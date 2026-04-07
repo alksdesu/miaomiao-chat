@@ -94,6 +94,7 @@ export function initModels() {
     eventBus.on('providers:updated', populateModelSelect);
     eventBus.on('providers:switched', populateModelSelect);
     eventBus.on('providers:models-changed', populateModelSelect);
+    eventBus.on('models:fetch-requested', populateModelSelect);
 
     // 监听下拉列表变化，保存到 state.selectedModel 并同步 apiFormat
     elements.modelSelect?.addEventListener('change', (e) => {

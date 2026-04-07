@@ -6,6 +6,15 @@ const { contextBridge, ipcRenderer } = require('electron');
  */
 contextBridge.exposeInMainWorld('electronAPI', {
     /**
+     * 发送初始化设置到主进程（替代 executeJavaScript 的安全方案）
+     * @param {Object} settings - 设置对象
+     * @returns {Promise<{success: boolean}>}
+     */
+    sendInitSettings: (settings) => {
+        return ipcRenderer.invoke('init-settings', settings);
+    },
+
+    /**
      * 手动检查更新
      */
     checkForUpdates: () => {

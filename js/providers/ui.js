@@ -612,8 +612,8 @@ function saveProviderForm(providerId) {
     }
 
     // 验证端点格式
-    if (endpoint && !endpoint.startsWith('http://') && !endpoint.startsWith('https://')) {
-        showNotification('API 地址必须以 http:// 或 https:// 开头', 'error');
+    if (endpoint && !endpoint.startsWith('http://') && !endpoint.startsWith('https://') && !endpoint.startsWith('ws://') && !endpoint.startsWith('wss://')) {
+        showNotification('API 地址必须以 http://, https://, ws:// 或 wss:// 开头', 'error');
         return;
     }
 

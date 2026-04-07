@@ -7,13 +7,14 @@
 import { state } from '../core/state.js';
 import { elements } from '../core/elements.js';
 import { eventBus } from '../core/events.js';
-import { removeMessageAt, removeMessagesAfter } from '../core/state-mutations.js';
-import { updateImagePreview, autoResizeTextarea } from '../ui/input.js';
+import { removeMessagesAfter, popLastAssistantMessage, updateMessageAt } from '../core/state-mutations.js';
+// 不直接导入 input.js 的函数，通过 eventBus 解耦（避免循环依赖）
 import { showConfirmDialog } from '../utils/dialogs.js';
 import { canEditMessage, safeDeleteMessage } from '../tools/message-compat.js';
 import { clearThoughtSignatures, hasThoughtSignatures } from '../api/format-converter.js';  // thoughtSignature 清理
 import { categorizeFile } from '../utils/file-helpers.js';
 import { enhanceCodeBlocks } from './renderer.js';
+import { PartType, MediaKind } from './schema.js';
 
 /**
  * 自动调整文本框高度（通用函数）
@@ -43,7 +44,7 @@ function getMessageIndexById(messageId) {
     }
 
     // Fallback：遍历数组查找（向后兼容，防止 map 未同步）
-    const messages = state.apiFormat === 'gemini' ? state.geminiContents : state.messages;
+    const messages = state.messages;
     const index = messages.findIndex(msg => msg.id === messageId);
 
     // 如果找到但 map 中没有，同步到 map
@@ -74,16 +75,25 @@ export function enterEditMode(messageEl) {
         return;
     }
 
-    let message;
-    if (state.apiFormat === 'gemini') {
-        message = state.geminiContents[targetIndex];
-        if (!message || message.role !== 'user') return;
-        const { text, images } = parseGeminiUserContent(message.parts);
+    const message = state.messages[targetIndex];
+    if (!message || message.role !== 'user') return;
+
+    // 新格式：从 parts 提取文本和附件
+    if (message.parts && Array.isArray(message.parts)) {
+        let text = '';
+        const attachments = [];
+        for (const p of message.parts) {
+            if (p.type === PartType.TEXT) text += p.text;
+            else if (p.type === PartType.MEDIA && p.media === MediaKind.IMAGE) {
+                attachments.push({ name: '已上传图片', type: 'image/*', category: 'image', data: p.url });
+            } else if (p.type === PartType.FILE) {
+                attachments.push({ name: p.name, type: p.mime, category: categorizeFile(p.mime), data: p.url });
+            }
+        }
         elements.userInput.value = text;
-        state.uploadedImages = images;
+        state.uploadedImages = attachments;
     } else {
-        message = state.messages[targetIndex];
-        if (!message || message.role !== 'user') return;
+        // 旧格式兼容
         const { text, images } = parseUserContent(message.content);
         elements.userInput.value = text;
         state.uploadedImages = images;
@@ -98,12 +108,12 @@ export function enterEditMode(messageEl) {
     messageEl.classList.add('editing');
     console.log('[editor.js] 编辑状态已更新, state.editingIndex =', state.editingIndex);
 
-    // 🔧 更新图片预览（显示当前消息的图片）
-    updateImagePreview();
-    console.log('[editor.js] updateImagePreview 已调用');
+    // 通过 eventBus 通知 input.js 更新图片预览（避免循环依赖）
+    eventBus.emit('editor:refresh-attachments');
+    console.log('[editor.js] editor:refresh-attachments 已发出');
 
     // 自动调整输入框高度以适应加载的内容
-    autoResizeTextarea();
+    eventBus.emit('editor:resize-textarea');
 
     // 聚焦输入框
     elements.userInput?.focus();
@@ -136,73 +146,39 @@ export function editMessageInPlace(messageEl) {
 
     const role = messageEl.classList.contains('user') ? 'user' : 'assistant';
 
-    // 获取当前内容和图片
+    // 获取当前内容和图片（统一从 state.messages 读取）
     let textContent = '';
     const images = [];
-    let thinkingContent = '';  // 思维链内容
+    let thinkingContent = '';
 
-    if (state.apiFormat === 'gemini') {
-        const message = state.geminiContents[index];
-        if (message?.parts) {
-            message.parts.forEach(p => {
-                if (p.thought && p.text !== undefined) {
-                    // Gemini 思维链部分
-                    thinkingContent += p.text;
-                } else if (p.text !== undefined && !p.thought) {
-                    textContent += p.text;
-                } else if (p.inlineData || p.inline_data) {
-                    images.push(p);
-                }
+    const message = state.messages[index];
+    if (!message) return;
+
+    // 新格式：从 parts 读取
+    if (message.parts && Array.isArray(message.parts)) {
+        for (const p of message.parts) {
+            if (p.type === PartType.THINKING) thinkingContent += p.text;
+            else if (p.type === PartType.TEXT) textContent += p.text;
+            else if (p.type === PartType.MEDIA && p.media === MediaKind.IMAGE) {
+                // 转为旧格式图片对象（编辑器使用）
+                images.push({ type: 'image_url', image_url: { url: p.url } });
+            }
+        }
+    }
+
+    // 旧格式兼容回退
+    if (!textContent && message.content) {
+        if (typeof message.content === 'string') {
+            textContent = message.content;
+        } else if (Array.isArray(message.content)) {
+            message.content.forEach(p => {
+                if (p.type === 'text') textContent += p.text || '';
+                else if (p.type === 'image_url' && p.image_url?.url) images.push(p);
             });
         }
-        // Fallback: thinking 可能存在 OpenAI 格式的元数据字段中
-        if (!thinkingContent) {
-            const openaiMsg = state.messages[index];
-            if (openaiMsg?.thinkingContent) {
-                thinkingContent = openaiMsg.thinkingContent;
-            }
-        }
-    } else if (state.apiFormat === 'claude') {
-        const message = state.claudeContents[index];
-        if (message?.content) {
-            if (typeof message.content === 'string') {
-                textContent = message.content;
-            } else if (Array.isArray(message.content)) {
-                message.content.forEach(p => {
-                    if (p.type === 'thinking' && p.thinking) {
-                        // Claude 思维链部分（原生 Claude API 响应）
-                        thinkingContent += p.thinking;
-                    } else if (p.type === 'text') {
-                        textContent += p.text || '';
-                    } else if (p.type === 'image' && p.source) {
-                        images.push(p);
-                    }
-                });
-            }
-        }
-        // Fallback: thinking 可能存在元数据字段而非 content 数组中
-        if (!thinkingContent && message?.thinkingContent) {
-            thinkingContent = message.thinkingContent;
-        }
-    } else {
-        const message = state.messages[index];
-        // OpenAI 格式的思维链存储在 thinkingContent 字段
-        if (message?.thinkingContent) {
-            thinkingContent = message.thinkingContent;
-        }
-        if (message?.content) {
-            if (typeof message.content === 'string') {
-                textContent = message.content;
-            } else if (Array.isArray(message.content)) {
-                message.content.forEach(p => {
-                    if (p.type === 'text') {
-                        textContent += p.text || '';
-                    } else if (p.type === 'image_url' && p.image_url?.url) {
-                        images.push(p);
-                    }
-                });
-            }
-        }
+    }
+    if (!thinkingContent && message.thinkingContent) {
+        thinkingContent = message.thinkingContent;
     }
 
     const contentDiv = messageEl.querySelector('.message-content');
@@ -229,18 +205,11 @@ export function editMessageInPlace(messageEl) {
             const imgPreview = document.createElement('div');
             imgPreview.className = 'edit-image-item';
 
-            // 提取图片 URL（根据格式不同）
+            // 提取图片 URL（使用 normalizeImage 统一处理所有格式）
             let imgUrl = '';
-            if (state.apiFormat === 'gemini') {
-                const inlineData = img.inlineData || img.inline_data;
-                const mimeType = inlineData.mimeType || inlineData.mime_type;
-                imgUrl = `data:${mimeType};base64,${inlineData.data}`;
-            } else if (state.apiFormat === 'claude') {
-                if (img.source?.type === 'base64') {
-                    imgUrl = `data:${img.source.media_type};base64,${img.source.data}`;
-                }
-            } else {
-                imgUrl = img.image_url?.url || img.url || '';
+            const norm = normalizeImage(img);
+            if (norm) {
+                imgUrl = norm.dataUrl;
             }
 
             imgPreview.innerHTML = `
@@ -383,56 +352,43 @@ export function editMessageInPlace(messageEl) {
  * @param {string} newContent - 新内容
  * @param {string} role - 角色
  */
-export function updateMessageContent(index, newContent, role) {
-    // 更新 OpenAI 格式
-    if (state.messages[index]) {
-        if (Array.isArray(state.messages[index].content)) {
-            const textPart = state.messages[index].content.find(p => p.type === 'text');
-            if (textPart) textPart.text = newContent;
-        } else {
-            state.messages[index].content = newContent;
-        }
-        clearEditMetadata(state.messages[index]);
+export function updateMessageContent(index, newContent, _role) {
+    if (!state.messages[index]) return;
+
+    const msg = state.messages[index];
+    const updates = {};
+
+    // 新格式 parts：合并所有 text part 为一个，替换为新内容
+    if (msg.parts && Array.isArray(msg.parts)) {
+        const nonTextParts = msg.parts.filter(p => p.type !== PartType.TEXT);
+        // 找到第一个 text part 的位置，在该位置插入新 text
+        const firstTextIdx = msg.parts.findIndex(p => p.type === PartType.TEXT);
+        const insertIdx = firstTextIdx >= 0 ? firstTextIdx : nonTextParts.length;
+        const newParts = [
+            ...nonTextParts.slice(0, insertIdx),
+            { type: PartType.TEXT, text: newContent },
+            ...nonTextParts.slice(insertIdx),
+        ];
+        updates.parts = newParts;
+    } else {
+        // 旧格式兜底：只创建 parts
+        updates.parts = [{ type: PartType.TEXT, text: newContent }];
     }
 
-    // 更新 Gemini 格式
-    if (state.geminiContents[index]) {
-        const textPart = state.geminiContents[index].parts?.find(p => p.text !== undefined);
-        if (textPart) textPart.text = newContent;
-        clearEditMetadata(state.geminiContents[index]);
-    }
-
-    // 更新 Claude 格式
-    if (state.claudeContents[index]) {
-        if (Array.isArray(state.claudeContents[index].content)) {
-            const textPart = state.claudeContents[index].content.find(p => p.type === 'text');
-            if (textPart) textPart.text = newContent;
-        } else {
-            state.claudeContents[index].content = newContent;
-        }
-        clearEditMetadata(state.claudeContents[index]);
-    }
-
-    // 编辑消息后清除后续 thoughtSignature（所有格式）
+    updateAndCleanup(index, getEditCleanupKeys(msg), updates);
     clearSubsequentSignatures(index);
 
-    // 发出事件通知会话保存
-    eventBus.emit('messages:changed', {
-        action: 'updated',
-        index
-    });
+    eventBus.emit('messages:changed', { action: 'updated', index });
 }
 
 /**
- * 清除编辑消息后续的 thoughtSignature（三种格式统一处理）
+ * 清除编辑消息后续的 thoughtSignature
  */
 function clearSubsequentSignatures(index) {
     if (index >= state.messages.length - 1) return;
     if (!hasThoughtSignatures(state.messages, index + 1)) return;
 
     const clearedCount = clearThoughtSignatures(state.messages, index + 1);
-    clearThoughtSignatures(state.geminiContents, index + 1);
-    clearThoughtSignatures(state.claudeContents, index + 1);
 
     eventBus.emit('ui:notification', {
         message: `编辑消息会影响思维链，已清除 ${clearedCount} 个签名。下次对话将重新生成思维链。`,
@@ -449,35 +405,41 @@ function clearSubsequentSignatures(index) {
  * @param {Array} images - 图片数组
  * @param {string} role - 角色
  */
-export function updateMessageContentWithImages(index, newText, images, role) {
+export function updateMessageContentWithImages(index, newText, images, _role) {
     const normalized = images.map(normalizeImage).filter(Boolean);
     const hasImages = normalized.length > 0;
-    const fmt = hasImages ? buildFormatImages(normalized) : null;
 
-    // 更新 OpenAI 格式
-    if (state.messages[index]) {
-        state.messages[index].content = hasImages
-            ? [{ type: 'text', text: newText }, ...fmt.openai]
-            : newText;
-        clearEditMetadata(state.messages[index]);
+    if (!state.messages[index]) return;
+
+    const msg = state.messages[index];
+    const updates = {};
+
+    // 新格式 parts
+    if (msg.parts && Array.isArray(msg.parts)) {
+        const thinkingParts = msg.parts.filter(p => p.type === PartType.THINKING);
+        const preservedParts = msg.parts.filter(p =>
+            p.type === PartType.TOOL_CALL || p.type === PartType.FILE
+        );
+        const newParts = [...thinkingParts, { type: PartType.TEXT, text: newText }];
+        if (hasImages) {
+            for (const n of normalized) {
+                newParts.push({ type: PartType.MEDIA, media: MediaKind.IMAGE, url: n.dataUrl, mime: n.mimeType });
+            }
+        }
+        newParts.push(...preservedParts);
+        updates.parts = newParts;
+    } else {
+        // 旧格式回退：更新 content 并创建 parts
+        const newParts = [{ type: PartType.TEXT, text: newText }];
+        if (hasImages) {
+            for (const n of normalized) {
+                newParts.push({ type: PartType.MEDIA, media: MediaKind.IMAGE, url: n.dataUrl, mime: n.mimeType });
+            }
+        }
+        updates.parts = newParts;
     }
 
-    // 更新 Gemini 格式
-    if (state.geminiContents[index]) {
-        state.geminiContents[index].parts = hasImages
-            ? [{ text: newText }, ...fmt.gemini]
-            : [{ text: newText }];
-        clearEditMetadata(state.geminiContents[index]);
-    }
-
-    // 更新 Claude 格式
-    if (state.claudeContents[index]) {
-        state.claudeContents[index].content = hasImages
-            ? [...fmt.claude, { type: 'text', text: newText }]
-            : [{ type: 'text', text: newText }];
-        clearEditMetadata(state.claudeContents[index]);
-    }
-
+    updateAndCleanup(index, getEditCleanupKeys(msg), updates);
     clearSubsequentSignatures(index);
 
     eventBus.emit('messages:changed', { action: 'updated', index });
@@ -595,22 +557,14 @@ export async function handleRetry(messageEl) {
     state.selectedReplyIndex = 0;
 
     // 检查是否有内容可以重试
-    if (state.messages.length === 0 && state.geminiContents.length === 0) return;
+    if (state.messages.length === 0) return;
 
     // 查找最后一条助手消息
     const allAssistantMsgs = elements.messagesArea.querySelectorAll('.message.assistant');
     const lastAssistantMsg = allAssistantMsgs.length > 0 ? allAssistantMsgs[allAssistantMsgs.length - 1] : null;
 
-    // 移除所有格式的最后一条助手消息
-    if (state.messages.length > 0 && state.messages[state.messages.length - 1].role === 'assistant') {
-        state.messages.pop();
-    }
-    if (state.geminiContents.length > 0 && state.geminiContents[state.geminiContents.length - 1].role === 'model') {
-        state.geminiContents.pop();
-    }
-    if (state.claudeContents.length > 0 && state.claudeContents[state.claudeContents.length - 1].role === 'assistant') {
-        state.claudeContents.pop();
-    }
+    // 移除最后一条助手消息
+    popLastAssistantMessage();
 
     // 删除 DOM
     if (lastAssistantMsg) {
@@ -652,20 +606,6 @@ function resolveMessageIndex(messageEl) {
     const nodes = Array.from(elements.messagesArea.querySelectorAll('.message'));
     const domIndex = nodes.indexOf(messageEl);
     return domIndex;
-}
-
-/**
- * 获取附件显示名称
- * @param {string} mimeType - MIME 类型
- * @returns {string}
- */
-function getAttachmentDisplayName(mimeType) {
-    const category = categorizeFile(mimeType);
-    if (category === 'image') return '已上传图片';
-    if (category === 'pdf') return '已上传PDF';
-    if (mimeType === 'text/markdown') return '已上传MD';
-    if (category === 'text') return '已上传TXT';
-    return '已上传文件';
 }
 
 /**
@@ -717,36 +657,6 @@ function parseUserContent(content) {
         });
     } else if (typeof content === 'string') {
         text = content;
-    }
-
-    return { text, images: attachments };
-}
-
-/**
- * 解析 Gemini 格式的用户消息内容
- */
-function parseGeminiUserContent(parts) {
-    let text = '';
-    const attachments = [];
-
-    if (Array.isArray(parts)) {
-        parts.forEach(part => {
-            if (part.text) {
-                text += (text ? '\n' : '') + part.text;
-            } else if (part.inlineData || part.inline_data) {
-                const inlineData = part.inlineData || part.inline_data;
-                const mimeType = inlineData.mimeType || inlineData.mime_type;
-                const data = inlineData.data;
-                const category = categorizeFile(mimeType);
-
-                attachments.push({
-                    name: getAttachmentDisplayName(mimeType),
-                    type: mimeType,
-                    category,
-                    data: `data:${mimeType};base64,${data}`,
-                });
-            }
-        });
     }
 
     return { text, images: attachments };
@@ -827,13 +737,29 @@ function buildFormatImages(normalizedImages) {
 }
 
 /**
- * 清除编辑后不再有效的元数据
- * @param {boolean} keepContentParts - 为 true 时保留 contentParts（updateMessageWithThinking 自行管理）
+ * 返回编辑时需要删除的元数据字段名列表
+ * @param {Object} msg - 消息对象
+ * @param {boolean} keepContentParts - 为 true 时保留 contentParts
+ * @returns {string[]} 需要删除的字段名
  */
-function clearEditMetadata(msg, keepContentParts = false) {
-    if (!keepContentParts) delete msg.contentParts;
-    delete msg.allReplies;
-    delete msg.selectedReplyIndex;
+function getEditCleanupKeys(msg, keepContentParts = false) {
+    const keys = [];
+    if (!keepContentParts && msg.contentParts) keys.push('contentParts');
+    if (msg.allReplies) keys.push('allReplies');
+    if (msg.selectedReplyIndex !== undefined) keys.push('selectedReplyIndex');
+    if (msg.replies) keys.push('replies');
+    return keys;
+}
+
+/**
+ * 更新消息后删除指定字段（避免 spread undefined 产生 ghost key）
+ */
+function updateAndCleanup(index, cleanupKeys, updates) {
+    updateMessageAt(index, updates);
+    const msg = state.messages[index];
+    if (msg) {
+        for (const key of cleanupKeys) delete msg[key];
+    }
 }
 
 /**
@@ -873,37 +799,11 @@ async function addNewImage(editableImages, renderCallback) {
             // 读取文件为 base64
             const base64 = await fileToBase64(file);
 
-            // 根据当前 API 格式创建图片对象
-            let imageObj;
-            if (state.apiFormat === 'gemini') {
-                // Gemini 格式：inlineData
-                const base64Data = base64.split(',')[1]; // 移除 data:image/xxx;base64, 前缀
-                imageObj = {
-                    inlineData: {
-                        mimeType: file.type,
-                        data: base64Data
-                    }
-                };
-            } else if (state.apiFormat === 'claude') {
-                // Claude 格式：source
-                const base64Data = base64.split(',')[1];
-                imageObj = {
-                    type: 'image',
-                    source: {
-                        type: 'base64',
-                        media_type: file.type,
-                        data: base64Data
-                    }
-                };
-            } else {
-                // OpenAI 格式：image_url
-                imageObj = {
-                    type: 'image_url',
-                    image_url: {
-                        url: base64
-                    }
-                };
-            }
+            // 统一使用 OpenAI 格式（updateMessageContentWithImages 会处理转换）
+            const imageObj = {
+                type: 'image_url',
+                image_url: { url: base64 }
+            };
 
             editableImages.push(imageObj);
             renderCallback();
@@ -947,54 +847,49 @@ function fileToBase64(file) {
  * @param {Array} images - 图片数组
  * @param {string} role - 角色
  */
-export function updateMessageWithThinking(index, newText, newThinking, images, role) {
+export function updateMessageWithThinking(index, newText, newThinking, images, _role) {
     const normalized = images.map(normalizeImage).filter(Boolean);
     const hasImages = normalized.length > 0;
-    const fmt = hasImages ? buildFormatImages(normalized) : null;
 
-    // 构建 contentParts（用于渲染）
-    const contentParts = [];
-    if (newThinking) {
-        contentParts.push({ type: 'thinking', text: newThinking });
-    }
-    contentParts.push({ type: 'text', text: newText });
-    if (hasImages) {
-        normalized.forEach(n => contentParts.push({ type: 'image_url', url: n.dataUrl, complete: true }));
-    }
+    if (!state.messages[index]) return;
 
-    // 更新 OpenAI 格式
-    if (state.messages[index]) {
-        state.messages[index].thinkingContent = newThinking;
-        state.messages[index].contentParts = contentParts;
-        state.messages[index].content = hasImages
-            ? [{ type: 'text', text: newText }, ...fmt.openai]
-            : newText;
-        delete state.messages[index].thinkingSignature;
-        delete state.messages[index].thoughtSignature;
-        clearEditMetadata(state.messages[index], true);
-    }
+    const msg = state.messages[index];
 
-    // 更新 Gemini 格式（不放 thought，Gemini 要求 thoughtSignature）
-    if (state.geminiContents[index]) {
-        state.geminiContents[index].parts = hasImages
-            ? [{ text: newText }, ...fmt.gemini]
-            : [{ text: newText }];
-        state.geminiContents[index].contentParts = contentParts;
-        delete state.geminiContents[index].thoughtSignature;
-        clearEditMetadata(state.geminiContents[index], true);
-    }
+    // 构建 contentParts
+    const updates = {};
 
-    // 更新 Claude 格式（不放 thinking，Claude 要求 signature）
-    if (state.claudeContents[index]) {
-        state.claudeContents[index].content = hasImages
-            ? [...fmt.claude, { type: 'text', text: newText }]
-            : [{ type: 'text', text: newText }];
-        state.claudeContents[index].thinkingContent = newThinking;
-        state.claudeContents[index].contentParts = contentParts;
-        delete state.claudeContents[index].thinkingSignature;
-        clearEditMetadata(state.claudeContents[index], true);
+    // 编辑思维链后需要清除签名
+    const signatureKeys = ['thinkingSignature', 'thoughtSignature'];
+
+    // 新格式 parts
+    if (msg.parts && Array.isArray(msg.parts)) {
+        const preservedParts = msg.parts.filter(p =>
+            p.type === PartType.TOOL_CALL || p.type === PartType.FILE
+        );
+        const newParts = [];
+        if (newThinking) newParts.push({ type: PartType.THINKING, text: newThinking });
+        newParts.push({ type: PartType.TEXT, text: newText });
+        if (hasImages) {
+            for (const n of normalized) {
+                newParts.push({ type: PartType.MEDIA, media: MediaKind.IMAGE, url: n.dataUrl, mime: n.mimeType });
+            }
+        }
+        newParts.push(...preservedParts);
+        updates.parts = newParts;
+    } else {
+        // 旧格式回退：创建 parts
+        const newParts = [];
+        if (newThinking) newParts.push({ type: PartType.THINKING, text: newThinking });
+        newParts.push({ type: PartType.TEXT, text: newText });
+        if (hasImages) {
+            for (const n of normalized) {
+                newParts.push({ type: PartType.MEDIA, media: MediaKind.IMAGE, url: n.dataUrl, mime: n.mimeType });
+            }
+        }
+        updates.parts = newParts;
     }
 
+    updateAndCleanup(index, [...getEditCleanupKeys(msg, true), ...signatureKeys], updates);
     clearSubsequentSignatures(index);
 
     eventBus.emit('messages:changed', { action: 'updated', index });

@@ -80,7 +80,8 @@ export function extractBase64Images(text) {
  */
 export function restoreBase64Images(html, images) {
     images.forEach((img, index) => {
-        const imgTag = `<img src="${img.dataUrl}" alt="${img.alt || 'Generated image'}" style="max-width: 100%; height: auto;">`;
+        const safeAlt = escapeHtml(img.alt || 'Generated image');
+        const imgTag = `<img src="${img.dataUrl}" alt="${safeAlt}" style="max-width: 100%; height: auto;">`;
         html = html.replace(`<!--IMG_PLACEHOLDER_${index}-->`, imgTag);
     });
     return html;
@@ -170,18 +171,4 @@ export function generateSessionName(content, maxLength = 25) {
     }
 
     return truncated.substring(0, breakPoint).trim() + '...';
-}
-
-/**
- * 下载图片
- * @param {string} dataUrl - 图片 data URL
- * @param {string} filename - 文件名
- */
-export function downloadImage(dataUrl, filename) {
-    const link = document.createElement('a');
-    link.href = dataUrl;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
 }

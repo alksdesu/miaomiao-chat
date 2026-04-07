@@ -166,6 +166,11 @@
     --color-focus: var(--md-blue);
     --color-bg-titlebar: transparent;
     --scroll-shadow-color: rgba(0, 0, 0, 0.1);
+
+    /* 欢迎消息渐变色 */
+    --welcome-gradient-start: #6FC2FF;
+    --welcome-gradient-mid: #53DBC9;
+    --welcome-gradient-end: #B291DE;
 }
 
 /* ========== 暗色主题 - 彻底深色重构 ========== */
@@ -228,6 +233,15 @@
     --color-focus: var(--md-teal);
     --color-bg-titlebar: #1e1e1e;
     --scroll-shadow-color: rgba(229, 229, 229, 0.15);
+
+    /* 懒加载图片占位色 */
+    --lazy-image-shimmer-a: #1f1f1f;
+    --lazy-image-shimmer-b: #2a2a2a;
+
+    /* 欢迎消息渐变色 */
+    --welcome-gradient-start: #1a3a52;
+    --welcome-gradient-mid: #1a4d47;
+    --welcome-gradient-end: #3a2a4d;
 }
 
 /* ========== 暗色主题下的像素装饰调整 ========== */

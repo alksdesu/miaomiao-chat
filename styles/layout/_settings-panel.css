@@ -224,6 +224,7 @@
     outline: 3px solid var(--md-blue);
     outline-offset: 2px;
     background: var(--md-blue);
+    color: var(--color-text-inverse);
 }
 
 .settings-input {

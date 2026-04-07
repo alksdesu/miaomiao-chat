@@ -76,7 +76,7 @@ export function saveCurrentConfig() {
  * 构建配置对象
  * @returns {Object} 配置对象
  */
-function buildConfigObject() {
+export function buildConfigObject() {
     return {
         // ⭐ 配置版本号（用于自动升级）
         configVersion: CONFIG_VERSION,
@@ -148,9 +148,16 @@ function buildConfigObject() {
         providers: JSON.parse(JSON.stringify(state.providers || [])),
         currentProviderId: state.currentProviderId || null,
 
+        // 功能开关（工具/压缩等）
+        fastImageCompression: state.fastImageCompression || false,
+        codeExecutionEnabled: state.codeExecutionEnabled || false,
+        computerUseEnabled: state.computerUseEnabled || false,
+        computerUsePermissions: { ...state.computerUsePermissions },
+        bashConfig: { ...state.bashConfig },
+
         // 快捷消息（深拷贝）
         quickMessages: JSON.parse(JSON.stringify(state.quickMessages || [])),
-        quickMessagesCategories: [...(state.quickMessagesCategories || ['常用'])],
+        quickMessagesCategories: [...(state.quickMessagesCategories || ['常用', '问候', '告别'])],
     };
 }
 
@@ -347,7 +354,7 @@ export async function loadConfig() {
  * 应用配置到 state
  * @param {Object} config - 配置对象
  */
-function applyConfigToState(config) {
+export function applyConfigToState(config) {
     // ⭐ 配置版本检测和自动升级
     const configVersion = config.configVersion || 1;  // 默认为 v1（旧格式）
 
@@ -474,6 +481,17 @@ function applyConfigToState(config) {
     state.providers = config.providers ?? [];
     state.currentProviderId = config.currentProviderId ?? null;
 
+    // 功能开关（工具/压缩等）
+    state.fastImageCompression = config.fastImageCompression ?? false;
+    state.codeExecutionEnabled = config.codeExecutionEnabled ?? false;
+    state.computerUseEnabled = config.computerUseEnabled ?? false;
+    if (config.computerUsePermissions) {
+        state.computerUsePermissions = { ...state.computerUsePermissions, ...config.computerUsePermissions };
+    }
+    if (config.bashConfig) {
+        state.bashConfig = { ...state.bashConfig, ...config.bashConfig };
+    }
+
     // 快捷消息
     state.quickMessages = config.quickMessages ?? [];
     state.quickMessagesCategories = config.quickMessagesCategories ?? ['常用', '问候', '告别'];
@@ -523,7 +541,7 @@ function applyConfigToState(config) {
     });
 
     // API 格式直接设置（不通过事件，避免时序问题）
-    if (['openai', 'gemini', 'claude'].includes(config.apiFormat)) {
+    if (['openai', 'openai-responses', 'gemini', 'claude', 'openclaw'].includes(config.apiFormat)) {
         state.apiFormat = config.apiFormat;
 
         // 直接更新UI
@@ -729,11 +747,35 @@ export function syncUIWithState() {
         }
     }
 
-    // 思维链强度按钮
-    const strengthBtns = document.querySelectorAll('.strength-btn');
+    // 思维链强度按钮（排除 Claude effort 按钮）
+    const strengthBtns = document.querySelectorAll('.strength-btn:not(.claude-effort-btn)');
     strengthBtns.forEach(btn => {
         btn.classList.toggle('active', btn.dataset.strength === state.thinkingStrength);
     });
+
+    // Claude Adaptive Thinking
+    const claudeAdaptiveCheckbox = document.getElementById('claude-adaptive-thinking');
+    if (claudeAdaptiveCheckbox) claudeAdaptiveCheckbox.checked = state.claudeAdaptiveThinking;
+    const claudeAdaptiveRow = document.getElementById('claude-adaptive-row');
+    if (claudeAdaptiveRow) claudeAdaptiveRow.style.display = state.thinkingEnabled ? 'flex' : 'none';
+    const claudeEffortBtns = document.querySelectorAll('.claude-effort-btn');
+    claudeEffortBtns.forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.effort === state.claudeEffortLevel);
+    });
+
+    // Thinking None Mode
+    const thinkingNoneCheckbox = document.getElementById('thinking-none-mode');
+    if (thinkingNoneCheckbox) thinkingNoneCheckbox.checked = state.thinkingNoneMode;
+
+    // 输出详细度
+    const verbosityCheckbox = document.getElementById('verbosity-enabled');
+    if (verbosityCheckbox) verbosityCheckbox.checked = state.verbosityEnabled;
+    const verbositySelect = document.getElementById('output-verbosity');
+    if (verbositySelect) verbositySelect.value = state.outputVerbosity;
+
+    // Gemini System Parts
+    const geminiPartsCheckbox = document.getElementById('gemini-system-parts-enabled');
+    if (geminiPartsCheckbox) geminiPartsCheckbox.checked = state.geminiSystemPartsEnabled;
 
     // 网络搜索开关
     const webSearchEnabled = document.getElementById('web-search-enabled');
@@ -822,6 +864,18 @@ export function syncUIWithState() {
     document.querySelectorAll('.format-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.format === state.apiFormat);
     });
+
+    // 图片压缩模式
+    const fastImageCompression = document.getElementById('fast-image-compression');
+    if (fastImageCompression) fastImageCompression.checked = state.fastImageCompression || false;
+
+    // Code Execution
+    const codeExecutionEnabled = document.getElementById('code-execution-enabled');
+    if (codeExecutionEnabled) codeExecutionEnabled.checked = state.codeExecutionEnabled || false;
+
+    // Computer Use
+    const computerUseEnabled = document.getElementById('computer-use-enabled');
+    if (computerUseEnabled) computerUseEnabled.checked = state.computerUseEnabled || false;
 
     console.log('UI synced with state');
 }

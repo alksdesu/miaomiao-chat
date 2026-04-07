@@ -6,13 +6,14 @@
 import { state, elements } from '../core/state.js';
 import { eventBus } from '../core/events.js';
 import { requestStateMachine } from '../core/request-state-machine.js';
-import { toOpenAIMessage, toGeminiMessage, toClaudeMessage } from '../messages/converters.js';
 import { createMessageElement } from '../messages/renderer.js';
 import { removeMessagesAfterAll, updateMessageContentWithImages } from '../messages/editor.js';
 import { showNotification } from './notifications.js';
-import { generateMessageId } from '../utils/helpers.js';
-import { pushMessage } from '../core/state-mutations.js';
-import { truncateFileName } from '../utils/file-helpers.js';
+import { pushMessage, updateMessageAt } from '../core/state-mutations.js';
+import { truncateFileName, categorizeFile } from '../utils/file-helpers.js';
+import {
+    createMessage, Role, textPart, mediaPart, filePart, MediaKind,
+} from '../messages/schema.js';
 import { MAX_ATTACHMENTS, MAX_FILE_SIZE, MAX_MESSAGE_LENGTH, IMAGE_COMPRESSION_TIMEOUT, AUTO_DOCUMENT_TOKEN_THRESHOLD } from '../utils/constants.js';
 import { estimateTokenCount } from '../stream/stats.js';
 import { renderPdfToImages } from '../utils/pdf.js';
@@ -486,7 +487,7 @@ function saveEdit() {
 
     if (hasAttachments) {
         // 使用统一的转换器处理所有附件类型
-        // converters.js 中的函数会根据 MIME 类型自动处理图片/PDF/TXT
+        // 附件会根据 MIME 类型自动处理图片/PDF/TXT
         messageAttachments = attachmentDataUrls;
     }
 
@@ -707,48 +708,32 @@ export async function handleSend() {
         }
     }
 
-    // 构建三种格式的用户消息
-    // 按需压缩策略：先发送原图，API 报错时自动压缩重试
-    const attachmentDataUrls = hasAttachments ? state.uploadedImages.map(file => file.data) : null;
-    const originalDataUrls = hasAttachments ? state.uploadedImages.map(file => file.data) : null;
-
-    // 🔑 生成唯一消息ID
-    const messageId = generateMessageId();
-
-    // OpenAI 格式
-    const openaiMessage = toOpenAIMessage('user', textContent, attachmentDataUrls);
-    openaiMessage.id = messageId;
-    // 保存原始数据 URL 引用（用于下载）
-    if (originalDataUrls) {
-        openaiMessage.originalImageUrls = originalDataUrls;
+    // 构建新格式用户消息
+    const parts = [];
+    if (textContent) {
+        parts.push(textPart(textContent));
+    }
+    if (hasAttachments) {
+        for (const file of state.uploadedImages) {
+            const cat = file.category || categorizeFile(file.type);
+            if (cat === 'image') {
+                parts.push(mediaPart(MediaKind.IMAGE, file.data, file.type));
+            } else if (cat === 'video') {
+                parts.push(mediaPart(MediaKind.VIDEO, file.data, file.type));
+            } else if (cat === 'pdf') {
+                parts.push(filePart(file.name, file.type, file.data));
+            } else if (cat === 'text') {
+                // 文本文件：直接添加为 text part（包裹 <document>）
+                parts.push(textPart(`<document>\n${file.data}\n</document>`));
+            }
+        }
     }
 
-    // Gemini 格式
-    const geminiMessage = toGeminiMessage('user', textContent, attachmentDataUrls);
-    geminiMessage.id = messageId;
-    // 保存原始数据 URL 引用（用于下载）
-    if (originalDataUrls) {
-        geminiMessage.originalImageUrls = originalDataUrls;
-    }
+    const userMessage = createMessage(Role.USER, parts);
 
-    // Claude 格式
-    const claudeMessage = toClaudeMessage('user', textContent, attachmentDataUrls);
-    claudeMessage.id = messageId;
-    // 保存原始数据 URL 引用（用于下载）
-    if (originalDataUrls) {
-        claudeMessage.originalImageUrls = originalDataUrls;
-    }
-
-    // 保存用户消息到历史栈（支持多级撤销）
-    const userMsg = state.apiFormat === 'gemini' ? geminiMessage : openaiMessage;
-    state.lastUserMessage = userMsg; // 向后兼容
-    state.messageHistory.push({
-        openai: openaiMessage,
-        gemini: geminiMessage,
-        claude: claudeMessage,
-        timestamp: Date.now()
-    });
-    // 限制历史记录大小
+    // 保存用户消息到历史栈
+    state.lastUserMessage = userMessage;
+    state.messageHistory.push({ message: userMessage, timestamp: Date.now() });
     if (state.messageHistory.length > state.maxHistorySize) {
         state.messageHistory.shift();
     }
@@ -756,33 +741,23 @@ export async function handleSend() {
     if (isEditing) {
         const targetIndex = state.editingIndex;
 
-        // 更新所有三种格式
-        if (state.messages[targetIndex]) {
-            state.messages[targetIndex] = openaiMessage;
-        }
-        if (state.geminiContents[targetIndex]) {
-            state.geminiContents[targetIndex] = geminiMessage;
-        }
-        if (state.claudeContents[targetIndex]) {
-            state.claudeContents[targetIndex] = claudeMessage;
-        }
+        // 编辑用户消息：完整替换
+        updateMessageAt(targetIndex, userMessage, true);
 
         if (state.editingElement) {
             updateUserMessageDOM(state.editingElement, textContent, hasAttachments ? state.uploadedImages : null);
         }
 
-        // 移除编辑位置之后的所有消息（所有格式）
+        // 移除编辑位置之后的所有消息
         removeMessagesAfterAll(targetIndex);
     } else {
-        // 使用安全的状态更新函数推送消息
-        pushMessage(openaiMessage, geminiMessage, claudeMessage);
+        pushMessage(userMessage);
 
         const messageIndex = state.messages.length - 1;
-        // 传递 messageId 到 DOM 元素
-        const messageEl = createMessageElement('user', textContent, hasAttachments ? state.uploadedImages : null, messageId);
+        const messageEl = createMessageElement('user', textContent, hasAttachments ? state.uploadedImages : null, userMessage.id);
         elements.messagesArea.appendChild(messageEl);
         if (messageEl) {
-            messageEl.dataset.messageIndex = messageIndex; // 向后兼容，保留索引
+            messageEl.dataset.messageIndex = messageIndex;
         }
     }
 
@@ -1031,6 +1006,10 @@ export function initInputHandlers() {
         // 同时清除引用消息
         clearQuotedMessage();
     });
+
+    // 编辑模式进入时刷新附件预览和文本框高度（不清引用消息）
+    eventBus.on('editor:refresh-attachments', () => updateImagePreview());
+    eventBus.on('editor:resize-textarea', () => autoResizeTextarea());
 
     // 暴露到全局作用域（用于 HTML onclick）
     window.cancelEdit = cancelEdit;

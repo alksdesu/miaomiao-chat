@@ -13,6 +13,7 @@ import { parseStreamingMarkdownImages, mergeTextParts } from '../utils/markdown-
 import { createToolCallAccumulator, handleToolCallStream } from './tool-call-handler.js';
 import { XMLStreamAccumulator } from '../tools/xml-formatter.js';  // XML 工具调用解析
 import { state } from '../core/state.js';  // 访问 xmlToolCallingEnabled 配置
+import { getCurrentEndpoint, getCurrentApiKey, getCurrentModel } from '../api/handler.js';
 import { ThinkTagParser } from './think-tag-parser.js';  // <think> 标签解析器
 import { requestStateMachine, RequestState } from '../core/request-state-machine.js';
 
@@ -51,6 +52,7 @@ export async function parseOpenAIStream(reader, format = 'openai', sessionId = n
 
     // Responses API 的 encrypted_content 签名（用于多轮对话保持思维链上下文）
     let encryptedContent = null;
+    let reasoningItemId = null;
 
     try {
         while (true) {
@@ -103,9 +105,9 @@ export async function parseOpenAIStream(reader, format = 'openai', sessionId = n
                                 state.isToolCallPending = true;
 
                                 handleToolCallStream(completedCalls, {
-                                    endpoint: state.endpoint,
-                                    apiKey: state.apiKey,
-                                    model: state.model
+                                    endpoint: getCurrentEndpoint(),
+                                    apiKey: getCurrentApiKey(),
+                                    model: getCurrentModel()
                                 }).catch(error => {
                                     console.error('[Parser] Responses API [DONE] 工具调用失败:', error);
                                 });
@@ -114,7 +116,7 @@ export async function parseOpenAIStream(reader, format = 'openai', sessionId = n
                             }
                         }
 
-                        finalizeOpenAIStream(textContent, thinkingContent, contentParts, sessionId, encryptedContent);
+                        finalizeOpenAIStream(textContent, thinkingContent, contentParts, sessionId, encryptedContent, reasoningItemId);
                         return;
                     }
 
@@ -252,6 +254,7 @@ export async function parseOpenAIStream(reader, format = 'openai', sessionId = n
                                         for (const item of parsed.response.output) {
                                             if (item.type === 'reasoning' && item.encrypted_content) {
                                                 encryptedContent = item.encrypted_content;
+                                                reasoningItemId = item.id || null;
                                                 console.log('[Parser] 提取到 encrypted_content 签名');
                                             }
                                             // 从 response.completed 事件中提取工具调用（兜底）
@@ -315,9 +318,9 @@ export async function parseOpenAIStream(reader, format = 'openai', sessionId = n
                                             state.isToolCallPending = true;
 
                                             handleToolCallStream(completedCalls, {
-                                                endpoint: state.endpoint,
-                                                apiKey: state.apiKey,
-                                                model: state.model
+                                                endpoint: getCurrentEndpoint(),
+                                                apiKey: getCurrentApiKey(),
+                                                model: getCurrentModel()
                                             }).catch(error => {
                                                 console.error('[Parser] Responses API 工具调用流程失败:', error);
                                             });
@@ -478,9 +481,9 @@ export async function parseOpenAIStream(reader, format = 'openai', sessionId = n
                                     state.isToolCallPending = true;
 
                                     handleToolCallStream(completedCalls, {
-                                        endpoint: state.endpoint,
-                                        apiKey: state.apiKey,
-                                        model: state.model
+                                        endpoint: getCurrentEndpoint(),
+                                        apiKey: getCurrentApiKey(),
+                                        model: getCurrentModel()
                                     }).catch(error => {
                                         console.error('[Parser] Responses API 兜底工具调用流程失败:', error);
                                     });
@@ -575,9 +578,9 @@ export async function parseOpenAIStream(reader, format = 'openai', sessionId = n
 
                                         // 执行工具调用流程（异步，不阻塞）
                                         handleToolCallStream(toolCalls, {
-                                            endpoint: state.endpoint,
-                                            apiKey: state.apiKey,
-                                            model: state.model
+                                            endpoint: getCurrentEndpoint(),
+                                            apiKey: getCurrentApiKey(),
+                                            model: getCurrentModel()
                                         }).catch(_error => {
                                             console.error('[Parser] 工具调用流程失败:', _error);
                                         });
@@ -698,7 +701,7 @@ export async function parseOpenAIStream(reader, format = 'openai', sessionId = n
                                     contentParts.push({ type: 'text', text: truncDisplayText });
                                 }
                             }
-                            finalizeOpenAIStream(textContent, thinkingContent, contentParts, sessionId, encryptedContent);
+                            finalizeOpenAIStream(textContent, thinkingContent, contentParts, sessionId, encryptedContent, reasoningItemId);
                             return;
                         }
                     } catch (_e) {
@@ -730,7 +733,7 @@ export async function parseOpenAIStream(reader, format = 'openai', sessionId = n
         }
 
         // 流结束
-        finalizeOpenAIStream(textContent, thinkingContent, contentParts, sessionId, encryptedContent);
+        finalizeOpenAIStream(textContent, thinkingContent, contentParts, sessionId, encryptedContent, reasoningItemId);
     } finally {
         // 关键释放 reader 锁，防止资源泄漏
         try {
@@ -749,8 +752,9 @@ export async function parseOpenAIStream(reader, format = 'openai', sessionId = n
  * @param {Array} contentParts - 内容部分数组
  * @param {string} sessionId - 会话ID
  * @param {string} encryptedContent - Responses API 的 encrypted_content 签名
+ * @param {string} reasoningItemId - Responses API reasoning item 的 ID
  */
-function finalizeOpenAIStream(textContent, thinkingContent, contentParts, sessionId, encryptedContent = null) {
+function finalizeOpenAIStream(textContent, thinkingContent, contentParts, sessionId, encryptedContent = null, reasoningItemId = null) {
     // 流结束，清除工具调用pending标志（如果没有新的工具调用）
     // 这样handler的finally块才能正确清理loading状态
     if (state.isToolCallPending) {
@@ -764,18 +768,23 @@ function finalizeOpenAIStream(textContent, thinkingContent, contentParts, sessio
     // 清理所有未完成的图片缓冲区
     cleanupAllIncompleteImages(contentParts);
 
-    // 渲染最终内容
-    if (contentParts.length > 0) {
-        renderFinalContentWithThinking(contentParts, thinkingContent);
-    } else if (textContent || thinkingContent) {
-        renderFinalTextWithThinking(textContent, thinkingContent);
+    // 会话已切换时跳过 DOM 操作，只保存消息
+    const isBackground = sessionId && sessionId !== state.currentSessionId;
+
+    if (!isBackground) {
+        // 渲染最终内容
+        if (contentParts.length > 0) {
+            renderFinalContentWithThinking(contentParts, thinkingContent);
+        } else if (textContent || thinkingContent) {
+            renderFinalTextWithThinking(textContent, thinkingContent);
+        }
+
+        // 兜底：按最终内容重算 token（避免工具调用后正文漏计数）
+        recalculateStreamTokenCount({ textContent, thinkingContent, contentParts });
+
+        // 添加统计信息
+        appendStreamStats();
     }
-
-    // 兜底：按最终内容重算 token（避免工具调用后正文漏计数）
-    recalculateStreamTokenCount({ textContent, thinkingContent, contentParts });
-
-    // 添加统计信息
-    appendStreamStats();
 
     // 使用统一函数保存消息到所有三种格式并获取索引
     const messageIndex = saveAssistantMessage({
@@ -783,8 +792,9 @@ function finalizeOpenAIStream(textContent, thinkingContent, contentParts, sessio
         thinkingContent,
         contentParts,
         streamStats: getCurrentStreamStatsData(),
-        sessionId: sessionId, // 🔒 传递会话ID防止串消息
+        sessionId: sessionId,
         encryptedContent: encryptedContent,
+        reasoningItemId: reasoningItemId,
     });
 
     // Bug 2 立即设置 dataset.messageIndex
@@ -808,6 +818,9 @@ function finalizeOpenAIStreamWithError(textContent, thinkingContent, contentPart
     // 清理所有未完成的图片缓冲区
     cleanupAllIncompleteImages(contentParts);
 
+    // 会话已切换时跳过 DOM 操作，只保存消息
+    const isBackground = sessionId && sessionId !== state.currentSessionId;
+
     // 使用统一的错误渲染函数（包含折叠的技术详情）
     const errorObject = {
         code: errorCode,
@@ -822,27 +835,31 @@ function finalizeOpenAIStreamWithError(textContent, thinkingContent, contentPart
 
     const finalText = textContent + '\n\n' + errorMessage;
 
-    // 渲染内容（包含部分内容和错误）
-    if (contentParts.length > 0) {
-        renderFinalContentWithThinking(contentParts, thinkingContent);
-    } else if (textContent || thinkingContent) {
-        renderFinalTextWithThinking(textContent, thinkingContent);
-    }
+    if (!isBackground) {
+        // 渲染内容（包含部分内容和错误）
+        if (contentParts.length > 0) {
+            renderFinalContentWithThinking(contentParts, thinkingContent);
+        } else if (textContent || thinkingContent) {
+            renderFinalTextWithThinking(textContent, thinkingContent);
+        }
 
-    // 在消息末尾插入错误提示
-    const currentMsg = document.querySelector('.message.assistant:last-child');
-    if (currentMsg) {
-        const contentDiv = currentMsg.querySelector('.message-content');
-        if (contentDiv) {
-            contentDiv.insertAdjacentHTML('beforeend', errorHtml);
+        // 在消息末尾插入错误提示
+        const currentMsg = document.querySelector('.message.assistant:last-child');
+        if (currentMsg) {
+            const contentDiv = currentMsg.querySelector('.message-content');
+            if (contentDiv) {
+                contentDiv.insertAdjacentHTML('beforeend', errorHtml);
+            }
         }
     }
 
-    // 兜底：按最终内容重算 token（避免工具调用后正文漏计数）
-    recalculateStreamTokenCount({ textContent: finalText, thinkingContent, contentParts });
+    if (!isBackground) {
+        // 兜底：按最终内容重算 token（避免工具调用后正文漏计数）
+        recalculateStreamTokenCount({ textContent: finalText, thinkingContent, contentParts });
 
-    // 添加统计信息
-    appendStreamStats();
+        // 添加统计信息
+        appendStreamStats();
+    }
 
     // 保存消息（标记为错误）并获取索引
     const messageIndex = saveAssistantMessage({
@@ -856,22 +873,24 @@ function finalizeOpenAIStreamWithError(textContent, thinkingContent, contentPart
             message: errorMessage
         },
         errorHtml,
-        sessionId: sessionId, // 🔒 传递会话ID防止串消息
+        sessionId: sessionId,
     });
 
     // Bug 2 立即设置 dataset.messageIndex
     setCurrentMessageIndex(messageIndex);
 
-    // 触发 UI 状态重置
-    eventBus.emit('stream:error', {
-        errorCode,
-        errorMessage,
-        partialContent: textContent
-    });
+    // 触发 UI 状态重置（后台任务不触发，防止干扰当前会话）
+    if (!isBackground) {
+        eventBus.emit('stream:error', {
+            errorCode,
+            errorMessage,
+            partialContent: textContent
+        });
 
-    // 强制清理工具调用标志（防止状态泄漏）
-    if (state.isToolCallPending) {
-        console.log('[Parser-OpenAI] 错误状态下强制清理 isToolCallPending');
-        state.isToolCallPending = false;
+        // 强制清理工具调用标志（防止状态泄漏）
+        if (state.isToolCallPending) {
+            console.log('[Parser-OpenAI] 错误状态下强制清理 isToolCallPending');
+            state.isToolCallPending = false;
+        }
     }
 }

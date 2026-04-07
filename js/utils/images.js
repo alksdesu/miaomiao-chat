@@ -5,6 +5,7 @@
 
 import { detectImageFormat } from './helpers.js';
 import { API_FILE_SIZE_LIMITS } from './constants.js';
+import { PartType, MediaKind } from '../messages/schema.js';
 
 /**
  * API 图片大小限制配置
@@ -244,10 +245,11 @@ export async function compressImagesInMessages(messages, apiFormat, fastMode = f
                 }
             }
         } else if (msg.parts && Array.isArray(msg.parts)) {
-            // Gemini 格式：parts 数组
+            // 新格式 or Gemini 格式：parts 数组
             compressedMsg.parts = [];
             for (const part of msg.parts) {
                 if (part.inlineData) {
+                    // Gemini 格式
                     const compressed = await compressImage(part.inlineData.data, part.inlineData.mimeType, { fastMode, apiFormat });
                     compressedMsg.parts.push({
                         ...part,
@@ -257,6 +259,21 @@ export async function compressImagesInMessages(messages, apiFormat, fastMode = f
                         }
                     });
                     console.log(`[重试] 压缩图片: ${(compressed.originalSize / 1024 / 1024).toFixed(2)}MB → ${(compressed.compressedSize / 1024 / 1024).toFixed(2)}MB`);
+                } else if (part.type === PartType.MEDIA && part.media === MediaKind.IMAGE && part.url) {
+                    // 新格式：{type:'media', media:'image', url:'data:...'}
+                    const match = part.url.match(/^data:([^;]+);base64,(.+)$/);
+                    if (match) {
+                        const [, mimeType, base64Data] = match;
+                        const compressed = await compressImage(base64Data, mimeType, { fastMode, apiFormat });
+                        compressedMsg.parts.push({
+                            ...part,
+                            url: `data:${compressed.mimeType};base64,${compressed.data}`,
+                            mime: compressed.mimeType,
+                        });
+                        console.log(`[重试] 压缩图片: ${(compressed.originalSize / 1024 / 1024).toFixed(2)}MB → ${(compressed.compressedSize / 1024 / 1024).toFixed(2)}MB`);
+                    } else {
+                        compressedMsg.parts.push(part);
+                    }
                 } else {
                     compressedMsg.parts.push(part);
                 }

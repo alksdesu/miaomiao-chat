@@ -9,7 +9,9 @@ import { getPrefillMessages, getOpeningMessages } from '../utils/prefill.js';
 import { processVariables } from '../utils/variables.js';
 import { filterMessagesByCapabilities } from '../utils/message-filter.js';
 import { getCurrentModelCapabilities } from '../providers/manager.js';
-import { getOrCreateMappedId } from './format-converter.js';  // ID 重映射
+import { toClaudeMessages } from '../messages/api-adapters.js';
+import { isElectron } from '../utils/platform.js';
+import { escapeXML } from '../tools/xml-formatter.js';
 
 /**
  * 上传图片到 Claude Files API
@@ -63,341 +65,6 @@ async function uploadImageToFilesAPI(base64Data, mediaType) {
 }
 
 /**
- * 转换消息格式为 Claude 格式
- * @param {Array} messages - OpenAI 格式的消息数组
- * @returns {Promise<Array>} Claude 格式的消息数组
- */
-async function convertToClaudeMessages(messages) {
-    // Claude API 中 system 是顶级参数，messages 中只能有 user 和 assistant
-    // 过滤掉 system 消息，避免被错误转换成 user
-    const convertedMessages = messages
-        .filter(msg => msg.role !== 'system')
-        .map(msg => {
-            // ⭐ 处理工具调用消息（assistant with tool_calls）
-            if (msg.role === 'assistant' && msg.tool_calls) {
-                const content = [];
-
-                // 当启用 thinking 时，先添加 thinking block（必须在 tool_use 之前）
-                if (state.thinkingEnabled && msg.thinkingContent) {
-                    const thinkingBlock = {
-                        type: 'thinking',
-                        thinking: msg.thinkingContent
-                    };
-                    // 添加签名（如果有）
-                    if (msg.thinkingSignature) {
-                        thinkingBlock.signature = msg.thinkingSignature;
-                    }
-                    content.push(thinkingBlock);
-                }
-
-                // 添加 tool_use blocks
-                msg.tool_calls.forEach(tc => {
-                    // 解析 arguments（可能是字符串）
-                    let input;
-                    try {
-                        input = typeof tc.function.arguments === 'string'
-                            ? JSON.parse(tc.function.arguments)
-                            : tc.function.arguments;
-                    } catch {
-                        input = {};
-                    }
-
-                    // ID 重映射（OpenAI → Claude）
-                    const claudeId = getOrCreateMappedId(tc.id, 'claude');
-
-                    content.push({
-                        type: 'tool_use',
-                        id: claudeId,
-                        name: tc.function.name,
-                        input: input
-                    });
-                });
-
-                return {
-                    role: 'assistant',
-                    content: content
-                };
-            }
-
-            // ⭐ 处理工具结果消息（role: 'tool'）
-            if (msg.role === 'tool') {
-                // ID 重映射（OpenAI → Claude）
-                const claudeId = getOrCreateMappedId(msg.tool_call_id, 'claude');
-
-                // 多模态支持：解析工具结果并检测图片
-                let resultContent;
-                try {
-                    resultContent = JSON.parse(msg.content);
-                } catch {
-                    resultContent = msg.content;
-                }
-
-                // 检测多模态内容
-                const contentParts = [];
-
-                if (resultContent && typeof resultContent === 'object') {
-                    // 处理文本字段
-                    if (resultContent.text) {
-                        contentParts.push({
-                            type: 'text',
-                            text: resultContent.text
-                        });
-                    }
-
-                    // 处理图片数组（Code Execution 返回多张图片）
-                    if (Array.isArray(resultContent.images)) {
-                        for (const imageItem of resultContent.images) {
-                            // 提取 image_url 格式
-                            if (imageItem.type === 'image_url' && imageItem.url) {
-                                const match = imageItem.url.match(/^data:([^;]+);base64,(.+)$/);
-                                if (match) {
-                                    contentParts.push({
-                                        type: 'image',
-                                        source: {
-                                            type: 'base64',
-                                            media_type: match[1],
-                                            data: match[2]
-                                        }
-                                    });
-                                }
-                            }
-                        }
-                    }
-
-                    // 处理单个图片字段（向后兼容）
-                    if (resultContent.image) {
-                        const imageData = resultContent.image;
-
-                        // 处理 base64 格式: "data:image/png;base64,..."
-                        if (typeof imageData === 'string' && imageData.startsWith('data:')) {
-                            const match = imageData.match(/^data:([^;]+);base64,(.+)$/);
-                            if (match) {
-                                contentParts.push({
-                                    type: 'image',
-                                    source: {
-                                        type: 'base64',
-                                        media_type: match[1],
-                                        data: match[2]
-                                    }
-                                });
-                            }
-                        }
-                        // 处理已经是 Claude 格式: { source: { type, media_type, data } }
-                        else if (imageData.source) {
-                            contentParts.push({
-                                type: 'image',
-                                source: imageData.source
-                            });
-                        }
-                        // 处理 Gemini 格式: { inlineData: { mimeType, data } }
-                        else if (imageData.inlineData) {
-                            contentParts.push({
-                                type: 'image',
-                                source: {
-                                    type: 'base64',
-                                    media_type: imageData.inlineData.mimeType,
-                                    data: imageData.inlineData.data
-                                }
-                            });
-                        }
-                        // 处理简化格式: { mimeType, data } 或 { media_type, data }
-                        else if (imageData.data) {
-                            contentParts.push({
-                                type: 'image',
-                                source: {
-                                    type: 'base64',
-                                    media_type: imageData.mimeType || imageData.media_type || 'image/png',
-                                    data: imageData.data
-                                }
-                            });
-                        }
-                    }
-
-                    // 处理其他字段（非 image/images/text）
-                    const otherFields = { ...resultContent };
-                    delete otherFields.image;
-                    delete otherFields.images;
-                    delete otherFields.text;
-                    if (Object.keys(otherFields).length > 0) {
-                        contentParts.push({
-                            type: 'text',
-                            text: JSON.stringify(otherFields)
-                        });
-                    }
-                }
-
-                // 如果没有检测到多模态内容，使用纯文本
-                if (contentParts.length === 0) {
-                    contentParts.push({
-                        type: 'text',
-                        text: typeof resultContent === 'string' ? resultContent : JSON.stringify(resultContent)
-                    });
-                }
-
-                // 返回 Claude 格式
-                // 注意：如果只有一个文本部分，Claude API 也接受字符串形式（向后兼容）
-                const toolResultContent = contentParts.length === 1 && contentParts[0].type === 'text' && !(resultContent && typeof resultContent === 'object' && resultContent.image)
-                    ? msg.content  // 纯文本保持原格式
-                    : contentParts;  // 多模态使用数组格式
-
-                return {
-                    role: 'user',
-                    content: [{
-                        type: 'tool_result',
-                        tool_use_id: claudeId,
-                        content: toolResultContent
-                    }]
-                };
-            }
-
-            // Claude 只支持 user 和 assistant 两种角色
-            const role = msg.role === 'assistant' ? 'assistant' : 'user';
-
-            // 处理多模态内容
-            if (Array.isArray(msg.content)) {
-                const content = msg.content.map(part => {
-                    if (part.type === 'text') {
-                        return { type: 'text', text: part.text };
-                    } else if (part.type === 'thinking') {
-                        // Thinking blocks 应该跳过（Claude API 会自动处理）
-                        // 根据官方文档：非工具场景会自动移除，工具场景需要保持原样
-                        // 但由于我们的内部格式使用 OpenAI 风格，这里跳过即可
-                        return null;
-                    } else if (part.type === 'image_url') {
-                        // 检查是否有 file_id（已通过 Files API 上传）
-                        if (part.file_id) {
-                            // 如果启用 Code Execution，使用 container_upload（沙箱可访问）
-                            if (state.codeExecutionEnabled) {
-                                return {
-                                    type: 'container_upload',
-                                    file_id: part.file_id
-                                };
-                            }
-                            // 否则下载文件并转换为 image（仅供模型"看"）
-                            // 注意：这需要异步处理，暂时先用 container_upload
-                            return {
-                                type: 'container_upload',
-                                file_id: part.file_id
-                            };
-                        }
-
-                        // 提取 base64 数据（图片）
-                        const matches = part.image_url.url.match(/^data:([^;]+);base64,(.+)$/);
-                        if (matches) {
-                            const mediaType = matches[1];
-                            const base64Data = matches[2];
-
-                            // 如果启用 Code Execution，检查图片大小
-                            if (state.codeExecutionEnabled) {
-                                // 计算 base64 解码后的大小（约为 base64 长度的 3/4）
-                                const estimatedSize = (base64Data.length * 3) / 4;
-                                const MAX_INLINE_SIZE = 5 * 1024 * 1024; // 5MB
-
-                                // 如果超过 5MB，自动上传到 Files API
-                                if (estimatedSize > MAX_INLINE_SIZE) {
-                                    console.log(`[Claude] 📤 图片过大 (${(estimatedSize/1024/1024).toFixed(1)}MB)，自动上传到 Files API...`);
-
-                                    // ⚠️ 异步上传 - 需要改成 async/await
-                                    // 这里标记需要上传，稍后处理
-                                    return {
-                                        _needsUpload: true,
-                                        mediaType,
-                                        base64Data,
-                                        estimatedSize
-                                    };
-                                }
-                            }
-
-                            // 普通图片（仅供模型"看"）或小于 5MB 的图片
-                            return {
-                                type: 'image',
-                                source: {
-                                    type: 'base64',
-                                    media_type: mediaType,
-                                    data: base64Data
-                                }
-                            };
-                        }
-                    } else if (part.type === 'file' && part.file?.file_data) {
-                        // 提取 base64 数据（PDF 文件）
-                        const matches = part.file.file_data.match(/^data:([^;]+);base64,(.+)$/);
-                        if (matches) {
-                            return {
-                                type: 'document',
-                                source: {
-                                    type: 'base64',
-                                    media_type: matches[1],
-                                    data: matches[2]
-                                }
-                            };
-                        }
-                    }
-                    return null;
-                }).filter(Boolean);
-
-                return { role, content };
-            }
-
-            // ⭐ 处理纯文本 assistant 消息
-            // 如果启用 thinking 且有 thinkingContent，需要转换为多模态格式
-            if (role === 'assistant' && state.thinkingEnabled && msg.thinkingContent) {
-                const content = [];
-
-                // 添加 thinking block
-                const thinkingBlock = {
-                    type: 'thinking',
-                    thinking: msg.thinkingContent
-                };
-                // 添加签名（如果有）
-                if (msg.thinkingSignature) {
-                    thinkingBlock.signature = msg.thinkingSignature;
-                }
-                content.push(thinkingBlock);
-
-                // 添加文本内容（如果有）
-                if (msg.content && msg.content.trim()) {
-                    content.push({
-                        type: 'text',
-                        text: msg.content
-                    });
-                }
-
-                return { role, content };
-            }
-
-            return { role, content: msg.content };
-        });
-
-    // 处理需要上传的大图片
-    for (const msg of convertedMessages) {
-        if (Array.isArray(msg.content)) {
-            for (let i = 0; i < msg.content.length; i++) {
-                const part = msg.content[i];
-                // 检测需要上传的标记
-                if (part && part._needsUpload) {
-                    try {
-                        console.log(`[Claude] 📤 正在上传图片 (${(part.estimatedSize/1024/1024).toFixed(1)}MB)...`);
-                        const fileId = await uploadImageToFilesAPI(part.base64Data, part.mediaType);
-
-                        // 替换为 container_upload
-                        msg.content[i] = {
-                            type: 'container_upload',
-                            file_id: fileId
-                        };
-                        console.log(`[Claude] 图片已上传，file_id: ${fileId}`);
-                    } catch (error) {
-                        console.error('[Claude] ❌ 图片上传失败:', error);
-                        throw new Error(`图片上传失败: ${error.message}`);
-                    }
-                }
-            }
-        }
-    }
-
-    return convertedMessages;
-}
-
-/**
  * 发送 Claude 格式的请求
  * @param {string} endpoint - API 端点
  * @param {string} apiKey - API 密钥
@@ -406,21 +73,22 @@ async function convertToClaudeMessages(messages) {
  * @returns {Promise<Response>} Fetch Response
  */
 export async function sendClaudeRequest(endpoint, apiKey, model, signal = null) {
-    // 转换消息格式为 Claude Messages API（过滤掉错误消息）
-    let messages = state.messages.filter(m => !m.isError);
+    // 转换消息格式为 Claude Messages API（新格式 → Claude API 格式）
+    const filtered = state.messages.filter(m => !m.isError && !m.error);
 
-    // 根据模型能力过滤消息（在格式转换前，OpenAI格式）
+    // 根据模型能力过滤消息
     const capabilities = getCurrentModelCapabilities();
+    let messagesToConvert = filtered;
     if (capabilities) {
-        messages = filterMessagesByCapabilities(messages, capabilities);
+        messagesToConvert = filterMessagesByCapabilities(filtered, capabilities);
         console.log('📋 [Claude] 消息已根据模型能力过滤:', {
             capabilities,
-            filteredCount: messages.length
+            filteredCount: messagesToConvert.length
         });
     }
 
-    // 转换为 Claude 格式（使用过滤后的消息）
-    let claudeMessages = await convertToClaudeMessages(messages);
+    // 使用 api-adapters 将新格式转为 Claude API 格式
+    let claudeMessages = toClaudeMessages(messagesToConvert);
 
     // 开场对话插入到对话历史之前（Claude 的 system 是独立参数，所以这里直接插入到最前面）
     if (state.prefillEnabled) {
@@ -467,7 +135,7 @@ export async function sendClaudeRequest(endpoint, apiKey, model, signal = null) 
 
     // 2. Computer Use 原生工具（仅 Electron 环境且非 XML 模式）
     // ⭐ XML 模式下使用统一的自定义 computer 工具（来自 builtin/computer-use.js）
-    if (state.computerUseEnabled && window.electronAPI?.isElectron?.() && !state.xmlToolCallingEnabled) {
+    if (state.computerUseEnabled && isElectron() && !state.xmlToolCallingEnabled) {
         // 根据模型选择 computer 工具版本（只有 computer 工具版本会变）
         // Opus 4.5 使用 20251124，其他模型使用 20250124
         const isOpus45 = model && model.toLowerCase().includes('opus-4-5');
@@ -507,7 +175,7 @@ export async function sendClaudeRequest(endpoint, apiKey, model, signal = null) 
         }
 
         console.log(`[Claude] 💻 Computer Use 原生工具已添加（computer: ${computerVersion}, bash: 20250124, text_editor: 20250728）`);
-    } else if (state.computerUseEnabled && window.electronAPI?.isElectron?.() && state.xmlToolCallingEnabled) {
+    } else if (state.computerUseEnabled && isElectron() && state.xmlToolCallingEnabled) {
         console.log(`[Claude] 💻 XML 模式：将使用自定义 Computer Use 工具（来自 builtin/computer-use.js）`);
     }
 
@@ -579,7 +247,7 @@ export async function sendClaudeRequest(endpoint, apiKey, model, signal = null) 
     }
 
     // Computer Use beta（仅 Electron 环境）
-    if (state.computerUseEnabled && window.electronAPI?.isElectron?.()) {
+    if (state.computerUseEnabled && isElectron()) {
         // 根据模型选择 beta header
         const isOpus45 = model && model.toLowerCase().includes('opus-4-5');
         const betaHeader = isOpus45 ? 'computer-use-2025-11-24' : 'computer-use-2025-01-24';
@@ -610,72 +278,45 @@ export async function sendClaudeRequest(endpoint, apiKey, model, signal = null) 
 }
 
 /**
- * 构建 Claude 工具结果消息（OpenAI 格式）
- * 注意：返回 OpenAI 格式的消息，由 convertToClaudeMessages 在发送时转换为 Claude 格式
+ * 构建 Claude 工具结果消息（Claude 原生格式）
  * @param {Array} toolCalls - 工具调用列表 [{id, name, arguments}]
- * @param {Array} toolResults - 工具结果列表 [{role: 'tool', content, tool_call_id}]
- * @returns {Array} OpenAI 格式的消息数组（存储在 state.messages 中）
+ * @param {Array} toolResults - 格式无关的结果 [{id, name, result, isError}]
+ * @returns {Array} Claude 格式的消息数组
  */
 export function buildToolResultMessages(toolCalls, toolResults) {
-    // XML 模式：使用 XML 格式而不是原生 tool_calls
+    // XML 模式
     if (state.xmlToolCallingEnabled) {
-        // 构建 XML 格式的工具调用文本
         let toolCallXML = '';
         for (const tc of toolCalls) {
-            toolCallXML += `<tool_use>\n  <name>${tc.name}</name>\n  <arguments>${JSON.stringify(tc.arguments)}</arguments>\n</tool_use>\n`;
+            toolCallXML += `<tool_use>\n  <name>${escapeXML(tc.name)}</name>\n  <arguments>${escapeXML(JSON.stringify(tc.arguments))}</arguments>\n</tool_use>\n`;
         }
-
-        // 构建 XML 格式的工具结果
         let toolResultXML = '';
-        for (let i = 0; i < toolResults.length; i++) {
-            const result = toolResults[i];
-            const toolCall = toolCalls[i] || toolCalls.find(tc => tc.id === result.tool_call_id);
-            const toolName = toolCall?.name || 'unknown';
-            toolResultXML += `<tool_use_result>\n  <name>${toolName}</name>\n  <result>${result.content}</result>\n</tool_use_result>\n`;
+        for (const r of toolResults) {
+            toolResultXML += `<tool_use_result>\n  <name>${escapeXML(r.name)}</name>\n  <result>${escapeXML(JSON.stringify(r.result))}</result>\n</tool_use_result>\n`;
         }
-
         return [
-            // 1. assistant 消息：包含 XML 工具调用
-            {
-                role: 'assistant',
-                content: toolCallXML.trim()
-            },
-            // 2. user 消息：包含 XML 工具结果
-            {
-                role: 'user',
-                content: toolResultXML.trim()
-            }
+            { role: 'assistant', content: toolCallXML.trim() },
+            { role: 'user', content: toolResultXML.trim() }
         ];
     }
 
-    // 原生模式：使用 tool_calls 格式
-    // 与 OpenAI/Gemini 保持一致：返回 OpenAI 格式
-    // convertToClaudeMessages 会将这些消息转换为 Claude 格式
-    const messages = [
-        // 1. 添加助手消息（包含工具调用）- OpenAI 格式
-        // content 字段必须存在（OpenAI API 要求）
-        {
-            role: 'assistant',
-            content: '',  // 添加 content 字段（空字符串）
-            tool_calls: toolCalls.map(tc => ({
-                id: tc.id,
-                type: 'function',
-                function: {
-                    name: tc.name,
-                    arguments: JSON.stringify(tc.arguments)
-                }
-            }))
-        },
-        // 2. 添加工具结果消息 - OpenAI 格式（附加工具名称用于 Claude 转换）
-        ...toolResults.map(result => {
-            // 查找对应的工具调用以获取名称
-            const toolCall = toolCalls.find(tc => tc.id === result.tool_call_id);
-            return {
-                ...result,
-                _toolName: toolCall?.name  // ⭐ 附加工具名称（Claude 转换时可能需要）
-            };
-        })
-    ];
+    // 原生模式：直接返回 Claude 格式
+    const assistantContent = toolCalls.map(tc => {
+        let input = tc.arguments;
+        if (typeof input === 'string') {
+            try { input = JSON.parse(input); } catch { input = {}; }
+        }
+        return { type: 'tool_use', id: tc.id, name: tc.name, input: input || {} };
+    });
 
-    return messages;
+    const toolResultContent = toolResults.map(r => ({
+        type: 'tool_result',
+        tool_use_id: r.id,
+        content: JSON.stringify(r.result),
+    }));
+
+    return [
+        { role: 'assistant', content: assistantContent },
+        { role: 'user', content: toolResultContent }
+    ];
 }

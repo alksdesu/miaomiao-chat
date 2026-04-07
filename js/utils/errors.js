@@ -177,11 +177,11 @@ export function renderHumanizedError(error, httpStatus = null, showDetails = tru
             detailsContent = '<div class="error-all-errors"><strong>所有错误详情：</strong><br><br>';
             allErrors.forEach((err, idx) => {
                 const requestLabel = err.request ? `请求 #${err.request}` : err.stream ? `流 #${err.stream}` : `错误 #${idx + 1}`;
-                detailsContent += `<div class="error-item"><strong>${requestLabel}:</strong><br>`;
-                detailsContent += `&nbsp;&nbsp;状态: ${err.status || 'N/A'}<br>`;
-                detailsContent += `&nbsp;&nbsp;类型: ${err.type || 'N/A'}<br>`;
-                detailsContent += `&nbsp;&nbsp;代码: ${err.code || 'N/A'}<br>`;
-                detailsContent += `&nbsp;&nbsp;消息: ${err.message || 'N/A'}<br>`;
+                detailsContent += `<div class="error-item"><strong>${escapeHtml(requestLabel)}:</strong><br>`;
+                detailsContent += `&nbsp;&nbsp;状态: ${escapeHtml(String(err.status || 'N/A'))}<br>`;
+                detailsContent += `&nbsp;&nbsp;类型: ${escapeHtml(String(err.type || 'N/A'))}<br>`;
+                detailsContent += `&nbsp;&nbsp;代码: ${escapeHtml(String(err.code || 'N/A'))}<br>`;
+                detailsContent += `&nbsp;&nbsp;消息: ${escapeHtml(String(err.message || 'N/A'))}<br>`;
                 if (err.fullError) {
                     detailsContent += `&nbsp;&nbsp;完整错误: <pre>${escapeHtml(JSON.stringify(err.fullError, null, 2))}</pre>`;
                 }

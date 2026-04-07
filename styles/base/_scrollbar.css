@@ -28,14 +28,12 @@
     background: var(--md-blue);
     border: 2px solid var(--color-border-primary);
     box-shadow: var(--shadow-sm);
-    transition: all 0.2s ease;
     border-radius: 0;
 }
 
 ::-webkit-scrollbar-thumb:hover {
     background: var(--md-orange);
     box-shadow: var(--shadow-md);
-    transform: translateX(-2px);
 }
 
 ::-webkit-scrollbar-thumb:active {

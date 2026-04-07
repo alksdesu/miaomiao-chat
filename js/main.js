@@ -3,6 +3,12 @@
  * 初始化所有模块并启动应用
  */
 
+// requestIdleCallback 降级（Safari / 旧 WebView 不支持）
+if (typeof window.requestIdleCallback !== 'function') {
+    window.requestIdleCallback = (fn) => setTimeout(fn, 1);
+    window.cancelIdleCallback = (id) => clearTimeout(id);
+}
+
 // ========== 全局错误处理器（H1 修复）==========
 
 /**
@@ -82,7 +88,7 @@ async function loadEruda() {
  * 初始化 Electron 自定义标题栏
  */
 function initElectronTitlebar() {
-    if (!window.electronAPI?.isElectron?.()) return;
+    if (!isElectron()) return;
 
     const titlebar = document.getElementById('electron-titlebar');
     if (!titlebar) return;
@@ -116,6 +122,7 @@ import './utils/markdown.js';
 import './utils/images.js';
 import './utils/prefill.js';
 import './utils/errors.js';
+import { isElectron, isAndroid } from './utils/platform.js';
 
 // ========== UI Layer (Basic) ==========
 import { loadTheme, initTheming } from './ui/theming.js';
@@ -125,6 +132,7 @@ import './ui/notifications.js';
 import { initDB, loadPreference, isIndexedDBAvailable, isLocalStorageAvailable, migrateMCPServersFromLocalStorage, loadAllMCPServers, migrateSessionsToV4 } from './state/storage.js';
 import { loadConfig, saveCurrentConfigImmediate } from './state/config.js';
 import { loadSessions, switchToSession } from './state/sessions.js';
+import { initTabSync } from './state/tab-sync.js';
 // initExportImport → 延迟动态加载
 import { initQuickMessages } from './state/quick-messages.js';
 // 新增：数据迁移
@@ -135,13 +143,13 @@ import {
     releaseMigrationLock,
     MIGRATION_STATES
 } from './state/migration.js';
+import { runMigrationIfNeeded } from './state/migration-gate.js';
 
 // ========== Providers Layer ==========
 import { migrateFromLegacyConfig } from './providers/manager.js';
 // initProvidersUI → 延迟动态加载
 
 // ========== Messages Layer ==========
-import './messages/converters.js';
 import './messages/sync.js';
 import './messages/renderer.js';
 import './messages/editor.js';
@@ -150,7 +158,6 @@ import { initReplySelector } from './messages/reply-selector.js';
 
 // ========== API Layer ==========
 import './api/params.js';
-import './api/parser.js';
 import './api/openai.js';
 import './api/gemini.js';
 import './api/claude.js';
@@ -200,7 +207,7 @@ async function init() {
     console.log('🏗️  Architecture: 6-layer modular design');
 
     // 初始化 Eruda 移动端调试工具（仅 Android 平台）
-    if (window.Capacitor && window.Capacitor.getPlatform() === 'android') {
+    if (isAndroid()) {
         await loadEruda();
     }
 
@@ -296,7 +303,22 @@ async function init() {
             }
         }
 
-        // 3.5. 迁移检查与配置加载并行（迁移已完成时省去串行等待）
+        // 3.5. 消息格式迁移（三格式 → 统一 parts[] 格式）
+        if (dbReady) {
+            try {
+                const migrationResult = await runMigrationIfNeeded();
+                if (migrationResult.migrated) {
+                    console.log(`[schema] 消息格式迁移完成: ${migrationResult.count} 个会话`);
+                    if (migrationResult.errors.length > 0) {
+                        console.warn(`[schema] ${migrationResult.errors.length} 个会话有迁移错误`);
+                    }
+                }
+            } catch (e) {
+                console.error('[schema] 消息格式迁移失败:', e);
+            }
+        }
+
+        // 3.6. 迁移检查与配置加载并行（迁移已完成时省去串行等待）
         if (state.storageMode !== 'localStorage') {
             const [migrationStatus] = await Promise.all([
                 getMigrationStatus(),
@@ -334,6 +356,18 @@ async function init() {
         // 迁移旧配置到提供商系统 (如果需要)
         console.log('🔄 Step 4/9: Migrating to provider system...');
         migrateFromLegacyConfig();
+
+        // Electron: 通过 IPC 将初始化设置发送给主进程（替代 executeJavaScript）
+        if (window.electronAPI?.sendInitSettings) {
+            try {
+                const settingsJson = await loadPreference('appSettings');
+                const appSettings = settingsJson ? JSON.parse(settingsJson) : {};
+                await window.electronAPI.sendInitSettings(appSettings);
+                console.log('[Main] 已通过 IPC 发送初始化设置');
+            } catch (err) {
+                console.error('[Main] 发送初始化设置失败:', err);
+            }
+        }
 
         // 并行加载会话、快捷消息、MCP 配置（三者互不依赖，都只依赖 IndexedDB）
         console.log('📚 Step 5/9: Loading sessions, quick messages, MCP config (parallel)...');
@@ -377,6 +411,8 @@ async function init() {
             initQuickMessages(),
             loadMCPConfig()
         ]);
+
+        initTabSync();
 
         // 会话消息已渲染，移除骨架屏
         const skeleton = document.getElementById('app-skeleton');
@@ -426,6 +462,7 @@ async function init() {
 
         // 非首屏 UI（延迟动态加载，不阻塞首次交互）
         requestIdleCallback(async () => {
+            try {
             const [
                 { initSettings },
                 { initImageViewer },
@@ -495,9 +532,12 @@ async function init() {
             });
 
             // APK 更新（仅 Android）
-            if (window.Capacitor && window.Capacitor.getPlatform() === 'android') {
+            if (isAndroid()) {
                 const { initAPKUpdater } = await import('./update/apk-updater.js');
                 initAPKUpdater();
+            }
+            } catch (error) {
+                console.error('延迟加载 UI 模块失败:', error);
             }
         }, { timeout: 1000 });
 
@@ -560,6 +600,13 @@ async function init() {
         import('./ui/mcp-auto-connect.js').then(({ initMCPAutoConnect }) => {
             initMCPAutoConnect(1000);
         });
+
+        // Electron 环境下初始化 MCP IPC 桥接
+        if (isElectron()) {
+            import('./tools/mcp/electron-bridge.js').then(({ initElectronMCPBridge }) => {
+                initElectronMCPBridge();
+            });
+        }
 
         // 添加页面关闭前保存配置
         window.addEventListener('beforeunload', () => {

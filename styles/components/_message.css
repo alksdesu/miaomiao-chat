@@ -537,6 +537,7 @@
 
 .table-wrapper th {
     background: var(--md-surface);
+    color: var(--color-text-primary);
     font-weight: 600;
 }
 

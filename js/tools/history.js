@@ -6,6 +6,7 @@
 import { state } from '../core/state.js';
 import { eventBus } from '../core/events.js';
 import { debouncedSaveSession } from '../state/sessions.js';
+import { savePreference, loadPreference } from '../state/storage.js';
 
 /**
  * 记录工具调用
@@ -42,7 +43,7 @@ export function recordToolCall(record) {
     // 发布事件
     eventBus.emit('tool:history:added', { entry: historyEntry });
 
-    // 保存到 localStorage
+    // 持久化保存
     saveToolHistory();
 
     console.log(`[ToolHistory] 记录工具调用: ${record.toolName}`, {
@@ -210,7 +211,7 @@ export function clearToolHistory(options = {}) {
         console.log(`[ToolHistory] 已清除 ${removedCount} 条工具调用历史`);
     }
 
-    // 保存到 localStorage
+    // 持久化保存
     saveToolHistory();
 
     // 发布事件
@@ -278,9 +279,9 @@ export function importToolHistory(data, options = {}) {
 }
 
 /**
- * 保存工具历史到 localStorage
+ * 保存工具历史到持久化存储
  */
-function saveToolHistory() {
+async function saveToolHistory() {
     try {
         // 输入验证：确保 toolCallHistory 是数组
         if (!Array.isArray(state.toolCallHistory)) {
@@ -289,20 +290,20 @@ function saveToolHistory() {
             return;
         }
 
-        localStorage.setItem('toolCallHistory', JSON.stringify(state.toolCallHistory));
+        await savePreference('toolCallHistory', state.toolCallHistory);
     } catch (error) {
         console.error('[ToolHistory] 保存历史失败:', error);
     }
 }
 
 /**
- * 从 localStorage 加载工具历史
+ * 从持久化存储加载工具历史
  */
-export function loadToolHistory() {
+export async function loadToolHistory() {
     try {
-        const saved = localStorage.getItem('toolCallHistory');
+        const saved = await loadPreference('toolCallHistory');
         if (saved) {
-            const parsed = JSON.parse(saved);
+            const parsed = typeof saved === 'string' ? JSON.parse(saved) : saved;
 
             // 输入验证：确保加载的数据是数组
             if (!Array.isArray(parsed)) {

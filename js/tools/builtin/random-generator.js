@@ -336,3 +336,9 @@ function generateRandomArray(count, arrayType, args) {
 }
 
 console.log('[RandomGenerator Tool] 🎲 随机生成器工具已加载');
+
+// ========== 标准化工具对象 ==========
+
+import { buildToolFromLegacy } from '../build-tool.js';
+
+export const randomGenerator = buildToolFromLegacy('random_generator', randomGeneratorTool, randomGeneratorHandler, { isReadOnly: () => true });

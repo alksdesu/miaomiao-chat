@@ -7,7 +7,7 @@ import { parseMarkdownImages } from '../utils/markdown-image-parser.js';
 import { extractXMLToolCalls } from '../tools/xml-formatter.js';
 import { state } from '../core/state.js';
 import { parseThinkTags } from '../stream/think-tag-parser.js';
-import { isVideoMimeType, isVideoUrl } from '../utils/media.js';
+import { isVideoMimeType, isAudioMimeType, isVideoUrl } from '../utils/media.js';
 
 /**
  * 解析 API 响应数据
@@ -130,7 +130,8 @@ export function parseApiResponse(data, format = 'openai') {
                     const inlineData = part.inlineData || part.inline_data;
                     const mimeType = inlineData.mimeType || inlineData.mime_type;
                     const dataUrl = `data:${mimeType};base64,${inlineData.data}`;
-                    const mediaType = isVideoMimeType(mimeType) ? 'video_url' : 'image_url';
+                    const mediaType = isVideoMimeType(mimeType) ? 'video_url'
+                        : isAudioMimeType(mimeType) ? 'audio_url' : 'image_url';
                     contentParts.push({ type: mediaType, url: dataUrl, complete: true, mimeType });
                 }
             }
@@ -206,6 +207,8 @@ export function parseApiResponse(data, format = 'openai') {
             let textContent = '';
             let thinkingContent = '';
             const contentParts = [];
+            const thinkingBlocks = [];
+            const thinkingSigs = [];
 
             data.content.forEach(block => {
                 if (block.type === 'text') {
@@ -219,7 +222,9 @@ export function parseApiResponse(data, format = 'openai') {
                         contentParts.push({ type: 'text', text: thinkParsedText });
                     }
                 } else if (block.type === 'thinking') {
-                    thinkingContent += block.thinking;
+                    thinkingContent += (thinkingContent ? '\n\n---\n\n' : '') + block.thinking;
+                    thinkingBlocks.push(block.thinking);
+                    thinkingSigs.push(block.signature || null);
                     contentParts.push({ type: 'thinking', text: block.thinking });
                 } else if (block.type === 'image') {
                     const source = block.source;
@@ -239,6 +244,30 @@ export function parseApiResponse(data, format = 'openai') {
                         const mimeType = source.media_type || source.mimeType || '';
                         contentParts.push({ type: 'video_url', url: source.url, complete: true, mimeType });
                     }
+                } else if (block.type === 'server_tool_use') {
+                    // 服务端工具调用（原子保存）
+                    contentParts.push({
+                        type: 'server_tool_use',
+                        id: block.id,
+                        name: block.name,
+                        input: block.input || {},
+                    });
+                } else if (block.type?.endsWith('_tool_result')) {
+                    // 服务端工具结果，关联到前一个 server_tool_use
+                    const prevStu = [...contentParts].reverse().find(
+                        p => p.type === 'server_tool_use' && p.id === block.tool_use_id
+                    );
+                    if (prevStu) {
+                        prevStu.result = { type: block.type, content: block.content };
+                    } else {
+                        contentParts.push({
+                            type: 'server_tool_use',
+                            id: block.tool_use_id || `srvtoolu_unknown`,
+                            name: block.type.replace('_tool_result', ''),
+                            input: {},
+                            result: { type: block.type, content: block.content },
+                        });
+                    }
                 }
             });
 
@@ -246,7 +275,10 @@ export function parseApiResponse(data, format = 'openai') {
                 content: textContent,
                 claudeContent: data.content,
                 thinkingContent: thinkingContent || null,
+                thinkingBlocks: thinkingBlocks.length > 0 ? thinkingBlocks : null,
+                thinkingSignatures: thinkingSigs.length > 0 ? thinkingSigs : null,
                 contentParts: contentParts.length > 0 ? contentParts : null,
+                pauseTurn: data.stop_reason === 'pause_turn',
             };
         }
 
@@ -320,6 +352,7 @@ export function parseApiResponse(data, format = 'openai') {
             let textContent = '';
             let thinkingContent = '';
             let encryptedContent = null;
+            let reasoningItemId = null;
             const contentParts = [];
 
             // 1. 优先从 output[] 数组解析
@@ -334,6 +367,7 @@ export function parseApiResponse(data, format = 'openai') {
                         // 提取 encrypted_content 签名（用于多轮对话）
                         if (item.encrypted_content) {
                             encryptedContent = item.encrypted_content;
+                            reasoningItemId = item.id || null;
                             console.log('[Response Parser] 提取到 encrypted_content 签名');
                         }
                     }
@@ -390,6 +424,7 @@ export function parseApiResponse(data, format = 'openai') {
                 thinkingContent: thinkingContent || null,
                 contentParts: contentParts.length > 0 ? contentParts : null,
                 encryptedContent: encryptedContent,
+                reasoningItemId: reasoningItemId,
             };
         }
 
@@ -526,9 +561,10 @@ export function parseApiResponse(data, format = 'openai') {
             }
 
             // 处理原生思维链（优先级高于 <think> 标签）
-            const finalThinkingContent = message.reasoning || extractedThinkingContent || null;
-            if (message.reasoning) {
-                contentParts.unshift({ type: 'thinking', text: message.reasoning });
+            const nativeReasoning = message.reasoning_content || message.reasoning;
+            const finalThinkingContent = nativeReasoning || extractedThinkingContent || null;
+            if (nativeReasoning) {
+                contentParts.unshift({ type: 'thinking', text: nativeReasoning });
             }
 
             return {

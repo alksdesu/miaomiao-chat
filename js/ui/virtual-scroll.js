@@ -6,9 +6,11 @@
 
 import { state } from '../core/state.js';
 import { elements } from '../core/elements.js';
+import { eventBus } from '../core/events.js';
 import { createMessageElement, renderThinkingBlock, renderReplyWithSelector } from '../messages/renderer.js';
 import { renderStreamStatsFromData } from '../stream/stats.js';
 import { lazyImageManager, preloadImagesInRange } from '../utils/lazy-image.js';
+import { PartType, MediaKind, hasParts, getTextContent, getThinkingContent } from '../messages/schema.js';
 
 // 虚拟滚动配置
 const VIRTUAL_SCROLL_CONFIG = {
@@ -42,19 +44,16 @@ function calculateSmartThreshold(messages) {
 
     // 统计图片数量
     for (const msg of messages) {
-        if (msg.content) {
-            // OpenAI/Claude 格式（数组内容）
-            if (Array.isArray(msg.content)) {
-                // 检测 OpenAI 格式的图片
-                imageCount += msg.content.filter(part => part.type === 'image_url').length;
-                // 检测 Claude 格式的图片
-                imageCount += msg.content.filter(part => part.type === 'image').length;
-                if (!hasImage && imageCount > 0) hasImage = true;
-            }
+        if (hasParts(msg)) {
+            // 新格式
+            imageCount += msg.parts.filter(p => p.type === PartType.MEDIA && p.media === MediaKind.IMAGE).length;
+            // 旧 Gemini 格式
+            imageCount += msg.parts.filter(p => p.inlineData).length;
+            if (!hasImage && imageCount > 0) hasImage = true;
         }
-        // Gemini parts 格式
-        if (msg.parts && Array.isArray(msg.parts)) {
-            imageCount += msg.parts.filter(part => part.inlineData).length;
+        if (msg.content && Array.isArray(msg.content)) {
+            imageCount += msg.content.filter(p => p.type === 'image_url').length;
+            imageCount += msg.content.filter(p => p.type === 'image').length;
             if (!hasImage && imageCount > 0) hasImage = true;
         }
     }
@@ -83,7 +82,7 @@ function calculateSmartThreshold(messages) {
  * @param {boolean} force - 强制启用/禁用
  */
 export function initVirtualScroll(force = null) {
-    const messages = state.apiFormat === 'gemini' ? state.geminiContents : state.messages;
+    const messages = state.messages;
 
     // 计算智能阈值
     const smartThreshold = calculateSmartThreshold(messages);
@@ -104,7 +103,7 @@ export function initVirtualScroll(force = null) {
  * 重建前缀和数组（O(n) 一次性构建）
  */
 function rebuildPrefixHeights() {
-    const messages = state.apiFormat === 'gemini' ? state.geminiContents : state.messages;
+    const messages = state.messages;
     const n = messages.length;
     const prefix = new Array(n + 1);
     prefix[0] = 0;
@@ -124,7 +123,7 @@ function updatePrefixHeightAt(index) {
         rebuildPrefixHeights();
         return;
     }
-    const messages = state.apiFormat === 'gemini' ? state.geminiContents : state.messages;
+    const messages = state.messages;
     const n = messages.length;
     // 从 index 开始重新累加
     for (let i = index; i < n; i++) {
@@ -225,7 +224,7 @@ function handleVirtualScroll() {
  * 计算可见范围
  */
 function updateVisibleRange() {
-    const messages = state.apiFormat === 'gemini' ? state.geminiContents : state.messages;
+    const messages = state.messages;
     const totalMessages = messages.length;
 
     if (totalMessages === 0) {
@@ -254,7 +253,7 @@ function updateVisibleRange() {
  * 渲染虚拟消息
  */
 function renderVirtualMessages() {
-    const messages = state.apiFormat === 'gemini' ? state.geminiContents : state.messages;
+    const messages = state.messages;
     const { start, end } = virtualScrollState.visibleRange;
     const prefix = virtualScrollState.prefixHeights;
 
@@ -380,19 +379,34 @@ function renderVirtualMessages() {
  * @returns {HTMLElement} 消息元素
  */
 function createVirtualMessageElement(msg, index) {
-    let role, text, images, messageId;
+    let text, images;
+    const role = msg.role;
+    const messageId = msg.id;
 
-    if (state.apiFormat === 'gemini') {
-        role = msg.role === 'model' ? 'assistant' : msg.role;
-        const parts = msg.parts || [];
-
-        text = parts.filter(p => p.text && !p.thought).map(p => p.text).join('');
-        images = parts.filter(p => p.inlineData || p.inline_data);
-        messageId = msg.id;
+    // 新格式：从 parts 读取
+    if (hasParts(msg)) {
+        text = getTextContent(msg);
+        images = msg.parts
+            .filter(p => p.type === PartType.MEDIA && p.media === MediaKind.IMAGE)
+            .map(p => ({
+                name: '已上传图片',
+                type: p.mime || 'image/*',
+                category: 'image',
+                data: p.url,
+            }));
+        // 文件附件
+        const fileAttachments = msg.parts
+            .filter(p => p.type === PartType.FILE)
+            .map(p => ({
+                name: p.name || '已上传文件',
+                type: p.mime || 'application/octet-stream',
+                category: p.mime === 'application/pdf' ? 'pdf' : 'text',
+                data: p.url,
+            }));
+        images = [...images, ...fileAttachments];
     } else {
-        role = msg.role;
+        // 旧格式回退：从 content 读取
         const content = msg.content;
-
         if (typeof content === 'string') {
             text = content;
             images = [];
@@ -403,8 +417,6 @@ function createVirtualMessageElement(msg, index) {
             text = '';
             images = [];
         }
-
-        messageId = msg.id;
     }
 
     const messageEl = createMessageElement(
@@ -418,10 +430,13 @@ function createVirtualMessageElement(msg, index) {
 
     // 恢复思维链（如果有）
     const openaiMsg = state.messages[index];
-    let thinkingText = openaiMsg?.thinkingContent || '';
-    // Gemini fallback：从 parts 中取 thought:true
-    if (!thinkingText && msg?.parts && Array.isArray(msg.parts)) {
-        thinkingText = msg.parts.filter(p => p.text && p.thought).map(p => p.text).join('');
+    let thinkingText = '';
+    if (hasParts(msg)) {
+        thinkingText = getThinkingContent(msg);
+    }
+    // 旧格式回退
+    if (!thinkingText) {
+        thinkingText = openaiMsg?.thinkingContent || '';
     }
     if (role === 'assistant' && thinkingText) {
         try {
@@ -429,29 +444,49 @@ function createVirtualMessageElement(msg, index) {
             if (contentDiv) {
                 contentDiv.innerHTML = renderThinkingBlock(thinkingText) + contentDiv.innerHTML;
             }
-            // 回写到 OpenAI 格式，确保编辑器能正确读取
-            if (openaiMsg && !openaiMsg.thinkingContent && thinkingText) {
-                openaiMsg.thinkingContent = thinkingText;
-            }
         } catch (e) {
             console.error('[VirtualScroll] 思维链恢复失败:', e);
         }
     }
 
+    // 恢复助手消息的媒体内容（图片/视频/音频）
+    if (role === 'assistant' && hasParts(msg)) {
+        const mediaParts = msg.parts.filter(p => p.type === PartType.MEDIA);
+        if (mediaParts.length > 0) {
+            const contentDiv = messageEl.querySelector('.message-content');
+            if (contentDiv) {
+                let mediaHtml = '';
+                for (const p of mediaParts) {
+                    if (p.media === MediaKind.VIDEO) {
+                        mediaHtml += `<div class="image-wrapper video-wrapper"><video src="${p.url}" controls playsinline muted preload="metadata"></video></div>`;
+                    } else if (p.media === MediaKind.AUDIO) {
+                        mediaHtml += `<div class="audio-wrapper"><audio src="${p.url}" controls preload="metadata"></audio></div>`;
+                    } else {
+                        mediaHtml += `<div class="image-wrapper"><img src="${p.url}" alt="Generated image" style="cursor:pointer;"></div>`;
+                    }
+                }
+                contentDiv.insertAdjacentHTML('beforeend', mediaHtml);
+            }
+        }
+    }
+
     // 恢复流统计（如果有）
-    if (openaiMsg?.streamStats) {
+    const statsData = openaiMsg?.meta?.stats || openaiMsg?.streamStats;
+    if (statsData) {
         requestIdleCallback(() => {
             const wrapper = messageEl.querySelector('.message-content-wrapper');
             if (wrapper) {
-                wrapper.insertAdjacentHTML('beforeend', renderStreamStatsFromData(openaiMsg.streamStats));
+                wrapper.insertAdjacentHTML('beforeend', renderStreamStatsFromData(statsData));
             }
         });
     }
 
     // 恢复多回复（如果有）
-    if (openaiMsg?.allReplies && openaiMsg.allReplies.length > 1) {
+    const repliesAll = openaiMsg?.replies?.all || openaiMsg?.allReplies;
+    const repliesSelected = openaiMsg?.replies?.selected ?? openaiMsg?.selectedReplyIndex ?? 0;
+    if (repliesAll && repliesAll.length > 1) {
         requestIdleCallback(() => {
-            renderReplyWithSelector(openaiMsg.allReplies, openaiMsg.selectedReplyIndex || 0, messageEl);
+            renderReplyWithSelector(repliesAll, repliesSelected, messageEl);
         });
     }
 
@@ -492,7 +527,7 @@ export function scrollToMessage(index, behavior = 'smooth') {
  * @param {string} behavior - 滚动行为
  */
 export function scrollToBottom(behavior = 'smooth') {
-    const messages = state.apiFormat === 'gemini' ? state.geminiContents : state.messages;
+    const messages = state.messages;
     scrollToMessage(messages.length - 1, behavior);
 }
 
@@ -500,7 +535,7 @@ export function scrollToBottom(behavior = 'smooth') {
  * 获取虚拟滚动统计信息
  */
 export function getVirtualScrollStats() {
-    const messages = state.apiFormat === 'gemini' ? state.geminiContents : state.messages;
+    const messages = state.messages;
 
     return {
         isActive: virtualScrollState.isActive,
@@ -511,3 +546,7 @@ export function getVirtualScrollStats() {
         estimatedTotalHeight: messages.length * VIRTUAL_SCROLL_CONFIG.itemHeight
     };
 }
+
+// restore.js 通过事件解耦，避免 messages 层直接导入 UI 层
+eventBus.on('restore:disable-virtual-scroll', () => disableVirtualScroll());
+eventBus.on('restore:init-virtual-scroll', () => initVirtualScroll());

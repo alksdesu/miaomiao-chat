@@ -26,6 +26,15 @@
     background: var(--md-coral);
 }
 
+.notification-success {
+    background: var(--md-teal);
+}
+
+.notification-warning {
+    background: var(--md-yellow);
+    color: var(--color-text-primary);
+}
+
 .notification-close {
     /* 使用 CSS Grid 叠加定位到右侧居中 */
     grid-row-start: 1;

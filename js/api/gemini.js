@@ -10,248 +10,8 @@ import { processVariables } from '../utils/variables.js';
 import { compressImage } from '../utils/images.js';
 import { filterMessagesByCapabilities } from '../utils/message-filter.js';
 import { getCurrentModelCapabilities, getCurrentProvider } from '../providers/manager.js';
-import { getOrCreateMappedId } from './format-converter.js';  // ID 重映射
-
-/**
- * 将 OpenAI 格式的消息完整转换为 Gemini 格式
- * @param {Object} msg - OpenAI 格式的消息
- * @returns {Object} Gemini 格式的消息 { role, parts }
- */
-function convertOpenAIMessageToGemini(msg) {
-    // ⭐ 处理工具调用消息（assistant with tool_calls）
-    if (msg.role === 'assistant' && msg.tool_calls) {
-        return {
-            role: 'model',
-            parts: msg.tool_calls.map(tc => {
-                // 解析 arguments（可能是字符串）
-                let args;
-                try {
-                    args = typeof tc.function.arguments === 'string'
-                        ? JSON.parse(tc.function.arguments)
-                        : tc.function.arguments;
-                } catch {
-                    args = {};
-                }
-
-                // ID 重映射（OpenAI → Gemini）
-                const geminiId = getOrCreateMappedId(tc.id, 'gemini');
-
-                const functionCall = {
-                    name: tc.function.name,
-                    args: args
-                };
-
-                // 仅当 ID 存在且不是自动生成的 gemini_ 前缀时才包含
-                if (geminiId && !geminiId.startsWith('gemini_')) {
-                    functionCall.id = geminiId;
-                }
-
-                const part = { functionCall };
-
-                // 恢复 thoughtSignature（如果存在）
-                // Gemini 2.5+ thinking 模式要求：functionCall 部分必须包含 thoughtSignature
-                if (tc._thoughtSignature) {
-                    part.thoughtSignature = tc._thoughtSignature;
-                    console.log('[Gemini Converter] 恢复 thoughtSignature:', tc._thoughtSignature?.substring(0, 20) + '...');
-                } else {
-                    console.warn('[Gemini Converter] ⚠️ 工具调用缺少 thoughtSignature:', tc.function?.name);
-                }
-
-                return part;
-            })
-        };
-    }
-
-    // ⭐ 处理工具结果消息（role: 'tool'）
-    if (msg.role === 'tool') {
-        // 解析 content（可能是 JSON 字符串）
-        let resultContent;
-        try {
-            resultContent = typeof msg.content === 'string'
-                ? JSON.parse(msg.content)
-                : msg.content;
-        } catch {
-            resultContent = { value: msg.content };
-        }
-
-        // ID 重映射（OpenAI → Gemini）
-        const geminiId = getOrCreateMappedId(msg.tool_call_id, 'gemini');
-
-        // 多模态支持：检测并转换图片数据
-        // 支持格式：
-        // 1. { image: "data:image/png;base64,..." }
-        // 2. { image: { inlineData: { mimeType, data } } }
-        // 3. { image: { mimeType, data } }
-        // 4. { text: "...", image: "..." } (混合)
-        const responseParts = [];
-
-        // 处理多模态返回（图片 + 文本）
-        if (resultContent && typeof resultContent === 'object') {
-            // 检查是否包含图片字段
-            if (resultContent.image) {
-                const imageData = resultContent.image;
-
-                // 处理 base64 格式: "data:image/png;base64,..."
-                if (typeof imageData === 'string' && imageData.startsWith('data:')) {
-                    const match = imageData.match(/^data:([^;]+);base64,(.+)$/);
-                    if (match) {
-                        responseParts.push({
-                            inlineData: {
-                                mimeType: match[1],
-                                data: match[2]
-                            }
-                        });
-                    }
-                }
-                // 处理已经是 inlineData 格式: { inlineData: { mimeType, data } }
-                else if (imageData.inlineData) {
-                    responseParts.push({
-                        inlineData: imageData.inlineData
-                    });
-                }
-                // 处理简化格式: { mimeType, data }
-                else if (imageData.mimeType && imageData.data) {
-                    responseParts.push({
-                        inlineData: {
-                            mimeType: imageData.mimeType,
-                            data: imageData.data
-                        }
-                    });
-                }
-            }
-
-            // 检查是否包含文本字段
-            if (resultContent.text) {
-                // 过滤掉图片占位符（避免重复显示）
-                // 当同时有图片和文本时，移除 [Image #N] 格式的占位符
-                let textContent = resultContent.text;
-                if (responseParts.some(p => p.inlineData)) {
-                    // 移除形如 [Image #1] 的占位符
-                    textContent = textContent.replace(/\[Image #\d+\]/g, '').trim();
-                }
-
-                // 只在有实际文本内容时才添加
-                if (textContent) {
-                    responseParts.push({ text: textContent });
-                }
-            }
-
-            // 如果有其他字段但不是 image/text，包装为 result
-            const otherFields = { ...resultContent };
-            delete otherFields.image;
-            delete otherFields.text;
-            if (Object.keys(otherFields).length > 0) {
-                responseParts.push({ text: JSON.stringify(otherFields) });
-            }
-        }
-
-        // 如果没有检测到多模态内容，使用原始格式
-        if (responseParts.length === 0) {
-            responseParts.push({
-                text: typeof resultContent === 'string'
-                    ? resultContent
-                    : JSON.stringify(resultContent)
-            });
-        }
-
-        // 构建 functionResponse
-        const functionResponse = {
-            name: msg._toolName || 'unknown',
-            response: responseParts.length === 1 && responseParts[0].text && !(resultContent && typeof resultContent === 'object' && resultContent.image)
-                ? { result: resultContent }  // 单纯文本保持原格式（向后兼容）
-                : { parts: responseParts }  // 多模态使用 parts 格式
-        };
-
-        // 仅当 ID 存在且不是自动生成的时才包含
-        if (geminiId && !geminiId.startsWith('gemini_')) {
-            functionResponse.id = geminiId;
-        }
-
-        return {
-            role: 'user',
-            parts: [{ functionResponse }]
-        };
-    }
-
-    // 处理普通消息
-    const geminiRole = msg.role === 'assistant' ? 'model' : 'user';
-    const parts = [];
-
-    // 处理 content
-    if (typeof msg.content === 'string') {
-        // 简单字符串格式
-        if (msg.content) {
-            parts.push({ text: msg.content });
-        }
-    } else if (Array.isArray(msg.content)) {
-        // 多模态内容数组
-        for (const part of msg.content) {
-            if (part.type === 'text' && part.text) {
-                const textPart = { text: part.text };
-                // 保留 part 级别的 thoughtSignature（如果存在）
-                if (part.thoughtSignature) {
-                    textPart.thoughtSignature = part.thoughtSignature;
-                }
-                parts.push(textPart);
-            } else if (part.type === 'thinking' && part.text) {
-                // ⚠️ Gemini 的思维链格式不同，暂时作为普通文本处理
-                // 或者可以在外层添加 thoughtSignature 标记
-                const thinkingPart = { text: `[Thinking]\n${part.text}` };
-                // 保留 part 级别的 thoughtSignature（如果存在）
-                if (part.thoughtSignature) {
-                    thinkingPart.thoughtSignature = part.thoughtSignature;
-                }
-                parts.push(thinkingPart);
-            } else if (part.type === 'image_url') {
-                // 提取 base64 数据（图片）
-                const url = part.image_url?.url || part.url;
-                if (url) {
-                    const match = url.match(/^data:([^;]+);base64,(.+)$/);
-                    if (match) {
-                        const imagePart = {
-                            inlineData: {
-                                mimeType: match[1],
-                                data: match[2]
-                            }
-                        };
-                        // 保留 part 级别的 thoughtSignature（如果存在）
-                        if (part.thoughtSignature) {
-                            imagePart.thoughtSignature = part.thoughtSignature;
-                        }
-                        parts.push(imagePart);
-                    }
-                }
-            } else if (part.type === 'file' && part.file?.file_data) {
-                // 提取 base64 数据（PDF 等文件）
-                const fileData = part.file.file_data;
-                const match = fileData.match(/^data:([^;]+);base64,(.+)$/);
-                if (match) {
-                    const filePart = {
-                        inlineData: {
-                            mimeType: match[1],
-                            data: match[2]
-                        }
-                    };
-                    // 保留 part 级别的 thoughtSignature（如果存在）
-                    if (part.thoughtSignature) {
-                        filePart.thoughtSignature = part.thoughtSignature;
-                    }
-                    parts.push(filePart);
-                }
-            }
-        }
-    }
-
-    const result = { role: geminiRole, parts };
-
-    // 保留 thoughtSignature（如果存在）
-    // 这个签名来自之前的 API 响应，需要原样传回
-    if (msg.thoughtSignature) {
-        result.thoughtSignature = msg.thoughtSignature;
-    }
-
-    return result;
-}
+import { toGeminiContents } from '../messages/api-adapters.js';
+import { escapeXML } from '../tools/xml-formatter.js';
 
 /**
  * 处理 contents 用于发送请求：压缩历史图片
@@ -279,8 +39,8 @@ async function processContentsForRequest(contents) {
                 const mimeType = inlineData.mimeType || inlineData.mime_type;
                 const data = inlineData.data;
 
-                // 压缩图片到 512px
-                const compressed = await compressImage(data, mimeType, 512);
+                // 压缩图片
+                const compressed = await compressImage(data, mimeType, { apiFormat: 'gemini' });
 
                 processedParts.push({
                     inlineData: {
@@ -426,30 +186,27 @@ export async function sendGeminiRequest(baseEndpoint, apiKey, model, signal = nu
         ];
     }
 
-    // 处理 contents：先从 OpenAI 格式过滤消息，再转换为 Gemini 格式
-    // 根据模型能力过滤消息（在格式转换前，OpenAI格式）
-    let openaiMessages = state.messages.filter(m => !m.isError);
+    // 处理 contents：新格式 → Gemini API 格式
+    let filtered = state.messages.filter(m => !m.isError && !m.error);
 
     const capabilities = getCurrentModelCapabilities();
     if (capabilities) {
-        openaiMessages = filterMessagesByCapabilities(openaiMessages, capabilities);
+        filtered = filterMessagesByCapabilities(filtered, capabilities);
         console.log('📋 [Gemini] 消息已根据模型能力过滤:', {
             capabilities,
-            filteredCount: openaiMessages.length
+            filteredCount: filtered.length
         });
     }
 
-    // 转换为 Gemini 格式（使用完整转换函数，保留所有内容）
-    const geminiContents = openaiMessages
-        .map(msg => convertOpenAIMessageToGemini(msg))
-        .filter(msg => msg.parts && msg.parts.length > 0); // 过滤掉空消息
+    // 使用 api-adapters 转换为 Gemini 格式
+    const geminiContents = toGeminiContents(filtered);
 
     // ⚠️ 安全检查：如果所有消息都被过滤掉，抛出错误
     if (geminiContents.length === 0) {
         throw new Error('所有消息都被过滤，无法发送请求。请至少输入一条有效消息。');
     }
 
-    console.log('🔄 [Gemini] OpenAI → Gemini 转换完成:', geminiContents.length, '条消息');
+    console.log('🔄 [Gemini] 新格式 → Gemini 转换完成:', geminiContents.length, '条消息');
 
     // 压缩历史图片以减小请求体积
     const processedContents = await processContentsForRequest(geminiContents);
@@ -582,77 +339,59 @@ export async function sendGeminiRequest(baseEndpoint, apiKey, model, signal = nu
 }
 
 /**
- * 构建 Gemini 工具结果消息（OpenAI 格式）
- * 注意：返回 OpenAI 格式的消息，由 sendGeminiRequest 在发送时转换为 Gemini 格式
- * @param {Array} toolCalls - 工具调用列表 [{id?, name, arguments}]
- * @param {Array} toolResults - 工具结果列表 [{role: 'tool', content, tool_call_id}]
- * @returns {Array} OpenAI 格式的消息数组（存储在 state.messages 中）
+ * 构建 Gemini 工具结果消息（Gemini 原生格式）
+ * @param {Array} toolCalls - 工具调用列表 [{id, name, arguments}]
+ * @param {Array} toolResults - 格式无关的结果 [{id, name, result, isError}]
+ * @returns {Array} Gemini 格式的 contents 数组
  */
 export function buildToolResultMessages(toolCalls, toolResults) {
-    // XML 模式：使用 XML 格式而不是原生 tool_calls
+    // XML 模式
     if (state.xmlToolCallingEnabled) {
-        // 构建 XML 格式的工具调用文本
         let toolCallXML = '';
         for (const tc of toolCalls) {
-            toolCallXML += `<tool_use>\n  <name>${tc.name}</name>\n  <arguments>${JSON.stringify(tc.arguments)}</arguments>\n</tool_use>\n`;
+            toolCallXML += `<tool_use>\n  <name>${escapeXML(tc.name)}</name>\n  <arguments>${escapeXML(JSON.stringify(tc.arguments))}</arguments>\n</tool_use>\n`;
         }
-
-        // 构建 XML 格式的工具结果
         let toolResultXML = '';
-        for (let i = 0; i < toolResults.length; i++) {
-            const result = toolResults[i];
-            const toolCall = toolCalls[i] || toolCalls.find(tc => tc.id === result.tool_call_id);
-            const toolName = toolCall?.name || 'unknown';
-            toolResultXML += `<tool_use_result>\n  <name>${toolName}</name>\n  <result>${result.content}</result>\n</tool_use_result>\n`;
+        for (const r of toolResults) {
+            toolResultXML += `<tool_use_result>\n  <name>${escapeXML(r.name)}</name>\n  <result>${escapeXML(JSON.stringify(r.result))}</result>\n</tool_use_result>\n`;
         }
-
         return [
-            // 1. assistant 消息：包含 XML 工具调用
-            {
-                role: 'assistant',
-                content: toolCallXML.trim()
-            },
-            // 2. user 消息：包含 XML 工具结果
-            {
-                role: 'user',
-                content: toolResultXML.trim()
-            }
+            { role: 'assistant', content: toolCallXML.trim() },
+            { role: 'user', content: toolResultXML.trim() }
         ];
     }
 
-    // 原生模式：使用 tool_calls 格式
-    // 与 OpenAI 保持一致：返回 OpenAI 格式
-    // sendGeminiRequest 会将这些消息转换为 Gemini 格式
-    const messages = [
-        // 1. 添加助手消息（包含工具调用）- OpenAI 格式
-        // content 字段必须存在（OpenAI API 要求）
-        {
-            role: 'assistant',
-            content: '',  // 添加 content 字段（空字符串）
-            tool_calls: toolCalls.map(tc => ({
-                id: tc.id || `gemini_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-                type: 'function',
-                function: {
-                    name: tc.name,
-                    arguments: JSON.stringify(tc.arguments)
-                },
-                // 保存 thoughtSignature 到私有字段
-                _thoughtSignature: tc.thoughtSignature || null
-            }))
-        },
-        // 2. 添加工具结果消息 - OpenAI 格式（附加工具名称用于 Gemini 转换）
-        ...toolResults.map(result => {
-            // 优先使用已有的 _toolName，否则通过ID查找
-            // 使用 _originalId 进行匹配（避免ID转换导致的匹配失败）
-            if (!result._toolName) {
-                const toolCall = toolCalls.find(tc =>
-                    tc.id === result._originalId || tc.id === result.tool_call_id
-                );
-                result._toolName = toolCall?.name || 'unknown';
+    // Gemini 原生格式
+    // 1. model 的 functionCall parts
+    const callParts = toolCalls.map(tc => {
+        const callPart = {
+            functionCall: {
+                name: tc.name,
+                args: tc.arguments || {}
             }
-            return result;
-        })
-    ];
+        };
+        if (tc.thoughtSignature) callPart.thoughtSignature = tc.thoughtSignature;
+        return callPart;
+    });
 
-    return messages;
+    // 2. user 的 functionResponse parts
+    const responseParts = toolResults.map(r => {
+        let responseObj;
+        try {
+            responseObj = typeof r.result === 'string' ? JSON.parse(r.result) : r.result;
+        } catch {
+            responseObj = r.result;
+        }
+        return {
+            functionResponse: {
+                name: r.name,
+                response: { result: responseObj }
+            }
+        };
+    });
+
+    return [
+        { role: 'model', parts: callParts },
+        { role: 'user', parts: responseParts }
+    ];
 }

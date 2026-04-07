@@ -22,14 +22,16 @@
  */
 
 import { eventBus } from '../core/events.js';
-import { getTool, getToolHandler } from './manager.js';
+import { getTool } from './manager.js';
 import { safeValidate, formatValidationErrors } from './validator.js';
 import { checkRateLimit } from './rate-limiter.js';
+import { isElectron } from '../utils/platform.js';
 
 // ========== 配置 ==========
 
 const DEFAULT_TIMEOUT = 30000; // 30秒
-const MAX_TIMEOUT = 120000; // 最大2分钟
+const MCP_TIMEOUT = 180000; // MCP 工具 3 分钟（与 MCP 客户端 toolCallTimeout 一致）
+const MAX_TIMEOUT = 180000; // 最大3分钟
 
 // ========== Claude 原生工具执行 ==========
 
@@ -41,7 +43,7 @@ const MAX_TIMEOUT = 120000; // 最大2分钟
  */
 async function executeNativeTool(toolName, args) {
     // 检查是否在 Electron 环境
-    if (!window.electronAPI || !window.electronAPI.isElectron || !window.electronAPI.isElectron()) {
+    if (!isElectron()) {
         throw new Error(`原生工具 "${toolName}" 仅在 Electron 环境中可用`);
     }
 
@@ -224,6 +226,14 @@ async function executeTextEditorTool(args) {
                 throw new Error(`读取文件失败: ${readResult.error}`);
             }
 
+            // 验证 old_str 唯一性
+            const occurrences = readResult.content.split(args.old_str).length - 1;
+            if (occurrences === 0) {
+                throw new Error('old_str not found in file');
+            } else if (occurrences > 1) {
+                throw new Error(`old_str found ${occurrences} times, must be unique. Use more context to make it unique.`);
+            }
+
             // 执行替换
             const newContent = readResult.content.replace(args.old_str, args.new_str);
 
@@ -370,8 +380,10 @@ export async function executeTool(toolId, args, options = {}) {
             throw new Error(errorMsg);
         }
 
-        // 4. 执行工具（带超时）
-        const timeout = Math.min(options.timeout || DEFAULT_TIMEOUT, MAX_TIMEOUT);
+        // 4. 执行工具（带超时）— MCP 工具使用更长的超时
+        const isMCP = toolId.includes('__');
+        const defaultTimeout = isMCP ? MCP_TIMEOUT : DEFAULT_TIMEOUT;
+        const timeout = Math.min(options.timeout || defaultTimeout, MAX_TIMEOUT);
         const result = await executeWithTimeout(tool, args, timeout);
 
         const duration = Date.now() - startTime;
@@ -454,65 +466,33 @@ export async function executeTool(toolId, args, options = {}) {
  * @returns {Promise<Object>} 执行结果
  */
 async function executeWithTimeout(tool, args, timeout) {
-    // 创建 AbortController 用于取消
     const abortController = new AbortController();
     const { signal } = abortController;
 
-    // 根据工具类型选择执行方式
-    let executePromise;
-
-    if (tool.type === 'builtin' || tool.type === 'custom') {
-        // 内置工具或自定义工具：直接调用处理器
-        const handler = getToolHandler(tool.id);
-        if (!handler) {
-            throw new Error(`工具处理器不存在: ${tool.id}`);
-        }
-        // 传递 signal（如果处理器支持）
-        executePromise = handler(args, { signal });
-
-    } else if (tool.type === 'mcp') {
-        // MCP 工具：通过 MCP 客户端调用
-        executePromise = executeMCPTool(tool, args, { signal });
-
-    } else {
-        throw new Error(`未知工具类型: ${tool.type}`);
+    // 统一路径：所有工具都通过 tool.call 执行
+    if (typeof tool.call !== 'function') {
+        throw new Error(`工具处理器不存在: ${tool.id}`);
     }
 
-    // 创建超时 Promise
+    const executePromise = tool.call(args, { signal });
+
     let timeoutId;
     const timeoutPromise = new Promise((_, reject) => {
         timeoutId = setTimeout(() => {
-            // 取消执行
             abortController.abort();
             reject(new Error(`工具执行超时 (${timeout}ms)`));
         }, timeout);
     });
 
-    // 竞速：执行 vs 超时
     try {
         const result = await Promise.race([executePromise, timeoutPromise]);
         clearTimeout(timeoutId);
         return result;
     } catch (error) {
         clearTimeout(timeoutId);
-        abortController.abort(); // 确保取消
+        abortController.abort();
         throw error;
     }
-}
-
-/**
- * 执行 MCP 工具
- * @param {Object} tool - MCP 工具定义
- * @param {Object} args - 参数
- * @returns {Promise<Object>} 执行结果
- */
-async function executeMCPTool(tool, args, options = {}) {
-    // 动态导入 MCP 客户端（避免循环依赖）
-    const { mcpClient } = await import('./mcp/client.js');
-
-    // 使用完整的工具ID（包含serverId）
-    const fullToolId = tool.id || `${tool.serverId}__${tool.name}`;
-    return mcpClient.callTool(fullToolId, args, options);
 }
 
 /**
@@ -624,14 +604,14 @@ export async function executeCancelable(executionId, toolId, args, options = {})
     try {
         // 在执行前检查是否已取消
         if (cancelController.canceled) {
-            throw new Error('工具执行已取消');
+            return { canceled: true };
         }
 
         const result = await executeTool(toolId, args, options);
 
         // 检查执行后是否被取消
         if (cancelController.canceled) {
-            throw new Error('工具执行已取消');
+            return { canceled: true };
         }
 
         return result;

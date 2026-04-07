@@ -8,7 +8,6 @@
 
 import { state } from '../core/state.js';
 import { eventBus } from '../core/events.js';
-import { EventListenerManager } from '../utils/event-listener-manager.js';
 import {
     getAllTools,
     getEnabledTools,
@@ -24,6 +23,7 @@ import { getToolHistory, clearToolHistory } from '../tools/history.js';
 import { debouncedSaveSession } from '../state/sessions.js';
 import { showNotification } from './notifications.js';
 import { showConfirmDialog } from '../utils/dialogs.js';
+import { escapeHtml } from '../utils/helpers.js';
 import { getIcon } from '../utils/icons.js';
 
 // ========== 模块状态 ==========
@@ -32,8 +32,6 @@ let modal = null;
 let selectedToolId = null;
 let isEditing = false;
 let removeFocusTrap = null;
-// 全局事件监听器管理器（用于管理持久性监听器）
-let globalListenerManager = null;
 
 // ========== 辅助函数 ==========
 
@@ -86,18 +84,13 @@ function createFocusTrap(container) {
 export function initToolManager() {
     console.log('[Tool Manager] 🔧 初始化工具管理界面...');
 
-    // 创建全局事件监听器管理器
-    if (!globalListenerManager) {
-        globalListenerManager = new EventListenerManager();
-    }
-
     // 创建模态框
     createModal();
 
     // 绑定顶部导航栏按钮
     const toggleBtn = document.getElementById('tools-manager-toggle');
     if (toggleBtn) {
-        globalListenerManager.add(toggleBtn, 'click', openModal);
+        toggleBtn.addEventListener('click', openModal);
     }
 
     // 监听工具系统事件
@@ -131,14 +124,14 @@ function createModal() {
     const searchInput = modal.querySelector('#tool-search-input');
     const addCustomBtn = modal.querySelector('#add-custom-tool-btn');
 
-    // 绑定关闭按钮（使用全局管理器）
+    // 绑定关闭按钮
     if (closeBtn) {
-        globalListenerManager.add(closeBtn, 'click', closeModal);
+        closeBtn.addEventListener('click', closeModal);
     }
 
     // 绑定 Tab 切换
     tabBtns.forEach(btn => {
-        globalListenerManager.add(btn, 'click', () => handleTabSwitch(btn.dataset.tab));
+        btn.addEventListener('click', () => handleTabSwitch(btn.dataset.tab));
     });
 
     // 点击背景关闭
@@ -147,7 +140,7 @@ function createModal() {
             closeModal();
         }
     };
-    globalListenerManager.add(modal, 'click', handleModalClick);
+    modal.addEventListener('click', handleModalClick);
 
     // ESC 键关闭
     const handleEscapeKey = (e) => {
@@ -155,16 +148,16 @@ function createModal() {
             closeModal();
         }
     };
-    globalListenerManager.add(document, 'keydown', handleEscapeKey);
+    document.addEventListener('keydown', handleEscapeKey);
 
     // 绑定搜索框
     if (searchInput) {
-        globalListenerManager.add(searchInput, 'input', handleToolSearch);
+        searchInput.addEventListener('input', handleToolSearch);
     }
 
     // 绑定添加自定义工具按钮
     if (addCustomBtn) {
-        globalListenerManager.add(addCustomBtn, 'click', handleAddCustomTool);
+        addCustomBtn.addEventListener('click', handleAddCustomTool);
     }
 
     // 绑定表单按钮
@@ -354,7 +347,7 @@ function renderToolGroup(title, tools, type) {
             <div class="tool-item ${selected}" data-tool-id="${tool.id}" data-type="${type}">
                 <div class="tool-item-content">
                     <span class="tool-icon">${icon}</span>
-                    <span class="tool-name">${tool.name}</span>
+                    <span class="tool-name">${escapeHtml(tool.name)}</span>
                 </div>
                 <label class="tool-enable-switch-container" onclick="event.stopPropagation()">
                     <input type="checkbox"
@@ -451,7 +444,7 @@ function showToolForm(toolOrId) {
                 <input type="text"
                        id="tool-name-input"
                        class="form-control"
-                       value="${tool.name}"
+                       value="${escapeHtml(tool.name)}"
                        ${!isEditable ? 'readonly' : ''}
                        placeholder="例如: web_search">
                 <small class="form-hint">用于 API 调用的唯一标识符（仅限字母、数字、下划线）</small>
@@ -664,7 +657,7 @@ function handleValidateSchema() {
         }, 3000);
 
     } catch (error) {
-        resultDiv.innerHTML = `<span class="validation-error">${getIcon('xCircle', { size: 14 })} ${error.message}</span>`;
+        resultDiv.innerHTML = `<span class="validation-error">${getIcon('xCircle', { size: 14 })} ${escapeHtml(error.message)}</span>`;
         resultDiv.className = 'validation-result error';
     }
 }
@@ -902,7 +895,7 @@ function loadPermissionsTab() {
         html += `
             <div class="permission-item">
                 <div class="permission-info">
-                    <span class="permission-name">${tool.name || tool.id}</span>
+                    <span class="permission-name">${escapeHtml(tool.name || tool.id)}</span>
                     <span class="permission-type type-${tool.type}">${tool.type}</span>
                 </div>
                 <div class="permission-controls">
@@ -1032,7 +1025,7 @@ async function showToolTestDialog(tool) {
             resultContent.innerHTML = `
                 <div class="test-result-success">
                     <h4>执行成功</h4>
-                    <pre class="result-data">${JSON.stringify(result, null, 2)}</pre>
+                    <pre class="result-data">${escapeHtml(JSON.stringify(result, null, 2))}</pre>
                 </div>
             `;
             resultContainer.style.display = 'block';
@@ -1043,7 +1036,7 @@ async function showToolTestDialog(tool) {
             resultContent.innerHTML = `
                 <div class="test-result-error">
                     <h4>❌ 执行失败</h4>
-                    <pre class="error-message">${error.message}</pre>
+                    <pre class="error-message">${escapeHtml(error.message)}</pre>
                 </div>
             `;
             resultContainer.style.display = 'block';

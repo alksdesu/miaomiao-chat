@@ -6,8 +6,7 @@
 import { eventBus } from '../core/events.js';
 import { executeTool } from '../tools/executor.js';
 import { createToolCallUI, updateToolCallStatus } from '../ui/tool-display.js';
-import { getOrCreateMappedId } from '../api/format-converter.js';  // ID 转换
-import { state } from '../core/state.js';  // 访问应用状态
+import { state } from '../core/state.js';
 import { requestStateMachine } from '../core/request-state-machine.js';
 
 /**
@@ -408,15 +407,15 @@ export async function executeToolCalls(toolCalls) {
 
             // 立即转换 ID 为当前格式,防止切换模型时不匹配
             const currentFormat = state.apiFormat || 'openai';
-            const mappedId = getOrCreateMappedId(id, currentFormat);
+            const { getOrCreateMappedId } = await import('../api/format-converter.js');
+            getOrCreateMappedId(id, currentFormat);
 
-            // 返回工具结果对象
+            // 返回格式无关的工具结果
             return {
-                tool_call_id: mappedId,  // 使用转换后的 ID
-                _originalId: id,  // ⭐ 保存原始 ID 用于匹配工具名称
-                _toolName: name,  // ⭐ 直接保存工具名称，防止ID匹配失败
-                role: 'tool',
-                content: JSON.stringify(enrichedResult)
+                id,
+                name,
+                result: enrichedResult,
+                isError: false
             };
 
         } catch (error) {
@@ -434,46 +433,38 @@ export async function executeToolCalls(toolCalls) {
                 toolArgs: args
             });
 
-            // 失败时也转换 ID
+            // 失败时也预注册 ID 映射
             const currentFormat = state.apiFormat || 'openai';
-            const mappedId = getOrCreateMappedId(id, currentFormat);
-
-            // 保存原始ID和工具名称
-            const baseResult = {
-                tool_call_id: mappedId,
-                _originalId: id,
-                _toolName: name,
-                role: 'tool'
-            };
+            const { getOrCreateMappedId } = await import('../api/format-converter.js');
+            getOrCreateMappedId(id, currentFormat);
 
             // 改进错误消息，明确告知不要重试
             let errorMessage;
             if (error.message.includes('Missing required parameter')) {
-                // 参数缺失错误 - 明确是 schema 问题
                 errorMessage = `Tool "${name}" call failed due to missing required parameter. ` +
                     `This is a parameter schema issue, not a temporary error. ` +
                     `Do NOT retry this tool call. Please respond to the user explaining the issue. ` +
                     `Error details: ${error.message}`;
             } else if (error.message.includes('不存在') || error.message.includes('not found') || error.message.includes('not available')) {
-                // 工具不存在错误
                 errorMessage = `Tool "${name}" is not available or not registered. ` +
                     `This tool cannot be used. Do NOT retry this tool. ` +
                     `Please respond to the user WITHOUT using this tool.`;
             } else {
-                // 其他执行错误
                 errorMessage = `Tool "${name}" execution failed: ${error.message}. ` +
                     `This error cannot be fixed by retrying with the same parameters. ` +
                     `Do NOT retry this tool call. Please respond to the user based on this error.`;
             }
 
             return {
-                ...baseResult,
-                content: JSON.stringify({
+                id,
+                name,
+                result: {
                     error: errorMessage,
                     is_error: true,
-                    original_error: error.message,  // 保留原始错误便于调试
-                    failed_args: args  // 保留失败的参数
-                })
+                    original_error: error.message,
+                    failed_args: args
+                },
+                isError: true
             };
         }
     });

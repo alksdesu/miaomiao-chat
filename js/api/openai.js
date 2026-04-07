@@ -9,6 +9,10 @@ import { getPrefillMessages, getOpeningMessages } from '../utils/prefill.js';
 import { processVariables } from '../utils/variables.js';
 import { filterMessagesByCapabilities } from '../utils/message-filter.js';
 import { getCurrentModelCapabilities, getCurrentProvider } from '../providers/manager.js';
+import { toOpenAIMessages } from '../messages/api-adapters.js';
+
+import { getOrCreateMappedId } from './format-converter.js';
+import { escapeXML } from '../tools/xml-formatter.js';
 
 /**
  * 发送 OpenAI 格式的请求
@@ -29,8 +33,12 @@ export async function sendOpenAIRequest(endpoint, apiKey, model, signal = null) 
         apiEndpoint = endpoint.replace('/chat/completions', '/responses');
     }
 
-    // 构建消息数组（过滤掉错误消息，它们不应发送给 API）
-    let messages = state.messages.filter(m => !m.isError);
+    // 构建消息数组：新格式 → OpenAI API 格式
+    // Responses API 模式下注入 reasoning items（encrypted_content 配对）
+    let messages = toOpenAIMessages(
+        state.messages.filter(m => !m.isError && !m.error),
+        { injectReasoning: isResponsesFormat }
+    );
 
     // 根据模型能力过滤消息（在格式转换前，OpenAI格式）
     const capabilities = getCurrentModelCapabilities();
@@ -75,20 +83,11 @@ export async function sendOpenAIRequest(endpoint, apiKey, model, signal = null) 
 
     // 根据API格式选择消息参数名
     if (isResponsesFormat) {
-        // Responses API 使用 input
+        // Responses API 使用 input（reasoning items 已由 toOpenAIMessages 注入）
         requestBody.input = messages;
 
         // 请求返回加密的推理内容（用于多轮对话保持思维链上下文）
         requestBody.include = ['reasoning.encrypted_content'];
-
-        // 从消息历史中查找并传递 encrypted_content 签名
-        // 类似 Gemini 的 thoughtSignature，需要传递给所有消息
-        const encryptedContent = findEncryptedContentFromMessages(state.messages);
-        if (encryptedContent) {
-            // 将签名添加到每个非 system 消息中（Responses API 格式）
-            requestBody.input = propagateEncryptedContent(messages, encryptedContent);
-            console.log('[OpenAI] 传递 encrypted_content 签名到请求');
-        }
     } else {
         // Chat Completions API 使用 messages
         requestBody.messages = messages;
@@ -183,52 +182,32 @@ export async function sendOpenAIRequest(endpoint, apiKey, model, signal = null) 
 }
 
 /**
- * 构建工具结果消息数组
- * @param {Array} toolCalls - 工具调用列表
- * @param {Array} toolResults - 工具结果列表
- * @returns {Array} 包含工具结果的消息数组
+ * 构建 OpenAI 工具结果消息（OpenAI 原生格式）
+ * @param {Array} toolCalls - 工具调用列表 [{id, name, arguments}]
+ * @param {Array} toolResults - 格式无关的结果 [{id, name, result, isError}]
+ * @returns {Array} OpenAI 格式的消息数组
  */
 export function buildToolResultMessages(toolCalls, toolResults) {
-    // XML 模式：使用 XML 格式而不是原生 tool_calls
+    // XML 模式
     if (state.xmlToolCallingEnabled) {
-        // 构建 XML 格式的工具调用文本
         let toolCallXML = '';
         for (const tc of toolCalls) {
-            toolCallXML += `<tool_use>\n  <name>${tc.name}</name>\n  <arguments>${JSON.stringify(tc.arguments)}</arguments>\n</tool_use>\n`;
+            toolCallXML += `<tool_use>\n  <name>${escapeXML(tc.name)}</name>\n  <arguments>${escapeXML(JSON.stringify(tc.arguments))}</arguments>\n</tool_use>\n`;
         }
-
-        // 构建 XML 格式的工具结果
         let toolResultXML = '';
-        for (let i = 0; i < toolResults.length; i++) {
-            const result = toolResults[i];
-            const toolCall = toolCalls[i] || toolCalls.find(tc => tc.id === result.tool_call_id);
-            const toolName = toolCall?.name || 'unknown';
-            toolResultXML += `<tool_use_result>\n  <name>${toolName}</name>\n  <result>${result.content}</result>\n</tool_use_result>\n`;
+        for (const r of toolResults) {
+            toolResultXML += `<tool_use_result>\n  <name>${escapeXML(r.name)}</name>\n  <result>${escapeXML(JSON.stringify(r.result))}</result>\n</tool_use_result>\n`;
         }
-
         return [
-            // 1. assistant 消息：包含 XML 工具调用
-            {
-                role: 'assistant',
-                content: toolCallXML.trim()
-            },
-            // 2. user 消息：包含 XML 工具结果
-            {
-                role: 'user',
-                content: toolResultXML.trim()
-            }
+            { role: 'assistant', content: toolCallXML.trim() },
+            { role: 'user', content: toolResultXML.trim() }
         ];
     }
 
-    // 检查是否使用 Responses API 格式
-    const provider = getCurrentProvider();
-    const isResponsesFormat = provider?.apiFormat === 'openai-responses';
-
     // Responses API 格式
-    if (isResponsesFormat) {
+    const provider = getCurrentProvider();
+    if (provider?.apiFormat === 'openai-responses') {
         const messages = [];
-
-        // 1. 追加每个 function_call 对象（模型的工具调用请求）
         for (const tc of toolCalls) {
             messages.push({
                 type: 'function_call',
@@ -238,32 +217,19 @@ export function buildToolResultMessages(toolCalls, toolResults) {
                 arguments: typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments)
             });
         }
-
-        // 2. 追加每个 function_call_output（工具执行结果）
-        for (const result of toolResults) {
-            let outputStr;
-            try {
-                // 尝试解析以检测多模态内容
-                const parsed = JSON.parse(result.content);
-                // 纯文本结果直接用字符串
-                outputStr = typeof parsed === 'string' ? parsed : JSON.stringify(parsed);
-            } catch {
-                outputStr = result.content;
-            }
-
+        for (const r of toolResults) {
+            const mappedId = getOrCreateMappedId(r.id, 'openai');
             messages.push({
                 type: 'function_call_output',
-                call_id: result.tool_call_id,
-                output: outputStr
+                call_id: mappedId,
+                output: JSON.stringify(r.result)
             });
         }
-
         return messages;
     }
 
-    // 原生 Chat Completions API 模式：使用 tool_calls 格式（仅文本）
-    const messages = [
-        // 添加助手消息（包含工具调用）
+    // Chat Completions API 原生格式
+    return [
         {
             role: 'assistant',
             content: '',
@@ -276,54 +242,10 @@ export function buildToolResultMessages(toolCalls, toolResults) {
                 }
             }))
         },
-        // 2. 添加工具结果消息（Chat Completions API 仅支持纯文本）
-        ...toolResults
+        ...toolResults.map(r => ({
+            role: 'tool',
+            tool_call_id: getOrCreateMappedId(r.id, 'openai'),
+            content: JSON.stringify(r.result)
+        }))
     ];
-
-    return messages;
-}
-
-/**
- * 从消息历史中查找 encrypted_content 签名
- * 优先使用最新的签名（类似 Gemini 的 thoughtSignature）
- * @param {Array} messages - 消息数组
- * @returns {string|null} encrypted_content 签名
- */
-function findEncryptedContentFromMessages(messages) {
-    if (!messages || messages.length === 0) return null;
-
-    // 从后向前查找，优先使用最新的签名
-    for (let i = messages.length - 1; i >= 0; i--) {
-        const msg = messages[i];
-        if (msg.encryptedContent) {
-            return msg.encryptedContent;
-        }
-    }
-
-    return null;
-}
-
-/**
- * 将 encrypted_content 签名传播到所有消息
- * Responses API 格式：在 assistant 消息中添加 reasoning 字段
- * @param {Array} messages - 消息数组
- * @param {string} encryptedContent - 加密的推理内容
- * @returns {Array} 更新后的消息数组
- */
-function propagateEncryptedContent(messages, encryptedContent) {
-    if (!encryptedContent) return messages;
-
-    return messages.map(msg => {
-        // 只在 assistant 消息中添加签名（模型的回复）
-        if (msg.role === 'assistant') {
-            return {
-                ...msg,
-                // Responses API 格式：reasoning 包含 encrypted_content
-                reasoning: {
-                    encrypted_content: encryptedContent
-                }
-            };
-        }
-        return msg;
-    });
 }

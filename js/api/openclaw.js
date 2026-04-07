@@ -8,6 +8,7 @@ import { eventBus } from '../core/events.js';
 import { buildModelParams, buildThinkingConfig } from './params.js';
 import { getToolsForAPI } from '../tools/manager.js';
 import { getCurrentModel } from './handler.js';
+import { PartType } from '../messages/schema.js';
 
 // 请求 ID 计数器
 let requestIdCounter = 0;
@@ -463,7 +464,12 @@ export async function sendOpenClawRequest(endpoint, apiKey, model, signal = null
         const m = msgs[i];
         if (m.isError) continue;
         if (m.role === 'user') {
-            if (typeof m.content === 'string') {
+            // 新格式：从 parts 提取文本
+            if (m.parts && Array.isArray(m.parts)) {
+                messageText = m.parts.filter(p => p.type === PartType.TEXT).map(p => p.text).join('\n');
+            }
+            // 旧格式兼容
+            else if (typeof m.content === 'string') {
                 messageText = m.content;
             } else if (Array.isArray(m.content)) {
                 messageText = m.content.filter(p => p.type === 'text').map(p => p.text).join('\n');

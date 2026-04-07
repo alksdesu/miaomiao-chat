@@ -14,6 +14,7 @@ import { renderHumanizedError } from '../utils/errors.js';
 import { saveErrorMessage } from '../messages/sync.js';
 import { getSendFunction } from '../api/factory.js';
 import { getCurrentProvider } from '../providers/manager.js';
+import { isVideoMimeType, isAudioMimeType } from '../utils/media.js';
 
 /**
  * 处理多个流式响应（并行）
@@ -100,7 +101,7 @@ export async function handleMultiStreamResponses(endpoint, apiKey, model, abortC
 
     // 并行处理所有流，第一个流实时显示，其他流后台处理
     const streamPromises = validResponses.map((item, idx) => {
-        return parseStreamToReply(item.response, idx === 0);
+        return parseStreamToReply(item.response, idx === 0, requestFormat);
     });
 
     const streamResults = await Promise.allSettled(streamPromises);
@@ -148,12 +149,14 @@ export async function handleMultiStreamResponses(endpoint, apiKey, model, abortC
         const messageIndex = saveAssistantMessage({
             textContent: reply0.content || '',
             thinkingContent: reply0.thinkingContent,
-            thoughtSignature: reply0.thoughtSignature,
+            thoughtSignature: reply0.thoughtSignature || reply0.thinkingSignature,
+            encryptedContent: reply0.encryptedContent,
+            reasoningItemId: reply0.reasoningItemId,
+            groundingMetadata: reply0.groundingMetadata,
             streamStats: getCurrentStreamStatsData(),
             allReplies: allReplies,
             selectedReplyIndex: 0,
-            geminiParts: reply0.parts,
-            sessionId: sessionId, // 🔒 传递会话ID防止串消息
+            sessionId: sessionId, // 传递会话ID防止串消息
         });
 
         // Bug 2 立即设置 dataset.messageIndex
@@ -213,7 +216,7 @@ export async function handleMultiStreamResponses(endpoint, apiKey, model, abortC
  * @param {boolean} showRealtime - 是否实时显示
  * @returns {Promise<Object>} 回复对象
  */
-async function parseStreamToReply(response, showRealtime = false) {
+async function parseStreamToReply(response, showRealtime = false, apiFormat = 'openai') {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -223,7 +226,7 @@ async function parseStreamToReply(response, showRealtime = false) {
     let groundingMetadata = null;
     const contentParts = [];
 
-    switch (state.apiFormat) {
+    switch (apiFormat) {
         case 'gemini':
             while (true) {
                 const { done, value } = await reader.read();
@@ -273,13 +276,18 @@ async function parseStreamToReply(response, showRealtime = false) {
                                     recordTokens(part.text);
                                 }
                                 textContent += part.text;
-                            } else if (part.inlineData) {
-                                const dataUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+                            } else if (part.inlineData || part.inline_data) {
+                                const inlineData = part.inlineData || part.inline_data;
+                                const mimeType = inlineData.mimeType || inlineData.mime_type;
+                                const dataUrl = `data:${mimeType};base64,${inlineData.data}`;
+                                const mediaType = isVideoMimeType(mimeType) ? 'video_url'
+                                    : isAudioMimeType(mimeType) ? 'audio_url' : 'image_url';
                                 contentParts.push({
-                                    type: 'image_url',
+                                    type: mediaType,
                                     url: dataUrl,
                                     complete: true,
-                                    inlineData: part.inlineData
+                                    mimeType,
+                                    inlineData
                                 });
                             }
                         }
@@ -311,6 +319,8 @@ async function parseStreamToReply(response, showRealtime = false) {
             };
 
         case 'claude':
+            // eslint-disable-next-line no-case-declarations
+            let claudeSignature = '';
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
@@ -353,6 +363,8 @@ async function parseStreamToReply(response, showRealtime = false) {
                                 }
                                 thinkingContent += delta.thinking;
                                 if (showRealtime) updateStreamingMessage(textContent, thinkingContent);
+                            } else if (delta?.type === 'signature_delta') {
+                                claudeSignature += delta.signature;
                             }
                         }
                     } catch (e) {
@@ -367,11 +379,15 @@ async function parseStreamToReply(response, showRealtime = false) {
 
             return {
                 content: textContent,
-                thinkingContent: thinkingContent || null
+                thinkingContent: thinkingContent || null,
+                thinkingSignature: claudeSignature || null
             };
 
         case 'openai':
         default:
+            // eslint-disable-next-line no-case-declarations
+            let openaiEncrypted = null;
+            let openaiReasoningId = null;
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
@@ -418,6 +434,34 @@ async function parseStreamToReply(response, showRealtime = false) {
                                 if (showRealtime) updateStreamingMessage(textContent, thinkingContent);
                             }
                         }
+
+                        // Responses API: reasoning delta
+                        if (parsed.type === 'response.reasoning.delta' && parsed.delta) {
+                            if (showRealtime) {
+                                recordFirstToken();
+                                recordTokens(parsed.delta);
+                            }
+                            thinkingContent += parsed.delta;
+                            if (showRealtime) updateStreamingMessage(textContent, thinkingContent);
+                        }
+                        // Responses API: text delta
+                        if (parsed.type === 'response.output_text.delta' && parsed.delta) {
+                            if (showRealtime) {
+                                recordFirstToken();
+                                recordTokens(parsed.delta);
+                            }
+                            textContent += parsed.delta;
+                            if (showRealtime) updateStreamingMessage(textContent, thinkingContent);
+                        }
+                        // Responses API: encrypted_content 提取
+                        if (parsed.type === 'response.completed' && parsed.response?.output) {
+                            for (const item of parsed.response.output) {
+                                if (item.type === 'reasoning' && item.encrypted_content) {
+                                    openaiEncrypted = item.encrypted_content;
+                                    openaiReasoningId = item.id || null;
+                                }
+                            }
+                        }
                     } catch (e) {
                         console.warn('OpenAI stream parse error:', e);
                         // 如果是API错误，重新抛出
@@ -430,7 +474,9 @@ async function parseStreamToReply(response, showRealtime = false) {
 
             return {
                 content: textContent,
-                thinkingContent: thinkingContent || null
+                thinkingContent: thinkingContent || null,
+                encryptedContent: openaiEncrypted,
+                reasoningItemId: openaiReasoningId,
             };
     }
 }

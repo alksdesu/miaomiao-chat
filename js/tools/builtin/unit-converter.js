@@ -259,3 +259,9 @@ export function getSupportedCategories() {
 
 console.log('[UnitConverter Tool] 📏 单位转换工具已加载');
 console.log('[UnitConverter Tool] 支持的类别:', getSupportedCategories().join(', '));
+
+// ========== 标准化工具对象 ==========
+
+import { buildToolFromLegacy } from '../build-tool.js';
+
+export const unitConverter = buildToolFromLegacy('unit_converter', unitConverterTool, unitConverterHandler, { isReadOnly: () => true });

@@ -7,6 +7,7 @@ import { state } from '../core/state.js';
 import { eventBus } from '../core/events.js';
 import { saveCurrentConfig } from '../state/config.js';
 import { handleAttachFile } from './input.js';
+import { isElectron } from '../utils/platform.js';
 
 /**
  * 同步快捷开关状态
@@ -50,6 +51,15 @@ export function initQuickToggles() {
             // 显示/隐藏强度选择
             const strengthGroup = document.getElementById('thinking-strength-group');
             if (strengthGroup) strengthGroup.style.display = state.thinkingEnabled ? 'flex' : 'none';
+            // 同步 thinkingHint 显隐
+            const thinkingHint = document.getElementById('thinking-hint');
+            if (thinkingHint) thinkingHint.style.display = state.thinkingEnabled ? 'block' : 'none';
+            // 同步 Claude Adaptive 行显隐
+            const claudeAdaptiveRow = document.getElementById('claude-adaptive-row');
+            if (claudeAdaptiveRow) claudeAdaptiveRow.style.display = state.thinkingEnabled ? 'flex' : 'none';
+            // 同步自定义 budget 输入框显隐
+            const budgetInput = document.getElementById('thinking-budget-group');
+            if (budgetInput) budgetInput.style.display = (state.thinkingEnabled && state.thinkingStrength === 'custom') ? 'flex' : 'none';
             saveCurrentConfig();
         });
     }
@@ -100,7 +110,7 @@ export function initQuickToggles() {
     const toggleComputerUse = document.getElementById('toggle-computer-use');
     if (toggleComputerUse) {
         // 仅在 Electron 环境显示
-        if (window.electronAPI?.isElectron()) {
+        if (isElectron()) {
             toggleComputerUse.style.display = '';
         }
 

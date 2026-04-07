@@ -4,6 +4,7 @@
  */
 
 import { state } from '../core/state.js';
+import { PartType, MediaKind, hasParts } from '../messages/schema.js';
 
 /**
  * 根据模型能力过滤和转换消息
@@ -23,8 +24,8 @@ export function filterMessagesByCapabilities(messages, modelCapabilities) {
         // 只处理 assistant 和 user 消息，system 消息保持不变
         if (msg.role === 'system') return msg;
 
-        // 检查消息是否包含图片
-        const hasImages = hasImageContent(msg.content);
+        // 检查消息是否包含图片（新格式优先）
+        const hasImages = hasParts(msg) ? hasImageInParts(msg.parts) : hasImageContent(msg.content);
         if (!hasImages) return msg;
 
         // 根据角色和能力决定转换策略
@@ -96,8 +97,18 @@ function convertAssistantImageToUser(msg, messageIndex) {
     const imageParts = [];
     const thinkingParts = [];
 
-    // 分离文本、思维链和图片
-    if (Array.isArray(msg.content)) {
+    // 新格式：从 parts 读取
+    if (hasParts(msg)) {
+        for (const p of msg.parts) {
+            if (p.type === PartType.TEXT) textParts.push(p.text);
+            else if (p.type === PartType.THINKING) thinkingParts.push(p.text);
+            else if (p.type === PartType.MEDIA && p.media === MediaKind.IMAGE) {
+                imageParts.push({ type: 'image_url', image_url: { url: p.url } });
+            }
+        }
+    }
+    // 旧格式：从 content 读取
+    else if (Array.isArray(msg.content)) {
         msg.content.forEach(part => {
             if (part.type === 'text') {
                 textParts.push(part.text);
@@ -139,14 +150,18 @@ function convertAssistantImageToUser(msg, messageIndex) {
         newContent.push(img);
     });
 
-    // 返回转换后的 user 消息
-    return {
+    // 返回转换后的 user 消息（保留原消息的 id 等字段）
+    const result = {
+        ...msg,
         role: 'user',
         content: newContent,
-        _converted: true,  // 标记已转换
+        _converted: true,
         _originalRole: 'assistant',
         _originalIndex: messageIndex
     };
+    // 移除旧的 parts，避免角色不一致
+    delete result.parts;
+    return result;
 }
 
 /**
@@ -160,7 +175,16 @@ function removeImagesFromMessage(msg, role) {
     const thinkingParts = [];
     let imageCount = 0;
 
-    if (Array.isArray(msg.content)) {
+    // 新格式：从 parts 读取
+    if (hasParts(msg)) {
+        for (const p of msg.parts) {
+            if (p.type === PartType.TEXT) textParts.push(p.text);
+            else if (p.type === PartType.THINKING) thinkingParts.push(p.text);
+            else if (p.type === PartType.MEDIA && p.media === MediaKind.IMAGE) imageCount++;
+        }
+    }
+    // 旧格式：从 content 读取
+    else if (Array.isArray(msg.content)) {
         msg.content.forEach(part => {
             if (part.type === 'text') {
                 textParts.push(part.text);
@@ -200,10 +224,17 @@ function removeImagesFromMessage(msg, role) {
     newText = (newText + placeholder).trim();
 
     // 简化为字符串格式
-    return {
+    const result = {
         ...msg,
         content: newText
     };
+    // 同步更新 parts（移除 media，保留其他）
+    if (result.parts && Array.isArray(result.parts)) {
+        result.parts = result.parts.filter(p => !(p.type === PartType.MEDIA && p.media === MediaKind.IMAGE));
+        const tp = result.parts.find(p => p.type === PartType.TEXT);
+        if (tp) tp.text = newText;
+    }
+    return result;
 }
 
 /**
@@ -214,6 +245,16 @@ function removeImagesFromMessage(msg, role) {
 function hasImageContent(content) {
     if (Array.isArray(content)) {
         return content.some(part => part.type === 'image_url');
+    }
+    return false;
+}
+
+/**
+ * 检查新格式 parts 中是否包含图片
+ */
+function hasImageInParts(parts) {
+    if (Array.isArray(parts)) {
+        return parts.some(p => p.type === PartType.MEDIA && p.media === MediaKind.IMAGE);
     }
     return false;
 }

@@ -5,10 +5,12 @@
 
 import { state } from '../core/state.js';
 import { eventBus } from '../core/events.js';
-import { mcpClient, detectPlatform } from '../tools/mcp/client.js';
+import { mcpClient } from '../tools/mcp/client.js';
+import { detectPlatform } from '../utils/platform.js';
 import { saveMCPServer, deleteMCPServer } from '../state/storage.js';
 import { showNotification } from './notifications.js';
 import { showConfirmDialog } from '../utils/dialogs.js';
+import { escapeHtml } from '../utils/helpers.js';
 import { getIcon } from '../utils/icons.js';
 import {
     standardToInternal,
@@ -584,7 +586,7 @@ function createServerCard(server) {
         <div class="mcp-server-card" data-server-id="${server.id}">
             <div class="mcp-server-header">
                 <div class="mcp-server-title">
-                    <h4>${server.name}</h4>
+                    <h4>${escapeHtml(server.name)}</h4>
                     <span class="mcp-server-type-badge ${server.type}">${server.type === 'local' ? '本地' : '远程'}</span>
                 </div>
                 <div class="mcp-server-actions">

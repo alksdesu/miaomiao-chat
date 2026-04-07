@@ -153,3 +153,9 @@ export function testCalculator() {
         }
     }
 }
+
+// ========== 标准化工具对象 ==========
+
+import { buildToolFromLegacy } from '../build-tool.js';
+
+export const calculator = buildToolFromLegacy('calculator', calculatorTool, calculatorHandler, { isReadOnly: () => true });

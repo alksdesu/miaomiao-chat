@@ -1,4 +1,5 @@
 /**
+ * @deprecated 请使用 response-parser.js，此文件不再被引用
  * API 响应解析器
  * 解析不同 API 格式的响应数据
  */

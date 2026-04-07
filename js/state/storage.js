@@ -21,6 +21,18 @@ const STORES = {
 };
 
 let db = null;
+let _versionChangePending = false;
+
+/**
+ * 跨标签页写入锁：防止多标签页并发覆盖 IndexedDB 数据
+ * 使用 Web Locks API，不支持时降级为无锁
+ */
+function withDBLock(lockName, fn) {
+    if (navigator.locks) {
+        return navigator.locks.request(lockName, fn);
+    }
+    return fn();
+}
 
 /**
  * 检测 IndexedDB 是否可用
@@ -174,8 +186,21 @@ export function initDB() {
             db = request.result;
             console.log(`IndexedDB 初始化成功（版本 ${DB_VERSION}）`);
 
-            // 监听连接关闭，自动重连
+            // 其他标签页升级数据库版本时，关闭当前连接避免阻塞
+            db.onversionchange = () => {
+                _versionChangePending = true;
+                db.close();
+                db = null;
+                eventBus.emit('ui:notification', {
+                    message: '检测到新版本，请刷新页面',
+                    type: 'warning',
+                    duration: 0
+                });
+            };
+
+            // 监听连接关闭，自动重连（版本升级导致的关闭除外）
             db.onclose = () => {
+                if (_versionChangePending) return;
                 console.warn('IndexedDB 连接已关闭，尝试重新连接...');
                 db = null;
                 initDB().catch(e => console.error('IndexedDB 重连失败:', e));
@@ -252,43 +277,42 @@ export function initDB() {
  * @returns {Promise<void>}
  */
 export async function saveSessionToDB(session) {
-    if (!db) {
-        try { await initDB(); } catch (_) { /* ignore */ }
-        if (!db) throw new Error('数据库未初始化且重连失败');
-    }
-    return new Promise((resolve, reject) => {
+    return withDBLock(`webchat-session-${session.id}`, async () => {
+        if (!db) {
+            try { await initDB(); } catch (_) { /* ignore */ }
+            if (!db) throw new Error('数据库未初始化且重连失败');
+        }
+        return new Promise((resolve, reject) => {
 
-        const transaction = db.transaction([STORE_NAME], 'readwrite');
-        const store = transaction.objectStore(STORE_NAME);
-        const request = store.put(session);
+            const transaction = db.transaction([STORE_NAME], 'readwrite');
+            const store = transaction.objectStore(STORE_NAME);
+            const request = store.put(session);
 
-        request.onsuccess = () => resolve();
-        request.onerror = () => {
-            const error = request.error;
-            console.error('保存会话失败:', error);
+            request.onsuccess = () => resolve();
+            request.onerror = () => {
+                const error = request.error;
+                console.error('保存会话失败:', error);
 
-            // 检测存储配额超出错误
-            if (error && (error.name === 'QuotaExceededError' ||
-                         error.message?.includes('quota') ||
-                         error.message?.includes('storage'))) {
-                // 发出事件让 UI 层显示通知
-                eventBus.emit('storage:quota-exceeded', {
-                    message: '存储空间不足！请清理一些旧会话或浏览器数据'
-                });
-            }
-            reject(error);
-        };
+                if (error && (error.name === 'QuotaExceededError' ||
+                             error.message?.includes('quota') ||
+                             error.message?.includes('storage'))) {
+                    eventBus.emit('storage:quota-exceeded', {
+                        message: '存储空间不足！请清理一些旧会话或浏览器数据'
+                    });
+                }
+                reject(error);
+            };
 
-        // 监听事务错误（某些浏览器在事务级别报告配额错误）
-        transaction.onerror = (event) => {
-            const error = event.target.error;
-            if (error && (error.name === 'QuotaExceededError' ||
-                         error.message?.includes('quota'))) {
-                eventBus.emit('storage:quota-exceeded', {
-                    message: '存储空间不足！请清理一些旧会话或浏览器数据'
-                });
-            }
-        };
+            transaction.onerror = (event) => {
+                const error = event.target.error;
+                if (error && (error.name === 'QuotaExceededError' ||
+                             error.message?.includes('quota'))) {
+                    eventBus.emit('storage:quota-exceeded', {
+                        message: '存储空间不足！请清理一些旧会话或浏览器数据'
+                    });
+                }
+            };
+        });
     });
 }
 
@@ -323,8 +347,6 @@ export async function loadAllSessionsFromDB() {
                         messageCount: (s.messages || []).length,
                         // 临时保留消息引用（v4 迁移前需要）
                         _pendingMessages: s.messages,
-                        _pendingGemini: s.geminiContents,
-                        _pendingClaude: s.claudeContents
                     };
                 }
                 return s;
@@ -346,26 +368,27 @@ export async function loadAllSessionsFromDB() {
  * @returns {Promise<void>}
  */
 export async function deleteSessionFromDB(sessionId) {
-    if (!db) {
-        try { await initDB(); } catch (_) { /* ignore */ }
-        if (!db) throw new Error('数据库未初始化且重连失败');
-    }
-    return new Promise((resolve, reject) => {
-        // 级联删除：同时删除 session 和对应的 messages
-        const storeNames = [STORE_NAME];
-        if (hasMessagesStore()) storeNames.push(STORES.MESSAGES);
-
-        const transaction = db.transaction(storeNames, 'readwrite');
-        transaction.objectStore(STORE_NAME).delete(sessionId);
-        if (hasMessagesStore()) {
-            transaction.objectStore(STORES.MESSAGES).delete(sessionId);
+    return withDBLock(`webchat-session-${sessionId}`, async () => {
+        if (!db) {
+            try { await initDB(); } catch (_) { /* ignore */ }
+            if (!db) throw new Error('数据库未初始化且重连失败');
         }
+        return new Promise((resolve, reject) => {
+            const storeNames = [STORE_NAME];
+            if (hasMessagesStore()) storeNames.push(STORES.MESSAGES);
 
-        transaction.oncomplete = () => resolve();
-        transaction.onerror = () => {
-            console.error('删除会话失败:', transaction.error);
-            reject(transaction.error);
-        };
+            const transaction = db.transaction(storeNames, 'readwrite');
+            transaction.objectStore(STORE_NAME).delete(sessionId);
+            if (hasMessagesStore()) {
+                transaction.objectStore(STORES.MESSAGES).delete(sessionId);
+            }
+
+            transaction.oncomplete = () => resolve();
+            transaction.onerror = () => {
+                console.error('删除会话失败:', transaction.error);
+                reject(transaction.error);
+            };
+        });
     });
 }
 
@@ -375,22 +398,24 @@ export async function deleteSessionFromDB(sessionId) {
  * 保存会话消息到独立的 messages store
  */
 export async function saveSessionMessages(sessionId, data) {
-    if (!db) {
-        try { await initDB(); } catch (_) { /* ignore */ }
-        if (!db) throw new Error('数据库未初始化且重连失败');
-    }
-    return new Promise((resolve, reject) => {
-        const transaction = db.transaction([STORES.MESSAGES], 'readwrite');
-        const store = transaction.objectStore(STORES.MESSAGES);
-        store.put({ sessionId, messages: data.messages, geminiContents: data.geminiContents, claudeContents: data.claudeContents });
-        transaction.oncomplete = () => resolve();
-        transaction.onerror = () => {
-            const error = transaction.error;
-            if (error && (error.name === 'QuotaExceededError' || error.message?.includes('quota'))) {
-                eventBus.emit('storage:quota-exceeded', { message: '存储空间不足！' });
-            }
-            reject(error);
-        };
+    return withDBLock(`webchat-msg-${sessionId}`, async () => {
+        if (!db) {
+            try { await initDB(); } catch (_) { /* ignore */ }
+            if (!db) throw new Error('数据库未初始化且重连失败');
+        }
+        return new Promise((resolve, reject) => {
+            const transaction = db.transaction([STORES.MESSAGES], 'readwrite');
+            const store = transaction.objectStore(STORES.MESSAGES);
+            store.put({ sessionId, messages: data.messages });
+            transaction.oncomplete = () => resolve();
+            transaction.onerror = () => {
+                const error = transaction.error;
+                if (error && (error.name === 'QuotaExceededError' || error.message?.includes('quota'))) {
+                    eventBus.emit('storage:quota-exceeded', { message: '存储空间不足！' });
+                }
+                reject(error);
+            };
+        });
     });
 }
 
@@ -398,37 +423,35 @@ export async function saveSessionMessages(sessionId, data) {
  * 原子保存会话元数据 + 消息（单事务，两个 store）
  */
 export async function saveSessionAtomic(sessionMeta, messagesData) {
-    if (!db) {
-        try { await initDB(); } catch (_) { /* ignore */ }
-        if (!db) throw new Error('数据库未初始化且重连失败');
-    }
-    return new Promise((resolve, reject) => {
-        const transaction = db.transaction([STORE_NAME, STORES.MESSAGES], 'readwrite');
-        // 写 messages store
-        transaction.objectStore(STORES.MESSAGES).put({
-            sessionId: sessionMeta.id,
-            messages: messagesData.messages,
-            geminiContents: messagesData.geminiContents,
-            claudeContents: messagesData.claudeContents
-        });
-        // 写 sessions store（仅元数据）
-        transaction.objectStore(STORE_NAME).put(sessionMeta);
+    return withDBLock(`webchat-session-${sessionMeta.id}`, async () => {
+        if (!db) {
+            try { await initDB(); } catch (_) { /* ignore */ }
+            if (!db) throw new Error('数据库未初始化且重连失败');
+        }
+        return new Promise((resolve, reject) => {
+            const transaction = db.transaction([STORE_NAME, STORES.MESSAGES], 'readwrite');
+            transaction.objectStore(STORES.MESSAGES).put({
+                sessionId: sessionMeta.id,
+                messages: messagesData.messages,
+            });
+            transaction.objectStore(STORE_NAME).put(sessionMeta);
 
-        transaction.oncomplete = () => resolve();
-        transaction.onerror = () => {
-            const error = transaction.error;
-            if (error && (error.name === 'QuotaExceededError' || error.message?.includes('quota'))) {
-                eventBus.emit('storage:quota-exceeded', { message: '存储空间不足！' });
-            }
-            reject(error);
-        };
+            transaction.oncomplete = () => resolve();
+            transaction.onerror = () => {
+                const error = transaction.error;
+                if (error && (error.name === 'QuotaExceededError' || error.message?.includes('quota'))) {
+                    eventBus.emit('storage:quota-exceeded', { message: '存储空间不足！' });
+                }
+                reject(error);
+            };
+        });
     });
 }
 
 /**
  * 从 messages store 加载指定会话的消息
  * @param {string} sessionId - 会话 ID
- * @returns {Promise<Object|null>} { messages, geminiContents, claudeContents } 或 null
+ * @returns {Promise<Object|null>} { messages } 或 null
  */
 export async function loadSessionMessages(sessionId) {
     if (!db) {
@@ -502,8 +525,6 @@ export async function migrateSessionsToV4() {
                 messagesStore.put({
                     sessionId: session.id,
                     messages: session.messages,
-                    geminiContents: session.geminiContents || [],
-                    claudeContents: session.claudeContents || []
                 });
 
                 // 从 session 中移除消息，只保留元数据

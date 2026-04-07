@@ -10,27 +10,13 @@
 
 import { state } from '../../core/state.js';
 import { eventBus } from '../../core/events.js';
+import { cacheTools, getCachedTools, clearToolCache } from './tool-cache.js';
+import { detectPlatform } from '../../utils/platform.js';
+
+// 向后兼容：re-export detectPlatform
+export { detectPlatform };
 
 let wsRequestCounter = 0;
-
-/**
- * 检测当前运行平台
- * @returns {'electron'|'web'|'android'} 平台类型
- */
-export function detectPlatform() {
-    // 检测 Electron
-    if (window.electron && window.electron.ipcRenderer) {
-        return 'electron';
-    }
-
-    // 检测 Android/Capacitor
-    if (window.Capacitor && window.Capacitor.getPlatform() === 'android') {
-        return 'android';
-    }
-
-    // 默认为 Web
-    return 'web';
-}
 
 /**
  * MCP 客户端类
@@ -111,6 +97,10 @@ export class MCPClient {
                 // Electron: 通过 IPC 通知主进程停止 MCP 子进程
                 await window.electron.ipcRenderer.invoke('mcp:disconnect', { serverId });
             } else {
+                // 清理心跳/健康检查定时器
+                if (connection.pingTimer) clearInterval(connection.pingTimer);
+                if (connection.healthCheckTimer) clearInterval(connection.healthCheckTimer);
+
                 // 远程连接：关闭 WebSocket 或清理资源
                 if (connection.ws) {
                     connection.ws.close();
@@ -142,7 +132,10 @@ export class MCPClient {
 
             this.connections.delete(serverId);
 
-            console.log(`[MCP] 🔌 已断开 MCP 服务器: ${serverId}`);
+            // 清理 HTTP session
+            try { sessionStorage.removeItem(`mcp-session-${serverId}`); } catch { /* ignore */ }
+
+            console.log(`[MCP] 已断开 MCP 服务器: ${serverId}`);
 
             if (!silent) {
                 eventBus.emit('mcp:disconnected', { serverId });
@@ -361,8 +354,32 @@ export class MCPClient {
                 connection.connected = true;
                 this.connections.set(id, connection);
 
-                // 发现工具
-                await this._discoverTools(id, connection);
+                // 有缓存时先用缓存（立即可用），后台非阻塞更新
+                const cached = getCachedTools(id);
+                if (cached && cached.length > 0) {
+                    for (const tool of cached) {
+                        const normalizedTool = this._normalizeToolDefinition(tool);
+                        if (!normalizedTool) continue;
+                        const toolId = `${id}__${normalizedTool.name}`;
+                        this.tools.set(toolId, {
+                            id: toolId, serverId: id,
+                            name: normalizedTool.name,
+                            description: normalizedTool.description || '',
+                            inputSchema: normalizedTool.inputSchema,
+                            mcpDefinition: normalizedTool,
+                            _cached: true
+                        });
+                    }
+                    eventBus.emit('mcp:tools-discovered', { serverId: id, tools: cached, cached: true });
+
+                    // 后台刷新（不阻塞连接完成）
+                    this._discoverTools(id, connection).catch(e =>
+                        console.warn(`[MCP] 后台工具刷新失败: ${name}`, e.message)
+                    );
+                } else {
+                    // 无缓存，必须等待工具发现
+                    await this._discoverTools(id, connection);
+                }
 
                 console.log(`[MCP] 已连接到 MCP 服务器: ${name} (${type})`);
                 eventBus.emit('mcp:connected', { serverId: id, config });
@@ -622,6 +639,10 @@ export class MCPClient {
                             ws.removeEventListener('message', initHandler);
                             clearTimeout(timeout);
 
+                            // 保存服务器 capabilities
+                            ws._serverCapabilities = response.result?.capabilities || {};
+                            ws._serverInfo = response.result?.serverInfo || {};
+
                             // 发送 initialized 通知
                             ws.send(JSON.stringify({
                                 jsonrpc: '2.0',
@@ -653,8 +674,26 @@ export class MCPClient {
 
             const instanceId = `ws_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
+            // WS 心跳保活（30 秒间隔），防止代理/防火墙断开空闲连接
+            const pingTimer = setInterval(() => {
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'ping' }));
+                }
+            }, 30000);
+
+            // 监听服务器 notification（工具列表变更等）
+            ws.addEventListener('message', (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (!data.id && data.method) {
+                        this._handleNotification(id, data);
+                    }
+                } catch { /* 忽略非 JSON 消息 */ }
+            });
+
             // 设置自动重连（异常断开时）
             ws.onclose = (event) => {
+                clearInterval(pingTimer);
                 // 非正常关闭 && 连接仍存在（用户未手动删除）
                 if (!event.wasClean && this.connections.has(id)) {
                     const current = this.connections.get(id);
@@ -674,7 +713,8 @@ export class MCPClient {
 
                     // 自动重连，带退避和次数限制
                     const MAX_RECONNECT_ATTEMPTS = 5;
-                    const reconnectAttempt = (connection.reconnectAttempts || 0) + 1;
+                    const conn = this.connections.get(id);
+                    const reconnectAttempt = (conn?.reconnectAttempts || 0) + 1;
                     if (reconnectAttempt > MAX_RECONNECT_ATTEMPTS) {
                         console.warn(`[MCP] ⚠️ WebSocket 重连次数已达上限 (${MAX_RECONNECT_ATTEMPTS})，停止重连: ${config.name}`);
                         eventBus.emit('mcp:reconnect-failed', {
@@ -684,7 +724,7 @@ export class MCPClient {
                         });
                         return;
                     }
-                    connection.reconnectAttempts = reconnectAttempt;
+                    if (conn) conn.reconnectAttempts = reconnectAttempt;
 
                     const delay = Math.min(5000 * Math.pow(2, reconnectAttempt - 1), 60000);
 
@@ -730,7 +770,10 @@ export class MCPClient {
                 apiKey,
                 headers: mergedHeaders,
                 instanceId,
-                shouldReconnect: true // 标志位：是否允许自动重连
+                pingTimer,
+                serverCapabilities: ws._serverCapabilities || {},
+                serverInfo: ws._serverInfo || {},
+                shouldReconnect: true
             };
         } else if (protocol === 'sse') {
             return await this._connectRemoteSSE(config, mergedHeaders);
@@ -798,11 +841,16 @@ export class MCPClient {
 
                 console.log(`[MCP] 初始化成功:`, initData);
 
+                // 保存服务器 capabilities
+                const serverCapabilities = initData?.result?.capabilities || {};
+                const serverInfo = initData?.result?.serverInfo || {};
+
                 // 提取 Mcp-Session-Id（Streamable HTTP 规范）
                 const sessionId = initResponse.headers.get('mcp-session-id');
                 if (sessionId) {
                     console.log(`[MCP] 获取到 Session ID: ${sessionId}`);
                     requestHeaders['Mcp-Session-Id'] = sessionId;
+                    try { sessionStorage.setItem(`mcp-session-${id}`, sessionId); } catch { /* ignore */ }
                 }
 
                 // 2. 发送 initialized 通知（无需等待响应）
@@ -819,21 +867,23 @@ export class MCPClient {
                     })
                 }).catch(err => console.warn('[MCP] initialized 通知失败:', err));
 
+                return {
+                    type: 'remote',
+                    protocol: protocol,
+                    url,
+                    apiKey,
+                    headers: requestHeaders,
+                    serverCapabilities,
+                    serverInfo,
+                    sessionId: sessionId || null
+                };
             } catch (error) {
-                console.error(`[MCP] ❌ 初始化失败:`, error);
+                console.error(`[MCP] 初始化失败:`, error);
                 if (error.name === 'AbortError') {
                     throw new Error(`HTTP 初始化超时 (${this.retryConfig.connectionTimeout}ms)`);
                 }
                 throw error;
             }
-
-            return {
-                type: 'remote',
-                protocol: protocol, // 使用实际检测到的协议（http/sse/streamable-http）
-                url,
-                apiKey,
-                headers: requestHeaders
-            };
         }
     }
 
@@ -938,12 +988,16 @@ export class MCPClient {
                 return;
             }
 
-            // Notification
+            // Notification（工具列表变更等）
+            if (json.method) {
+                this._handleNotification(id, json);
+            }
             eventBus.emit('mcp:notification', { serverId: id, message: json });
         };
 
         const handleSseEvent = (eventName, data) => {
             if (!data) return;
+            connection.lastEventTime = Date.now();
 
             if (eventName === 'endpoint') {
                 let endpoint = data.trim();
@@ -1007,6 +1061,11 @@ export class MCPClient {
                     console.warn('[MCP] SSE 读取异常:', error);
                 }
             } finally {
+                // 清理健康检查定时器
+                if (connection.healthCheckTimer) {
+                    clearInterval(connection.healthCheckTimer);
+                }
+
                 // Fail endpoint waiters if stream closed before endpoint event
                 if (!endpointResolved) {
                     endpointReject(new Error('SSE 连接已关闭（未收到 endpoint 事件）'));
@@ -1107,12 +1166,22 @@ export class MCPClient {
             sseReader,
             sseLoop: readLoop,
             instanceId,
+            lastEventTime: Date.now(),
             shouldReconnect: true
         };
 
+        // SSE 健康检查：60s 无事件视为断开
+        connection.healthCheckTimer = setInterval(() => {
+            if (Date.now() - connection.lastEventTime > 60000) {
+                console.warn(`[MCP] SSE 连接可能已断开（60s 无事件），触发重连: ${id}`);
+                clearInterval(connection.healthCheckTimer);
+                sseAbortController.abort();
+            }
+        }, 30000);
+
         try {
             // Handshake: initialize -> initialized
-            await this._sendSSERequest(connection, 'initialize', {
+            const initResult = await this._sendSSERequest(connection, 'initialize', {
                 protocolVersion: '2024-11-05',
                 capabilities: {},
                 clientInfo: {
@@ -1120,6 +1189,10 @@ export class MCPClient {
                     version: '1.1.4'
                 }
             });
+
+            // 保存服务器 capabilities
+            connection.serverCapabilities = initResult?.capabilities || {};
+            connection.serverInfo = initResult?.serverInfo || {};
 
             this._sendSSENotification(connection, 'initialized');
         } catch (error) {
@@ -1308,11 +1381,33 @@ export class MCPClient {
     }
 
     /**
+     * 处理服务器 notification（统一 WS/SSE 入口）
+     * @private
+     */
+    _handleNotification(serverId, message) {
+        if (message.method === 'notifications/tools/list_changed') {
+            console.log(`[MCP] 收到工具列表变更通知: ${serverId}`);
+            const conn = this.connections.get(serverId);
+            if (conn) {
+                this._discoverTools(serverId, conn).then(() => {
+                    eventBus.emit('mcp:tools-changed', { serverId });
+                }).catch(e => console.error('[MCP] 工具刷新失败:', e));
+            }
+        }
+    }
+
+    /**
      * 发现 MCP 工具
      * @private
      */
     async _discoverTools(serverId, connection) {
-        console.log(`[MCP] 🔍 发现工具: ${serverId}`);
+        console.log(`[MCP] 发现工具: ${serverId}`);
+
+        // 检查服务器是否声明支持 tools
+        if (connection.serverCapabilities && Object.keys(connection.serverCapabilities).length > 0 && !connection.serverCapabilities.tools) {
+            console.log(`[MCP] 服务器 ${serverId} 未声明 tools 能力，跳过工具发现`);
+            return;
+        }
 
         try {
             let toolsList;
@@ -1350,6 +1445,9 @@ export class MCPClient {
 
             console.log(`[MCP] 发现 ${toolsList.length} 个工具: ${serverId}`);
 
+            // 缓存工具列表，下次启动时先加载缓存
+            cacheTools(serverId, toolsList);
+
             eventBus.emit('mcp:tools-discovered', {
                 serverId,
                 tools: toolsList
@@ -1386,7 +1484,12 @@ export class MCPClient {
                 }, this.retryConfig.connectionTimeout);
 
                 const handler = (event) => {
-                    const response = JSON.parse(event.data);
+                    let response;
+                    try {
+                        response = JSON.parse(event.data);
+                    } catch {
+                        return; // 忽略非 JSON 消息（如心跳 pong）
+                    }
                     if (response.id === requestId) {
                         clearTimeout(timeout);
                         ws.removeEventListener('message', handler);
@@ -1501,7 +1604,12 @@ export class MCPClient {
                 }, this.retryConfig.toolCallTimeout);
 
                 const handler = (event) => {
-                    const response = JSON.parse(event.data);
+                    let response;
+                    try {
+                        response = JSON.parse(event.data);
+                    } catch {
+                        return; // 忽略非 JSON 消息（如心跳 pong）
+                    }
                     if (response.id === requestId) {
                         clearTimeout(timeout);
                         ws.removeEventListener('message', handler);
@@ -1574,6 +1682,15 @@ export class MCPClient {
                 });
 
                 clearTimeout(timeoutId);
+
+                // 404 = session 过期，清除后抛错让上层重试
+                if (response.status === 404) {
+                    if (connection.headers) {
+                        delete connection.headers['Mcp-Session-Id'];
+                    }
+                    connection.sessionId = null;
+                    throw new Error('MCP session 已过期 (404)，需要重新连接');
+                }
 
                 if (!response.ok) {
                     throw new Error(`HTTP 请求失败: ${response.status}`);

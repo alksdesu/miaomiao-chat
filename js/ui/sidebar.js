@@ -8,7 +8,7 @@ import { eventBus } from '../core/events.js';
 import { switchToSession, deleteSession, renameSession, createNewSession } from '../state/sessions.js';
 import { escapeHtml } from '../utils/helpers.js';
 import { getCurrentQuery, highlightMatch } from './session-search.js';
-import { sessionToMarkdown } from '../messages/converters.js';
+import { sessionToMarkdown } from '../state/export-import.js';
 import { getIcon } from '../utils/icons.js';
 import { showNotification } from './notifications.js';
 // 新增：IndexedDB 偏好设置 API
@@ -40,8 +40,6 @@ async function getSessionDataForExport(sessionMeta) {
         return {
             ...sessionMeta,
             messages: state.messages || [],
-            geminiContents: state.geminiContents || [],
-            claudeContents: state.claudeContents || []
         };
     }
 
@@ -55,8 +53,6 @@ async function getSessionDataForExport(sessionMeta) {
     return {
         ...sessionMeta,
         messages: sessionMeta._pendingMessages || [],
-        geminiContents: sessionMeta._pendingGemini || [],
-        claudeContents: sessionMeta._pendingClaude || []
     };
 }
 

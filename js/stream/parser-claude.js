@@ -13,6 +13,7 @@ import { parseStreamingMarkdownImages } from '../utils/markdown-image-parser.js'
 import { handleToolCallStream } from './tool-call-handler.js';
 import { XMLStreamAccumulator } from '../tools/xml-formatter.js';  // XML 工具调用解析
 import { state } from '../core/state.js';  // 访问 xmlToolCallingEnabled 配置
+import { getCurrentEndpoint, getCurrentApiKey, getCurrentModel } from '../api/handler.js';
 import { ThinkTagParser } from './think-tag-parser.js';  // <think> 标签解析器
 import { requestStateMachine, RequestState } from '../core/request-state-machine.js';
 
@@ -40,6 +41,8 @@ export async function parseClaudeStream(reader, sessionId = null) {
 
     // ⭐ 工具调用相关状态
     const toolCalls = new Map();  // Map<index, {id, name, input: string}>
+    const serverToolCalls = new Map();  // Map<index, {id, name, input: string}> — 服务端工具
+    const serverToolResults = [];  // 服务端工具结果（原子交付）
     const xmlToolCallAccumulator = new XMLStreamAccumulator();  // XML 工具调用累积器
     let xmlParsingDisabled = false;  // XML 解析崩溃时禁用，回退到纯文本
     let stopReason = null;  // 停止原因
@@ -110,6 +113,24 @@ export async function parseClaudeStream(reader, sessionId = null) {
                                         input: ''  // 将通过 delta 事件拼接
                                     });
                                     console.log('[Claude] 检测到原生工具调用:', block.name);
+                                } else if (currentBlockType === 'server_tool_use') {
+                                    // 服务端工具调用（web_search, code_execution 等）
+                                    const block = event.content_block;
+                                    serverToolCalls.set(blockIndex, {
+                                        id: block.id,
+                                        name: block.name,
+                                        input: ''
+                                    });
+                                    console.log('[Claude] 检测到服务端工具调用:', block.name);
+                                } else if (currentBlockType?.endsWith('_tool_result')) {
+                                    // 服务端工具结果（原子交付，完整内容在 content_block_start 中）
+                                    const block = event.content_block;
+                                    serverToolResults.push({
+                                        type: currentBlockType,
+                                        tool_use_id: block.tool_use_id,
+                                        content: block.content,
+                                    });
+                                    console.log('[Claude] 接收到服务端工具结果:', currentBlockType);
                                 } else if (currentBlockType === 'thinking') {
                                     // 如果是新的思考块，初始化
                                     currentThinkingBlock = '';
@@ -122,6 +143,11 @@ export async function parseClaudeStream(reader, sessionId = null) {
                                     const toolCall = toolCalls.get(event.index);
                                     if (toolCall) {
                                         toolCall.input += event.delta.partial_json;
+                                    }
+                                    // 服务端工具也用 input_json_delta
+                                    const serverCall = serverToolCalls.get(event.index);
+                                    if (serverCall) {
+                                        serverCall.input += event.delta.partial_json;
                                     }
                                 } else if (event.delta?.type === 'thinking_delta') {
                                     recordFirstToken();
@@ -295,10 +321,8 @@ export async function parseClaudeStream(reader, sessionId = null) {
                                     // 注意：工具调用时不结束统计，让统计在 continuation 完成后才最终确定
                                     // finalizeStreamStats() 会在 continuation 完成时调用
 
-                                    // 合并思维链
+                                    // 合并思维链（用于渲染）
                                     const finalThinking = thinkingBlocks.join('\n\n---\n\n');
-                                    // 合并所有签名（使用相同的分隔符）
-                                    const finalSignature = thinkingSignatures.join('\n\n---\n\n');
 
                                     // 关键先渲染思维链到 DOM，然后再保存消息
                                     if (contentParts.length > 0) {
@@ -314,7 +338,8 @@ export async function parseClaudeStream(reader, sessionId = null) {
                                     const messageIndex = saveAssistantMessage({
                                         textContent: textContent || '(调用工具)',
                                         thinkingContent: finalThinking,
-                                        thinkingSignature: finalSignature,
+                                        thinkingBlocks,
+                                        thinkingSignatures,
                                         contentParts,
                                         toolCalls: completedCalls,
                                         streamStats: getPartialStreamStatsData(),  // 保存部分统计，供 continuation 聚合
@@ -330,9 +355,9 @@ export async function parseClaudeStream(reader, sessionId = null) {
 
                                     // 执行工具调用（异步）
                                     handleToolCallStream(completedCalls, {
-                                        endpoint: state.endpoint,
-                                        apiKey: state.apiKey,
-                                        model: state.model
+                                        endpoint: getCurrentEndpoint(),
+                                        apiKey: getCurrentApiKey(),
+                                        model: getCurrentModel()
                                     }).catch(error => {
                                         console.error('[Parser] 工具调用流程失败:', error);
                                     });
@@ -340,10 +365,71 @@ export async function parseClaudeStream(reader, sessionId = null) {
                                     return; // 退出流处理
                                 }
 
-                                // 合并所有思考块（用分隔线分隔）
+                                // 将服务端工具调用和结果注入 contentParts（用于保存和回传）
+                                for (const [_idx, call] of serverToolCalls) {
+                                    let args;
+                                    try {
+                                        args = (call.input != null && call.input !== '') ? JSON.parse(call.input) : {};
+                                    } catch { args = {}; }
+
+                                    // 找到对应的 result
+                                    const result = serverToolResults.find(r => r.tool_use_id === call.id);
+                                    contentParts.push({
+                                        type: 'server_tool_use',
+                                        id: call.id,
+                                        name: call.name,
+                                        input: args,
+                                        result: result ? { type: result.type, content: result.content } : null,
+                                    });
+                                }
+
+                                // pause_turn：服务端工具执行完毕，模型需要继续
+                                if (stopReason === 'pause_turn') {
+                                    console.log('[Claude] pause_turn 检测到，准备 continuation');
+                                    const finalThinking = thinkingBlocks.join('\n\n---\n\n');
+
+                                    if (contentParts.length > 0) {
+                                        renderFinalContentWithThinking(contentParts, finalThinking);
+                                    } else if (textContent || finalThinking) {
+                                        renderFinalTextWithThinking(textContent, finalThinking);
+                                    }
+
+                                    // 保存消息（包含 server tool blocks）
+                                    const messageIndex = saveAssistantMessage({
+                                        textContent,
+                                        thinkingContent: finalThinking,
+                                        thinkingBlocks,
+                                        thinkingSignatures,
+                                        contentParts,
+                                        streamStats: getPartialStreamStatsData(),
+                                        sessionId
+                                    });
+                                    setCurrentMessageIndex(messageIndex);
+
+                                    // 保存消息元素引用用于 continuation
+                                    const assistantMessageEl = state.currentAssistantMessage?.closest('.message');
+
+                                    // 转换到工具调用状态（复用 continuation 机制）
+                                    requestStateMachine.transition(RequestState.TOOL_CALLING);
+                                    state.isToolCallPending = true;
+
+                                    // 发起 continuation（不带新 user 消息，只带完整历史）
+                                    import('../api/handler.js').then(({ resendWithToolResults }) => {
+                                        resendWithToolResults([], {
+                                            endpoint: getCurrentEndpoint(),
+                                            apiKey: getCurrentApiKey(),
+                                            model: getCurrentModel()
+                                        }, assistantMessageEl);
+                                    }).catch(error => {
+                                        console.error('[Claude] pause_turn continuation 失败:', error);
+                                    });
+
+                                    return;
+                                }
+
+                                // 合并所有思考块（用于渲染）
                                 const finalThinking = thinkingBlocks.join('\n\n---\n\n');
-                                const finalSignature = thinkingSignatures.join('\n\n---\n\n');
-                                finalizeClaudeStream(textContent, finalThinking, finalSignature, contentParts, sessionId);
+                                finalizeClaudeStream(textContent, finalThinking, thinkingBlocks, thinkingSignatures, contentParts, sessionId);
                                 return;
                             }
                         }
@@ -376,8 +462,7 @@ export async function parseClaudeStream(reader, sessionId = null) {
 
         // 流结束
         const finalThinking = thinkingBlocks.join('\n\n---\n\n');
-        const finalSignature = thinkingSignatures.join('\n\n---\n\n');
-        finalizeClaudeStream(textContent, finalThinking, finalSignature, contentParts, sessionId);
+        finalizeClaudeStream(textContent, finalThinking, thinkingBlocks, thinkingSignatures, contentParts, sessionId);
     } finally {
         // 关键释放 reader 锁，防止资源泄漏
         try {
@@ -392,12 +477,13 @@ export async function parseClaudeStream(reader, sessionId = null) {
 /**
  * 完成 Claude 流处理
  * @param {string} textContent - 文本内容
- * @param {string} thinkingContent - 思维链内容
- * @param {string} thinkingSignature - 思维链签名
+ * @param {string} thinkingContent - 思维链内容（合并后，用于渲染）
+ * @param {Array} thinkingBlocksArr - 思维链块数组（独立保存）
+ * @param {Array} thinkingSigsArr - 对应签名数组
  * @param {Array} contentParts - 内容部分数组
  * @param {string} sessionId - 会话ID
  */
-function finalizeClaudeStream(textContent, thinkingContent, thinkingSignature, contentParts, sessionId) {
+function finalizeClaudeStream(textContent, thinkingContent, thinkingBlocksArr, thinkingSigsArr, contentParts, sessionId) {
     // 流结束，清除工具调用pending标志（如果没有新的工具调用）
     // 这样handler的finally块才能正确清理loading状态
     if (state.isToolCallPending) {
@@ -411,24 +497,30 @@ function finalizeClaudeStream(textContent, thinkingContent, thinkingSignature, c
     // 清理所有未完成的图片缓冲区
     cleanupAllIncompleteImages(contentParts);
 
-    // 渲染最终内容
-    if (contentParts.length > 0) {
-        renderFinalContentWithThinking(contentParts, thinkingContent);
-    } else if (textContent || thinkingContent) {
-        renderFinalTextWithThinking(textContent, thinkingContent);
+    // 会话已切换时跳过 DOM 操作，只保存消息
+    const isBackground = sessionId && sessionId !== state.currentSessionId;
+
+    if (!isBackground) {
+        // 渲染最终内容
+        if (contentParts.length > 0) {
+            renderFinalContentWithThinking(contentParts, thinkingContent);
+        } else if (textContent || thinkingContent) {
+            renderFinalTextWithThinking(textContent, thinkingContent);
+        }
+
+        // 兜底：按最终内容重算 token（避免工具调用后正文漏计数）
+        recalculateStreamTokenCount({ textContent, thinkingContent, contentParts });
+
+        // 添加统计信息
+        appendStreamStats();
     }
-
-    // 兜底：按最终内容重算 token（避免工具调用后正文漏计数）
-    recalculateStreamTokenCount({ textContent, thinkingContent, contentParts });
-
-    // 添加统计信息
-    appendStreamStats();
 
     // 使用统一函数保存消息到所有三种格式并获取索引
     const messageIndex = saveAssistantMessage({
         textContent,
         thinkingContent,
-        thinkingSignature,
+        thinkingBlocks: thinkingBlocksArr,
+        thinkingSignatures: thinkingSigsArr,
         contentParts,
         streamStats: getCurrentStreamStatsData(),
         sessionId: sessionId, // 🔒 传递会话ID防止串消息
@@ -455,6 +547,9 @@ function finalizeClaudeStreamWithError(textContent, thinkingContent, contentPart
     // 清理所有未完成的图片缓冲区
     cleanupAllIncompleteImages(contentParts);
 
+    // 会话已切换时跳过 DOM 操作，只保存消息
+    const isBackground = sessionId && sessionId !== state.currentSessionId;
+
     // 使用统一的错误渲染函数（包含折叠的技术详情）
     const errorObject = {
         type: errorCode,
@@ -468,27 +563,31 @@ function finalizeClaudeStreamWithError(textContent, thinkingContent, contentPart
 
     const finalText = textContent + '\n\n' + errorMessage;
 
-    // 渲染内容（包含部分内容和错误）
-    if (contentParts.length > 0) {
-        renderFinalContentWithThinking(contentParts, thinkingContent);
-    } else if (textContent || thinkingContent) {
-        renderFinalTextWithThinking(textContent, thinkingContent);
-    }
+    if (!isBackground) {
+        // 渲染内容（包含部分内容和错误）
+        if (contentParts.length > 0) {
+            renderFinalContentWithThinking(contentParts, thinkingContent);
+        } else if (textContent || thinkingContent) {
+            renderFinalTextWithThinking(textContent, thinkingContent);
+        }
 
-    // 在消息末尾插入错误提示
-    const currentMsg = document.querySelector('.message.assistant:last-child');
-    if (currentMsg) {
-        const contentDiv = currentMsg.querySelector('.message-content');
-        if (contentDiv) {
-            contentDiv.insertAdjacentHTML('beforeend', errorHtml);
+        // 在消息末尾插入错误提示
+        const currentMsg = document.querySelector('.message.assistant:last-child');
+        if (currentMsg) {
+            const contentDiv = currentMsg.querySelector('.message-content');
+            if (contentDiv) {
+                contentDiv.insertAdjacentHTML('beforeend', errorHtml);
+            }
         }
     }
 
-    // 兜底：按最终内容重算 token（避免工具调用后正文漏计数）
-    recalculateStreamTokenCount({ textContent: finalText, thinkingContent, contentParts });
+    if (!isBackground) {
+        // 兜底：按最终内容重算 token（避免工具调用后正文漏计数）
+        recalculateStreamTokenCount({ textContent: finalText, thinkingContent, contentParts });
 
-    // 添加统计信息
-    appendStreamStats();
+        // 添加统计信息
+        appendStreamStats();
+    }
 
     // 保存消息（标记为错误）并获取索引
     const messageIndex = saveAssistantMessage({
@@ -501,23 +600,25 @@ function finalizeClaudeStreamWithError(textContent, thinkingContent, contentPart
             code: errorCode,
             message: errorMessage
         },
-        sessionId: sessionId, // 🔒 传递会话ID防止串消息
+        sessionId: sessionId,
         errorHtml
     });
 
     // Bug 2 立即设置 dataset.messageIndex
     setCurrentMessageIndex(messageIndex);
 
-    // 触发 UI 状态重置
-    eventBus.emit('stream:error', {
-        errorCode,
-        errorMessage,
-        partialContent: textContent
-    });
+    // 触发 UI 状态重置（后台任务不触发，防止干扰当前会话）
+    if (!isBackground) {
+        eventBus.emit('stream:error', {
+            errorCode,
+            errorMessage,
+            partialContent: textContent
+        });
 
-    // 强制清理工具调用标志（防止状态泄漏）
-    if (state.isToolCallPending) {
-        console.log('[Parser-Claude] 错误状态下强制清理 isToolCallPending');
-        state.isToolCallPending = false;
+        // 强制清理工具调用标志（防止状态泄漏）
+        if (state.isToolCallPending) {
+            console.log('[Parser-Claude] 错误状态下强制清理 isToolCallPending');
+            state.isToolCallPending = false;
+        }
     }
 }

@@ -11,7 +11,7 @@
 /* 虚拟滚动容器优化 */
 .messages-area.virtual-scroll-active {
     /* 启用 GPU 加速 */
-    will-change: scroll-position;
+    will-change: transform;
     transform: translateZ(0);
 
     /* 优化滚动性能 */

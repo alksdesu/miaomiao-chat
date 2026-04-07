@@ -2,12 +2,11 @@
  * 代码编辑器模态框
  * 支持三个标签页：分析、代码、预览
  *
- * 使用 EventListenerManager 管理事件监听器，防止内存泄漏
+ * 使用 AbortController 管理事件监听器，关闭时统一清理
  */
 
 import { eventBus } from '../core/events.js';
 import { escapeHtml } from '../utils/helpers.js';
-import { EventListenerManager } from '../utils/event-listener-manager.js';
 
 /**
  * 打开代码编辑器模态框
@@ -207,8 +206,9 @@ function generateLanguageOptions(currentLang) {
  * @param {boolean} isReadOnly - 是否只读模式
  */
 function bindModalEvents(modal, originalCode, originalLanguage, onSave, isReadOnly = false) {
-    // 创建事件监听器管理器，确保在关闭时清理所有监听器
-    const listenerManager = new EventListenerManager();
+    // 使用 AbortController 统一管理事件监听器生命周期
+    const ac = new AbortController();
+    const signal = ac.signal;
 
     const closeBtn = modal.querySelector('.close-modal-btn');
     const cancelBtn = modal.querySelector('.cancel-btn');
@@ -217,15 +217,15 @@ function bindModalEvents(modal, originalCode, originalLanguage, onSave, isReadOn
 
     // 关闭模态框
     const closeModal = () => {
-        listenerManager.cleanup(); // 清理所有事件监听器
+        ac.abort(); // 清理所有事件监听器
         modal.remove();
         document.body.style.overflow = '';
         document.querySelector('.app-container')?.removeAttribute('inert');
     };
 
-    listenerManager.add(closeBtn, 'click', closeModal);
-    listenerManager.add(cancelBtn, 'click', closeModal);
-    listenerManager.add(overlay, 'click', closeModal);
+    closeBtn.addEventListener('click', closeModal, { signal });
+    cancelBtn.addEventListener('click', closeModal, { signal });
+    overlay.addEventListener('click', closeModal, { signal });
 
     // ESC键关闭
     const escHandler = (e) => {
@@ -233,7 +233,7 @@ function bindModalEvents(modal, originalCode, originalLanguage, onSave, isReadOn
             closeModal();
         }
     };
-    listenerManager.add(document, 'keydown', escHandler);
+    document.addEventListener('keydown', escHandler, { signal });
 
     // 保存按钮（只在非只读模式下绑定）
     if (!isReadOnly && saveBtn) {
@@ -261,7 +261,7 @@ function bindModalEvents(modal, originalCode, originalLanguage, onSave, isReadOn
                 type: 'success'
             });
         };
-        listenerManager.add(saveBtn, 'click', handleSave);
+        saveBtn.addEventListener('click', handleSave, { signal });
     }
 
     // 只读模式：禁用编辑功能
@@ -301,7 +301,7 @@ function bindModalEvents(modal, originalCode, originalLanguage, onSave, isReadOn
                 runLivePreview(modal, textarea.value, language);
             }
         };
-        listenerManager.add(btn, 'click', handleTabClick);
+        btn.addEventListener('click', handleTabClick, { signal });
     });
 
     // 刷新预览按钮
@@ -312,7 +312,7 @@ function bindModalEvents(modal, originalCode, originalLanguage, onSave, isReadOn
             const language = modal.querySelector('#editor-language-selector').value;
             updateCodePreview(modal, textarea.value, language);
         };
-        listenerManager.add(refreshBtn, 'click', handleRefresh);
+        refreshBtn.addEventListener('click', handleRefresh, { signal });
     }
 
     // 语言选择器变化
@@ -322,7 +322,7 @@ function bindModalEvents(modal, originalCode, originalLanguage, onSave, isReadOn
             const textarea = modal.querySelector('#code-editor-textarea');
             updateCodePreview(modal, textarea.value, langSelector.value);
         };
-        listenerManager.add(langSelector, 'change', handleLangChange);
+        langSelector.addEventListener('change', handleLangChange, { signal });
     }
 
     // 刷新实时预览按钮
@@ -333,7 +333,7 @@ function bindModalEvents(modal, originalCode, originalLanguage, onSave, isReadOn
             const language = modal.querySelector('#editor-language-selector').value;
             runLivePreview(modal, textarea.value, language);
         };
-        listenerManager.add(refreshLivePreviewBtn, 'click', handleRefreshLive);
+        refreshLivePreviewBtn.addEventListener('click', handleRefreshLive, { signal });
     }
 
     // 清空控制台按钮
@@ -345,7 +345,7 @@ function bindModalEvents(modal, originalCode, originalLanguage, onSave, isReadOn
                 consoleContent.innerHTML = '';
             }
         };
-        listenerManager.add(clearConsoleBtn, 'click', handleClearConsole);
+        clearConsoleBtn.addEventListener('click', handleClearConsole, { signal });
     }
 
     // 全屏预览按钮
@@ -357,7 +357,7 @@ function bindModalEvents(modal, originalCode, originalLanguage, onSave, isReadOn
                 openFullscreenPreview(iframe.srcdoc);
             }
         };
-        listenerManager.add(fullscreenBtn, 'click', handleFullscreen);
+        fullscreenBtn.addEventListener('click', handleFullscreen, { signal });
     }
 }
 

@@ -303,3 +303,9 @@ function formatCustomDate(date) {
 }
 
 console.log('[DateTime Tool] 📅 时间日期工具已加载');
+
+// ========== 标准化工具对象 ==========
+
+import { buildToolFromLegacy } from '../build-tool.js';
+
+export const datetime = buildToolFromLegacy('datetime', datetimeTool, datetimeHandler, { isReadOnly: () => true });

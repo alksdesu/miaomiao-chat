@@ -167,7 +167,9 @@ export function safeMarkedParse(text) {
         if (typeof DOMPurify !== 'undefined') {
             html = DOMPurify.sanitize(html, DOMPURIFY_CONFIG);
         } else {
-            console.warn('DOMPurify 未加载，HTML 未经净化可能存在 XSS 风险！');
+            // DOMPurify 不可用时降级为纯文本，防止未净化的 HTML 导致 XSS
+            console.warn('DOMPurify 未加载，降级为纯文本输出');
+            return escapeHtml(text);
         }
 
         // 3. 还原 LaTeX 公式（在还原图片之前）
@@ -178,6 +180,12 @@ export function safeMarkedParse(text) {
         // 4. 还原 base64 图片
         if (images.length > 0) {
             html = restoreBase64Images(html, images);
+        }
+
+        // 二次净化：restore 操作可能引入未经净化的 HTML（如 KaTeX 输出、img 标签）
+        // 移除潜在的事件处理器属性，防止通过 alt/formula 注入 XSS
+        if (typeof DOMPurify !== 'undefined') {
+            html = DOMPurify.sanitize(html, DOMPURIFY_CONFIG);
         }
 
         // 性能优化：将结果存入缓存

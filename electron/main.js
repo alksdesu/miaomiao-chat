@@ -7,6 +7,21 @@ const { initUpdater, checkForUpdatesManually, setSilentUpdate, quitAndInstall } 
 const { mcpManager } = require('./mcp-manager');
 
 let mainWindow;
+
+/**
+ * 校验 URL 是否为安全的外部链接协议（仅允许 http/https）
+ * 防止 file:///、smb:// 等危险协议被 shell.openExternal 打开
+ * @param {string} url
+ * @returns {boolean}
+ */
+function isSafeExternalUrl(url) {
+    try {
+        const parsed = new URL(url);
+        return ['http:', 'https:'].includes(parsed.protocol);
+    } catch {
+        return false;
+    }
+}
 const VIDEO_STORAGE_DIR_NAME = 'message-videos';
 const MAX_VIDEO_BASE64_LENGTH = 1024 * 1024 * 256; // 256MB base64 字符串上限
 let resolvedVideoStorageDir = null;
@@ -117,6 +132,8 @@ function createWindow() {
     Menu.setApplicationMenu(null);
 
     // 设置 CSP 响应头（在 Electron 中生效，包含 frame-ancestors）
+    // 安全备注：connect-src 包含 http: 和 ws: 是因为用户可能使用本地 HTTP API 代理（如 localhost）
+    // 如非必要，生产环境应收紧为仅 https: 和 wss:
     mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
         callback({
             responseHeaders: {
@@ -148,7 +165,11 @@ function createWindow() {
     // ✅ 安全：拦截外部链接，用系统默认浏览器打开
     // 防止点击消息中的超链接导致应用窗口导航离开
     mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-        shell.openExternal(url);
+        if (isSafeExternalUrl(url)) {
+            shell.openExternal(url);
+        } else {
+            console.warn('[Main] 拒绝打开不安全的 URL:', url);
+        }
         return { action: 'deny' };
     });
 
@@ -156,7 +177,11 @@ function createWindow() {
         // 只允许加载应用自身的页面，外部链接用浏览器打开
         if (url !== mainWindow.webContents.getURL()) {
             event.preventDefault();
-            shell.openExternal(url);
+            if (isSafeExternalUrl(url)) {
+                shell.openExternal(url);
+            } else {
+                console.warn('[Main] 拒绝导航到不安全的 URL:', url);
+            }
         }
     });
 
@@ -168,33 +193,33 @@ function createWindow() {
 app.whenReady().then(() => {
     createWindow();
 
-    // ✅ 读取用户设置（从渲染进程的 IndexedDB/localStorage）
-    mainWindow.webContents.once('did-finish-load', () => {
-        mainWindow.webContents.executeJavaScript(`
-            (async () => {
-                // 优先从 IndexedDB 读取
-                try {
-                    const { loadPreference } = await import('./js/state/storage.js');
-                    const settingsJson = await loadPreference('appSettings');
-                    return settingsJson ? JSON.parse(settingsJson) : {};
-                } catch (e) {
-                    // 降级：从 localStorage 读取
-                    return JSON.parse(localStorage.getItem('appSettings') || '{}');
-                }
-            })()
-        `).then(settings => {
-            console.log('[Main] 读取到用户设置:', settings);
+    let updaterInitialized = false;
 
-            // 初始化更新器
-            initUpdater(mainWindow, {
-                silentUpdate: settings.silentUpdate || false,
-                checkUpdateOnStartup: settings.checkUpdateOnStartup !== false,
-                updateServerUrl: settings.updateServerUrl || null
-            });
-        }).catch(err => {
-            console.error('[Main] 读取设置失败，使用默认值:', err);
-            initUpdater(mainWindow, {});
+    // 等待渲染进程通过 IPC 发送初始化设置
+    ipcMain.handle('init-settings', (event, settings) => {
+        if (updaterInitialized) return { success: true };
+        updaterInitialized = true;
+        clearTimeout(initFallbackTimer);
+        console.log('[Main] 收到渲染进程的初始化设置:', settings);
+        initUpdater(mainWindow, {
+            silentUpdate: settings?.silentUpdate || false,
+            checkUpdateOnStartup: settings?.checkUpdateOnStartup !== false,
+            updateServerUrl: settings?.updateServerUrl || null
         });
+        return { success: true };
+    });
+
+    // 兜底：如果渲染进程长时间未发送设置，使用默认值初始化更新器
+    const initFallbackTimer = setTimeout(() => {
+        if (!updaterInitialized && mainWindow && !mainWindow.isDestroyed()) {
+            updaterInitialized = true;
+            console.warn('[Main] 渲染进程未在超时内发送设置，使用默认值');
+            initUpdater(mainWindow, {});
+        }
+    }, 10000);
+
+    mainWindow.on('closed', () => {
+        clearTimeout(initFallbackTimer);
     });
 
     app.on('activate', () => {
@@ -505,6 +530,36 @@ mcpManager.on('server-error', (data) => {
 mcpManager.on('notification', (data) => {
     if (mainWindow) {
         mainWindow.webContents.send('mcp:notification', data);
+    }
+});
+
+mcpManager.on('server-exited', (data) => {
+    if (mainWindow) {
+        mainWindow.webContents.send('mcp:server-exited', data);
+    }
+});
+
+mcpManager.on('server-restarting', (data) => {
+    if (mainWindow) {
+        mainWindow.webContents.send('mcp:server-restarting', data);
+    }
+});
+
+mcpManager.on('server-restarted', (data) => {
+    if (mainWindow) {
+        mainWindow.webContents.send('mcp:server-restarted', data);
+    }
+});
+
+mcpManager.on('server-restart-failed', (data) => {
+    if (mainWindow) {
+        mainWindow.webContents.send('mcp:server-restart-failed', data);
+    }
+});
+
+mcpManager.on('restart-limit-exceeded', (data) => {
+    if (mainWindow) {
+        mainWindow.webContents.send('mcp:restart-limit-exceeded', data);
     }
 });
 

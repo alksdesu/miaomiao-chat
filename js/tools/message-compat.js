@@ -12,6 +12,7 @@
 import { state } from '../core/state.js';
 import { eventBus } from '../core/events.js';
 import { removeMessageAt } from '../core/state-mutations.js';
+import { PartType } from '../messages/schema.js';
 
 // ========== 消息删除兼容性 ==========
 
@@ -21,7 +22,14 @@ import { removeMessageAt } from '../core/state-mutations.js';
  * @returns {boolean}
  */
 export function hasToolCalls(message) {
-    return message && message.tool_calls && message.tool_calls.length > 0;
+    if (!message) return false;
+    // 旧格式
+    if (message.tool_calls && message.tool_calls.length > 0) return true;
+    // 兼容字段
+    if (message.toolCalls && message.toolCalls.length > 0) return true;
+    // 新格式 parts[]
+    if (Array.isArray(message.parts) && message.parts.some(p => p.type === PartType.TOOL_CALL)) return true;
+    return false;
 }
 
 /**
@@ -46,10 +54,18 @@ export function findAssociatedToolResults(assistantMessageIndex) {
         return [];
     }
 
-    // 提取所有 tool_call_id
-    const toolCallIds = new Set(
-        assistantMessage.tool_calls.map(tc => tc.id)
-    );
+    // 从新格式 parts 或旧格式 tool_calls 提取 tool_call ids
+    let toolCallIds;
+    if (Array.isArray(assistantMessage.parts)) {
+        const tcParts = assistantMessage.parts.filter(p => p.type === PartType.TOOL_CALL);
+        if (tcParts.length > 0) {
+            toolCallIds = new Set(tcParts.map(p => p.id));
+        }
+    }
+    if (!toolCallIds && assistantMessage.tool_calls) {
+        toolCallIds = new Set(assistantMessage.tool_calls.map(tc => tc.id));
+    }
+    if (!toolCallIds) return [];
 
     // 查找后续的工具结果消息
     const resultIndices = [];
@@ -86,7 +102,15 @@ export function findAssociatedAssistantMessage(toolResultIndex) {
     for (let i = toolResultIndex - 1; i >= 0; i--) {
         const msg = messages[i];
         if (hasToolCalls(msg)) {
-            const found = msg.tool_calls.some(tc => tc.id === toolCallId);
+            let found = false;
+            // 新格式
+            if (Array.isArray(msg.parts)) {
+                found = msg.parts.some(p => p.type === PartType.TOOL_CALL && p.id === toolCallId);
+            }
+            // 旧格式回退
+            if (!found && msg.tool_calls) {
+                found = msg.tool_calls.some(tc => tc.id === toolCallId);
+            }
             if (found) {
                 return i;
             }
@@ -120,8 +144,10 @@ export function safeDeleteMessage(index) {
         const toolResultIndices = findAssociatedToolResults(index);
 
         if (toolResultIndices.length > 0) {
+            const tcCount = message.parts?.filter(p => p.type === PartType.TOOL_CALL).length
+                || message.tool_calls?.length || message.toolCalls?.length || 0;
             warnings.push(
-                `此消息包含 ${message.tool_calls.length} 个工具调用，` +
+                `此消息包含 ${tcCount} 个工具调用，` +
                 `将同时删除 ${toolResultIndices.length} 条工具结果消息`
             );
             deletedIndices.push(...toolResultIndices);
@@ -223,8 +249,15 @@ export function shouldRenderMessage(message) {
 
     // 包含 tool_calls 但没有 content 的助手消息不单独显示
     if (message.role === 'assistant' && hasToolCalls(message)) {
-        // 如果既有工具调用又有文本内容，则显示文本部分
-        if (message.content && message.content.trim()) {
+        // 新格式：检查 parts 中是否有文本
+        if (Array.isArray(message.parts) && message.parts.some(p => p.type === PartType.TEXT && p.text && p.text.trim())) {
+            return true;
+        }
+        // 旧格式回退
+        if (typeof message.content === 'string' && message.content.trim()) {
+            return true;
+        }
+        if (Array.isArray(message.content) && message.content.some(p => p.type === 'text' && p.text?.trim())) {
             return true;
         }
         return false;
@@ -306,8 +339,10 @@ export function initMessageCompat() {
         if (hasToolCalls(message)) {
             const toolResultIndices = findAssociatedToolResults(index);
             if (toolResultIndices.length > 0) {
+                const tcCount = message.parts?.filter(p => p.type === PartType.TOOL_CALL).length
+                    || message.tool_calls?.length || message.toolCalls?.length || 0;
                 warnings.push(
-                    `此消息包含 ${message.tool_calls.length} 个工具调用，` +
+                    `此消息包含 ${tcCount} 个工具调用，` +
                     `将同时删除 ${toolResultIndices.length} 条关联的工具结果消息`
                 );
             }

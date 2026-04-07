@@ -5,7 +5,7 @@
 
 import { state } from '../core/state.js';
 import { elements } from '../core/elements.js';
-import { saveCurrentConfig, syncUIWithState, saveSavedConfigs } from '../state/config.js';
+import { saveCurrentConfig, syncUIWithState, saveSavedConfigs, applyConfigToState, buildConfigObject } from '../state/config.js';
 import { eventBus } from '../core/events.js';
 import { syncQuickToggles } from './quick-toggles.js';
 import { showNotification } from './notifications.js';
@@ -332,47 +332,12 @@ function handleConfigSelect() {
 
     state.currentConfigName = config.name;
 
-    // 应用配置（所有字段）
-    if (config.imageSize !== undefined) state.imageSize = config.imageSize;
-    if (config.replyCount !== undefined) state.replyCount = config.replyCount;
-    if (config.streamEnabled !== undefined) state.streamEnabled = config.streamEnabled;
-    if (config.thinkingEnabled !== undefined) state.thinkingEnabled = config.thinkingEnabled;
-    if (config.thinkingStrength !== undefined) state.thinkingStrength = config.thinkingStrength;
-    if (config.thinkingBudget !== undefined) state.thinkingBudget = config.thinkingBudget;
-    if (config.claudeAdaptiveThinking !== undefined) state.claudeAdaptiveThinking = config.claudeAdaptiveThinking;
-    if (config.claudeEffortLevel !== undefined) state.claudeEffortLevel = config.claudeEffortLevel;
-    if (config.webSearchEnabled !== undefined) state.webSearchEnabled = config.webSearchEnabled;
-
-    if (config.endpoints) state.endpoints = { ...config.endpoints };
-    if (config.apiKeys) state.apiKeys = { ...config.apiKeys };
-    if (config.customModels) state.customModels = { ...config.customModels };
-
-    if (config.modelParams) {
-        ['openai', 'gemini', 'claude'].forEach(format => {
-            if (config.modelParams[format]) {
-                state.modelParams[format] = { ...state.modelParams[format], ...config.modelParams[format] };
-            }
-        });
-    }
-
-    if (config.customHeaders) state.customHeaders = [...config.customHeaders];
-    if (config.prefillEnabled !== undefined) state.prefillEnabled = config.prefillEnabled;
-    if (config.systemPrompt !== undefined) state.systemPrompt = config.systemPrompt;
-    if (config.prefillMessages) state.prefillMessages = JSON.parse(JSON.stringify(config.prefillMessages));
-    if (config.charName !== undefined) state.charName = config.charName;
-    if (config.userName !== undefined) state.userName = config.userName;
-
-    if (config.apiFormat) {
-        // 通过事件发送格式切换请求，避免循环依赖
-        eventBus.emit('config:format-change-requested', { format: config.apiFormat, shouldFetchModels: false });
-    }
+    // 复用统一的配置还原函数，避免字段遗漏
+    applyConfigToState(config);
 
     saveCurrentConfig();
-
-    // 同步 UI 状态
     syncUIWithState();
 
-    // 通过事件请求获取模型
     eventBus.emit('models:fetch-requested', { forceRefresh: false });
 
     showNotification(`已切换到配置: ${config.name}`, 'info');
@@ -389,36 +354,9 @@ async function handleSaveConfig() {
     );
     if (!name) return;
 
-    const config = {
-        name: name,
-        apiEndpoint: elements.apiEndpoint.value,
-        apiKey: elements.apiKey.value,
-        selectedModel: elements.modelSelect.value,
-        apiFormat: state.apiFormat,
-        imageSize: state.imageSize,
-        replyCount: state.replyCount,
-        streamEnabled: state.streamEnabled,
-        thinkingEnabled: state.thinkingEnabled,
-        thinkingStrength: state.thinkingStrength,
-        thinkingBudget: state.thinkingBudget,
-        claudeAdaptiveThinking: state.claudeAdaptiveThinking,
-        claudeEffortLevel: state.claudeEffortLevel,
-        webSearchEnabled: state.webSearchEnabled,
-        endpoints: { ...state.endpoints },
-        apiKeys: { ...state.apiKeys },
-        customModels: { ...state.customModels },
-        modelParams: {
-            openai: { ...state.modelParams.openai },
-            gemini: { ...state.modelParams.gemini },
-            claude: { ...state.modelParams.claude }
-        },
-        customHeaders: [...state.customHeaders],
-        prefillEnabled: state.prefillEnabled,
-        systemPrompt: state.systemPrompt,
-        prefillMessages: JSON.parse(JSON.stringify(state.prefillMessages)),
-        charName: state.charName,
-        userName: state.userName
-    };
+    // 复用统一的配置构建函数，避免字段遗漏
+    const config = buildConfigObject();
+    config.name = name;
 
     const existingIndex = state.savedConfigs.findIndex(c => c.name === name);
     if (existingIndex >= 0) {

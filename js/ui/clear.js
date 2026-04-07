@@ -7,31 +7,38 @@ import { state } from '../core/state.js';
 import { elements } from '../core/elements.js';
 import { saveCurrentSessionMessages } from '../state/sessions.js';
 import { showConfirmDialog } from '../utils/dialogs.js';
-import { clearIdMappings } from '../api/format-converter.js';  // 清理 ID 映射表
+import { clearIdMappings } from '../api/format-converter.js';
+import { replaceAllMessages } from '../core/state-mutations.js';
+import { clearUndoStack } from '../tools/undo.js';
 
 /**
  * 处理清空当前会话
  */
 export async function handleClear() {
+    // 流式加载中不允许清空
+    if (state.isLoading) return;
+
     const confirmed = await showConfirmDialog(
         '确定要清空当前会话的所有对话吗？',
         '确认清空'
     );
     if (!confirmed) return;
 
-    // 清空三种格式的消息
-    state.messages = [];
-    state.geminiContents = [];
-    state.claudeContents = [];
+    // 通过安全函数清空三种格式的消息
+    replaceAllMessages([]);
 
     // 清理工具调用 ID 映射表（防止内存泄漏）
     clearIdMappings();
+
+    // 清空撤销栈
+    clearUndoStack();
 
     // 重置相关状态
     state.lastUserMessage = null;
     state.editingIndex = null;
     state.currentReplies = [];
     state.selectedReplyIndex = 0;
+    state.currentAssistantMessage = null;
 
     // 清除编辑状态
     if (state.editingElement) {

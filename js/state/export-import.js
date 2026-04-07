@@ -5,12 +5,15 @@
 
 import { state } from '../core/state.js';
 import { elements } from '../core/elements.js';
-import { loadAllSessionsFromDB, saveSessionToDB, loadConfig as loadConfigFromDB, loadSavedConfigs as loadSavedConfigsFromDB, saveConfig as saveConfigToDB, saveSavedConfigs as saveSavedConfigsToDB, loadPreference, savePreference } from './storage.js';
+import { loadAllSessionsFromDB, saveSessionToDB, loadSessionMessages, saveSessionMessages, loadConfig as loadConfigFromDB, loadSavedConfigs as loadSavedConfigsFromDB, saveConfig as saveConfigToDB, saveSavedConfigs as saveSavedConfigsToDB, loadPreference, savePreference } from './storage.js';
 import { loadSavedConfigs } from './config.js';
 import { loadSessions } from './sessions.js';
 import { showNotification } from '../ui/notifications.js';
 import { showConfirmDialog } from '../utils/dialogs.js';
 import { sanitizeMessageForExport } from '../api/format-converter.js';  // 过滤私有字段
+import { categorizeFile } from '../utils/file-helpers.js';
+import { SCHEMA_VERSION } from '../messages/schema.js';
+import { migrateSession } from '../messages/migration.js';
 
 /**
  * 生成导出文件名
@@ -52,6 +55,37 @@ function filterRuntimeState(config) {
 }
 
 /**
+ * 为导出的会话列表加载消息数据（v4 架构适配）
+ * v3 未迁移的会话可能有 _pendingMessages，v4 从 messages store 加载
+ */
+async function loadMessagesForSessions(sessions) {
+    const results = [];
+    for (const session of sessions) {
+        const merged = { ...session };
+        // v3 未迁移数据：从 _pending 字段获取
+        if (merged._pendingMessages) {
+            merged.messages = merged._pendingMessages;
+            delete merged._pendingMessages;
+            delete merged._pendingGemini;
+            delete merged._pendingClaude;
+        }
+        // v4：从 messages store 加载
+        else if (!merged.messages && merged.id) {
+            try {
+                const msgData = await loadSessionMessages(merged.id);
+                if (msgData) {
+                    merged.messages = msgData.messages || [];
+                }
+            } catch (e) {
+                console.warn(`[Export] 加载会话 ${merged.id} 消息失败:`, e);
+            }
+        }
+        results.push(merged);
+    }
+    return results;
+}
+
+/**
  * 清理会话中的私有字段
  * @param {Object} session - 会话对象
  * @returns {Object} 清理后的会话对象
@@ -72,9 +106,17 @@ function sanitizeSession(session) {
 
 /**
  * 导出配置
+ * 注意：导出数据包含 API 密钥（apiKey、apiKeys），用户需妥善保管导出文件
  */
 export async function exportConfig() {
     try {
+        // 导出前提醒用户数据包含敏感信息
+        const confirmed = await showConfirmDialog(
+            '导出的配置文件包含 API 密钥等敏感信息，请妥善保管导出文件，避免泄露。是否继续？',
+            '导出配置'
+        );
+        if (!confirmed) return;
+
         // 从 IndexedDB 读取配置
         let currentConfig = null;
         let savedConfigs = [];
@@ -135,8 +177,11 @@ export async function exportSessions() {
     try {
         const sessions = await loadAllSessionsFromDB();
 
+        // v4: 从 messages store 加载每个会话的消息
+        const sessionsWithMessages = await loadMessagesForSessions(sessions);
+
         // 清理会话中的私有字段
-        const cleanedSessions = sessions.map(session => sanitizeSession(session));
+        const cleanedSessions = sessionsWithMessages.map(session => sanitizeSession(session));
 
         const exportData = {
             type: 'sessions',
@@ -156,9 +201,17 @@ export async function exportSessions() {
 
 /**
  * 导出全部数据（配置 + 会话）
+ * 注意：导出数据包含 API 密钥（apiKey、apiKeys），用户需妥善保管导出文件
  */
 export async function exportAllData() {
     try {
+        // 导出前提醒用户数据包含敏感信息
+        const confirmed = await showConfirmDialog(
+            '导出的备份文件包含 API 密钥等敏感信息，请妥善保管导出文件，避免泄露。是否继续？',
+            '导出全部数据'
+        );
+        if (!confirmed) return;
+
         // 从 IndexedDB 读取数据
         let currentConfig = null;
         let savedConfigs = [];
@@ -184,7 +237,8 @@ export async function exportAllData() {
         const filteredSavedConfigs = savedConfigs.map(filterRuntimeState);
 
         // 清理会话中的私有字段
-        const cleanedSessions = sessions.map(session => sanitizeSession(session));
+        const sessionsWithMessages = await loadMessagesForSessions(sessions);
+        const cleanedSessions = sessionsWithMessages.map(session => sanitizeSession(session));
 
         const exportData = {
             type: 'full-backup',
@@ -298,7 +352,28 @@ async function importSessions(data) {
                 if (!overwrite) continue;
             }
 
-            await saveSessionToDB(session);
+            // 分离消息数据，写入 messages store
+            const { messages, geminiContents: _gc, claudeContents: _cc, ...sessionMeta } = session;
+            await saveSessionToDB(sessionMeta);
+            if (messages && messages.length > 0) {
+                // 检查是否需要迁移旧格式消息
+                const needsMigration = !messages[0]?._schemaVersion || messages[0]._schemaVersion < SCHEMA_VERSION;
+                let finalMessages = messages;
+                if (needsMigration) {
+                    try {
+                        const migrated = migrateSession(messages);
+                        if (migrated.messages.length > 0) {
+                            finalMessages = migrated.messages;
+                            console.log(`[Import] 迁移会话 ${session.id}: ${messages.length} → ${finalMessages.length} 条消息`);
+                        }
+                    } catch (e) {
+                        console.warn(`[Import] 迁移失败，使用原始格式:`, e);
+                    }
+                }
+                await saveSessionMessages(session.id, {
+                    messages: finalMessages,
+                });
+            }
             importCount++;
         } catch (error) {
             console.error(`导入会话 ${session.id} 失败:`, error);
@@ -348,7 +423,26 @@ async function importFullBackup(data) {
         let importCount = 0;
         for (const session of data.sessions) {
             try {
-                await saveSessionToDB(session);
+                const { messages, geminiContents: _gc, claudeContents: _cc, ...sessionMeta } = session;
+                await saveSessionToDB(sessionMeta);
+                if (messages && messages.length > 0) {
+                    // 检查是否需要迁移旧格式消息
+                    const needsMigration = !messages[0]?._schemaVersion || messages[0]._schemaVersion < SCHEMA_VERSION;
+                    let finalMessages = messages;
+                    if (needsMigration) {
+                        try {
+                            const migrated = migrateSession(messages);
+                            if (migrated.messages.length > 0) {
+                                finalMessages = migrated.messages;
+                            }
+                        } catch (e) {
+                            console.warn(`[Import] 迁移失败，使用原始格式:`, e);
+                        }
+                    }
+                    await saveSessionMessages(session.id, {
+                        messages: finalMessages,
+                    });
+                }
                 importCount++;
             } catch (error) {
                 console.error(`导入会话 ${session.id} 失败:`, error);
@@ -464,4 +558,186 @@ export function initExportImport() {
     window.triggerImport = triggerImport;
 
     console.log('Export/Import initialized');
+}
+
+// ========== 会话 Markdown 导出 ==========
+
+function getExportMessages(session) {
+    if (Array.isArray(session?.messages) && session.messages.length > 0) {
+        return session.messages;
+    }
+    return [];
+}
+
+function getSelectedReply(msg) {
+    const repliesAll = msg?.replies?.all || msg?.allReplies;
+    if (!Array.isArray(repliesAll) || repliesAll.length === 0) {
+        return null;
+    }
+    const selectedIndex = msg?.replies?.selected ?? (Number.isInteger(msg?.selectedReplyIndex) ? msg.selectedReplyIndex : 0);
+    return repliesAll[selectedIndex] || repliesAll[0] || null;
+}
+
+function getAttachmentMarker(part) {
+    if (!part || typeof part !== 'object') return '';
+
+    // 新格式 parts: type=media/file
+    if (part.type === 'media') {
+        if (part.media === 'video') return '[视频]';
+        if (part.media === 'audio') return '[音频]';
+        return '[图片]';
+    }
+    if (part.type === 'file') return '[文档]';
+
+    // 旧格式
+    if (part.type === 'image_url' || part.type === 'image') return '[图片]';
+    if (part.type === 'video_url') return '[视频]';
+    if (part.type === 'document') return '[文档]';
+
+    const inlineData = part.inlineData || part.inline_data;
+    if (inlineData) {
+        const mimeType = inlineData.mimeType || inlineData.mime_type || '';
+        const category = categorizeFile(mimeType);
+        if (category === 'image') return '[图片]';
+        if (category === 'video') return '[视频]';
+        if (category === 'pdf' || category === 'text') return '[文档]';
+        return '[附件]';
+    }
+
+    return '';
+}
+
+function extractTextFromParts(parts = []) {
+    return parts
+        .map((part) => {
+            if (!part || typeof part !== 'object') return '';
+            if (part.thought || part.type === 'thinking') return '';
+            if (typeof part.text === 'string') return part.text;
+            return getAttachmentMarker(part);
+        })
+        .filter(Boolean)
+        .join('\n')
+        .trim();
+}
+
+function extractThinkingContent(msg) {
+    const selectedReply = getSelectedReply(msg);
+
+    if (Array.isArray(msg?.parts)) {
+        const thinking = msg.parts
+            .filter(part => (part?.type === 'thinking' || part?.thought) && typeof part.text === 'string')
+            .map(part => part.text)
+            .join('\n\n')
+            .trim();
+        if (thinking) return thinking;
+    }
+    if (selectedReply?.thinkingContent) {
+        return selectedReply.thinkingContent;
+    }
+    if (msg?.thinkingContent) {
+        return msg.thinkingContent;
+    }
+    if (msg?.thought) {
+        return msg.thought;
+    }
+    if (Array.isArray(msg?.contentParts)) {
+        const thinking = msg.contentParts
+            .filter(part => part?.type === 'thinking' && typeof part.text === 'string')
+            .map(part => part.text)
+            .join('\n\n')
+            .trim();
+        if (thinking) return thinking;
+    }
+    return '';
+}
+
+function extractMessageBody(msg) {
+    const selectedReply = getSelectedReply(msg);
+
+    if (selectedReply) {
+        if (Array.isArray(selectedReply.parts) && selectedReply.parts.length > 0) {
+            return extractTextFromParts(selectedReply.parts);
+        }
+        if (typeof selectedReply.content === 'string' && selectedReply.content.trim()) {
+            return selectedReply.content.trim();
+        }
+        if (Array.isArray(selectedReply.contentParts) && selectedReply.contentParts.length > 0) {
+            return extractTextFromParts(selectedReply.contentParts);
+        }
+        if (Array.isArray(selectedReply.claudeContent) && selectedReply.claudeContent.length > 0) {
+            return extractTextFromParts(selectedReply.claudeContent);
+        }
+    }
+
+    if (Array.isArray(msg?.parts) && msg.parts.length > 0) {
+        return extractTextFromParts(msg.parts);
+    }
+    if (typeof msg?.content === 'string') {
+        return msg.content.trim();
+    }
+    if (Array.isArray(msg?.content)) {
+        return extractTextFromParts(msg.content);
+    }
+    if (Array.isArray(msg?.contentParts)) {
+        return extractTextFromParts(msg.contentParts);
+    }
+    return '';
+}
+
+function extractToolCalls(msg) {
+    // 新格式：从 parts 提取
+    if (Array.isArray(msg?.parts)) {
+        const tcNames = msg.parts
+            .filter(p => p.type === 'tool_call' && p.name)
+            .map(p => p.name);
+        if (tcNames.length > 0) return tcNames.map(n => `- ${n}`).join('\n');
+    }
+    // 旧格式回退
+    const toolCalls = msg?.toolCalls;
+    if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
+        return '';
+    }
+    const lines = toolCalls
+        .map(toolCall => toolCall?.name || toolCall?.function?.name || toolCall?.id || '')
+        .filter(Boolean);
+    if (lines.length === 0) return '';
+    return lines.map(name => `- ${name}`).join('\n');
+}
+
+/**
+ * 将整个会话转换为 Markdown 字符串
+ * @param {Object} session - 会话对象
+ * @returns {string} Markdown 字符串
+ */
+export function sessionToMarkdown(session) {
+    if (!session) return '';
+
+    const messages = getExportMessages(session);
+    if (messages.length === 0) return '';
+
+    let markdown = `# ${session.name || 'Untitled Session'}\n\n`;
+
+    messages.forEach((msg) => {
+        if (msg.role === 'system') return;
+
+        const roleName = msg.role === 'user' ? 'User' : 'Assistant';
+        markdown += `## ${roleName}\n\n`;
+
+        const thinkingContent = extractThinkingContent(msg);
+        if (thinkingContent) {
+            markdown += `> **Thinking:**\n> ${thinkingContent.replace(/\n/g, '\n> ')}\n\n`;
+        }
+
+        const toolCalls = extractToolCalls(msg);
+        if (toolCalls) {
+            markdown += `> **Tool Calls:**\n> ${toolCalls.replace(/\n/g, '\n> ')}\n\n`;
+        }
+
+        const content = extractMessageBody(msg);
+        markdown += `${content || '[无文本内容]'}\n\n`;
+
+        markdown += `---\n\n`;
+    });
+
+    return markdown.trim();
 }

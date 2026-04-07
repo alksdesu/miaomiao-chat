@@ -5,8 +5,10 @@
 
 import { state, elements } from '../core/state.js';
 import { eventBus } from '../core/events.js';
+import { updateMessageAt } from '../core/state-mutations.js';
 import { debouncedSaveSession } from '../state/sessions.js';
 import { safeMarkedParse } from '../utils/markdown.js';
+import { PartType, MediaKind, textPart, thinkingPart, mediaPart, isSchemaFormatParts, getTextContent } from './schema.js';
 import { renderThinkingBlock, enhanceCodeBlocks, renderContentParts } from './renderer.js';
 import { renderHumanizedError } from '../utils/errors.js';
 import { getMediaExtension, isVideoMimeType, isVideoUrl } from '../utils/media.js';
@@ -55,11 +57,11 @@ export function selectReply(replyIndex, messageIndex = null) {
     let messageEl;
 
     // 如果提供了消息索引，从消息历史中获取回复
-    // 注意：allReplies 统一存储在 state.messages 中，不在 geminiContents/claudeContents 中
     if (messageIndex !== null) {
         const msg = state.messages[messageIndex];
-        if (!msg || !msg.allReplies) return;
-        replies = msg.allReplies;
+        if (!msg) return;
+        replies = msg.replies?.all || msg.allReplies;
+        if (!replies) return;
         messageEl = elements.messagesArea.querySelector(`.message[data-message-index="${messageIndex}"]`);
 
         // Bug 2 防御性日志（而非复杂的 DOM 恢复）
@@ -88,39 +90,21 @@ export function selectReply(replyIndex, messageIndex = null) {
 
     const reply = replies[replyIndex];
 
-    // 更新消息历史中的选中索引 - 同步所有三种格式
+    // 更新消息历史中的选中索引 - 通过安全函数同步
     if (messageIndex !== null) {
-        const textContent = reply.content || (reply.parts?.find(p => p.text)?.text) || '';
-
-        // 更新 OpenAI 格式
-        if (state.messages[messageIndex]) {
-            state.messages[messageIndex].selectedReplyIndex = replyIndex;
-            state.messages[messageIndex].content = textContent;
-            state.messages[messageIndex].thinkingContent = reply.thinkingContent || null;
-            state.messages[messageIndex].contentParts = reply.contentParts || null;
+        // 新格式优先：从 parts 提取文本
+        let textContent = '';
+        if (reply.parts && reply.parts.length > 0 && reply.parts[0]?.type) {
+            textContent = getTextContent(reply);
+        }
+        // 旧格式回退
+        if (!textContent) {
+            textContent = reply.content || '';
         }
 
-        // 更新 Gemini 格式
-        if (state.geminiContents[messageIndex]) {
-            state.geminiContents[messageIndex].selectedReplyIndex = replyIndex;
-            if (reply.parts) {
-                state.geminiContents[messageIndex].parts = reply.parts;
-            } else {
-                state.geminiContents[messageIndex].parts = [{ text: textContent }];
-            }
-            // 更新 thoughtSignature（每个回复可能有不同的签名）
-            if (reply.thoughtSignature) {
-                state.geminiContents[messageIndex].thoughtSignature = reply.thoughtSignature;
-            } else {
-                delete state.geminiContents[messageIndex].thoughtSignature;
-            }
-        }
-
-        // 更新 Claude 格式
-        if (state.claudeContents[messageIndex]) {
-            state.claudeContents[messageIndex].selectedReplyIndex = replyIndex;
-            state.claudeContents[messageIndex].content = reply.claudeContent || [{ type: 'text', text: textContent }];
-        }
+        applyReplyToMessage(messageIndex, reply, textContent, {
+            replyIndex,
+        });
 
         debouncedSaveSession();
     } else {
@@ -155,59 +139,77 @@ export function selectReply(replyIndex, messageIndex = null) {
                 };
                 html = renderHumanizedError(errorObj, null, true);
             } else {
-                // 渲染思维链内容（如果有）
-                if (reply.thinkingContent) {
-                    html += renderThinkingBlock(reply.thinkingContent);
-                }
-
-                // 优先渲染 contentParts (包含图片)
-                if (reply.contentParts && reply.contentParts.length > 0) {
-                    html += renderContentParts(reply.contentParts);
-                }
-                // 渲染主要内容
-                else if (state.apiFormat === 'gemini' && reply.parts) {
-                for (const part of reply.parts) {
-                    // 跳过思维部分（已在上面单独渲染）
-                    if (part.thought) continue;
-
-                    if (part.text) {
-                        html += safeMarkedParse(part.text);
-                    } else if (part.inlineData || part.inline_data) {
-                        const inlineData = part.inlineData || part.inline_data;
-                        const mimeType = inlineData.mimeType || inlineData.mime_type;
-                        const dataUrl = `data:${mimeType};base64,${inlineData.data}`;
-                        if (isVideoMimeType(mimeType)) {
-                            html += renderVideoBlock(dataUrl, mimeType);
-                        } else {
-                            html += renderImageBlock(dataUrl);
-                        }
-                    }
-                }
-
-                // 渲染搜索引用（如果有）
-                if (reply.groundingMetadata) {
-                    html += renderSearchGrounding(reply.groundingMetadata);
-                }
-                } else if (reply.content) {
-                if (Array.isArray(reply.content)) {
-                    for (const part of reply.content) {
-                        if (part.type === 'text') {
+                // 新格式 parts[] 优先
+                if (isSchemaFormatParts(reply.parts)) {
+                    for (const part of reply.parts) {
+                        if (part.type === PartType.THINKING) {
+                            html += renderThinkingBlock(part.text);
+                        } else if (part.type === PartType.TEXT && part.text && part.text !== '(调用工具)') {
                             html += safeMarkedParse(part.text);
-                        } else if (part.type === 'video_url') {
-                            const url = part.video_url?.url || part.url;
-                            html += renderVideoBlock(url, part.mime_type || part.mimeType || part.video_url?.mime_type || part.video_url?.mimeType);
-                        } else if (part.type === 'image_url' && part.image_url?.url) {
-                            const url = part.image_url.url;
-                            if (isVideoUrl(url)) {
-                                html += renderVideoBlock(url);
+                        } else if (part.type === PartType.MEDIA && part.url) {
+                            if (part.media === MediaKind.VIDEO) {
+                                html += renderVideoBlock(part.url, part.mime);
+                            } else if (part.media === MediaKind.AUDIO) {
+                                html += `<div class="audio-wrapper"><audio src="${part.url}" controls preload="metadata"></audio></div>`;
                             } else {
-                                html += renderImageBlock(url);
+                                html += renderImageBlock(part.url);
                             }
                         }
                     }
-                } else {
-                    html += safeMarkedParse(reply.content);
                 }
+                // 旧格式回退链
+                else {
+                    // 思维链
+                    if (reply.thinkingContent) {
+                        html += renderThinkingBlock(reply.thinkingContent);
+                    }
+                    // contentParts
+                    if (reply.contentParts && reply.contentParts.length > 0) {
+                        html += renderContentParts(reply.contentParts);
+                    }
+                    // Gemini 原始格式
+                    else if (state.apiFormat === 'gemini' && reply.parts) {
+                        for (const part of reply.parts) {
+                            if (part.thought) continue;
+                            if (part.text) {
+                                html += safeMarkedParse(part.text);
+                            } else if (part.inlineData || part.inline_data) {
+                                const inlineData = part.inlineData || part.inline_data;
+                                const mimeType = inlineData.mimeType || inlineData.mime_type;
+                                const dataUrl = `data:${mimeType};base64,${inlineData.data}`;
+                                if (isVideoMimeType(mimeType)) {
+                                    html += renderVideoBlock(dataUrl, mimeType);
+                                } else {
+                                    html += renderImageBlock(dataUrl);
+                                }
+                            }
+                        }
+                        if (reply.groundingMetadata) {
+                            html += renderSearchGrounding(reply.groundingMetadata);
+                        }
+                    }
+                    // content 字符串/数组
+                    else if (reply.content) {
+                        if (Array.isArray(reply.content)) {
+                            for (const part of reply.content) {
+                                if (part.type === 'text') {
+                                    html += safeMarkedParse(part.text);
+                                } else if (part.type === 'video_url') {
+                                    const url = part.video_url?.url || part.url;
+                                    html += renderVideoBlock(url, part.mime_type || part.mimeType || part.video_url?.mime_type || part.video_url?.mimeType);
+                                } else if (part.type === 'image_url' && part.image_url?.url) {
+                                    const url = part.image_url.url;
+                                    if (isVideoUrl(url)) {
+                                        html += renderVideoBlock(url);
+                                    } else {
+                                        html += renderImageBlock(url);
+                                    }
+                                }
+                            }
+                        } else {
+                            html += safeMarkedParse(reply.content);
+                        }
+                    }
                 }
             }
             contentDiv.innerHTML = html;
@@ -223,51 +225,98 @@ export function selectReply(replyIndex, messageIndex = null) {
 // 已删除 bindImageClickEvents 函数（改用内联 onclick，与其他渲染函数保持一致）
 
 /**
+ * 将回复数据应用到指定索引的消息
+ * @param {number} index - 消息索引
+ * @param {Object} reply - 回复对象
+ * @param {string} textContent - 文本内容
+ * @param {Object} extraOpenai - 额外字段（selectedReplyIndex, allReplies 等）
+ */
+function applyReplyToMessage(index, reply, textContent, extraOpenai = {}) {
+    // 优先使用回复自身的 parts（新格式）
+    let parts;
+    if (isSchemaFormatParts(reply.parts)) {
+        // 新格式：直接使用 reply.parts（去掉 tool_call/file，后面从 existingMsg 补回）
+        parts = reply.parts.filter(p => p.type !== PartType.TOOL_CALL && p.type !== PartType.FILE);
+    } else {
+        // 旧格式回退：从旧字段重建 parts
+        parts = [];
+        if (reply.thinkingContent) {
+            parts.push(thinkingPart(reply.thinkingContent, reply.thinkingSignature || reply.thoughtSignature || null));
+        }
+        if (textContent) {
+            parts.push(textPart(textContent));
+        }
+        if (reply.contentParts && reply.contentParts.length > 0) {
+            for (const cp of reply.contentParts) {
+                if (cp.type === 'image' || cp.type === 'image_url') {
+                    const url = cp.url || cp.image_url?.url;
+                    if (url) parts.push(mediaPart(MediaKind.IMAGE, url));
+                } else if (cp.type === 'video' || cp.type === 'video_url') {
+                    const url = cp.url || cp.video_url?.url;
+                    if (url) parts.push(mediaPart(MediaKind.VIDEO, url, cp.mime_type || cp.mimeType));
+                }
+            }
+        }
+    }
+
+    // 保留原始消息中的 tool_call 和 file parts
+    const existingMsg = state.messages[index];
+    if (existingMsg?.parts && Array.isArray(existingMsg.parts)) {
+        for (const p of existingMsg.parts) {
+            if (p.type === PartType.TOOL_CALL || p.type === PartType.FILE) {
+                parts.push(p);
+            }
+        }
+    }
+
+    const updates = {
+        parts,
+        ...extraOpenai,
+    };
+
+    // 同步 reply 的 meta 到顶层（模型名、统计、provider-specific 数据）
+    if (reply.meta) {
+        updates.meta = reply.meta;
+    }
+
+    // 同步更新 replies.selected
+    const replyIdx = extraOpenai.replyIndex ?? extraOpenai.selectedReplyIndex;
+    if (replyIdx !== undefined) {
+        const existingReplies = existingMsg?.replies;
+        if (existingReplies) {
+            updates.replies = { ...existingReplies, selected: replyIdx };
+        }
+    }
+
+    updateMessageAt(index, updates);
+}
+
+/**
  * 更新消息历史中选中的回复
  */
 function updateMessageHistoryWithSelectedReply() {
     if (state.currentReplies.length === 0) return;
 
     const reply = state.currentReplies[state.selectedReplyIndex];
-    const textContent = reply.content || (reply.parts?.find(p => p.text)?.text) || '';
-
-    // 同步更新所有三种格式的最后一条 assistant 消息
-    // OpenAI 格式
-    if (state.messages.length > 0) {
-        const lastMsg = state.messages[state.messages.length - 1];
-        if (lastMsg.role === 'assistant') {
-            lastMsg.content = textContent;
-            lastMsg.allReplies = state.currentReplies;
-            lastMsg.selectedReplyIndex = state.selectedReplyIndex;
-            lastMsg.thinkingContent = reply.thinkingContent || null;
-        }
+    // 新格式优先
+    let textContent = '';
+    if (reply.parts && reply.parts.length > 0 && reply.parts[0]?.type) {
+        textContent = reply.parts.filter(p => p.type === PartType.TEXT).map(p => p.text).join('');
     }
-
-    // Gemini 格式
-    if (state.geminiContents.length > 0) {
-        const lastMsg = state.geminiContents[state.geminiContents.length - 1];
-        if (lastMsg.role === 'model') {
-            lastMsg.parts = reply.parts || [{ text: textContent }];
-            lastMsg.allReplies = state.currentReplies;
-            lastMsg.selectedReplyIndex = state.selectedReplyIndex;
-            // 更新 thoughtSignature
-            if (reply.thoughtSignature) {
-                lastMsg.thoughtSignature = reply.thoughtSignature;
-            } else {
-                delete lastMsg.thoughtSignature;
-            }
-        }
+    if (!textContent) {
+        textContent = reply.content || '';
     }
+    const lastIndex = state.messages.length - 1;
 
-    // Claude 格式
-    if (state.claudeContents.length > 0) {
-        const lastMsg = state.claudeContents[state.claudeContents.length - 1];
-        if (lastMsg.role === 'assistant') {
-            lastMsg.content = reply.claudeContent || [{ type: 'text', text: textContent }];
-            lastMsg.allReplies = state.currentReplies;
-            lastMsg.selectedReplyIndex = state.selectedReplyIndex;
-        }
-    }
+    if (lastIndex < 0) return;
+    if (state.messages[lastIndex].role !== 'assistant') return;
+
+    const shared = {
+        replies: { all: state.currentReplies, selected: state.selectedReplyIndex },
+        replyIndex: state.selectedReplyIndex,
+    };
+
+    applyReplyToMessage(lastIndex, reply, textContent, shared);
 
     debouncedSaveSession();
 }

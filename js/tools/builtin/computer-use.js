@@ -202,7 +202,13 @@ async function replaceString(path, oldStr, newStr) {
         throw new Error(readResult.error || 'Read file failed');
     }
 
-    // 替换字符串
+    // 替换字符串（要求唯一匹配）
+    const occurrences = readResult.content.split(oldStr).length - 1;
+    if (occurrences === 0) {
+        throw new Error('old_str not found in file');
+    } else if (occurrences > 1) {
+        throw new Error(`old_str found ${occurrences} times, must be unique. Use more context to make it unique.`);
+    }
     const newContent = readResult.content.replace(oldStr, newStr);
 
     // 写回文件
@@ -249,3 +255,9 @@ async function insertLine(path, lineNumber, text) {
         inserted: true
     };
 }
+
+// ========== 标准化工具对象 ==========
+
+import { buildToolFromLegacy } from '../build-tool.js';
+
+export const computerUse = buildToolFromLegacy('computer', computerUseTool, computerUseHandler, { hidden: true, enabled: true });

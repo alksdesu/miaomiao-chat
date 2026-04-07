@@ -4,56 +4,14 @@
  */
 
 import { state, elements } from '../core/state.js';
-import { createMessageElement, renderThinkingBlock, renderReplyWithSelector, enhanceCodeBlocks, renderContentParts, bindImageClickEvents, clearThinkingCache } from './renderer.js';
+import { eventBus } from '../core/events.js';
+import { createMessageElement, renderThinkingBlock, renderReplyWithSelector, enhanceCodeBlocks, renderContentParts, bindImageClickEvents, clearThinkingCache, renderSearchGrounding } from './renderer.js';
 import { safeMarkedParse } from '../utils/markdown.js';
 import { renderStreamStatsFromData } from '../stream/stats.js';
-import { generateMessageId } from '../utils/helpers.js';
-import { rebuildMessageIdMap } from '../core/state-mutations.js';
-import { initVirtualScroll, disableVirtualScroll } from '../ui/virtual-scroll.js';
+import { rebuildMessageIdMap, ensureMessageIds } from '../core/state-mutations.js';
 import { renderHumanizedError } from '../utils/errors.js';
-import { restoreToolCallsGroup } from '../ui/tool-display.js';  // 工具UI恢复
-import { categorizeFile } from '../utils/file-helpers.js';
 import { lazyImageManager } from '../utils/lazy-image.js';
-
-/**
- * 解析 Gemini 用户消息内容
- * @param {Array} parts - Gemini parts 数组
- * @returns {Object} { text, attachments }
- */
-function parseGeminiUserContent(parts) {
-    let text = '';
-    const attachments = [];
-
-    if (Array.isArray(parts)) {
-        parts.forEach(part => {
-            if (part.text && !part.thought) {
-                // 过滤掉思维链 parts（thought: true），只提取正文
-                text += (text ? '\n' : '') + part.text;
-            } else if (part.inlineData || part.inline_data) {
-                const inlineData = part.inlineData || part.inline_data;
-                const mimeType = inlineData.mimeType || inlineData.mime_type;
-                const data = inlineData.data;
-                const category = categorizeFile(mimeType);
-
-                // 根据类型生成名称
-                let name = '已上传文件';
-                if (category === 'image') name = '已上传图片';
-                else if (category === 'pdf') name = '已上传PDF';
-                else if (category === 'text') name = mimeType === 'text/markdown' ? '已上传MD' : '已上传TXT';
-
-                attachments.push({
-                    name,
-                    type: mimeType,
-                    category,
-                    data: `data:${mimeType};base64,${data}`,
-                });
-            }
-        });
-    }
-
-    // 返回 images 以保持向后兼容
-    return { text, images: attachments };
-}
+import { PartType, MediaKind, ToolState, hasParts, filterParts, getThinkingContent as schemaGetThinkingContent } from './schema.js';
 
 /**
  * 解析 OpenAI/Claude 格式的用户消息内容
@@ -118,8 +76,8 @@ function parseUserContent(content) {
  * 渲染会话消息
  */
 export function renderSessionMessages() {
-    // 清理旧的虚拟滚动状态（修复会话切换时 listener 泄漏和状态残留）
-    disableVirtualScroll();
+    // 清理旧的虚拟滚动状态（通过事件通知 UI 层）
+    eventBus.emit('restore:disable-virtual-scroll');
 
     // 清理思维链惰性渲染缓存（防止跨会话内存泄漏）
     clearThinkingCache();
@@ -128,7 +86,7 @@ export function renderSessionMessages() {
     elements.messagesArea.innerHTML = '';
 
     // 检查是否有消息
-    const messages = state.apiFormat === 'gemini' ? state.geminiContents : state.messages;
+    const messages = state.messages;
 
     if (messages.length === 0) {
         // 显示欢迎消息
@@ -154,7 +112,7 @@ export function renderSessionMessages() {
     // 如果消息数量超过阈值，使用虚拟滚动
     if (messages.length >= 50) {
         console.log(`消息数量 ${messages.length}，启用虚拟滚动模式`);
-        initVirtualScroll(); // 由智能阈值决定是否启用
+        eventBus.emit('restore:init-virtual-scroll');
         rebuildMessageIdMap(); // 重建索引映射
         // 虚拟滚动模块会自动渲染
         return;
@@ -165,106 +123,61 @@ export function renderSessionMessages() {
     // 性能优化：使用 DocumentFragment 批量插入，避免频繁 reflow
     const fragment = document.createDocumentFragment();
     const enhancementQueue = []; // 增强操作队列（异步执行）
-    let idsGenerated = false; // 追踪是否有旧消息补充了ID
 
-    // 渲染所有消息
-    if (state.apiFormat === 'gemini') {
-        state.geminiContents.forEach((msg, index) => {
-            const role = msg.role === 'model' ? 'assistant' : msg.role;
-            const openaiMsg = state.messages[index]; // 提前获取，用于错误恢复和其他元数据
-            const { text, images } = parseGeminiUserContent(msg.parts);
+    // 批量补充缺少 ID 的旧消息
+    ensureMessageIds();
 
-            // 确保消息有唯一ID（为旧消息生成ID）
-            if (!msg.id) {
-                msg.id = generateMessageId();
-                if (openaiMsg) openaiMsg.id = msg.id;
-                if (state.claudeContents[index]) state.claudeContents[index].id = msg.id;
-                idsGenerated = true;
-            }
+    // 渲染所有消息（统一读 state.messages）
+    state.messages.forEach((msg, index) => {
+        // 新格式优先从 parts 提取文本和附件
+        let text, images;
+        if (hasParts(msg)) {
+            text = filterParts(msg.parts, PartType.TEXT).map(p => p.text).join('\n');
+            const mediaAttachments = filterParts(msg.parts, PartType.MEDIA)
+                .filter(p => p.media === MediaKind.IMAGE)
+                .map(p => ({
+                    name: '已上传图片',
+                    type: p.mime || 'image/*',
+                    category: 'image',
+                    data: p.url,
+                }));
+            const fileAttachments = filterParts(msg.parts, PartType.FILE)
+                .map(p => ({
+                    name: p.name || '已上传文件',
+                    type: p.mime || 'application/octet-stream',
+                    category: p.mime === 'application/pdf' ? 'pdf' : 'text',
+                    data: p.url,
+                }));
+            images = [...mediaAttachments, ...fileAttachments];
+        } else {
+            ({ text, images } = parseUserContent(msg.content));
+        }
+        const modelName = msg.modelName || msg.meta?.model || null;
+        const providerName = msg.providerName || msg.meta?.provider || null;
 
-            const messageEl = createMessageElement(role, text, images.length > 0 ? images : null, msg.id, openaiMsg?.modelName, openaiMsg?.providerName);
-            messageEl.dataset.messageIndex = index;
+        const messageEl = createMessageElement(msg.role, text, images.length > 0 ? images : null, msg.id, modelName, providerName);
+        messageEl.dataset.messageIndex = index;
 
-            // 添加到 Fragment 而非直接 appendChild（减少 reflow）
-            fragment.appendChild(messageEl);
+        fragment.appendChild(messageEl);
 
-            // 将耗时的增强操作加入队列，稍后异步执行
-            if (role === 'assistant' && !msg.isError) {
-                enhancementQueue.push({
-                    messageEl,
-                    msg,
-                    openaiMsg
-                });
-            } else if (role === 'assistant' && msg.isError) {
-                // 增强：错误消息降级渲染
-                const contentDiv = messageEl.querySelector('.message-content');
-                if (contentDiv) {
-                    if (openaiMsg?.errorHtml) {
-                        // 优先级 1: 使用已保存的 errorHtml
-                        contentDiv.innerHTML = openaiMsg.errorHtml;
-                    } else if (openaiMsg?.errorData) {
-                        // 优先级 2: 从 errorData 重新渲染
-                        contentDiv.innerHTML = renderHumanizedError(
-                            openaiMsg.errorData,
-                            openaiMsg.httpStatus || null,
-                            false  // 不显示技术详情，避免 DOM 过大
-                        );
-                    } else {
-                        // 优先级 3: 显示通用错误消息
-                        contentDiv.innerHTML = '<div class="error-humanized"><div class="error-humanized-content"><div class="error-humanized-title">错误消息加载失败</div><div class="error-humanized-hint">请重新发送消息</div></div></div>';
-                    }
+        const isError = msg.isError || msg.error;
+        if (msg.role === 'assistant' && !isError) {
+            enhancementQueue.push({ messageEl, msg, openaiMsg: msg });
+        } else if (msg.role === 'assistant' && isError) {
+            const contentDiv = messageEl.querySelector('.message-content');
+            if (contentDiv) {
+                const storedErrorHtml = msg.errorHtml || msg.meta?.raw?.errorHtml;
+                if (storedErrorHtml) {
+                    contentDiv.innerHTML = window.DOMPurify ? DOMPurify.sanitize(storedErrorHtml) : storedErrorHtml;
+                } else if (msg.errorData) {
+                    contentDiv.innerHTML = renderHumanizedError(msg.errorData, msg.httpStatus || null, false);
+                } else {
+                    contentDiv.innerHTML = '<div class="error-humanized"><div class="error-humanized-content"><div class="error-humanized-title">错误消息加载失败</div><div class="error-humanized-hint">请重新发送消息</div></div></div>';
                 }
-                messageEl.dataset.isError = 'true';
             }
-        });
-    } else {
-        state.messages.forEach((msg, index) => {
-            const { text, images } = parseUserContent(msg.content);
-
-            // 确保消息有唯一ID（为旧消息生成ID）
-            if (!msg.id) {
-                msg.id = generateMessageId();
-                if (state.geminiContents[index]) state.geminiContents[index].id = msg.id;
-                if (state.claudeContents[index]) state.claudeContents[index].id = msg.id;
-                idsGenerated = true;
-            }
-
-            const messageEl = createMessageElement(msg.role, text, images.length > 0 ? images : null, msg.id, msg.modelName, msg.providerName);
-            messageEl.dataset.messageIndex = index;
-
-            // 添加到 Fragment 而非直接 appendChild（减少 reflow）
-            fragment.appendChild(messageEl);
-
-            // 将耗时的增强操作加入队列，稍后异步执行
-            if (msg.role === 'assistant' && !msg.isError) {
-                enhancementQueue.push({
-                    messageEl,
-                    msg,
-                    openaiMsg: msg
-                });
-            } else if (msg.role === 'assistant' && msg.isError) {
-                // 增强：错误消息降级渲染（OpenAI 格式）
-                const contentDiv = messageEl.querySelector('.message-content');
-                if (contentDiv) {
-                    if (msg.errorHtml) {
-                        // 优先级 1: 使用已保存的 errorHtml
-                        contentDiv.innerHTML = msg.errorHtml;
-                    } else if (msg.errorData) {
-                        // 优先级 2: 从 errorData 重新渲染
-                        contentDiv.innerHTML = renderHumanizedError(
-                            msg.errorData,
-                            msg.httpStatus || null,
-                            false  // 不显示技术详情，避免 DOM 过大
-                        );
-                    } else {
-                        // 优先级 3: 显示通用错误消息
-                        contentDiv.innerHTML = '<div class="error-humanized"><div class="error-humanized-content"><div class="error-humanized-title">错误消息加载失败</div><div class="error-humanized-hint">请重新发送消息</div></div></div>';
-                    }
-                }
-                messageEl.dataset.isError = 'true';
-            }
-        });
-    }
+            messageEl.dataset.isError = 'true';
+        }
+    });
 
     // 一次性插入所有消息（只触发一次 reflow）
     elements.messagesArea.appendChild(fragment);
@@ -279,10 +192,6 @@ export function renderSessionMessages() {
         }
     }
 
-    // 仅在有旧消息补充了ID时才重建（replaceAllMessages已经重建过一次）
-    if (idsGenerated) {
-        rebuildMessageIdMap();
-    }
 
     // 观察所有懒加载图片
     requestIdleCallback(() => {
@@ -326,7 +235,7 @@ async function restoreToolCallsUI(toolCalls, messageEl) {
             result: tc.result || (tc.status !== 'failed' ? { restored: true, message: '(工具结果未保存)' } : null)
         }));
 
-        await restoreToolCallsGroup(normalized, contentDiv);
+        eventBus.emit('restore:tool-calls', { toolCalls: normalized, contentDiv });
         console.log('[Restore] 工具UI恢复完成');
     } catch (error) {
         console.error('[Restore] 恢复工具UI失败:', error);
@@ -350,28 +259,44 @@ function enhanceAssistantMessage(_messageEl, msg, openaiMsg) {
         let html = '';
         let contentRendered = false;  // 跟踪是否成功渲染了内容
 
-        // 1. 先渲染思维链（如果有）
-        // 优先从 OpenAI 格式取，回退到 Gemini parts 中的 thought:true
-        let thinkingText = openaiMsg.thinkingContent || '';
-        if (!thinkingText && msg?.parts && Array.isArray(msg.parts)) {
-            thinkingText = msg.parts
-                .filter(p => p.text && p.thought)
-                .map(p => p.text)
-                .join('');
+        // 1. 渲染思维链：新格式 parts 优先，回退到旧字段
+        let thinkingText = '';
+        if (hasParts(msg)) {
+            thinkingText = schemaGetThinkingContent(msg);
+        }
+        if (!thinkingText) {
+            if (openaiMsg.thinkingContent) console.warn('[Restore] 命中旧格式回退: thinkingContent');
+            thinkingText = openaiMsg.thinkingContent || '';
         }
         if (thinkingText) {
             html += renderThinkingBlock(thinkingText);
-            // 回写到 OpenAI 格式，确保编辑器能正确读取
-            if (!openaiMsg.thinkingContent && thinkingText) {
-                openaiMsg.thinkingContent = thinkingText;
+        }
+
+        // 2. 渲染内容：新格式 parts 优先
+        if (hasParts(msg)) {
+            for (const p of msg.parts) {
+                if (p.type === PartType.THINKING) continue; // 已在上面渲染
+                if (p.type === PartType.TEXT && p.text && p.text !== '(调用工具)') {
+                    html += safeMarkedParse(p.text);
+                    contentRendered = true;
+                } else if (p.type === PartType.MEDIA && p.url) {
+                    if (p.media === MediaKind.VIDEO) {
+                        html += `<div class="image-wrapper video-wrapper"><video src="${p.url}" controls playsinline muted preload="metadata"></video></div>`;
+                    } else if (p.media === MediaKind.AUDIO) {
+                        html += `<div class="audio-wrapper"><audio src="${p.url}" controls preload="metadata"></audio></div>`;
+                    } else {
+                        html += `<div class="image-wrapper"><img src="${p.url}" alt="Generated image" style="cursor:pointer;"></div>`;
+                    }
+                    contentRendered = true;
+                }
             }
         }
 
-        // 2. 优先渲染 contentParts（text, image）
-        if (openaiMsg.contentParts && openaiMsg.contentParts.length > 0) {
-            // 过滤占位符；只有当步骤1已渲染了thinking时才过滤thinking类型
+        // 3. 回退到 contentParts（旧格式）
+        if (!contentRendered && openaiMsg.contentParts && openaiMsg.contentParts.length > 0) {
+            console.warn('[Restore] 命中旧格式回退: contentParts');
             const validContentParts = openaiMsg.contentParts.filter(
-                p => !(p.type === 'text' && p.text === '(调用工具)') && (thinkingText ? p.type !== 'thinking' : true)
+                p => !(p.type === PartType.TEXT && p.text === '(调用工具)') && (thinkingText ? p.type !== PartType.THINKING : true)
             );
 
             if (validContentParts.length > 0) {
@@ -383,9 +308,9 @@ function enhanceAssistantMessage(_messageEl, msg, openaiMsg) {
             }
         }
 
-        // 3. 如果 contentParts 没有渲染出内容，回退到 openaiMsg.content
+        // 4. 回退到 openaiMsg.content（旧格式）
         if (!contentRendered && openaiMsg.content) {
-            // 获取原始文本内容
+            console.warn('[Restore] 命中旧格式回退: content');
             let textContent = '';
             if (typeof openaiMsg.content === 'string') {
                 textContent = openaiMsg.content;
@@ -395,21 +320,8 @@ function enhanceAssistantMessage(_messageEl, msg, openaiMsg) {
                     .map(p => p.text)
                     .join('');
             }
-            // 如果不是占位符，渲染它
             if (textContent && textContent !== '(调用工具)') {
                 html += safeMarkedParse(textContent);
-                contentRendered = true;
-            }
-        }
-
-        // 4. 最后的回退：尝试从 Gemini parts 获取内容
-        if (!contentRendered && msg && msg.parts && Array.isArray(msg.parts)) {
-            const textFromParts = msg.parts
-                .filter(p => p.text && !p.thought)  // 排除思维链
-                .map(p => p.text)
-                .join('');
-            if (textFromParts && textFromParts !== '(调用工具)') {
-                html += safeMarkedParse(textFromParts);
                 contentRendered = true;
             }
         }
@@ -420,7 +332,7 @@ function enhanceAssistantMessage(_messageEl, msg, openaiMsg) {
         }
 
         // 日志记录未渲染的情况
-        if (!contentRendered && !openaiMsg.thinkingContent) {
+        if (!contentRendered && !thinkingText) {
             console.warn('[Restore] 消息无法渲染内容:', {
                 index: _messageEl.dataset.messageIndex,
                 contentParts: openaiMsg.contentParts?.length,
@@ -430,8 +342,8 @@ function enhanceAssistantMessage(_messageEl, msg, openaiMsg) {
         }
     }
 
-    // 优化：恢复流统计信息（缓存 wrapper 查询）
-    const statsData = msg.streamStats || (openaiMsg && openaiMsg.streamStats);
+    // 恢复流统计信息
+    const statsData = msg.meta?.stats || msg.streamStats || (openaiMsg && openaiMsg.streamStats);
     if (statsData) {
         const wrapper = _messageEl.querySelector('.message-content-wrapper');
         if (wrapper) {
@@ -439,17 +351,40 @@ function enhanceAssistantMessage(_messageEl, msg, openaiMsg) {
         }
     }
 
-    // 恢复多回复选择器
-    if (openaiMsg?.allReplies && openaiMsg.allReplies.length > 1) {
-        const selectedIndex = openaiMsg.selectedReplyIndex || 0;
-        renderReplyWithSelector(openaiMsg.allReplies, selectedIndex, _messageEl);
+    // 恢复多回复选择器：新格式 replies 优先，回退到旧字段
+    const allReplies = msg.replies?.all || openaiMsg?.allReplies;
+    if (allReplies && allReplies.length > 1) {
+        const selectedIndex = msg.replies?.selected ?? openaiMsg?.selectedReplyIndex ?? 0;
+        renderReplyWithSelector(allReplies, selectedIndex, _messageEl);
     } else {
-        // 对于没有多回复的消息，也需要增强代码块、表格、思维链等
         enhanceCodeBlocks(_messageEl);
     }
 
-    // 恢复工具调用UI（如果有）
-    if (openaiMsg?.toolCalls && openaiMsg.toolCalls.length > 0) {
+    // 恢复 Gemini 搜索引用（groundingMetadata）
+    const groundingMetadata = msg.meta?.raw?.gemini?.groundingMetadata || openaiMsg?.groundingMetadata;
+    if (groundingMetadata) {
+        const contentDiv = _messageEl.querySelector('.message-content');
+        if (contentDiv) {
+            contentDiv.insertAdjacentHTML('beforeend', renderSearchGrounding(groundingMetadata));
+        }
+    }
+
+    // 恢复工具调用UI：新格式 parts 优先，回退到旧字段
+    const toolCallParts = filterParts(msg.parts, PartType.TOOL_CALL);
+    if (toolCallParts.length > 0) {
+        // 映射新格式字段名到 restoreToolCallsUI 期望的格式
+        const mapped = toolCallParts.map(tc => ({
+            id: tc.id,
+            name: tc.name,
+            arguments: tc.args,
+            status: tc.state === ToolState.DONE ? 'completed' : tc.state === ToolState.ERROR ? 'failed' : tc.state,
+            result: tc.result,
+            error: tc.error,
+            duration: tc.duration,
+        }));
+        restoreToolCallsUI(mapped, _messageEl);
+    } else if (openaiMsg?.toolCalls && openaiMsg.toolCalls.length > 0) {
+        console.warn('[Restore] 命中旧格式回退: toolCalls');
         restoreToolCallsUI(openaiMsg.toolCalls, _messageEl);
     }
 }

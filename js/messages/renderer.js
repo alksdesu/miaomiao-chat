@@ -7,6 +7,7 @@
 import { state } from '../core/state.js';
 import { elements } from '../core/elements.js';
 import { eventBus } from '../core/events.js';
+import { updateMessageTextAt } from '../core/state-mutations.js';
 import { safeMarkedParse } from '../utils/markdown.js';
 import { generateMessageId, escapeHtml } from '../utils/helpers.js';
 import { getCurrentModelCapabilities } from '../providers/manager.js';
@@ -15,6 +16,7 @@ import { renderHumanizedError } from '../utils/errors.js';
 import { categorizeFile, truncateFileName } from '../utils/file-helpers.js';
 import { lazyImageManager } from '../utils/lazy-image.js';
 import { getMediaExtension, isVideoMimeType, isAudioMimeType, isVideoUrl } from '../utils/media.js';
+import { PartType, MediaKind, hasParts, filterParts, isSchemaFormatParts } from './schema.js';
 
 /**
  * 添加消息到 DOM
@@ -121,7 +123,7 @@ export function createMessageElement(role, content, images = null, messageId = n
                         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
                         <polyline points="14 2 14 8 20 8"/>
                     </svg>
-                    <span class="file-name" title="${file.name}">${truncateFileName(file.name, 20)}</span>
+                    <span class="file-name" title="${escapeHtml(file.name)}">${escapeHtml(truncateFileName(file.name, 20))}</span>
                 `;
                 attachmentsContainer.appendChild(fileEl);
             } else if (category === 'text') {
@@ -136,7 +138,7 @@ export function createMessageElement(role, content, images = null, messageId = n
                         <line x1="16" y1="13" x2="8" y2="13"/>
                         <line x1="16" y1="17" x2="8" y2="17"/>
                     </svg>
-                    <span class="file-name" title="${file.name}">${truncateFileName(file.name, 20)}</span>
+                    <span class="file-name" title="${escapeHtml(file.name)}">${escapeHtml(truncateFileName(file.name, 20))}</span>
                 `;
                 attachmentsContainer.appendChild(fileEl);
             }
@@ -279,18 +281,32 @@ export function renderReplyWithSelector(replies, selectedIndex, assistantMessage
             }
         };
         html = renderHumanizedError(errorObj, null, true);
+    } else if (isSchemaFormatParts(reply.parts)) {
+        // 新格式渲染：parts 优先
+        for (const part of reply.parts) {
+            if (part.type === PartType.THINKING) {
+                html += renderThinkingBlock(part.text);
+            } else if (part.type === PartType.TEXT && part.text && part.text !== '(调用工具)') {
+                html += safeMarkedParse(part.text);
+            } else if (part.type === PartType.MEDIA && part.url) {
+                if (part.media === MediaKind.VIDEO) {
+                    html += renderVideoMedia(part.url, part.mime);
+                } else if (part.media === MediaKind.AUDIO) {
+                    html += renderAudioMedia(part.url, part.mime);
+                } else {
+                    html += renderImageMedia(part.url);
+                }
+            }
+        }
     } else {
-        // 渲染思维链内容（如果有）
+        // 旧格式回退链
         if (reply.thinkingContent) {
             html += renderThinkingBlock(reply.thinkingContent);
         }
 
-        // 修复1: 优先渲染 contentParts (包含图片)
         if (reply.contentParts && reply.contentParts.length > 0) {
             html += renderContentParts(reply.contentParts);
-        }
-        // 渲染主要内容
-        else if (state.apiFormat === 'gemini' && reply.parts) {
+        } else if (state.apiFormat === 'gemini' && reply.parts) {
             html += renderGeminiParts(reply.parts);
             if (reply.groundingMetadata) {
                 html += renderSearchGrounding(reply.groundingMetadata);
@@ -496,10 +512,10 @@ function renderContent(content) {
 export function renderContentParts(contentParts) {
     let html = '';
     for (const part of contentParts) {
-        if (part.type === 'thinking') {
+        if (part.type === PartType.THINKING) {
             // 支持 inline thinking
             html += renderThinkingBlock(part.text, false);
-        } else if (part.type === 'text') {
+        } else if (part.type === PartType.TEXT) {
             // 过滤工具调用占位符（重新加载时不显示）
             if (part.text && part.text !== '(调用工具)') {
                 html += safeMarkedParse(part.text);
@@ -987,14 +1003,33 @@ eventBus.on('message:content-updated', ({ messageEl, index, newContent, role }) 
     const contentDiv = messageEl.querySelector('.message-content');
     if (!contentDiv) return;
 
-    // 优先使用 OpenAI 格式的 contentParts（包含思维链）
     const openaiMsg = state.messages[index];
 
-    // 优先使用 contentParts 渲染（包含编辑后的思维链）
+    // 新格式优先：从 parts 渲染
+    if (hasParts(openaiMsg)) {
+        let htmlContent = '';
+        for (const p of openaiMsg.parts) {
+            if (p.type === PartType.THINKING) {
+                htmlContent += renderThinkingBlock(p.text);
+            } else if (p.type === PartType.TEXT && p.text && p.text !== '(调用工具)') {
+                htmlContent += role === 'assistant' ? safeMarkedParse(p.text) : escapeHtml(p.text);
+            } else if (p.type === PartType.MEDIA && p.url) {
+                const mediaType = (p.media === MediaKind.VIDEO) ? 'video' : (p.media === MediaKind.AUDIO) ? 'audio' : 'image';
+                htmlContent += renderMediaBlock(p.url, mediaType, p.mime);
+            }
+        }
+        if (htmlContent) {
+            contentDiv.innerHTML = htmlContent;
+            enhanceCodeBlocks(messageEl);
+            eventBus.emit('ui:notification', { message: '消息已保存', type: 'success' });
+            return;
+        }
+    }
+
+    // 旧格式回退1：contentParts
     if (openaiMsg?.contentParts && openaiMsg.contentParts.length > 0) {
-        // 过滤掉占位符
         const validParts = openaiMsg.contentParts.filter(
-            p => !(p.type === 'text' && p.text === '(调用工具)')
+            p => !(p.type === PartType.TEXT && p.text === '(调用工具)')
         );
         if (validParts.length > 0) {
             contentDiv.innerHTML = renderContentParts(validParts);
@@ -1004,7 +1039,7 @@ eventBus.on('message:content-updated', ({ messageEl, index, newContent, role }) 
         }
     }
 
-    // 回退：使用 thinkingContent + content 渲染
+    // 旧格式回退2：thinkingContent + content
     if (role === 'assistant' && openaiMsg?.thinkingContent) {
         let html = renderThinkingBlock(openaiMsg.thinkingContent);
         if (typeof openaiMsg.content === 'string') {
@@ -1018,77 +1053,10 @@ eventBus.on('message:content-updated', ({ messageEl, index, newContent, role }) 
         return;
     }
 
-    // 最后回退：根据 API 格式渲染
-    let htmlContent = '';
-
-    if (state.apiFormat === 'gemini') {
-        const messageData = state.geminiContents[index];
-        if (messageData?.parts) {
-            messageData.parts.forEach(part => {
-                if (part.text !== undefined) {
-                    if (role === 'assistant') {
-                        htmlContent += safeMarkedParse(part.text);
-                    } else {
-                        htmlContent += part.text;
-                    }
-                } else if (part.inlineData || part.inline_data) {
-                    const inlineData = part.inlineData || part.inline_data;
-                    const mimeType = inlineData.mimeType || inlineData.mime_type;
-                    const base64Data = inlineData.data;
-                    const mediaUrl = `data:${mimeType};base64,${base64Data}`;
-                    const mediaType = isVideoMimeType(mimeType) ? 'video' : 'image';
-                    htmlContent += renderMediaBlock(mediaUrl, mediaType, mimeType);
-                }
-            });
-        }
-    } else if (state.apiFormat === 'claude') {
-        const messageData = state.claudeContents[index];
-        if (messageData?.content) {
-            if (Array.isArray(messageData.content)) {
-                messageData.content.forEach(part => {
-                    if (part.type === 'text') {
-                        if (role === 'assistant') {
-                            htmlContent += safeMarkedParse(part.text || '');
-                        } else {
-                            htmlContent += part.text || '';
-                        }
-                    } else if (part.type === 'video' && part.source) {
-                        const mimeType = part.source.media_type || part.source.mimeType || 'video/mp4';
-                        const videoUrl = part.source.type === 'base64'
-                            ? `data:${mimeType};base64,${part.source.data}`
-                            : (part.source.url || '');
-                        htmlContent += renderMediaBlock(videoUrl, 'video', mimeType);
-                    } else if (part.type === 'image' && part.source) {
-                        const imgUrl = `data:${part.source.media_type};base64,${part.source.data}`;
-                        htmlContent += renderMediaBlock(imgUrl, 'image', part.source.media_type);
-                    }
-                });
-            } else {
-                if (role === 'assistant') {
-                    htmlContent = safeMarkedParse(messageData.content);
-                } else {
-                    htmlContent = messageData.content;
-                }
-            }
-        }
-    } else {
-        const messageData = state.messages[index];
-        if (messageData?.content) {
-            htmlContent = renderContent(messageData.content);
-        }
-    }
-
-    // 更新DOM
-    contentDiv.innerHTML = htmlContent;
-
-    // 重新增强内容（代码高亮、折叠等）
+    // 最终回退：content 字符串
+    contentDiv.innerHTML = openaiMsg?.content ? renderContent(openaiMsg.content) : '';
     enhanceCodeBlocks(messageEl);
-
-    // 显示成功通知
-    eventBus.emit('ui:notification', {
-        message: '消息已保存',
-        type: 'success'
-    });
+    eventBus.emit('ui:notification', { message: '消息已保存', type: 'success' });
 });
 
 // ========== 代码块折叠功能 ==========
@@ -1592,7 +1560,15 @@ function getMessageMarkdown(index) {
     const message = state.messages[index];
     if (!message) return '';
 
-    // 提取文本内容
+    // 新格式：从 parts 提取文本
+    if (message.parts && Array.isArray(message.parts)) {
+        const textParts = filterParts(message.parts, PartType.TEXT);
+        if (textParts.length > 0) {
+            return textParts.map(p => p.text).join('\n');
+        }
+    }
+
+    // 旧格式兼容
     if (typeof message.content === 'string') {
         return message.content;
     } else if (Array.isArray(message.content)) {
@@ -1607,46 +1583,8 @@ function getMessageMarkdown(index) {
  * 更新消息的Markdown文本
  */
 function updateMessageMarkdown(index, newMarkdown) {
-    // OpenAI格式
-    if (state.messages[index]) {
-        if (typeof state.messages[index].content === 'string') {
-            state.messages[index].content = newMarkdown;
-        } else if (Array.isArray(state.messages[index].content)) {
-            const textPart = state.messages[index].content.find(p => p.type === 'text');
-            if (textPart) {
-                textPart.text = newMarkdown;
-            } else {
-                // 如果没有文本部分，添加一个
-                state.messages[index].content.push({ type: 'text', text: newMarkdown });
-            }
-        }
-    }
+    updateMessageTextAt(index, newMarkdown);
 
-    // Gemini格式
-    if (state.geminiContents[index]) {
-        const textPart = state.geminiContents[index].parts?.find(p => p.text !== undefined);
-        if (textPart) {
-            textPart.text = newMarkdown;
-        } else if (state.geminiContents[index].parts) {
-            state.geminiContents[index].parts.push({ text: newMarkdown });
-        }
-    }
-
-    // Claude格式
-    if (state.claudeContents[index]) {
-        if (Array.isArray(state.claudeContents[index].content)) {
-            const textPart = state.claudeContents[index].content.find(p => p.type === 'text');
-            if (textPart) {
-                textPart.text = newMarkdown;
-            } else {
-                state.claudeContents[index].content.push({ type: 'text', text: newMarkdown });
-            }
-        } else {
-            state.claudeContents[index].content = [{ type: 'text', text: newMarkdown }];
-        }
-    }
-
-    // 发出保存事件
     eventBus.emit('messages:changed', {
         action: 'updated',
         index

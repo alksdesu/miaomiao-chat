@@ -7,7 +7,7 @@ import { state } from '../core/state.js';
 import { elements } from '../core/elements.js';
 import { saveCurrentConfig } from '../state/config.js';
 import { populateModelSelect } from './models.js';
-import { convertFromOpenAI, convertFromGemini, convertFromClaude } from '../messages/sync.js';
+import { rebuildMessageIdMap } from '../core/state-mutations.js';
 
 /**
  * 切换 API 格式
@@ -39,27 +39,11 @@ export function setApiFormat(format, shouldFetchModels = true) {
     }
 
     // 检查是否有对话历史
-    const hasHistory = (
-        state.messages.length > 0 ||
-        state.geminiContents.length > 0 ||
-        state.claudeContents.length > 0
-    );
+    const hasHistory = state.messages.length > 0;
 
     // 如果有历史消息，从旧格式转换到新格式
     if (hasHistory) {
-        // 先确保从当前格式同步到其他格式
-        switch (oldFormat) {
-            case 'openai':
-            case 'openai-responses':  // Responses API 使用相同的消息转换
-                convertFromOpenAI();
-                break;
-            case 'gemini':
-                convertFromGemini();
-                break;
-            case 'claude':
-                convertFromClaude();
-                break;
-        }
+        rebuildMessageIdMap();
         console.log(`消息已从 ${oldFormat} 格式转换`);
     }
 

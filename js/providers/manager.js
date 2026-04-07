@@ -7,7 +7,6 @@ import { state } from '../core/state.js';
 import { elements } from '../core/elements.js';
 import { eventBus } from '../core/events.js';
 import { saveCurrentConfig, getDefaultCapabilities } from '../state/config.js';
-import { setApiFormat } from '../ui/format-switcher.js';
 
 // 密钥统计数据保存防抖
 let statsUpdateTimeout = null;
@@ -492,6 +491,8 @@ export function setKeyRotationConfig(providerId, config) {
 function syncProviderState(provider) {
     if (!provider) return;
 
+    const prevFormat = state.apiFormat;
+
     // 同步 apiFormat
     if (state.apiFormat !== provider.apiFormat) {
         state.apiFormat = provider.apiFormat;
@@ -502,6 +503,11 @@ function syncProviderState(provider) {
     if (provider.apiFormat === 'gemini' && provider.geminiApiKeyInHeader !== undefined) {
         state.geminiApiKeyInHeader = provider.geminiApiKeyInHeader;
         console.log(`[syncProviderState] 同步 geminiApiKeyInHeader: ${provider.geminiApiKeyInHeader}`);
+    }
+
+    // 通知 UI 提供商已切换
+    if (prevFormat !== provider.apiFormat || state.currentProviderId !== provider.id) {
+        eventBus.emit('providers:switched', { provider });
     }
 }
 

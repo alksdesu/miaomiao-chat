@@ -15,7 +15,9 @@ import { handleOpenClawStream } from '../stream/parser-openclaw.js';
 import { resetStreamStats, finalizeStreamStats, getCurrentStreamStatsData, appendStreamStats } from '../stream/stats.js';
 import { saveErrorMessage, saveAssistantMessage } from '../messages/sync.js';
 import { setCurrentMessageIndex } from '../messages/dom-sync.js';
+import { extendMessagesTemporarily, restoreMessages, rebuildMessageIdMap } from '../core/state-mutations.js';
 import { renderHumanizedError } from '../utils/errors.js';
+import { escapeHtml } from '../utils/helpers.js';
 import { renderFinalTextWithThinking, renderFinalContentWithThinking } from '../stream/helpers.js';
 import { parseApiResponse } from './response-parser.js';
 import { renderReplyWithSelector } from '../messages/renderer.js';
@@ -378,11 +380,13 @@ async function handleNonStreamResponse(response, assistantMessageEl, sessionId) 
                 textContent: reply0.content || '',
                 thinkingContent: reply0.thinkingContent,
                 thoughtSignature: reply0.thoughtSignature,
-                encryptedContent: reply0.encryptedContent,  // 🔐 Responses API 签名
+                thinkingBlocks: reply0.thinkingBlocks,
+                thinkingSignatures: reply0.thinkingSignatures,
+                encryptedContent: reply0.encryptedContent,
+                reasoningItemId: reply0.reasoningItemId,
                 streamStats: getCurrentStreamStatsData(),
                 allReplies: allReplies,
                 selectedReplyIndex: 0,
-                geminiParts: reply0.parts,
                 contentParts: reply0.contentParts,
                 sessionId: sessionId, // 传递会话ID防止串消息
             });
@@ -417,6 +421,21 @@ async function handleNonStreamResponse(response, assistantMessageEl, sessionId) 
 
             // 添加统计信息
             appendStreamStats();
+
+            // Claude pause_turn：服务端工具执行后需要 continuation
+            if (reply0.pauseTurn) {
+                console.log('[Handler] 非流式 pause_turn，发起 continuation');
+                const continuationEl = assistantMessageEl;
+                requestStateMachine.transition(RequestState.TOOL_CALLING);
+                state.isToolCallPending = true;
+                resendWithToolResults([], {
+                    endpoint: state.endpoint,
+                    apiKey: state.apiKey,
+                    model: state.model
+                }, continuationEl).catch(error => {
+                    console.error('[Handler] pause_turn continuation 失败:', error);
+                });
+            }
         } else {
             // 所有请求都失败了，抛出包含详细错误信息的异常
             if (requestErrors.length > 0) {
@@ -597,12 +616,7 @@ async function sendToAPI() {
 
                     if (state.messages && state.messages.length > 0) {
                         state.messages = await compressImagesInMessages(state.messages, apiFormat, fastMode);
-                    }
-                    if (state.claudeContents && state.claudeContents.length > 0) {
-                        state.claudeContents = await compressImagesInMessages(state.claudeContents, apiFormat, fastMode);
-                    }
-                    if (state.geminiContents && state.geminiContents.length > 0) {
-                        state.geminiContents = await compressImagesInMessages(state.geminiContents, apiFormat, fastMode);
+                        rebuildMessageIdMap();
                     }
 
                     console.log('[Handler] 图片压缩完成，重新发送请求...');
@@ -611,12 +625,13 @@ async function sendToAPI() {
                     state.isImageCompressionRetry = true;
                     state.imageRetryMessageElement = assistantMessageEl;
 
-                    // 显示加载提示（即将被重试逻辑清除）
+                    // 显示加载提示
                     if (state.currentAssistantMessage) {
                         state.currentAssistantMessage.innerHTML = '<div class="thinking-dots retry-loading"><span></span><span></span><span></span></div><div style="margin-top: 8px; font-size: 12px; color: #888;">图片过大，已自动压缩后重试...</div>';
                     }
 
-                    // 重新发送请求（递归调用 - 会复用当前消息元素）
+                    // H4: 重置状态机后再递归调用
+                    requestStateMachine.forceReset();
                     await sendToAPI();
                     return;
                 } else {
@@ -640,7 +655,9 @@ async function sendToAPI() {
         }
 
         // 处理流式响应或非流式响应
-        if (state.streamEnabled) {
+        // OpenClaw 使用 WebSocket，必须走流式路径
+        const forceStream = getCurrentProvider()?.apiFormat === 'openclaw';
+        if (state.streamEnabled || forceStream) {
             requestStateMachine.transition(RequestState.STREAMING, { assistantMessageEl });
             await handleStreamResponse(response, abortController, sessionId);
         } else {
@@ -683,15 +700,9 @@ async function sendToAPI() {
                     const apiFormat = provider?.apiFormat || 'openai';
                     const fastMode = state.fastImageCompression || false;
 
-                    // 压缩三种格式的消息
                     if (state.messages && state.messages.length > 0) {
                         state.messages = await compressImagesInMessages(state.messages, apiFormat, fastMode);
-                    }
-                    if (state.claudeContents && state.claudeContents.length > 0) {
-                        state.claudeContents = await compressImagesInMessages(state.claudeContents, apiFormat, fastMode);
-                    }
-                    if (state.geminiContents && state.geminiContents.length > 0) {
-                        state.geminiContents = await compressImagesInMessages(state.geminiContents, apiFormat, fastMode);
+                        rebuildMessageIdMap();
                     }
 
                     console.log('[Handler] 图片压缩完成，重新发送请求...');
@@ -730,8 +741,10 @@ async function sendToAPI() {
                     const messageIndex = saveErrorMessage(error, null, renderHumanizedError);
                     setCurrentMessageIndex(messageIndex);
                 }
-                // 转换到错误状态
-                requestStateMachine.transition(RequestState.ERROR, { error });
+                // 仅当仍在同一会话时才操作状态机（后台任务失败不应干扰当前会话）
+                if (sessionId === state.currentSessionId) {
+                    requestStateMachine.transition(RequestState.ERROR, { error });
+                }
             }
         }
     } finally {
@@ -769,8 +782,11 @@ async function sendToAPI() {
         state.isImageCompressionRetry = false;
         state.imageRetryMessageElement = null;
 
-        // 清理旧版状态标志（向后兼容）
-        state.currentAssistantMessage = null;
+        // 仅当仍在同一会话时才清理全局 UI 状态（防止后台任务干扰新会话）
+        const isStillSameSession = sessionId === state.currentSessionId;
+        if (isStillSameSession) {
+            state.currentAssistantMessage = null;
+        }
 
         // 工具调用进行中不重置状态机（等待 continuation 完成）
         if (state.isToolCallPending) {
@@ -835,18 +851,8 @@ export async function resendWithToolResults(toolResultMessages, apiConfig, assis
     // 保存当前会话 ID
     const sessionId = state.currentSessionId;
 
-    // 不过滤错误消息，保持索引一致性
-    // 合并原有消息和工具结果
-    const newMessages = [
-        ...state.messages,  // 不过滤，保持索引一致
-        ...toolResultMessages
-    ];
-
-    // 记录原消息数组的引用
-    const originalMessages = state.messages;
-
-    // 临时覆盖 state.messages（仅用于此次请求）
-    state.messages = newMessages;
+    // 临时扩展消息数组（仅用于此次请求，通过安全函数操作）
+    const backup = extendMessagesTemporarily(toolResultMessages);
 
     // 标记这是工具调用的continuation，复用现有消息元素
     state.isToolCallContinuation = true;
@@ -868,7 +874,7 @@ export async function resendWithToolResults(toolResultMessages, apiConfig, assis
         if (assistantMessageEl) {
             const errorDiv = assistantMessageEl.querySelector('.message-content');
             if (errorDiv) {
-                errorDiv.innerHTML += `<div class="error-message" style="margin-top: 8px;">工具调用后续请求失败: ${error.message}</div>`;
+                errorDiv.innerHTML += `<div class="error-message" style="margin-top: 8px;">工具调用后续请求失败: ${escapeHtml(error.message)}</div>`;
             }
         }
 
@@ -893,11 +899,8 @@ export async function resendWithToolResults(toolResultMessages, apiConfig, assis
         // 抛出错误以便外层处理
         throw error;
     } finally {
-        // 将 continuation 的更新同步回原消息数组
-        // saveAssistantMessage 在 continuation 模式下会更新 newMessages 中的消息
-        // 由于浅拷贝，原数组中的对象也会被更新
-        // 但我们需要确保原数组引用被恢复
-        state.messages = originalMessages;
+        // 恢复原消息数组引用（通过安全函数）
+        restoreMessages(backup);
 
         // 关键只有在没有新的工具调用时才清理状态
         // 如果 sendToAPI 中检测到新的工具调用，isToolCallPending 会被重新设置为 true
@@ -989,6 +992,13 @@ export function initAPIHandler() {
                     console.log('[Handler] 流式错误触发密钥轮询，已自动轮询到下一个密钥');
                 }
             }
+        }
+
+        // 后台任务的流错误不应干扰当前会话的状态
+        // forceReset 后状态机变 IDLE，此时收到的 stream:error 来自旧请求
+        if (!requestStateMachine.isBusy()) {
+            console.log('[Handler] 忽略后台任务的流式错误（状态机已空闲）');
+            return;
         }
 
         // 使用状态机转换到错误状态

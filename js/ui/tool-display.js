@@ -78,22 +78,23 @@ function getOrCreateGroup(targetContainer) {
  * 第一个工具创建 group + 按钮，后续只更新计数
  */
 export async function createToolCallUI(toolCall, targetContainer = null) {
-    // 防止重复
-    const existingGroup = document.querySelector('.tool-calls-group');
-    if (existingGroup) {
-        const data = toolCallsDataMap.get(existingGroup);
-        if (data && data.tools.some(t => t.id === toolCall.id)) {
-            console.warn(`[ToolDisplay] 工具已存在，跳过: ${toolCall.id}`);
-            return existingGroup;
-        }
-    }
-
     const { state } = await import('../core/state.js');
     const target = targetContainer || state.currentAssistantMessage || document.querySelector('.message.assistant:last-child .message-content');
 
     if (!target) {
         console.warn('[ToolDisplay] 未找到 assistant 消息元素');
         return null;
+    }
+
+    // 在当前目标消息范围内查找已存在的 group，而不是全局查询
+    const messageScope = target.closest('.message') || target;
+    const existingGroup = messageScope.querySelector('.tool-calls-group');
+    if (existingGroup) {
+        const data = toolCallsDataMap.get(existingGroup);
+        if (data && data.tools.some(t => t.id === toolCall.id)) {
+            console.warn(`[ToolDisplay] 工具已存在，跳过: ${toolCall.id}`);
+            return existingGroup;
+        }
     }
 
     const group = getOrCreateGroup(target);
@@ -388,7 +389,7 @@ function openToolDetailModal(group) {
 
     const overlay = document.createElement('div');
     overlay.className = 'tool-detail-overlay';
-    overlay.onclick = () => modal.remove();
+    overlay.onclick = null; // 由下方 closeModal 统一设置
 
     // 内容面板：自建，不用 .modal-content（避免其 overflow:hidden）
     const panel = document.createElement('div');
@@ -402,7 +403,7 @@ function openToolDetailModal(group) {
     const closeBtn = document.createElement('button');
     closeBtn.className = 'tool-detail-close-btn';
     closeBtn.innerHTML = '&times;';
-    closeBtn.onclick = () => modal.remove();
+    closeBtn.onclick = null; // 由下方 closeModal 统一设置
     header.append(title, closeBtn);
 
     // Body — 滚动区域，固定高度
@@ -465,13 +466,16 @@ function openToolDetailModal(group) {
     document.body.appendChild(modal);
 
     // ESC 关闭
+    const closeModal = () => {
+        modal.remove();
+        document.removeEventListener('keydown', onKeydown);
+    };
     const onKeydown = (e) => {
-        if (e.key === 'Escape') {
-            modal.remove();
-            document.removeEventListener('keydown', onKeydown);
-        }
+        if (e.key === 'Escape') closeModal();
     };
     document.addEventListener('keydown', onKeydown);
+    overlay.onclick = closeModal;
+    closeBtn.onclick = closeModal;
 }
 
 /**
@@ -663,6 +667,14 @@ function stopGroupTimer(group) {
     }
 }
 
+// 会话切换时清理所有残留的 group 计时器
+eventBus.on('session:before-switch', () => {
+    for (const [, timer] of groupTimers) {
+        clearInterval(timer);
+    }
+    groupTimers.clear();
+});
+
 // ==================== 恢复用 API ====================
 
 /**
@@ -752,3 +764,10 @@ export async function restoreToolCallsGroup(toolCalls, contentDiv) {
     // 插入到 message-content 最前面
     contentDiv.prepend(group);
 }
+
+// restore.js 通过事件解耦，避免 messages 层直接导入 UI 层
+eventBus.on('restore:tool-calls', ({ toolCalls, contentDiv }) => {
+    restoreToolCallsGroup(toolCalls, contentDiv).catch(err => {
+        console.error('[ToolDisplay] 恢复工具 UI 失败:', err);
+    });
+});

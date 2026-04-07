@@ -163,7 +163,7 @@
 .message-content em,
 .message-content i {
     font-style: italic;
-    color: var(--md-muted);
+    color: inherit;
 }
 
 /* 删除线 */

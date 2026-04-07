@@ -1,316 +1,226 @@
 /**
- * 状态变更辅助函数
- * 提供安全的状态更新方法，避免直接突变 state 对象
+ * 状态变更辅助函数（统一消息格式版）
  *
- * 设计原则：
- * 1. 所有数组操作返回新数组，不修改原数组
- * 2. 所有更新通过事件通知，便于调试和追踪
- * 3. 为未来的响应式系统升级做准备
+ * state.messages 是唯一数据源（新 parts[] 格式）。
  */
 
 import { state } from './state.js';
 import { eventBus } from './events.js';
+import { generateMessageId } from '../utils/helpers.js';
+import { PartType, hasParts } from '../messages/schema.js';
 
-/**
- * 从指定索引开始重建 messageIdMap
- * 用于删除消息后更新后续消息的索引
- * @param {number} fromIndex - 起始索引
- */
 function rebuildMessageIdMapFromIndex(fromIndex) {
     if (!state.messageIdMap) return;
-
-    // 始终从 OpenAI 格式（主存储）构建，避免格式耦合
-    const messages = state.messages;
-
-    // 更新从 fromIndex 开始的所有消息索引
-    for (let i = fromIndex; i < messages.length; i++) {
-        const msg = messages[i];
-        const messageId = msg.id;
-        if (messageId) {
-            state.messageIdMap.set(messageId, i);
-        }
+    for (let i = fromIndex; i < state.messages.length; i++) {
+        const id = state.messages[i]?.id;
+        if (id) state.messageIdMap.set(id, i);
     }
 }
 
-/**
- * 完全重建 messageIdMap
- * 用于会话恢复或格式转换时同步映射
- */
 export function rebuildMessageIdMap() {
     if (!state.messageIdMap) {
         state.messageIdMap = new Map();
     } else {
         state.messageIdMap.clear();
     }
-
-    // 始终从 OpenAI 格式（主存储）构建，避免格式耦合
-    const messages = state.messages;
-
-    messages.forEach((msg, index) => {
-        const messageId = msg.id;
-        if (messageId) {
-            state.messageIdMap.set(messageId, index);
-        }
+    state.messages.forEach((msg, i) => {
+        if (msg.id) state.messageIdMap.set(msg.id, i);
     });
-
-    console.log(`messageIdMap 重建完成，共 ${state.messageIdMap.size} 条消息`);
 }
 
 /**
- * 安全地向消息数组添加消息
- * 自动更新 messageIdMap
- * @param {Object} openaiMsg - OpenAI 格式消息
- * @param {Object} geminiMsg - Gemini 格式消息
- * @param {Object} claudeMsg - Claude 格式消息
+ * 添加消息（新格式，单参数）
+ * @param {Object} msg - 新格式消息对象（含 parts[], meta 等）
  * @returns {number} 新消息的索引
  */
-export function pushMessage(openaiMsg, geminiMsg, claudeMsg) {
-    // ⚠️ 当前实现：直接修改（向后兼容）
-    // 未来可升级为：state.messages = [...state.messages, openaiMsg]
-    state.messages.push(openaiMsg);
-    state.geminiContents.push(geminiMsg);
-    state.claudeContents.push(claudeMsg);
+export function pushMessage(msg) {
+    state.messages.push(msg);
 
     const index = state.messages.length - 1;
 
-    // 更新 messageIdMap（如果消息有 ID）
-    const messageId = openaiMsg.id || geminiMsg.id || claudeMsg.id;
-    if (messageId && state.messageIdMap) {
-        state.messageIdMap.set(messageId, index);
+    if (msg.id && state.messageIdMap) {
+        state.messageIdMap.set(msg.id, index);
     }
 
     state.sessionDirty = true;
-
-    // 发出事件通知
-    eventBus.emit('state:messages-pushed', {
-        index,
-        openaiMsg,
-        geminiMsg,
-        claudeMsg
-    });
-
+    eventBus.emit('state:messages-pushed', { index, msg });
     return index;
 }
 
 /**
- * 安全地删除消息（通过索引）
- * 自动更新 messageIdMap，重新索引后续消息
- * @param {number} index - 消息索引
+ * 删除消息
  */
 export function removeMessageAt(index) {
-    if (index < 0 || index >= state.messages.length) {
-        console.warn(`Invalid message index: ${index}`);
-        return;
+    if (index < 0 || index >= state.messages.length) return;
+
+    const removed = state.messages[index];
+    if (removed.id && state.messageIdMap) {
+        state.messageIdMap.delete(removed.id);
     }
 
-    // 保存被删除的消息（用于事件）
-    const removedOpenai = state.messages[index];
-    const removedGemini = state.geminiContents[index];
-    const removedClaude = state.claudeContents[index];
-
-    // 从 messageIdMap 中删除此消息
-    const removedId = removedOpenai.id || removedGemini.id || removedClaude.id;
-    if (removedId && state.messageIdMap) {
-        state.messageIdMap.delete(removedId);
-    }
-
-    // ⚠️ 当前实现：直接修改（向后兼容）
     state.messages.splice(index, 1);
-    state.geminiContents.splice(index, 1);
-    state.claudeContents.splice(index, 1);
 
-    // 重新索引后续消息（索引都减 1）
-    if (state.messageIdMap) {
-        rebuildMessageIdMapFromIndex(index);
-    }
-
+    if (state.messageIdMap) rebuildMessageIdMapFromIndex(index);
     state.sessionDirty = true;
-
-    // 发出事件通知
-    eventBus.emit('state:message-removed', {
-        index,
-        removedOpenai,
-        removedGemini,
-        removedClaude
-    });
+    eventBus.emit('state:message-removed', { index, removed });
 }
 
 /**
- * 安全地删除指定索引后的所有消息
- * 自动更新 messageIdMap
- * @param {number} fromIndex - 起始索引（保留该索引，删除之后的）
+ * 删除指定索引后的所有消息
  */
 export function removeMessagesAfter(fromIndex) {
-    if (fromIndex < 0) {
-        console.warn(`Invalid fromIndex: ${fromIndex}`);
-        return;
-    }
-
-    const originalLength = state.messages.length;
-    const removeCount = Math.max(0, originalLength - fromIndex - 1);
-
+    if (fromIndex < 0) return;
+    const removeCount = Math.max(0, state.messages.length - fromIndex - 1);
     if (removeCount === 0) return;
 
-    // 从 messageIdMap 中删除被移除的消息
     if (state.messageIdMap) {
-        const messages = state.messages;
-        for (let i = fromIndex + 1; i < messages.length; i++) {
-            const msg = messages[i];
-            const messageId = msg.id;
-            if (messageId) {
-                state.messageIdMap.delete(messageId);
-            }
+        for (let i = fromIndex + 1; i < state.messages.length; i++) {
+            const id = state.messages[i]?.id;
+            if (id) state.messageIdMap.delete(id);
         }
     }
 
-    // ⚠️ 当前实现：直接修改（向后兼容）
     state.messages = state.messages.slice(0, fromIndex + 1);
-    state.geminiContents = state.geminiContents.slice(0, fromIndex + 1);
-    state.claudeContents = state.claudeContents.slice(0, fromIndex + 1);
 
     state.sessionDirty = true;
-
-    // 发出事件通知
-    eventBus.emit('state:messages-removed-after', {
-        fromIndex,
-        removeCount,
-        newLength: state.messages.length
-    });
+    eventBus.emit('state:messages-removed-after', { fromIndex, removeCount, newLength: state.messages.length });
 }
 
 /**
- * 安全地更新消息内容
- * @param {number} index - 消息索引
- * @param {Object} updates - 更新内容 { openai?, gemini?, claude? }
+ * 更新消息（spread merge 或完整替换）
+ * @param {number} index
+ * @param {Object} updates - 直接合并到 state.messages[index]
+ * @param {boolean} replace - true 时完整替换
  */
-export function updateMessageAt(index, updates) {
-    if (index < 0 || index >= state.messages.length) {
-        console.warn(`Invalid message index: ${index}`);
-        return;
+export function updateMessageAt(index, updates, replace = false) {
+    if (index < 0 || index >= state.messages.length) return;
+
+    const old = state.messages[index];
+
+    // replace 模式下维护 messageIdMap
+    if (replace && old.id && state.messageIdMap) {
+        state.messageIdMap.delete(old.id);
     }
 
-    const oldOpenai = state.messages[index];
-    const oldGemini = state.geminiContents[index];
-    const oldClaude = state.claudeContents[index];
+    state.messages[index] = replace ? updates : { ...old, ...updates };
 
-    // ⚠️ 当前实现：直接修改（向后兼容）
-    if (updates.openai) {
-        state.messages[index] = { ...oldOpenai, ...updates.openai };
-    }
-    if (updates.gemini) {
-        state.geminiContents[index] = { ...oldGemini, ...updates.gemini };
-    }
-    if (updates.claude) {
-        state.claudeContents[index] = { ...oldClaude, ...updates.claude };
+    // 确保新消息的 ID 在 map 中
+    const newMsg = state.messages[index];
+    if (newMsg.id && state.messageIdMap) {
+        state.messageIdMap.set(newMsg.id, index);
     }
 
     state.sessionDirty = true;
-
-    // 发出事件通知
-    eventBus.emit('state:message-updated', {
-        index,
-        oldOpenai,
-        oldGemini,
-        oldClaude,
-        newOpenai: state.messages[index],
-        newGemini: state.geminiContents[index],
-        newClaude: state.claudeContents[index]
-    });
+    eventBus.emit('state:message-updated', { index, old, msg: newMsg });
 }
 
 /**
- * 安全地替换整个消息数组
- * 自动重建 messageIdMap
- * @param {Array} messages - OpenAI 格式消息数组
- * @param {Array} geminiContents - Gemini 格式消息数组
- * @param {Array} claudeContents - Claude 格式消息数组
+ * 替换所有消息
+ * @param {Array} messages - 新格式消息数组
  */
-export function replaceAllMessages(messages, geminiContents, claudeContents) {
-    const oldLength = state.messages.length;
-
-    // 使用数组副本（不可变更新）
+export function replaceAllMessages(messages) {
     state.messages = [...messages];
-    state.geminiContents = [...geminiContents];
-    state.claudeContents = [...claudeContents];
 
-    // 刚加载的会话是干净的
     state.sessionDirty = false;
-
-    // 重建 messageIdMap
     rebuildMessageIdMap();
-
-    // 发出事件通知
-    eventBus.emit('state:messages-replaced', {
-        oldLength,
-        newLength: state.messages.length
-    });
+    eventBus.emit('state:messages-replaced', { newLength: state.messages.length });
 }
 
 /**
- * 安全地更新状态属性
- * @param {string} key - 属性名
- * @param {*} value - 新值
+ * 弹出最后一条 assistant 消息
  */
+export function popLastAssistantMessage() {
+    const len = state.messages.length;
+    if (len === 0) return null;
+
+    const msg = state.messages[len - 1];
+    if (msg.role !== 'assistant') return null;
+
+    state.messages.pop();
+
+    if (msg.id && state.messageIdMap) state.messageIdMap.delete(msg.id);
+    state.sessionDirty = true;
+    eventBus.emit('state:message-removed', { index: len - 1, removed: msg });
+    return msg;
+}
+
+/**
+ * 临时扩展消息数组（工具调用 continuation）
+ */
+export function extendMessagesTemporarily(extraMessages) {
+    const backup = {
+        messages: state.messages,
+    };
+    state.messages = [...state.messages, ...extraMessages];
+    return backup;
+}
+
+export function restoreMessages(backup) {
+    if (backup?.messages) {
+        state.messages = backup.messages;
+        rebuildMessageIdMap();
+    }
+}
+
+/**
+ * 更新消息中的文本内容（新格式：修改 parts 中的 text part）
+ */
+export function updateMessageTextAt(index, newText) {
+    if (index < 0 || index >= state.messages.length) return;
+
+    const msg = state.messages[index];
+
+    // 新格式：修改 parts 中的第一个 text part
+    if (hasParts(msg)) {
+        const textPart = msg.parts.find(p => p.type === PartType.TEXT);
+        if (textPart) {
+            textPart.text = newText;
+        } else {
+            msg.parts.push({ type: PartType.TEXT, text: newText });
+        }
+    } else {
+        // 旧格式兜底：创建 parts 而非写 content
+        if (!msg.parts) msg.parts = [];
+        msg.parts.push({ type: PartType.TEXT, text: newText });
+    }
+
+    state.sessionDirty = true;
+    eventBus.emit('state:message-updated', { index, old: msg, msg });
+}
+
+/**
+ * 批量补充缺少 ID 的消息
+ */
+export function ensureMessageIds() {
+    let count = 0;
+    for (const msg of state.messages) {
+        if (!msg.id) {
+            msg.id = generateMessageId();
+            count++;
+        }
+    }
+    if (count > 0) {
+        rebuildMessageIdMap();
+        state.sessionDirty = true;
+    }
+    return count;
+}
+
 export function setState(key, value) {
-    const oldValue = state[key];
-
-    // ⚠️ 当前实现：直接修改（向后兼容）
     state[key] = value;
-
-    // 发出事件通知
-    eventBus.emit('state:property-changed', {
-        key,
-        oldValue,
-        newValue: value
-    });
-
-    // 发出特定属性的事件
-    eventBus.emit(`state:${key}`, {
-        oldValue,
-        newValue: value
-    });
 }
 
-/**
- * 调试：打印状态变更统计
- */
 export function logStateMutations() {
-    const stats = {
-        messagesPushed: 0,
-        messagesRemoved: 0,
-        messagesUpdated: 0,
-        propertiesChanged: 0
-    };
-
+    const stats = { pushed: 0, removed: 0, updated: 0, propChanged: 0 };
     const handlers = {
-        'state:messages-pushed': () => stats.messagesPushed++,
-        'state:message-removed': () => stats.messagesRemoved++,
-        'state:message-updated': () => stats.messagesUpdated++,
-        'state:property-changed': () => stats.propertiesChanged++
+        'state:messages-pushed': () => stats.pushed++,
+        'state:message-removed': () => stats.removed++,
+        'state:message-updated': () => stats.updated++,
+        'state:property-changed': () => stats.propChanged++,
     };
-
-    Object.entries(handlers).forEach(([event, handler]) => {
-        eventBus.on(event, handler);
-    });
-
-    // 返回取消监听函数
+    Object.entries(handlers).forEach(([e, h]) => eventBus.on(e, h));
     return () => {
-        Object.entries(handlers).forEach(([event, handler]) => {
-            eventBus.off(event, handler);
-        });
-        console.log('📊 State Mutations Statistics:', stats);
+        Object.entries(handlers).forEach(([e, h]) => eventBus.off(e, h));
+        console.log('State Mutations:', stats);
     };
 }
-
-/**
- * 未来升级路径：启用完全不可变更新
- *
- * 启用方法：
- * 1. 将所有 state.xxx = value 改为使用 Proxy
- * 2. 监听所有状态变化并发出事件
- * 3. 实现时间旅行调试功能
- *
- * 示例代码（已在 state.js 中准备，但被注释）：
- * import { ReactiveState } from './state.js';
- * export const reactiveState = new ReactiveState(state);
- */

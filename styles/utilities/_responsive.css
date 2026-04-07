@@ -35,7 +35,7 @@
 
     /* ---- Header 紧凑化 ---- */
     .header-content {
-        padding: 6px 10px;
+        padding: calc(6px + env(safe-area-inset-top, 0px)) 10px 6px;
     }
 
     .header-content .icon-button {
@@ -84,6 +84,9 @@
     .input-icon-btn {
         width: 32px;
         height: 32px;
+        min-width: 40px;
+        min-height: 40px;
+        padding: 4px;
     }
 
     .input-icon-btn svg {
@@ -173,7 +176,6 @@
         z-index: var(--z-sticky);
         box-shadow: var(--shadow-sm);
         background: var(--md-lime);
-        padding: 10px 12px;
     }
 
     .session-list {
@@ -273,7 +275,7 @@
         height: 28px;
     }
 
-    /* ---- 模态框全屏 ---- */
+    /* ---- 模态框全屏（排除轻量对话框） ---- */
     .modal-content {
         width: 100vw;
         height: 100dvh;
@@ -282,22 +284,30 @@
         border-radius: 0;
     }
 
-    .modal-header {
-        padding-top: calc(10px + env(safe-area-inset-top, 0px));
+    #confirm-dialog-modal .modal-content,
+    #input-dialog-modal .modal-content {
+        width: 90%;
+        max-width: 400px;
+        height: auto;
+        max-height: 80dvh;
+        border-radius: 12px;
     }
 
     /* ---- 通知 ---- */
     .notification {
-        left: 12px;
-        right: 12px;
+        left: 8px;
+        right: 8px;
+        top: 8px;
         width: auto;
-        font-size: var(--fs-base);
-        padding: 8px 36px 8px 12px;
+        font-size: var(--fs-sm);
+        padding: 6px 30px 6px 10px;
     }
 
     .notification-close {
-        width: 32px;
-        height: 32px;
+        width: 24px;
+        height: 24px;
+        margin-right: 2px;
+        font-size: var(--fs-lg);
     }
 
     /* ---- 侧边栏移动端 ---- */
@@ -306,7 +316,7 @@
     }
 
     .sidebar-header {
-        padding: 10px 12px;
+        padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px;
         gap: 6px;
         border-bottom-width: 1px;
     }
@@ -350,6 +360,9 @@
     .session-action-btn {
         width: 28px;
         height: 28px;
+        min-width: 44px;
+        min-height: 44px;
+        padding: 8px;
         border-width: 1px;
     }
 
@@ -371,6 +384,9 @@
     .search-clear-btn {
         width: 28px;
         height: 28px;
+        min-width: 44px;
+        min-height: 44px;
+        padding: 8px;
     }
 
     /* ---- 设置面板移动端 ---- */
@@ -380,7 +396,7 @@
     }
 
     .settings-header {
-        padding: 10px 12px;
+        padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px;
         border-bottom-width: 1px;
     }
 
@@ -430,6 +446,9 @@
     .settings-icon-btn {
         width: 36px;
         height: 36px;
+        min-width: 44px;
+        min-height: 44px;
+        padding: 4px;
         border-width: 1px;
     }
 
@@ -464,7 +483,13 @@
 
     /* ========== 通用模态框缩小 ========== */
     .modal-header {
-        padding: 10px 12px;
+        padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px;
+    }
+
+    /* 覆盖组件文件中双 class 选择器的 padding */
+    .code-editor-modal-content .modal-header,
+    .edit-model-content .modal-header {
+        padding-top: calc(10px + env(safe-area-inset-top, 0px));
     }
 
     .modal-header h2,
@@ -492,7 +517,7 @@
 
     /* ========== MCP 设置缩小 ========== */
     .mcp-settings-header {
-        padding: 10px 12px;
+        padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px;
     }
 
     .mcp-settings-header h2 {
@@ -581,6 +606,9 @@
     .settings-content .settings-icon-btn {
         width: 28px;
         height: 28px;
+        min-width: 44px;
+        min-height: 44px;
+        padding: 8px;
     }
 
     .settings-content .settings-icon-btn svg {

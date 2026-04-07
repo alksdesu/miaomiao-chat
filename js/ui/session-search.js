@@ -7,6 +7,7 @@ import { state } from '../core/state.js';
 import { elements } from '../core/elements.js';
 import { eventBus } from '../core/events.js';
 import { escapeHtml } from '../utils/helpers.js';
+import { PartType, hasParts } from '../messages/schema.js';
 
 // 搜索状态
 let searchDebounceTimer = null;
@@ -51,8 +52,17 @@ function bindSearchEvents() {
         }
     });
 
-    // 监听会话列表更新，刷新当前会话的搜索缓存
-    eventBus.on('sessions:updated', () => {
+    // 监听会话列表更新，刷新当前会话的搜索缓存并清理已删除会话的缓存
+    eventBus.on('sessions:updated', ({ sessions }) => {
+        // 清理已删除会话的缓存
+        if (sessions) {
+            const activeIds = new Set(sessions.map(s => s.id));
+            for (const cachedId of searchTextCache.keys()) {
+                if (!activeIds.has(cachedId)) {
+                    searchTextCache.delete(cachedId);
+                }
+            }
+        }
         buildSearchCacheForCurrentSession(); // 覆盖旧缓存
         if (currentQuery) {
             performSearch(currentQuery);
@@ -117,10 +127,9 @@ const searchTextCache = new Map();
  * 获取会话的搜索文本（优先缓存，否则从当前 state 或 IndexedDB 加载）
  */
 function getSearchableMessages(session) {
-    // 当前会话：直接从 state 取
+    // 当前会话：直接从 state 取（统一格式）
     if (session.id === state.currentSessionId) {
-        const messages = state.apiFormat === 'gemini' ? state.geminiContents : state.messages;
-        return { messages, format: state.apiFormat };
+        return { messages: state.messages, format: 'openai' };
     }
     // 非当前会话：使用缓存的搜索文本
     const cached = searchTextCache.get(session.id);
@@ -135,21 +144,15 @@ function getSearchableMessages(session) {
  */
 export function buildSearchCacheForCurrentSession() {
     if (!state.currentSessionId) return;
-    const format = state.apiFormat;
-    let messages;
-    switch (format) {
-        case 'gemini': messages = state.geminiContents; break;
-        case 'claude': messages = state.claudeContents; break;
-        default: messages = state.messages;
-    }
+    const messages = state.messages;
     // 提取所有消息文本用于搜索
     const extracted = messages.map((msg, index) => ({
-        text: extractMessageText(msg, format),
+        text: extractMessageText(msg, 'openai'),
         role: msg.role || 'unknown',
         id: msg.id || `msg_${index}`,
         index
     }));
-    searchTextCache.set(state.currentSessionId, { messages: extracted, format });
+    searchTextCache.set(state.currentSessionId, { messages: extracted, format: 'openai' });
 }
 
 /**
@@ -242,6 +245,14 @@ export function searchSessions(query) {
  */
 function extractMessageText(message, format) {
     if (!message) return '';
+
+    // 新格式：优先从 parts 读取
+    if (hasParts(message)) {
+        return message.parts
+            .filter(p => p.type === PartType.TEXT)
+            .map(p => p.text)
+            .join(' ');
+    }
 
     switch (format) {
         case 'openai':

@@ -12,6 +12,9 @@ import { generateSessionId, generateSessionName } from '../utils/helpers.js';
 import { renderSessionMessages } from '../messages/restore.js';
 import { replaceAllMessages } from '../core/state-mutations.js';
 import { requestStateMachine } from '../core/request-state-machine.js';
+import { broadcastEvent } from './tab-sync.js';
+import { PartType } from '../messages/schema.js';
+import { isElectron, isAndroid, getIpcRenderer } from '../utils/platform.js';
 
 // 防抖保存定时器
 let saveSessionTimer = null;
@@ -44,7 +47,7 @@ function cloneSerializable(data) {
 }
 
 function isElectronIpcAvailable() {
-    return typeof window !== 'undefined' && !!(window.electron?.ipcRenderer?.invoke);
+    return isElectron() && !!getIpcRenderer()?.invoke;
 }
 
 function getCapacitorFilesystem() {
@@ -52,11 +55,7 @@ function getCapacitorFilesystem() {
 }
 
 function isAndroidFilesystemAvailable() {
-    return typeof window !== 'undefined' &&
-        !!window.Capacitor &&
-        typeof window.Capacitor.getPlatform === 'function' &&
-        window.Capacitor.getPlatform() === 'android' &&
-        !!getCapacitorFilesystem();
+    return isAndroid() && !!getCapacitorFilesystem();
 }
 
 function getVideoExtensionByMimeType(mimeType) {
@@ -191,8 +190,6 @@ async function replaceVideoDataUrlsDeep(value, cache) {
 export async function createPersistedSessionPayload(source = {}) {
     const clonedPayload = {
         messages: cloneSerializable(source.messages || []),
-        geminiContents: cloneSerializable(source.geminiContents || []),
-        claudeContents: cloneSerializable(source.claudeContents || [])
     };
 
     if (!isElectronIpcAvailable() && !isAndroidFilesystemAvailable()) {
@@ -202,8 +199,6 @@ export async function createPersistedSessionPayload(source = {}) {
     const cache = new Map(persistedVideoUrlCache);
 
     await replaceVideoDataUrlsDeep(clonedPayload.messages, cache);
-    await replaceVideoDataUrlsDeep(clonedPayload.geminiContents, cache);
-    await replaceVideoDataUrlsDeep(clonedPayload.claudeContents, cache);
 
     for (const [dataUrl, fileUrl] of cache.entries()) {
         persistedVideoUrlCache.set(dataUrl, fileUrl);
@@ -298,22 +293,22 @@ export async function saveCurrentSessionMessages(force = false) {
     if (!session.customName) {
         let content = '';
 
-        if (state.apiFormat === 'gemini' && state.geminiContents.length > 0) {
-            // Gemini 格式
-            const firstUserMsg = state.geminiContents.find(m => m.role === 'user');
-            if (firstUserMsg && firstUserMsg.parts) {
-                const textPart = firstUserMsg.parts.find(p => p.text);
-                if (textPart) {
-                    content = textPart.text;
-                }
-            }
-        } else if (state.messages.length > 0) {
-            // OpenAI 格式
+        if (state.messages.length > 0) {
             const firstUserMsg = state.messages.find(m => m.role === 'user');
             if (firstUserMsg) {
-                content = typeof firstUserMsg.content === 'string'
-                    ? firstUserMsg.content
-                    : firstUserMsg.content.find(p => p.type === 'text')?.text || '';
+                // 新格式优先：从 parts 读取
+                if (firstUserMsg.parts && Array.isArray(firstUserMsg.parts)) {
+                    const tp = firstUserMsg.parts.find(p => p.type === PartType.TEXT);
+                    if (tp) content = tp.text;
+                }
+                // 旧格式回退
+                if (!content) {
+                    content = typeof firstUserMsg.content === 'string'
+                        ? firstUserMsg.content
+                        : (Array.isArray(firstUserMsg.content)
+                            ? (firstUserMsg.content.find(p => p.type === 'text')?.text || '')
+                            : '');
+                }
             }
         }
 
@@ -326,15 +321,11 @@ export async function saveCurrentSessionMessages(force = false) {
     try {
         persistedPayload = await createPersistedSessionPayload({
             messages: state.messages,
-            geminiContents: state.geminiContents,
-            claudeContents: state.claudeContents
         });
     } catch (error) {
         console.error('[Session] 构建持久化快照失败，回退到原始消息:', error);
         persistedPayload = {
             messages: cloneSerializable(state.messages),
-            geminiContents: cloneSerializable(state.geminiContents),
-            claudeContents: cloneSerializable(state.claudeContents)
         };
     }
 
@@ -352,6 +343,11 @@ export async function saveCurrentSessionMessages(force = false) {
         };
         await saveSessionAtomic(sessionMeta, persistedPayload);
         state.sessionDirty = false;
+        broadcastEvent('session-updated', {
+            sessionId: session.id,
+            updatedAt: session.updatedAt,
+            messageCount: session.messageCount
+        });
     } catch (e) {
         console.error('保存会话到 IndexedDB 失败:', e);
         eventBus.emit('ui:notification', { message: '保存会话失败', type: 'error' });
@@ -381,9 +377,7 @@ export async function createNewSession(shouldSwitch = true) {
     // v4 架构下 session 是纯元数据，消息在 state.messages 中
     const currentSession = state.sessions.find(s => s.id === state.currentSessionId);
     if (currentSession) {
-        const hasMessages = state.messages.length > 0 ||
-                           state.geminiContents.length > 0 ||
-                           state.claudeContents.length > 0;
+        const hasMessages = state.messages.length > 0;
         if (!hasMessages && !currentSession.customName) {
             eventBus.emit('ui:notification', { message: '当前会话为空，无需创建新会话', type: 'info' });
             return currentSession;
@@ -465,6 +459,11 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
     // 触发会话切换前事件（用于清理）
     eventBus.emit('session:before-switch');
 
+    // 清理视频 data URL 缓存（键为完整 base64 data URL，占用大量内存）
+    if (persistedVideoUrlCache.size > 0) {
+        persistedVideoUrlCache.clear();
+    }
+
     try {
         // 检查是否被中断
         if (signal.aborted) {
@@ -485,6 +484,10 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
                 messageElement: state.currentAssistantMessage,
                 createdAt: Date.now()
             });
+
+            // 立即清空全局引用，阻止后台流的 rAF 回调继续渲染到旧 DOM
+            state.currentAssistantMessage = null;
+
             eventBus.emit('ui:notification', {
                 message: '上一个会话的生成将在后台继续',
                 type: 'info',
@@ -544,19 +547,13 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
             if (session._pendingMessages) {
                 msgData = {
                     messages: session._pendingMessages,
-                    geminiContents: session._pendingGemini || [],
-                    claudeContents: session._pendingClaude || []
                 };
             } else {
-                msgData = { messages: [], geminiContents: [], claudeContents: [] };
+                msgData = { messages: [] };
             }
         }
 
-        replaceAllMessages(
-            msgData.messages || [],
-            msgData.geminiContents || [],
-            msgData.claudeContents || []
-        );
+        replaceAllMessages(msgData.messages || []);
 
         state.lastUserMessage = null;
         state.messageHistory = [];
@@ -737,6 +734,8 @@ export async function deleteSession(sessionId) {
     // 从数据库删除
     try {
         await deleteSessionFromDB(sessionId);
+        // 删除成功后从防护集合中移除
+        _deletedSessionIds.delete(sessionId);
     } catch (e) {
         console.error('从数据库删除会话失败:', e);
         _deletedSessionIds.delete(sessionId);
@@ -770,6 +769,7 @@ export async function deleteSession(sessionId) {
 
     eventBus.emit('ui:notification', { message: '会话已删除', type: 'info' });
     eventBus.emit('sessions:updated', { sessions: state.sessions });
+    broadcastEvent('session-deleted', { sessionId });
 }
 
 /**
@@ -799,4 +799,11 @@ eventBus.on('messages:changed', () => {
 // 监听存储配额超出事件，显示通知
 eventBus.on('storage:quota-exceeded', ({ message }) => {
     eventBus.emit('ui:notification', { message, type: 'error' });
+});
+
+// 监听跨标签页会话切换请求
+eventBus.on('session:switch-requested', ({ sessionId }) => {
+    if (sessionId && sessionId !== state.currentSessionId) {
+        switchToSession(sessionId, true).catch(e => console.error('[Sessions] 跨标签页切换失败:', e));
+    }
 });

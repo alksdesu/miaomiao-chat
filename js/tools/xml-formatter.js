@@ -23,7 +23,7 @@ function generateToolCallId() {
 /**
  * 转义 XML 特殊字符
  */
-function escapeXML(str) {
+export function escapeXML(str) {
     if (typeof str !== 'string') return '';
 
     // 修复1: 过滤非法 XML 字符（控制字符，除了 \t \n \r）
@@ -230,15 +230,15 @@ export function extractXMLToolCalls(text) {
     }
 
     // 格式 3: invoke 格式 (Claude native XML)
-    // 匹配: <invoke name="xxx"> <parameter name="yyy">value</parameter>... </invoke>
-    const invokeRegex = /<invoke\s+name="([^"]+)">([\s\S]*?)<\/invoke>/gi;
+    // 匹配: <invoke name="xxx"> 或 <invoke name="xxx">
+    const invokeRegex = /<(?:antml:)?invoke\s+name="([^"]+)">([\s\S]*?)<\/(?:antml:)?invoke>/gi;
     while ((match = invokeRegex.exec(text)) !== null) {
         const name = match[1].trim();
         const paramsContent = match[2];
         const args = {};
 
-        // 解析 parameter 标签
-        const paramRegex = /<parameter\s+name="([^"]+)">([\s\S]*?)<\/parameter>/gi;
+        // 解析 parameter 标签（兼容 antml:parameter）
+        const paramRegex = /<(?:antml:)?parameter\s+name="([^"]+)">([\s\S]*?)<\/(?:antml:)?parameter>/gi;
         let paramMatch;
         while ((paramMatch = paramRegex.exec(paramsContent)) !== null) {
             const paramName = paramMatch[1].trim();
@@ -261,9 +261,6 @@ export function extractXMLToolCalls(text) {
             console.log('[XML Parser] 提取到 invoke 格式工具调用:', name);
         }
     }
-
-    // 格式 4: antml:invoke 格式 - 使用与 invoke 相同的正则，因为标签名相同
-    // 已由格式 3 处理
 
     // 输出解析结果日志
     if (toolCalls.length > 0) {
@@ -323,10 +320,16 @@ export class XMLStreamAccumulator {
                 // 保留开始标签到 currentThinking
                 this.currentThinking = this.buffer.substring(thinkingStartMatch.index);
                 this.buffer = '';
+                // 首次检测到标签，内容已转移到 currentThinking，直接返回
+                return {
+                    hasToolCalls: this.completedCalls.length > 0,
+                    displayText: this.displayText,
+                    error: null
+                };
             }
 
-            // 检测 tool_use 或 invoke 开始
-            const toolStartMatch = this.buffer.match(/<(tool_use|invoke\s+name="[^"]+")/);
+            // 检测 tool_use 或 invoke/antml:invoke 开始
+            const toolStartMatch = this.buffer.match(/<(tool_use|(?:antml:)?invoke\s+name="[^"]+")/);
             if (toolStartMatch && !this.inToolUse && !this.inThinking) {
                 this.inToolUse = true;
                 const beforeTag = this.buffer.substring(0, toolStartMatch.index);
@@ -334,6 +337,12 @@ export class XMLStreamAccumulator {
                 // 保留开始标签到 currentToolXML
                 this.currentToolXML = this.buffer.substring(toolStartMatch.index);
                 this.buffer = '';
+                // 首次检测到标签，内容已转移到 currentToolXML，直接返回
+                return {
+                    hasToolCalls: this.completedCalls.length > 0,
+                    displayText: this.displayText,
+                    error: null
+                };
             }
 
             // 累积思考内容
@@ -391,8 +400,8 @@ export class XMLStreamAccumulator {
                     };
                 }
 
-                // 检测 tool_use 或 invoke 结束
-                const endMatch = this.currentToolXML.match(/<\/(tool_use|invoke)>/);
+                // 检测 tool_use 或 invoke/antml:invoke 结束
+                const endMatch = this.currentToolXML.match(/<\/(?:tool_use|(?:antml:)?invoke)>/);
                 if (endMatch) {
                     this.inToolUse = false;
 

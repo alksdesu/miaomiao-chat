@@ -386,7 +386,7 @@
                         <option value="render">渲染为图片</option>
                     </select>
                 </div>
-                <p class="settings-hint">标准：原生发送 PDF 文件（OpenAI/Claude/Gemini 均支持）<br>兼容：将 PDF 数据通过图片字段传输，适用于不支持 file 格式的 OpenAI 兼容接口<br>渲染为图片：使用 pdf.js 将 PDF 逐页渲染为 JPEG 图片后发送，适用于完全不支持 PDF 的 API（如 Copilot 代理）</p>
+                <p class="settings-hint">标准：原生发送 PDF 文件（OpenAI/Claude/Gemini 均支持）<br>兼容：将 PDF 数据通过图片字段传输，适用于不支持 file 格式的 OpenAI 兼容接口<br>渲染为图片：使用 pdf.js 将 PDF 逐页渲染为 JPEG 图片后发送，适用于完全不支持 PDF 的 API</p>
 
             </div>
 
@@ -1406,7 +1406,7 @@
     </div>
 
     <!-- 通用输入对话框 -->
-    <div id="input-dialog-modal" class="modal" role="dialog" aria-modal="true" style="display: none;">
+    <div id="input-dialog-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="input-dialog-title" style="display: none;">
         <div class="modal-overlay"></div>
         <div class="modal-content" style="max-width: 400px;">
             <div class="modal-header">
@@ -1425,7 +1425,7 @@
     </div>
 
     <!-- 通用确认对话框 -->
-    <div id="confirm-dialog-modal" class="modal" role="dialog" aria-modal="true" style="display: none;">
+    <div id="confirm-dialog-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title" style="display: none;">
         <div class="modal-overlay"></div>
         <div class="modal-content" style="max-width: 400px;">
             <div class="modal-header">
@@ -1443,7 +1443,7 @@
     </div>
 
     <!-- 工具测试对话框 -->
-    <div id="tool-test-dialog-modal" class="modal" role="dialog" aria-modal="true" style="display: none;">
+    <div id="tool-test-dialog-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="tool-test-dialog-title" style="display: none;">
         <div class="modal-overlay"></div>
         <div class="modal-content" style="max-width: 700px;">
             <div class="modal-header">
@@ -1466,11 +1466,11 @@
     </div>
 
     <!-- 工具调用管理界面 -->
-    <div id="tool-manager-modal">
+    <div id="tool-manager-modal" role="dialog" aria-modal="true" aria-labelledby="tool-manager-title">
         <div class="tool-manager-content">
             <!-- 头部 -->
             <div class="tool-manager-header">
-                <h2 class="tool-manager-title">工具调用管理</h2>
+                <h2 id="tool-manager-title" class="tool-manager-title">工具调用管理</h2>
                 <button class="close-tool-manager" aria-label="关闭">×</button>
             </div>
 
@@ -1575,11 +1575,11 @@
     </div>
 
     <!-- MCP 服务器管理模态框 -->
-    <div id="mcp-settings-modal">
+    <div id="mcp-settings-modal" role="dialog" aria-modal="true" aria-labelledby="mcp-settings-title">
         <div class="mcp-settings-content">
             <!-- 头部 -->
             <div class="mcp-settings-header">
-                <h2>MCP 服务器管理</h2>
+                <h2 id="mcp-settings-title">MCP 服务器管理</h2>
                 <button class="close-mcp-settings" aria-label="关闭">×</button>
             </div>
 

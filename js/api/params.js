@@ -42,6 +42,11 @@ export function buildModelParams(format) {
             result.max_tokens = params.max_tokens !== null ? params.max_tokens : 8192;
             if (params.temperature !== null) result.temperature = params.temperature;
             if (params.top_p !== null) result.top_p = params.top_p;
+            // Extended Thinking 要求 temperature 必须为 1
+            if (state.thinkingEnabled && result.temperature !== undefined && result.temperature !== 1) {
+                console.log('[Params] Claude thinking 模式强制 temperature=1');
+                result.temperature = 1;
+            }
             if (params.top_k !== null) result.top_k = params.top_k;
             break;
     }

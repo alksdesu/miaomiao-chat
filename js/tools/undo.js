@@ -1,3 +1,4 @@
+/* global structuredClone */
 /**
  * 工具调用撤销系统
  * 允许用户撤销最近的工具调用，恢复到调用前的消息状态
@@ -11,6 +12,7 @@
 import { state } from '../core/state.js';
 import { eventBus } from '../core/events.js';
 import { renderSessionMessages } from '../messages/restore.js';
+import { replaceAllMessages } from '../core/state-mutations.js';
 
 // ========== 状态管理 ==========
 
@@ -34,10 +36,8 @@ export function createSnapshot(metadata = {}) {
         timestamp: Date.now(),
         datetime: new Date().toISOString(),
 
-        // 保存消息状态（深拷贝）
-        messages: JSON.parse(JSON.stringify(state.messages)),
-        geminiContents: JSON.parse(JSON.stringify(state.geminiContents)),
-        claudeContents: JSON.parse(JSON.stringify(state.claudeContents)),
+        // 深拷贝消息
+        messages: structuredClone(state.messages),
 
         // 保存 UI 状态
         currentAssistantMessage: state.currentAssistantMessage,
@@ -89,11 +89,13 @@ export function undo() {
     console.log('[Undo] ⏪ 执行撤销:', snapshot.id);
 
     try {
-        // 恢复消息状态
-        state.messages = JSON.parse(JSON.stringify(snapshot.messages));
-        state.geminiContents = JSON.parse(JSON.stringify(snapshot.geminiContents));
-        state.claudeContents = JSON.parse(JSON.stringify(snapshot.claudeContents));
-        state.currentAssistantMessage = snapshot.currentAssistantMessage;
+        // 通过安全函数恢复消息状态（深拷贝防止快照被污染）
+        replaceAllMessages(
+            structuredClone(snapshot.messages)
+        );
+        // 清空旧 DOM 引用（renderSessionMessages 会重建 DOM）
+        state.currentAssistantMessage = null;
+        state.sessionDirty = true; // 撤销后需要保存
 
         // 重新渲染消息列表
         renderSessionMessages();
@@ -244,6 +246,13 @@ export function undoLastToolCall() {
 }
 
 // ========== 初始化 ==========
+
+// 会话切换时清空撤销栈（避免跨会话的 structuredClone 内存堆积）
+eventBus.on('session:before-switch', () => {
+    if (undoStack.length > 0) {
+        clearUndoStack();
+    }
+});
 
 console.log('[Undo] ⏪ 工具调用撤销系统已加载');
 

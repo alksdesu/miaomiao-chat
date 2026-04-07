@@ -287,3 +287,9 @@ function escapeRegex(string) {
 }
 
 console.log('[TextFormatter Tool] 📝 文本格式化工具已加载');
+
+// ========== 标准化工具对象 ==========
+
+import { buildToolFromLegacy } from '../build-tool.js';
+
+export const textFormatter = buildToolFromLegacy('text_formatter', textFormatterTool, textFormatterHandler, { isReadOnly: () => true });

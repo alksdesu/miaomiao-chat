@@ -1,9 +1,9 @@
 /* ========== 欢迎消息 ========== */
 .welcome-message {
     background: linear-gradient(135deg,
-        #6FC2FF 0%,
-        #53DBC9 50%,
-        #B291DE 100%
+        var(--welcome-gradient-start) 0%,
+        var(--welcome-gradient-mid) 50%,
+        var(--welcome-gradient-end) 100%
     );
     background-size: 200% 200%;
     animation: gradientShift 8s ease infinite;
@@ -75,10 +75,11 @@
 
 /* ========== 暗色主题适配 ========== */
 .dark-theme .welcome-message {
+    /* 渐变色已由 CSS 变量在 .dark-theme 中覆盖 */
     background: linear-gradient(135deg,
-        #1a3a52 0%,      /* 深蓝 */
-        #1a4d47 50%,     /* 深青 */
-        #3a2a4d 100%     /* 深紫 */
+        var(--welcome-gradient-start) 0%,
+        var(--welcome-gradient-mid) 50%,
+        var(--welcome-gradient-end) 100%
     );
     background-size: 200% 200%;
     color: var(--color-text-primary);

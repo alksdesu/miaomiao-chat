@@ -13,6 +13,7 @@ import { parseStreamingMarkdownImages } from '../utils/markdown-image-parser.js'
 import { handleToolCallStream } from './tool-call-handler.js';
 import { XMLStreamAccumulator } from '../tools/xml-formatter.js';  // XML 工具调用解析
 import { state } from '../core/state.js';  // 访问 xmlToolCallingEnabled 配置
+import { getCurrentEndpoint, getCurrentApiKey, getCurrentModel } from '../api/handler.js';
 import { ThinkTagParser } from './think-tag-parser.js';  // <think> 标签解析器
 import { requestStateMachine, RequestState } from '../core/request-state-machine.js';
 import { isVideoMimeType, isAudioMimeType } from '../utils/media.js';
@@ -397,9 +398,9 @@ export async function parseGeminiStream(reader, sessionId = null) {
 
             // 执行工具调用（异步）
             handleToolCallStream(finalToolCalls, {
-                endpoint: state.endpoint,
-                apiKey: state.apiKey,
-                model: state.model
+                endpoint: getCurrentEndpoint(),
+                apiKey: getCurrentApiKey(),
+                model: getCurrentModel()
             }).catch(error => {
                 console.error('[Parser] 工具调用流程失败:', error);
             });
@@ -464,18 +465,23 @@ function finalizeGeminiStream(textContent, thinkingContent, thoughtSignature, _g
     // 清理所有未完成的图片缓冲区
     cleanupAllIncompleteImages(contentParts);
 
-    // 渲染最终内容
-    if (contentParts.length > 0) {
-        renderFinalContentWithThinking(contentParts, thinkingContent, _groundingMetadata);
-    } else {
-        renderFinalTextWithThinking(textContent, thinkingContent, _groundingMetadata);
+    // 会话已切换时跳过 DOM 操作，只保存消息
+    const isBackground = sessionId && sessionId !== state.currentSessionId;
+
+    if (!isBackground) {
+        // 渲染最终内容
+        if (contentParts.length > 0) {
+            renderFinalContentWithThinking(contentParts, thinkingContent, _groundingMetadata);
+        } else {
+            renderFinalTextWithThinking(textContent, thinkingContent, _groundingMetadata);
+        }
+
+        // 兜底：按最终内容重算 token（避免工具调用后正文漏计数）
+        recalculateStreamTokenCount({ textContent, thinkingContent, contentParts });
+
+        // 添加统计信息
+        appendStreamStats();
     }
-
-    // 兜底：按最终内容重算 token（避免工具调用后正文漏计数）
-    recalculateStreamTokenCount({ textContent, thinkingContent, contentParts });
-
-    // 添加统计信息
-    appendStreamStats();
 
     // 使用统一函数保存消息到所有三种格式并获取索引
     const messageIndex = saveAssistantMessage({
@@ -483,6 +489,7 @@ function finalizeGeminiStream(textContent, thinkingContent, thoughtSignature, _g
         thinkingContent,
         thoughtSignature,
         contentParts,
+        groundingMetadata: _groundingMetadata,
         streamStats: getCurrentStreamStatsData(),
         sessionId: sessionId, // 🔒 传递会话ID防止串消息
     });
@@ -511,6 +518,9 @@ function finalizeGeminiStreamWithError(textContent, thinkingContent, thoughtSign
     // 清理所有未完成的图片缓冲区
     cleanupAllIncompleteImages(contentParts);
 
+    // 会话已切换时跳过 DOM 操作，只保存消息
+    const isBackground = sessionId && sessionId !== state.currentSessionId;
+
     // 使用统一的错误渲染函数（包含折叠的技术详情）
     const errorObject = {
         code: errorCode,
@@ -525,27 +535,31 @@ function finalizeGeminiStreamWithError(textContent, thinkingContent, thoughtSign
 
     const finalText = textContent + '\n\n' + errorMessage;
 
-    // 渲染内容（包含部分内容和错误）
-    if (contentParts.length > 0) {
-        renderFinalContentWithThinking(contentParts, thinkingContent, _groundingMetadata);
-    } else {
-        renderFinalTextWithThinking(textContent, thinkingContent, _groundingMetadata);
-    }
+    if (!isBackground) {
+        // 渲染内容（包含部分内容和错误）
+        if (contentParts.length > 0) {
+            renderFinalContentWithThinking(contentParts, thinkingContent, _groundingMetadata);
+        } else {
+            renderFinalTextWithThinking(textContent, thinkingContent, _groundingMetadata);
+        }
 
-    // 在消息末尾插入错误提示
-    const currentMsg = document.querySelector('.message.assistant:last-child');
-    if (currentMsg) {
-        const contentDiv = currentMsg.querySelector('.message-content');
-        if (contentDiv) {
-            contentDiv.insertAdjacentHTML('beforeend', errorHtml);
+        // 在消息末尾插入错误提示
+        const currentMsg = document.querySelector('.message.assistant:last-child');
+        if (currentMsg) {
+            const contentDiv = currentMsg.querySelector('.message-content');
+            if (contentDiv) {
+                contentDiv.insertAdjacentHTML('beforeend', errorHtml);
+            }
         }
     }
 
-    // 兜底：按最终内容重算 token（避免工具调用后正文漏计数）
-    recalculateStreamTokenCount({ textContent: finalText, thinkingContent, contentParts });
+    if (!isBackground) {
+        // 兜底：按最终内容重算 token（避免工具调用后正文漏计数）
+        recalculateStreamTokenCount({ textContent: finalText, thinkingContent, contentParts });
 
-    // 添加统计信息
-    appendStreamStats();
+        // 添加统计信息
+        appendStreamStats();
+    }
 
     // 保存消息（标记为错误）并获取索引
     const messageIndex = saveAssistantMessage({
@@ -553,6 +567,7 @@ function finalizeGeminiStreamWithError(textContent, thinkingContent, thoughtSign
         thinkingContent,
         thoughtSignature,
         contentParts,
+        groundingMetadata: _groundingMetadata,
         streamStats: getCurrentStreamStatsData(),
         isError: true,
         errorData: {
@@ -560,22 +575,24 @@ function finalizeGeminiStreamWithError(textContent, thinkingContent, thoughtSign
             message: errorMessage
         },
         errorHtml,
-        sessionId: sessionId, // 🔒 传递会话ID防止串消息
+        sessionId: sessionId,
     });
 
     // Bug 2 立即设置 dataset.messageIndex
     setCurrentMessageIndex(messageIndex);
 
-    // 触发 UI 状态重置
-    eventBus.emit('stream:error', {
-        errorCode,
-        errorMessage,
-        partialContent: textContent
-    });
+    // 触发 UI 状态重置（后台任务不触发，防止干扰当前会话）
+    if (!isBackground) {
+        eventBus.emit('stream:error', {
+            errorCode,
+            errorMessage,
+            partialContent: textContent
+        });
 
-    // 强制清理工具调用标志（防止状态泄漏）
-    if (state.isToolCallPending) {
-        console.log('[Parser-Gemini] 错误状态下强制清理 isToolCallPending');
-        state.isToolCallPending = false;
+        // 强制清理工具调用标志（防止状态泄漏）
+        if (state.isToolCallPending) {
+            console.log('[Parser-Gemini] 错误状态下强制清理 isToolCallPending');
+            state.isToolCallPending = false;
+        }
     }
 }

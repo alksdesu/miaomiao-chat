@@ -8,6 +8,7 @@ import { elements } from '../core/elements.js';
 import { eventBus } from '../core/events.js';
 import { saveCurrentConfig } from '../state/config.js';
 import { savePreference, loadPreference } from '../state/storage.js';
+import { isElectron, isAndroid } from '../utils/platform.js';
 
 /**
  * 焦点陷阱 - 限制焦点在指定元素内
@@ -254,13 +255,6 @@ export function initSettings() {
 }
 
 /**
- * 检测是否在 Electron 或 APK 环境
- */
-function isElectron() {
-    return window.electronAPI && window.electronAPI.isElectron && window.electronAPI.isElectron();
-}
-
-/**
  * 移动端设置面板手风琴折叠
  * 768px 以下将设置组转为可折叠的手风琴
  */
@@ -349,10 +343,6 @@ function initMobileSettingsAccordion() {
     if (mq.matches) setup();
 }
 
-function isCapacitor() {
-    return window.Capacitor !== undefined;
-}
-
 /**
  * 初始化更新设置
  */
@@ -361,7 +351,7 @@ async function initUpdateSettings() {
     if (!updateSettingsSection) return;
 
     // 仅在 Electron 或 Capacitor 环境显示
-    if (!isElectron() && !isCapacitor()) {
+    if (!isElectron() && !isAndroid()) {
         updateSettingsSection.style.display = 'none';
         return;
     }
@@ -490,7 +480,7 @@ async function initUpdateSettings() {
 
             if (isElectron() && window.electronAPI && window.electronAPI.checkForUpdates) {
                 window.electronAPI.checkForUpdates();
-            } else if (isCapacitor()) {
+            } else if (isAndroid()) {
                 // APK 平台的检查更新逻辑
                 const { checkForUpdatesManually } = await import('../update/apk-updater.js');
                 await checkForUpdatesManually();

@@ -11,7 +11,7 @@ import { saveAssistantMessage } from '../messages/sync.js';
 import { setCurrentMessageIndex } from '../messages/dom-sync.js';
 import { openclawClient } from '../api/openclaw.js';
 import { ThinkTagParser } from './think-tag-parser.js';
-import { createToolCallAccumulator, handleToolCallStream } from './tool-call-handler.js';
+import { handleToolCallStream } from './tool-call-handler.js';
 
 /**
  * 处理 OpenClaw 的流式事件
@@ -21,7 +21,7 @@ export async function handleOpenClawStream(sessionId) {
     let textContent = '';
     let thinkingContent = '';
     const thinkTagParser = new ThinkTagParser();
-    const toolCallAccumulator = createToolCallAccumulator();
+    const collectedToolCalls = [];
     let hasToolCalls = false;
 
     // 事件监听器引用，用于清理
@@ -57,9 +57,9 @@ export async function handleOpenClawStream(sessionId) {
                 recordFirstToken();
                 recordTokens(text);
 
-                const parsed = thinkTagParser.feed(text);
-                if (parsed.thinking) thinkingContent += parsed.thinking;
-                if (parsed.text) textContent += parsed.text;
+                const { displayText, thinkingDelta } = thinkTagParser.processDelta(text);
+                if (thinkingDelta) thinkingContent += thinkingDelta;
+                if (displayText) textContent += displayText;
 
                 updateStreamingMessage(textContent, thinkingContent);
             }
@@ -73,10 +73,16 @@ export async function handleOpenClawStream(sessionId) {
                 case 'tool_call': {
                     hasToolCalls = true;
                     const tc = payload.data || {};
-                    toolCallAccumulator.addToolCall({
+                    let args;
+                    try {
+                        args = typeof tc.arguments === 'string' ? JSON.parse(tc.arguments) :
+                               typeof tc.function?.arguments === 'string' ? JSON.parse(tc.function.arguments) :
+                               tc.arguments || tc.function?.arguments || {};
+                    } catch { args = {}; }
+                    collectedToolCalls.push({
                         id: tc.id || `oc_tc_${Date.now()}`,
                         name: tc.name || tc.function?.name,
-                        arguments: tc.arguments || tc.function?.arguments || '{}'
+                        arguments: args
                     });
                     break;
                 }
@@ -97,13 +103,12 @@ export async function handleOpenClawStream(sessionId) {
 
             // 处理 <think> 标签剩余内容
             const remaining = thinkTagParser.flush();
-            if (remaining.thinking) thinkingContent += remaining.thinking;
-            if (remaining.text) textContent += remaining.text;
+            if (remaining.thinkingDelta) thinkingContent += remaining.thinkingDelta;
+            if (remaining.displayText) textContent += remaining.displayText;
 
             // 如果有工具调用
             if (hasToolCalls) {
-                const completedCalls = toolCallAccumulator.getCompletedCalls();
-                if (completedCalls.length > 0) {
+                if (collectedToolCalls.length > 0) {
                     if (textContent || thinkingContent) {
                         renderFinalTextWithThinking(textContent, thinkingContent);
                     }
@@ -111,13 +116,13 @@ export async function handleOpenClawStream(sessionId) {
                     const messageIndex = saveAssistantMessage({
                         textContent: textContent || '(调用工具)',
                         thinkingContent,
-                        toolCalls: completedCalls,
+                        toolCalls: collectedToolCalls,
                         streamStats: getCurrentStreamStatsData(),
                         sessionId
                     });
                     setCurrentMessageIndex(messageIndex);
 
-                    handleToolCallStream(completedCalls, {
+                    handleToolCallStream(collectedToolCalls, {
                         endpoint: openclawClient.url,
                         apiKey: openclawClient.token,
                         model: state.selectedModel,
@@ -146,10 +151,12 @@ export async function handleOpenClawStream(sessionId) {
                 finalizeOpenClawStream(textContent, thinkingContent, sessionId);
             }
 
-            eventBus.emit('stream:error', {
-                errorCode: payload?.code || 'openclaw_error',
-                errorMessage: errorMsg
-            });
+            if (sessionId === state.currentSessionId) {
+                eventBus.emit('stream:error', {
+                    errorCode: payload?.code || 'openclaw_error',
+                    errorMessage: errorMsg
+                });
+            }
 
             openclawClient.failRun(new Error(errorMsg));
             reject(new Error(errorMsg));
@@ -161,18 +168,23 @@ export async function handleOpenClawStream(sessionId) {
  * 完成 OpenClaw 流处理
  */
 function finalizeOpenClawStream(textContent, thinkingContent, sessionId) {
+    const isBackground = sessionId && sessionId !== state.currentSessionId;
+
     if (state.isToolCallPending) {
         state.isToolCallPending = false;
     }
 
     finalizeStreamStats();
 
-    if (textContent || thinkingContent) {
+    if (!isBackground && (textContent || thinkingContent)) {
         renderFinalTextWithThinking(textContent, thinkingContent);
     }
 
     recalculateStreamTokenCount({ textContent, thinkingContent, contentParts: [] });
-    appendStreamStats();
+
+    if (!isBackground) {
+        appendStreamStats();
+    }
 
     const messageIndex = saveAssistantMessage({
         textContent,
@@ -181,5 +193,7 @@ function finalizeOpenClawStream(textContent, thinkingContent, sessionId) {
         sessionId
     });
 
-    setCurrentMessageIndex(messageIndex);
+    if (!isBackground) {
+        setCurrentMessageIndex(messageIndex);
+    }
 }

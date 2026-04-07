@@ -1,97 +1,22 @@
 /**
  * 全局状态管理
  *
- * 注意：当前版本使用直接状态对象，未启用 Proxy 响应式
- * 未来可选优化：取消注释 ReactiveState 类以启用响应式状态管理
+ * 使用单层 Proxy 拦截顶层属性写入，自动通过 eventBus 发射变更事件
+ * 所有 state.xxx = value 赋值无需修改即可获得事件通知能力
+ *
+ * 设计决策：
+ * - 单层 Proxy（非递归），避免 Map/Set/Array 内部操作误触发
+ * - 事件名与 state-mutations.js 一致：state:{key} + state:property-changed
+ * - batch() 支持批量更新合并事件
  */
 
-// import { eventBus } from './events.js'; // Unused in current non-reactive state implementation
+import { eventBus } from './events.js';
 
-/* ===== 响应式状态管理（可选，未启用）=====
-class ReactiveState {
-    constructor(initialState) {
-        this._eventBus = eventBus;
-        this._state = this._makeReactive(initialState, []);
-    }
+// ========== 内部原始状态对象 ==========
 
-    _makeReactive(obj, path) {
-        if (typeof obj !== 'object' || obj === null) return obj;
-
-        // 不代理 Map, Set, DOM 元素等特殊对象
-        if (obj instanceof Map || obj instanceof Set || obj instanceof HTMLElement) {
-            return obj;
-        }
-
-        return new Proxy(obj, {
-            get: (target, prop) => {
-                const value = target[prop];
-                if (typeof value === 'object' && value !== null) {
-                    return this._makeReactive(value, [...path, prop]);
-                }
-                return value;
-            },
-            set: (target, prop, value) => {
-                const oldValue = target[prop];
-                target[prop] = value;
-
-                const fullPath = [...path, prop].join('.');
-                this._eventBus.emit(`state:${fullPath}`, { newValue: value, oldValue, path: fullPath });
-                this._eventBus.emit('state:*', { path: fullPath, newValue: value, oldValue });
-
-                return true;
-            }
-        });
-    }
-
-    get(path) {
-        return path.split('.').reduce((obj, key) => obj?.[key], this._state);
-    }
-
-    set(path, value) {
-        const keys = path.split('.');
-        const lastKey = keys.pop();
-        const target = keys.reduce((obj, key) => obj[key], this._state);
-        target[lastKey] = value;
-    }
-
-    subscribe(path, callback) {
-        return this._eventBus.on(`state:${path}`, callback);
-    }
-
-    subscribeAll(callback) {
-        return this._eventBus.on('state:*', callback);
-    }
-
-    batch(fn) {
-        const originalEmit = this._eventBus.emit;
-        const changes = [];
-
-        this._eventBus.emit = (event, data) => {
-            if (event.startsWith('state:')) {
-                changes.push({ event, data });
-            }
-        };
-
-        fn();
-
-        this._eventBus.emit = originalEmit;
-        changes.forEach(({ event, data }) => {
-            originalEmit.call(this._eventBus, event, data);
-        });
-    }
-
-    getState() {
-        return this._state;
-    }
-}
-===== 响应式状态管理结束 ===== */
-
-// 全局状态对象
-export const state = {
+const _rawState = {
     // 消息存储
     messages: [], // OpenAI 格式消息
-    geminiContents: [], // Gemini 原生格式消息
-    claudeContents: [], // Claude 原生格式消息
 
     // 消息 ID 映射（解决索引不一致问题）
     // messageId -> 数组索引，用于快速查找和防止删除错位
@@ -103,7 +28,7 @@ export const state = {
     // UI 状态
     isLoading: false,
     currentAssistantMessage: null,
-    currentAbortController: null, // 🛑 用于取消当前请求
+    currentAbortController: null, // 用于取消当前请求
     requestTimeout: 300000, // 请求超时时间（毫秒），默认 5 分钟
 
     // 图片处理
@@ -142,7 +67,7 @@ export const state = {
     },
     customHeaders: [],
 
-    // 提供商管理 (新增)
+    // 提供商管理
     providers: [],                    // 提供商列表
     currentProviderId: null,          // 当前使用的提供商 ID
     selectedModel: '',                // 当前选中的模型ID（从下拉列表）
@@ -182,14 +107,14 @@ export const state = {
     geminiApiKeyInHeader: false,
     prefillEnabled: true,
 
-    // ⭐ 新增：输出详细度配置
+    // 输出详细度配置
     verbosityEnabled: false,  // 是否启用输出详细度控制
     outputVerbosity: 'medium',  // 'low' | 'medium' | 'high'
 
-    // ⭐ Code Execution 开关
+    // Code Execution 开关
     codeExecutionEnabled: false,  // 代码执行功能（支持 Gemini、OpenAI、Claude）
 
-    // ⭐ Computer Use 开关和配置（仅 Electron 环境）
+    // Computer Use 开关和配置（仅 Electron 环境）
     computerUseEnabled: false,  // 计算机控制功能（仅 Claude + Electron）
     computerUsePermissions: {
         mouse: true,        // 允许鼠标控制
@@ -201,7 +126,7 @@ export const state = {
     bashConfig: {
         workingDirectory: '',  // 默认工作目录（空表示应用根目录）
         timeout: 30,           // 超时时间（秒）
-        requireConfirmation: false  // 是否需要用户确认
+        requireConfirmation: true   // 是否需要用户确认
     },
 
     // 工具调用兜底
@@ -215,7 +140,7 @@ export const state = {
     // 会话管理
     sessions: [],
     currentSessionId: null,
-    isSwitchingSession: false, // 🔒 防止会话切换竞态条件
+    isSwitchingSession: false, // 防止会话切换竞态条件
     backgroundTasks: new Map(),
 
     // 多回复生成
@@ -278,19 +203,92 @@ export const state = {
     tools: []            // 工具列表（内置 + MCP + 自定义）
 };
 
+// ========== Proxy 响应式包装 ==========
+
+let _batchDepth = 0;
+let _batchedChanges = [];
+
+/**
+ * 发射属性变更事件
+ * 事件名与 state-mutations.js 的 setState() 一致
+ */
+function _emitChange(key, oldValue, newValue) {
+    eventBus.emit(`state:${String(key)}`, { oldValue, newValue });
+    eventBus.emit('state:property-changed', { key: String(key), oldValue, newValue });
+}
+
+/**
+ * 全局状态对象（Proxy 包装）
+ * 拦截顶层属性写入，自动发射 eventBus 事件
+ * 所有现有的 state.xxx = value 写法无需修改即可获得事件通知
+ */
+export const state = new Proxy(_rawState, {
+    set(target, prop, value) {
+        const old = target[prop];
+
+        // 同值跳过（先检查再赋值，避免冗余写入）
+        if (Object.is(old, value)) return true;
+
+        target[prop] = value;
+
+        if (_batchDepth > 0) {
+            _batchedChanges.push({ key: prop, oldValue: old, newValue: value });
+        } else {
+            _emitChange(prop, old, value);
+        }
+
+        return true;
+    },
+
+    get(target, prop) {
+        return target[prop];
+    },
+
+    deleteProperty(target, prop) {
+        const old = target[prop];
+        delete target[prop];
+        if (_batchDepth === 0) {
+            _emitChange(prop, old, undefined);
+        }
+        return true;
+    }
+});
+
+// ========== 公共 API ==========
+
 // 重新导出 elements（便于其他模块导入）
 export { elements } from './elements.js';
 
-// 便捷函数
+// 获取当前状态
 export const getState = () => state;
 
-// 占位订阅函数（如果未来启用 Proxy，这里会实现真正的订阅）
+/**
+ * 订阅特定属性变更
+ * @param {string} path - 属性名（如 'isLoading', 'apiFormat'）
+ * @param {Function} callback - ({ oldValue, newValue }) => void
+ * @returns {Function} 取消订阅函数
+ */
 export const subscribe = (path, callback) => {
-    console.warn('State subscription is not enabled. Reactive state is not implemented yet.');
-    return () => {}; // 返回空的取消订阅函数
+    return eventBus.on(`state:${path}`, callback);
 };
 
+/**
+ * 批量更新状态，合并事件到批量结束后统一发射
+ * 避免高频连续赋值时产生过多中间事件
+ * @param {Function} fn - 批量更新函数
+ */
 export const batch = (fn) => {
-    // 直接执行，无批处理
-    fn();
+    _batchDepth++;
+    try {
+        fn();
+    } finally {
+        _batchDepth--;
+        if (_batchDepth === 0 && _batchedChanges.length > 0) {
+            const changes = _batchedChanges;
+            _batchedChanges = [];
+            for (const change of changes) {
+                _emitChange(change.key, change.oldValue, change.newValue);
+            }
+        }
+    }
 };
