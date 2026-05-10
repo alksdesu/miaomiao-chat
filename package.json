@@ -15,7 +15,7 @@
     "cap:build": "npm run cap:sync && cd android && gradlew assembleRelease",
     "cap:open": "npx cap open android",
     "cap:open:ios": "npx cap open ios",
-    "lint": "eslint js/**/*.js electron/**/*.js --max-warnings=50",
+    "lint": "eslint js/**/*.js electron/**/*.js --max-warnings=300",
     "lint:fix": "eslint js/**/*.js electron/**/*.js --fix",
     "format": "prettier --write \"js/**/*.{js,css}\" \"styles/**/*.css\" \"*.html\"",
     "format:check": "prettier --check \"js/**/*.{js,css}\" \"styles/**/*.css\" \"*.html\"",

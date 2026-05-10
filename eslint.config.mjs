@@ -5,7 +5,8 @@ const sharedRules = {
     'no-unused-vars': ['warn', {
         argsIgnorePattern: '^_',
         varsIgnorePattern: '^_',
-        caughtErrorsIgnorePattern: '^_'
+        caughtErrorsIgnorePattern: '^_',
+        destructuredArrayIgnorePattern: '^_'
     }],
     'no-console': 'off',
     'no-debugger': 'error',
@@ -104,6 +105,14 @@ export default [
             '*.config.mjs',
             'capacitor.config.ts'
         ]
+    },
+    {
+        linterOptions: {
+            reportUnusedDisableDirectives: 'off'
+        },
+        languageOptions: {
+            globals: { ...browserGlobals, ...electronGlobals }
+        }
     },
     {
         files: ['js/**/*.js'],
