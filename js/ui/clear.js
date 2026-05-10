@@ -8,8 +8,18 @@ import { elements } from '../core/elements.js';
 import { saveCurrentSessionMessages } from '../state/sessions.js';
 import { showConfirmDialog } from '../utils/dialogs.js';
 import { clearIdMappings } from '../api/format-converter.js';
-import { replaceAllMessages } from '../core/state-mutations.js';
+import {
+    replaceAllMessages,
+    setLastUserMessage,
+    setEditingIndex,
+    setCurrentReplies,
+    setSelectedReplyIndex,
+    setCurrentAssistantMessage,
+    setEditingElement,
+    setSessionDirty
+} from '../core/state-mutations.js';
 import { clearUndoStack } from '../tools/undo.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * 处理清空当前会话
@@ -18,10 +28,7 @@ export async function handleClear() {
     // 流式加载中不允许清空
     if (state.isLoading) return;
 
-    const confirmed = await showConfirmDialog(
-        '确定要清空当前会话的所有对话吗？',
-        '确认清空'
-    );
+    const confirmed = await showConfirmDialog('确定要清空当前会话的所有对话吗？', '确认清空');
     if (!confirmed) return;
 
     // 通过安全函数清空三种格式的消息
@@ -34,22 +41,24 @@ export async function handleClear() {
     clearUndoStack();
 
     // 重置相关状态
-    state.lastUserMessage = null;
-    state.editingIndex = null;
-    state.currentReplies = [];
-    state.selectedReplyIndex = 0;
-    state.currentAssistantMessage = null;
+    setLastUserMessage(null);
+    setEditingIndex(null);
+    setCurrentReplies([]);
+    setSelectedReplyIndex(0);
+    setCurrentAssistantMessage(null);
 
     // 清除编辑状态
     if (state.editingElement) {
         state.editingElement.classList.remove('editing');
-        state.editingElement = null;
+        setEditingElement(null);
     }
 
     // 清空消息区域
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     elements.messagesArea.innerHTML = '';
 
     // 恢复欢迎消息
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     elements.messagesArea.innerHTML = `
         <div class="welcome-message glass">
             <div class="gemini-logo">
@@ -68,7 +77,7 @@ export async function handleClear() {
     `;
 
     // 标记脏并立即保存（force=true 确保空消息写入 DB）
-    state.sessionDirty = true;
+    setSessionDirty(true);
     await saveCurrentSessionMessages(true);
 }
 
@@ -79,5 +88,5 @@ export function initClearChat() {
     // 绑定清空按钮
     elements.clearButton?.addEventListener('click', handleClear);
 
-    console.log('Clear chat initialized');
+    logger.debug('Clear chat initialized');
 }

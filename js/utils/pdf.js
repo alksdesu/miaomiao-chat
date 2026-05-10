@@ -1,3 +1,5 @@
+import { logger } from './logger.js';
+
 /**
  * PDF 渲染工具模块
  * 使用 pdf.js 将 PDF 文件逐页渲染为图片
@@ -22,10 +24,10 @@ async function loadPdfJs() {
         // 设置 worker 路径
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'libs/pdfjs/pdf.worker.min.mjs';
 
-        console.log('[PDF] pdf.js 已加载, 版本:', pdfjsLib.version);
+        logger.debug('[PDF] pdf.js 已加载, 版本:', pdfjsLib.version);
         return pdfjsLib;
     } catch (error) {
-        console.error('[PDF] pdf.js 加载失败:', error);
+        logger.error('[PDF] pdf.js 加载失败:', error);
         throw new Error('PDF 渲染库加载失败，请检查 libs/pdfjs/ 目录');
     }
 }
@@ -49,7 +51,7 @@ export async function renderPdfToImages(pdfDataUrl, options = {}) {
         format = 'image/jpeg',
         quality = 0.85,
         maxPages = 20,
-        onProgress = null,
+        onProgress = null
     } = options;
 
     // 加载 pdf.js
@@ -64,10 +66,12 @@ export async function renderPdfToImages(pdfDataUrl, options = {}) {
     const pdf = await loadingTask.promise;
     const totalPages = Math.min(pdf.numPages, maxPages);
 
-    console.log(`[PDF] 开始渲染: 共 ${pdf.numPages} 页, 将渲染 ${totalPages} 页, scale=${scale}`);
+    logger.debug(`[PDF] 开始渲染: 共 ${pdf.numPages} 页, 将渲染 ${totalPages} 页, scale=${scale}`);
 
     if (pdf.numPages > maxPages) {
-        console.warn(`[PDF] PDF 共 ${pdf.numPages} 页，超过上限 ${maxPages}，只渲染前 ${maxPages} 页`);
+        logger.warn(
+            `[PDF] PDF 共 ${pdf.numPages} 页，超过上限 ${maxPages}，只渲染前 ${maxPages} 页`
+        );
     }
 
     const images = [];
@@ -87,7 +91,7 @@ export async function renderPdfToImages(pdfDataUrl, options = {}) {
             // 渲染到 canvas
             await page.render({
                 canvasContext: ctx,
-                viewport: viewport,
+                viewport: viewport
             }).promise;
 
             // 转换为图片 Data URL
@@ -104,10 +108,10 @@ export async function renderPdfToImages(pdfDataUrl, options = {}) {
                 name: `pdf_page_${pageNum}.${ext}`,
                 type: format,
                 category: 'image',
-                size: imageSize,
+                size: imageSize
             });
 
-            console.log(
+            logger.debug(
                 `[PDF] 第 ${pageNum}/${totalPages} 页渲染完成: ${viewport.width}x${viewport.height} → ${(imageSize / 1024).toFixed(0)}KB`
             );
 
@@ -116,7 +120,7 @@ export async function renderPdfToImages(pdfDataUrl, options = {}) {
                 onProgress(pageNum, totalPages);
             }
         } catch (err) {
-            console.error(`[PDF] 第 ${pageNum} 页渲染失败:`, err);
+            logger.error(`[PDF] 第 ${pageNum} 页渲染失败:`, err);
             // 继续渲染其他页
         }
     }
@@ -126,6 +130,6 @@ export async function renderPdfToImages(pdfDataUrl, options = {}) {
     canvas.width = 0;
     canvas.height = 0;
 
-    console.log(`[PDF] 渲染完成: ${images.length} 张图片`);
+    logger.debug(`[PDF] 渲染完成: ${images.length} 张图片`);
     return images;
 }

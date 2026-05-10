@@ -14,13 +14,19 @@
     border-radius: 10px;
     width: 360px;
     max-width: calc(100vw - 40px);
-    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.18);
+    box-shadow: 0 4px 24px rgba(var(--shadow-color-rgb), 0.18);
     animation: approvalSlideIn 0.3s ease-out;
 }
 
 @keyframes approvalSlideIn {
-    from { transform: translateX(120px); opacity: 0; }
-    to { transform: translateX(0); opacity: 1; }
+    from {
+        transform: translateX(120px);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
 }
 
 .openclaw-approval-header {
@@ -145,6 +151,6 @@
     }
 
     .openclaw-approval-actions {
-        padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+        padding-bottom: calc(12px + var(--app-safe-bottom));
     }
 }

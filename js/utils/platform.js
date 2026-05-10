@@ -22,9 +22,15 @@ export function detectPlatform() {
     return _platform;
 }
 
-export function isElectron() { return detectPlatform() === 'electron'; }
-export function isAndroid() { return detectPlatform() === 'android'; }
-export function isWeb()     { return detectPlatform() === 'web'; }
+export function isElectron() {
+    return detectPlatform() === 'electron';
+}
+export function isAndroid() {
+    return detectPlatform() === 'android';
+}
+export function isWeb() {
+    return detectPlatform() === 'web';
+}
 
 /**
  * Electron IPC renderer（仅 Electron 环境可用）

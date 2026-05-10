@@ -5,16 +5,49 @@
  */
 
 import { state } from '../core/state.js';
-import { elements, isElementsInitialized } from '../core/elements.js';
+import { isElementsInitialized } from '../core/elements.js';
 import { eventBus } from '../core/events.js';
-import { saveSessionToDB, loadAllSessionsFromDB, deleteSessionFromDB, migrateFromLocalStorage, savePreference, loadPreference, saveSessionMessages, loadSessionMessages, saveSessionAtomic } from './storage.js';
+import {
+    saveSessionToDB,
+    loadAllSessionsFromDB,
+    deleteSessionFromDB,
+    migrateFromLocalStorage,
+    savePreference,
+    loadPreference,
+    loadSessionMessages,
+    saveSessionAtomic
+} from './storage.js';
 import { generateSessionId, generateSessionName } from '../utils/helpers.js';
 import { renderSessionMessages } from '../messages/restore.js';
-import { replaceAllMessages } from '../core/state-mutations.js';
+import {
+    replaceAllMessages,
+    setIsLoading,
+    setIsSending,
+    setCurrentAssistantMessage,
+    setCurrentAbortController,
+    setCurrentSessionId,
+    setSelectedReplyIndex,
+    setSessionDirty,
+    setEditingIndex,
+    setEditingElement,
+    setSessions,
+    setIsSwitchingSession,
+    setLastUserMessage,
+    setMessageHistory,
+    setCurrentReplies,
+    setUploadedImages,
+    setApiFormat as setStateApiFormat
+} from '../core/state-mutations.js';
 import { requestStateMachine } from '../core/request-state-machine.js';
 import { broadcastEvent } from './tab-sync.js';
-import { PartType } from '../messages/schema.js';
-import { isElectron, isAndroid, getIpcRenderer } from '../utils/platform.js';
+import { buildSessionSearchIndex } from './session-search-index.js';
+import { getTextContent } from '../messages/schema.js';
+import {
+    replaceVideoDataUrlsDeep,
+    isElectronIpcAvailable,
+    isAndroidFilesystemAvailable
+} from './video-persistence.js';
+import { logger } from '../utils/logger.js';
 
 // 防抖保存定时器
 let saveSessionTimer = null;
@@ -24,161 +57,13 @@ const _deletedSessionIds = new Set();
 // 会话切换 AbortController
 let sessionSwitchController = null;
 
-const VIDEO_DATA_URL_PATTERN = /^data:(video\/[^;]+);base64,/i;
 const persistedVideoUrlCache = new Map();
-const ANDROID_VIDEO_DIRECTORY = 'DATA';
-const ANDROID_VIDEO_FOLDER = 'message-videos';
-
-const VIDEO_MIME_TO_EXTENSION = {
-    'video/mp4': 'mp4',
-    'video/webm': 'webm',
-    'video/ogg': 'ogv',
-    'video/quicktime': 'mov',
-    'video/x-matroska': 'mkv',
-    'video/x-msvideo': 'avi',
-    'video/mpeg': 'mpeg'
-};
 
 function cloneSerializable(data) {
     if (typeof globalThis.structuredClone === 'function') {
         return globalThis.structuredClone(data);
     }
     return JSON.parse(JSON.stringify(data));
-}
-
-function isElectronIpcAvailable() {
-    return isElectron() && !!getIpcRenderer()?.invoke;
-}
-
-function getCapacitorFilesystem() {
-    return window?.Capacitor?.Plugins?.Filesystem || null;
-}
-
-function isAndroidFilesystemAvailable() {
-    return isAndroid() && !!getCapacitorFilesystem();
-}
-
-function getVideoExtensionByMimeType(mimeType) {
-    if (!mimeType || typeof mimeType !== 'string') return 'mp4';
-    return VIDEO_MIME_TO_EXTENSION[mimeType.toLowerCase()] || 'mp4';
-}
-
-async function ensureAndroidVideoFolder(filesystem) {
-    try {
-        await filesystem.mkdir({
-            path: ANDROID_VIDEO_FOLDER,
-            directory: ANDROID_VIDEO_DIRECTORY,
-            recursive: true
-        });
-    } catch (error) {
-        const errorMessage = String(error?.message || '');
-        if (/exist|already/i.test(errorMessage)) {
-            return;
-        }
-        throw error;
-    }
-}
-
-async function persistVideoDataUrlOnAndroid(dataUrl, cache) {
-    const matched = dataUrl.match(VIDEO_DATA_URL_PATTERN);
-    if (!matched) return dataUrl;
-
-    const filesystem = getCapacitorFilesystem();
-    if (!filesystem) return dataUrl;
-
-    const mimeType = matched[1]?.toLowerCase() || 'video/mp4';
-    const base64 = dataUrl.slice(matched[0].length);
-
-    await ensureAndroidVideoFolder(filesystem);
-
-    const extension = getVideoExtensionByMimeType(mimeType);
-    const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${extension}`;
-    const filePath = `${ANDROID_VIDEO_FOLDER}/${fileName}`;
-
-    const writeResult = await filesystem.writeFile({
-        path: filePath,
-        data: base64,
-        directory: ANDROID_VIDEO_DIRECTORY,
-        recursive: true
-    });
-
-    let playableUrl = writeResult?.uri || '';
-    if (window.Capacitor?.convertFileSrc && playableUrl) {
-        playableUrl = window.Capacitor.convertFileSrc(playableUrl);
-    }
-
-    if (playableUrl) {
-        cache.set(dataUrl, playableUrl);
-        return playableUrl;
-    }
-
-    return dataUrl;
-}
-
-async function persistVideoDataUrl(dataUrl, cache) {
-    if (!VIDEO_DATA_URL_PATTERN.test(dataUrl)) return dataUrl;
-
-    if (cache.has(dataUrl)) {
-        return cache.get(dataUrl);
-    }
-
-    const mimeMatch = dataUrl.match(/^data:(video\/[^;]+);base64,/i);
-    const mimeType = (mimeMatch?.[1] || '').toLowerCase();
-
-    if (isElectronIpcAvailable()) {
-        try {
-            const result = await window.electron.ipcRenderer.invoke('mcp:store-video', {
-                dataUrl,
-                mimeType
-            });
-
-            if (result?.success && result.fileUrl) {
-                cache.set(dataUrl, result.fileUrl);
-                return result.fileUrl;
-            }
-        } catch (error) {
-            console.error('[Session] Electron 视频持久化失败:', error);
-        }
-    }
-
-    if (isAndroidFilesystemAvailable()) {
-        try {
-            const androidUrl = await persistVideoDataUrlOnAndroid(dataUrl, cache);
-            if (androidUrl !== dataUrl) {
-                return androidUrl;
-            }
-        } catch (error) {
-            console.error('[Session] Android 视频持久化失败:', error);
-        }
-    }
-
-    cache.set(dataUrl, dataUrl);
-    return dataUrl;
-}
-
-async function replaceVideoDataUrlsDeep(value, cache) {
-    if (typeof value === 'string') {
-        if (!VIDEO_DATA_URL_PATTERN.test(value)) return value;
-        return await persistVideoDataUrl(value, cache);
-    }
-
-    if (Array.isArray(value)) {
-        for (let index = 0; index < value.length; index++) {
-            value[index] = await replaceVideoDataUrlsDeep(value[index], cache);
-        }
-        return value;
-    }
-
-    if (!value || typeof value !== 'object') {
-        return value;
-    }
-
-    for (const [key, nestedValue] of Object.entries(value)) {
-        // 保持原始 inlineData（主要用于 Gemini 历史兼容）
-        if (key === 'inlineData' || key === 'inline_data') continue;
-        value[key] = await replaceVideoDataUrlsDeep(nestedValue, cache);
-    }
-    return value;
 }
 
 /**
@@ -189,7 +74,7 @@ async function replaceVideoDataUrlsDeep(value, cache) {
  */
 export async function createPersistedSessionPayload(source = {}) {
     const clonedPayload = {
-        messages: cloneSerializable(source.messages || []),
+        messages: cloneSerializable(source.messages || [])
     };
 
     if (!isElectronIpcAvailable() && !isAndroidFilesystemAvailable()) {
@@ -216,10 +101,10 @@ export async function loadSessions() {
         await migrateFromLocalStorage();
 
         // 从 IndexedDB 加载会话
-        state.sessions = await loadAllSessionsFromDB();
+        setSessions(await loadAllSessionsFromDB());
     } catch (e) {
-        console.error('加载会话失败:', e);
-        state.sessions = [];
+        logger.error('加载会话失败:', e);
+        setSessions([]);
     }
 
     // 加载当前会话ID
@@ -234,7 +119,7 @@ export async function loadSessions() {
             currentId = localStorage.getItem('geminiCurrentSessionId');
         }
     } catch (error) {
-        console.error('加载当前会话ID失败:', error);
+        logger.error('加载当前会话ID失败:', error);
         currentId = localStorage.getItem('geminiCurrentSessionId');
     }
 
@@ -242,9 +127,9 @@ export async function loadSessions() {
     if (state.sessions.length === 0) {
         const newSession = await createNewSession(false);
         // 必须设置 currentSessionId，否则 saveCurrentSessionMessages 不会保存
-        state.currentSessionId = newSession.id;
+        setCurrentSessionId(newSession.id);
         await saveCurrentSessionId();
-    } else if (currentId && state.sessions.find(s => s.id === currentId)) {
+    } else if (currentId && state.sessions.find((s) => s.id === currentId)) {
         await switchToSession(currentId, false);
     } else {
         // 切换到最新的会话
@@ -268,7 +153,7 @@ export async function saveCurrentSessionId() {
             localStorage.setItem('geminiCurrentSessionId', state.currentSessionId || '');
         }
     } catch (error) {
-        console.error('保存当前会话ID失败:', error);
+        logger.error('保存当前会话ID失败:', error);
         // 降级处理
         localStorage.setItem('geminiCurrentSessionId', state.currentSessionId || '');
     }
@@ -284,30 +169,35 @@ export async function saveCurrentSessionMessages(force = false) {
     // 跳过无变更的保存（除非强制）
     if (!force && !state.sessionDirty) return;
 
-    const session = state.sessions.find(s => s.id === state.currentSessionId);
+    const session = state.sessions.find((s) => s.id === state.currentSessionId);
     if (!session) return;
     session.apiFormat = state.apiFormat;
     session.updatedAt = Date.now();
+
+    // 保存当前预填充状态快照
+    session.prefillSnapshot = {
+        prefillEnabled: state.prefillEnabled,
+        systemPrompt: state.systemPrompt,
+        prefillMessages: JSON.parse(JSON.stringify(state.prefillMessages || [])),
+        charName: state.charName,
+        userName: state.userName,
+        systemPrefillMessages: JSON.parse(JSON.stringify(state.systemPrefillMessages || [])),
+        geminiSystemPartsEnabled: state.geminiSystemPartsEnabled,
+        geminiSystemParts: JSON.parse(JSON.stringify(state.geminiSystemParts || []))
+    };
+
+    session.monitorEnabled = state.monitorEnabled ?? false;
 
     // 自动生成会话名称（取第一条用户消息）
     if (!session.customName) {
         let content = '';
 
         if (state.messages.length > 0) {
-            const firstUserMsg = state.messages.find(m => m.role === 'user');
+            const firstUserMsg = state.messages.find((m) => m.role === 'user');
             if (firstUserMsg) {
-                // 新格式优先：从 parts 读取
-                if (firstUserMsg.parts && Array.isArray(firstUserMsg.parts)) {
-                    const tp = firstUserMsg.parts.find(p => p.type === PartType.TEXT);
-                    if (tp) content = tp.text;
-                }
-                // 旧格式回退
+                // 用 schema 工具函数提取（内部处理新/旧格式回退）
                 if (!content) {
-                    content = typeof firstUserMsg.content === 'string'
-                        ? firstUserMsg.content
-                        : (Array.isArray(firstUserMsg.content)
-                            ? (firstUserMsg.content.find(p => p.type === 'text')?.text || '')
-                            : '');
+                    content = getTextContent(firstUserMsg);
                 }
             }
         }
@@ -320,17 +210,18 @@ export async function saveCurrentSessionMessages(force = false) {
     let persistedPayload;
     try {
         persistedPayload = await createPersistedSessionPayload({
-            messages: state.messages,
+            messages: state.messages
         });
     } catch (error) {
-        console.error('[Session] 构建持久化快照失败，回退到原始消息:', error);
+        logger.error('[Session] 构建持久化快照失败，回退到原始消息:', error);
         persistedPayload = {
-            messages: cloneSerializable(state.messages),
+            messages: cloneSerializable(state.messages)
         };
     }
 
     // 保存到 IndexedDB（消息和元数据原子写入同一事务）
     try {
+        const searchIndex = buildSessionSearchIndex(state.messages);
         session.messageCount = state.messages.length;
         const sessionMeta = {
             id: session.id,
@@ -340,16 +231,22 @@ export async function saveCurrentSessionMessages(force = false) {
             updatedAt: session.updatedAt,
             customName: session.customName,
             messageCount: session.messageCount,
+            prefillSnapshot: session.prefillSnapshot,
+            folderId: session.folderId ?? null,
+            monitorEnabled: session.monitorEnabled ?? false
         };
-        await saveSessionAtomic(sessionMeta, persistedPayload);
-        state.sessionDirty = false;
+        await saveSessionAtomic(sessionMeta, {
+            ...persistedPayload,
+            searchIndex
+        });
+        setSessionDirty(false);
         broadcastEvent('session-updated', {
             sessionId: session.id,
             updatedAt: session.updatedAt,
             messageCount: session.messageCount
         });
     } catch (e) {
-        console.error('保存会话到 IndexedDB 失败:', e);
+        logger.error('保存会话到 IndexedDB 失败:', e);
         eventBus.emit('ui:notification', { message: '保存会话失败', type: 'error' });
     }
 
@@ -375,11 +272,14 @@ export function debouncedSaveSession() {
 export async function createNewSession(shouldSwitch = true) {
     // 检查当前会话是否为空，如果为空则直接复用
     // v4 架构下 session 是纯元数据，消息在 state.messages 中
-    const currentSession = state.sessions.find(s => s.id === state.currentSessionId);
+    const currentSession = state.sessions.find((s) => s.id === state.currentSessionId);
     if (currentSession) {
         const hasMessages = state.messages.length > 0;
         if (!hasMessages && !currentSession.customName) {
-            eventBus.emit('ui:notification', { message: '当前会话为空，无需创建新会话', type: 'info' });
+            eventBus.emit('ui:notification', {
+                message: '当前会话为空，无需创建新会话',
+                type: 'info'
+            });
             return currentSession;
         }
     }
@@ -395,6 +295,18 @@ export async function createNewSession(shouldSwitch = true) {
         updatedAt: Date.now(),
         customName: false,
         messageCount: 0,
+        folderId: null,
+        monitorEnabled: false,
+        prefillSnapshot: {
+            prefillEnabled: true,
+            systemPrompt: '',
+            prefillMessages: [],
+            charName: 'Assistant',
+            userName: 'User',
+            systemPrefillMessages: [],
+            geminiSystemPartsEnabled: false,
+            geminiSystemParts: []
+        }
     };
 
     state.sessions.unshift(newSession);
@@ -403,7 +315,7 @@ export async function createNewSession(shouldSwitch = true) {
     try {
         await saveSessionToDB(newSession);
     } catch (e) {
-        console.error('保存新会话失败:', e);
+        logger.error('保存新会话失败:', e);
     }
 
     if (shouldSwitch) {
@@ -433,7 +345,7 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
 
     // 如果正在切换，取消当前切换，开始新的切换
     if (state.isSwitchingSession && sessionSwitchController) {
-        console.warn(`[Session] 取消正在进行的会话切换，切换到新目标: ${sessionId}`);
+        logger.warn(`[Session] 取消正在进行的会话切换，切换到新目标: ${sessionId}`);
         sessionSwitchController.abort();
     }
 
@@ -441,20 +353,8 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
     sessionSwitchController = new AbortController();
     const { signal } = sessionSwitchController;
 
-    // 检查是否有未保存的内容（如果提供了 elements）
-    if (elements) {
-        const hasUnsavedContent = elements.userInput?.value.trim().length > 0 ||
-                                  state.editingIndex !== null ||
-                                  state.uploadedImages.length > 0;
-        if (hasUnsavedContent) {
-            // 发出事件，让 UI 层处理确认对话框
-            eventBus.emit('sessions:confirm-switch', { sessionId, saveOld });
-            return;
-        }
-    }
-
     // 设置切换标志
-    state.isSwitchingSession = true;
+    setIsSwitchingSession(true);
 
     // 触发会话切换前事件（用于清理）
     eventBus.emit('session:before-switch');
@@ -467,7 +367,7 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
     try {
         // 检查是否被中断
         if (signal.aborted) {
-            console.log('[Session] 会话切换被取消');
+            logger.debug('[Session] 会话切换被取消');
             return;
         }
 
@@ -478,7 +378,7 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
         const activeAbortController = requestStateMachine.abortController;
         const hasActiveRequest = requestStateMachine.isBusy() && activeAbortController;
         if (oldSessionId && hasActiveRequest) {
-            console.log(`[sessions.js] 将会话 ${oldSessionId} 的任务移到后台`);
+            logger.debug(`[sessions.js] 将会话 ${oldSessionId} 的任务移到后台`);
             state.backgroundTasks.set(oldSessionId, {
                 abortController: activeAbortController,
                 messageElement: state.currentAssistantMessage,
@@ -486,7 +386,7 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
             });
 
             // 立即清空全局引用，阻止后台流的 rAF 回调继续渲染到旧 DOM
-            state.currentAssistantMessage = null;
+            setCurrentAssistantMessage(null);
 
             eventBus.emit('ui:notification', {
                 message: '上一个会话的生成将在后台继续',
@@ -498,7 +398,7 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
             const cleanupTimer = setTimeout(() => {
                 const task = state.backgroundTasks.get(oldSessionId);
                 if (task && Date.now() - task.createdAt > 180000) {
-                    console.warn('[sessions.js] 清理超时后台任务:', oldSessionId);
+                    logger.warn('[sessions.js] 清理超时后台任务:', oldSessionId);
                     task.abortController?.abort();
                     state.backgroundTasks.delete(oldSessionId);
                     eventBus.emit('sessions:updated');
@@ -521,32 +421,32 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
 
         // 再次检查是否被中断
         if (signal.aborted) {
-            console.log('[Session] 会话切换在保存后被取消');
+            logger.debug('[Session] 会话切换在保存后被取消');
             return;
         }
 
-        const session = state.sessions.find(s => s.id === sessionId);
+        const session = state.sessions.find((s) => s.id === sessionId);
         if (!session) {
-            console.error(`会话 ${sessionId} 不存在`);
+            logger.error(`会话 ${sessionId} 不存在`);
             return;
         }
 
         // 切换会话 - 从 IndexedDB 按需加载消息
-        state.currentSessionId = sessionId;
+        setCurrentSessionId(sessionId);
 
         // v4: 从 messages store 按需加载（不再从内存中的 session 对象取消息）
         let msgData = null;
         try {
             msgData = await loadSessionMessages(sessionId);
         } catch (e) {
-            console.error('[Session] 从 IndexedDB 加载消息失败:', e);
+            logger.error('[Session] 从 IndexedDB 加载消息失败:', e);
         }
 
         // 兼容: 如果 messages store 没有数据，尝试从 session 对象中取（v3 未迁移数据）
         if (!msgData) {
             if (session._pendingMessages) {
                 msgData = {
-                    messages: session._pendingMessages,
+                    messages: session._pendingMessages
                 };
             } else {
                 msgData = { messages: [] };
@@ -555,15 +455,15 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
 
         replaceAllMessages(msgData.messages || []);
 
-        state.lastUserMessage = null;
-        state.messageHistory = [];
+        setLastUserMessage(null);
+        setMessageHistory([]);
 
         // 退出编辑模式（清理 DOM 状态）
         if (state.editingElement) {
             state.editingElement.classList.remove('editing');
         }
-        state.editingIndex = null;
-        state.editingElement = null;
+        setEditingIndex(null);
+        setEditingElement(null);
 
         // 清空输入框
         if (elements && elements.userInput) {
@@ -574,41 +474,89 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
         // 通知 UI 更新编辑按钮状态
         eventBus.emit('editor:mode-changed', { isEditing: false });
 
-        state.currentReplies = [];
-        state.selectedReplyIndex = 0;
-        state.uploadedImages = [];
+        setCurrentReplies([]);
+        setSelectedReplyIndex(0);
+        setUploadedImages([]);
 
         // 更新图片预览（清空）
         eventBus.emit('ui:update-image-preview');
 
         // 恢复会话的 API 格式
         if (session.apiFormat && session.apiFormat !== state.apiFormat) {
-            state.apiFormat = session.apiFormat;
-            eventBus.emit('config:format-change-requested', { format: session.apiFormat, shouldFetchModels: false });
+            setStateApiFormat(session.apiFormat);
+            eventBus.emit('config:format-change-requested', {
+                format: session.apiFormat,
+                shouldFetchModels: false
+            });
         }
+
+        // 恢复预填充快照（兼容旧字段 prefillConfig）
+        const ps = session.prefillSnapshot || session.prefillConfig;
+        if (ps) {
+            state.prefillEnabled = ps.prefillEnabled ?? true;
+            state.systemPrompt = ps.systemPrompt ?? '';
+            state.prefillMessages = ps.prefillMessages
+                ? JSON.parse(JSON.stringify(ps.prefillMessages))
+                : [];
+            state.charName = ps.charName ?? 'Assistant';
+            state.userName = ps.userName ?? 'User';
+            state.systemPrefillMessages = ps.systemPrefillMessages
+                ? JSON.parse(JSON.stringify(ps.systemPrefillMessages))
+                : [];
+            state.geminiSystemPartsEnabled = ps.geminiSystemPartsEnabled ?? false;
+            state.geminiSystemParts = ps.geminiSystemParts
+                ? JSON.parse(JSON.stringify(ps.geminiSystemParts))
+                : [];
+        } else {
+            state.prefillEnabled = true;
+            state.systemPrompt = '';
+            state.prefillMessages = [];
+            state.charName = 'Assistant';
+            state.userName = 'User';
+            state.systemPrefillMessages = [];
+            state.geminiSystemPartsEnabled = false;
+            state.geminiSystemParts = [];
+        }
+        eventBus.emit('config:sync-prefill-ui');
+
+        // 恢复 AI Monitor 状态
+        state.monitorEnabled = session.monitorEnabled ?? false;
+        import('../devtools/monitor-state.js')
+            .then(({ syncMonitorOnSessionSwitch }) => {
+                syncMonitorOnSessionSwitch(session);
+            })
+            .catch(() => {});
 
         // 检查目标会话是否有后台任务
         const backgroundTask = state.backgroundTasks.get(sessionId);
         if (backgroundTask) {
             // 恢复后台任务的状态
-            state.isLoading = true;
-            state.currentAbortController = backgroundTask.abortController;
+            setIsLoading(true);
+            setCurrentAbortController(backgroundTask.abortController);
             // currentAssistantMessage 将在 renderSessionMessages 后自动恢复
-            console.log(`[sessions.js] 恢复会话 ${sessionId} 的后台任务, state.isLoading =`, state.isLoading);
+            logger.debug(
+                `[sessions.js] 恢复会话 ${sessionId} 的后台任务, state.isLoading =`,
+                state.isLoading
+            );
 
             // 🔧 显示取消按钮（恢复后台任务时）
             eventBus.emit('ui:show-cancel-button');
         } else {
             // 🔧 没有后台任务，完全重置状态和UI（修复切换会话后按钮卡住的问题）
-            state.isLoading = false;
-            state.isSending = false;  // 重置发送锁，防止跨会话锁定
-            state.currentAssistantMessage = null;
-            state.currentAbortController = null;
+            setIsLoading(false);
+            setIsSending(false);
+            setCurrentAssistantMessage(null);
+            setCurrentAbortController(null);
 
             // 清除发送锁超时定时器（通过状态机统一管理）
             requestStateMachine.clearSendLockTimeout();
 
-            console.log('[sessions.js] 切换到空闲会话，已重置 state.isLoading =', state.isLoading, ', state.isSending =', state.isSending);
+            logger.debug(
+                '[sessions.js] 切换到空闲会话，已重置 state.isLoading =',
+                state.isLoading,
+                ', state.isSending =',
+                state.isSending
+            );
 
             // 重置 UI 按钮状态
             eventBus.emit('ui:reset-input-buttons');
@@ -616,7 +564,7 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
 
         // 检查是否被中断
         if (signal.aborted) {
-            console.log('[Session] 会话切换在 UI 更新前被取消');
+            logger.debug('[Session] 会话切换在 UI 更新前被取消');
             return;
         }
 
@@ -627,7 +575,7 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
 
         // 最后检查是否被中断
         if (signal.aborted) {
-            console.log('[Session] 会话切换在渲染后被取消');
+            logger.debug('[Session] 会话切换在渲染后被取消');
             return;
         }
 
@@ -637,7 +585,7 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
             requestAnimationFrame(() => {
                 // 二次检查：确保会话没有再次切换
                 if (state.currentSessionId !== sessionId) {
-                    console.warn('[sessions.js] 会话已切换，取消后台任务恢复');
+                    logger.warn('[sessions.js] 会话已切换，取消后台任务恢复');
                     return;
                 }
 
@@ -645,17 +593,19 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
                     // 直接使用 document.getElementById 避免 Proxy 问题
                     const messagesArea = document.getElementById('messages');
                     if (!messagesArea) {
-                        console.error('[sessions.js] messagesArea 不存在');
+                        logger.error('[sessions.js] messagesArea 不存在');
                         return;
                     }
 
-                    const lastAssistantMsg = messagesArea.querySelector('.message.assistant:last-child .message-content');
+                    const lastAssistantMsg = messagesArea.querySelector(
+                        '.message.assistant:last-child .message-content'
+                    );
                     if (lastAssistantMsg) {
-                        state.currentAssistantMessage = lastAssistantMsg;
-                        console.log('[sessions.js] 后台任务 DOM 引用已恢复（已保存的消息）');
+                        setCurrentAssistantMessage(lastAssistantMsg);
+                        logger.debug('[sessions.js] 后台任务 DOM 引用已恢复（已保存的消息）');
                     } else {
                         // 未找到消息框，创建新的占位符（消息还没保存到数组）
-                        console.log('[sessions.js] 未找到助手消息，创建新占位符（正在流式输出）');
+                        logger.debug('[sessions.js] 未找到助手消息，创建新占位符（正在流式输出）');
 
                         // 创建消息框（与 handler.js 中的逻辑一致）
                         const messageDiv = document.createElement('div');
@@ -670,7 +620,9 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
 
                         const contentDiv = document.createElement('div');
                         contentDiv.className = 'message-content';
-                        contentDiv.innerHTML = '<div class="thinking-dots"><span></span><span></span><span></span></div>';
+                        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
+                        contentDiv.innerHTML =
+                            '<div class="thinking-dots"><span></span><span></span><span></span></div>';
 
                         messageDiv.appendChild(avatar);
                         contentWrapper.appendChild(contentDiv);
@@ -680,11 +632,11 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
                         messagesArea.appendChild(messageDiv);
 
                         // 恢复引用
-                        state.currentAssistantMessage = contentDiv;
-                        console.log('[sessions.js] 后台任务占位符已创建');
+                        setCurrentAssistantMessage(contentDiv);
+                        logger.debug('[sessions.js] 后台任务占位符已创建');
                     }
                 } catch (error) {
-                    console.error('[sessions.js] ❌ 恢复后台任务失败:', error);
+                    logger.error('[sessions.js] ❌ 恢复后台任务失败:', error);
                 }
             });
         }
@@ -698,16 +650,16 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
     } catch (error) {
         // 忽略 AbortError（正常的取消操作）
         if (error.name === 'AbortError') {
-            console.log('[Session] 会话切换被取消（AbortError）');
+            logger.debug('[Session] 会话切换被取消（AbortError）');
             return;
         }
-        console.error('会话切换失败:', error);
+        logger.error('会话切换失败:', error);
         eventBus.emit('ui:notification', { message: '会话切换失败', type: 'error' });
     } finally {
         // 清除切换标志（只有在没有新的切换时）
         // 如果已经有新的 AbortController，说明新的切换已经开始，不要清除标志
         if (sessionSwitchController && sessionSwitchController.signal === signal) {
-            state.isSwitchingSession = false;
+            setIsSwitchingSession(false);
             sessionSwitchController = null;
         }
     }
@@ -718,7 +670,7 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
  * @param {string} sessionId - 会话 ID
  */
 export async function deleteSession(sessionId) {
-    const sessionIndex = state.sessions.findIndex(s => s.id === sessionId);
+    const sessionIndex = state.sessions.findIndex((s) => s.id === sessionId);
     if (sessionIndex === -1) return;
 
     // 立即取消防抖保存，防止删除后定时器触发 saveSessionAtomic 重建已删除的记录
@@ -726,7 +678,7 @@ export async function deleteSession(sessionId) {
         clearTimeout(saveSessionTimer);
         saveSessionTimer = null;
     }
-    state.sessionDirty = false;
+    setSessionDirty(false);
 
     // 记录已删除的会话 ID，防止异步保存回写
     _deletedSessionIds.add(sessionId);
@@ -737,7 +689,7 @@ export async function deleteSession(sessionId) {
         // 删除成功后从防护集合中移除
         _deletedSessionIds.delete(sessionId);
     } catch (e) {
-        console.error('从数据库删除会话失败:', e);
+        logger.error('从数据库删除会话失败:', e);
         _deletedSessionIds.delete(sessionId);
         eventBus.emit('ui:notification', { message: '删除会话失败', type: 'error' });
         return;
@@ -758,7 +710,7 @@ export async function deleteSession(sessionId) {
 
     // 如果删除的是当前会话，先清空 currentSessionId 再切换
     if (state.currentSessionId === sessionId) {
-        state.currentSessionId = null;
+        setCurrentSessionId(null);
         if (state.sessions.length > 0) {
             const nextSession = state.sessions[sessionIndex] || state.sessions[sessionIndex - 1];
             await switchToSession(nextSession.id, false);
@@ -778,7 +730,7 @@ export async function deleteSession(sessionId) {
  * @param {string} newName - 新名称
  */
 export async function renameSession(sessionId, newName) {
-    const session = state.sessions.find(s => s.id === sessionId);
+    const session = state.sessions.find((s) => s.id === sessionId);
     if (!session) return;
 
     session.name = newName.trim() || '未命名会话';
@@ -792,7 +744,7 @@ export async function renameSession(sessionId, newName) {
 
 // 监听消息变更事件，自动保存会话
 eventBus.on('messages:changed', () => {
-    state.sessionDirty = true;
+    setSessionDirty(true);
     debouncedSaveSession();
 });
 
@@ -804,6 +756,8 @@ eventBus.on('storage:quota-exceeded', ({ message }) => {
 // 监听跨标签页会话切换请求
 eventBus.on('session:switch-requested', ({ sessionId }) => {
     if (sessionId && sessionId !== state.currentSessionId) {
-        switchToSession(sessionId, true).catch(e => console.error('[Sessions] 跨标签页切换失败:', e));
+        switchToSession(sessionId, true).catch((e) =>
+            logger.error('[Sessions] 跨标签页切换失败:', e)
+        );
     }
 });

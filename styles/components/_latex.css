@@ -32,6 +32,41 @@
     text-rendering: auto;
 }
 
+/* Markdown 公式中的中文文本使用无衬线回退，避免掉到宋体链 */
+.message-content .katex {
+    font-family: KaTeX_Main, var(--font-sans);
+}
+
+.message-content .katex .textrm,
+.message-content .katex .mathit,
+.message-content .katex .mathrm,
+.message-content .katex .mathbf,
+.message-content .katex .mainrm {
+    font-family: KaTeX_Main, var(--font-sans);
+}
+
+.message-content .katex .mathnormal,
+.message-content .katex .boldsymbol {
+    font-family: KaTeX_Math, var(--font-sans);
+}
+
+.message-content .katex .textsf,
+.message-content .katex .mathsf,
+.message-content .katex .mathboldsf,
+.message-content .katex .textboldsf,
+.message-content .katex .mathitsf,
+.message-content .katex .mathsfit,
+.message-content .katex .textitsf {
+    font-family: KaTeX_SansSerif, var(--font-sans);
+}
+
+.message-content .katex .texttt,
+.message-content .katex .mathtt {
+    font-family:
+        KaTeX_Typewriter, 'Space Mono', 'JetBrains Mono', 'Cascadia Code', 'SF Mono', 'Consolas',
+        'PingFang SC', 'Microsoft YaHei', '微软雅黑', monospace;
+}
+
 /* 块级公式 */
 .katex-display {
     display: block;
@@ -41,7 +76,9 @@
 
 /* 降级显示（KaTeX 未加载时） */
 .latex-fallback {
-    font-family: var(--font-mono);
+    font-family:
+        'Space Mono', 'JetBrains Mono', 'Cascadia Code', 'SF Mono', 'Consolas', 'PingFang SC',
+        'Microsoft YaHei', '微软雅黑', monospace;
     background: var(--color-bg-code);
     padding: 2px 6px;
     border-radius: 3px;
@@ -51,7 +88,9 @@
 
 /* 渲染失败的公式 */
 .latex-error {
-    font-family: var(--font-mono);
+    font-family:
+        'Space Mono', 'JetBrains Mono', 'Cascadia Code', 'SF Mono', 'Consolas', 'PingFang SC',
+        'Microsoft YaHei', '微软雅黑', monospace;
     background: var(--color-error-bg);
     padding: 2px 6px;
     border-radius: 3px;

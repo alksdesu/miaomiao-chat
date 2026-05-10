@@ -1,196 +1,96 @@
 /**
  * 工具管理器 MCP 增强功能
- * 提供 MCP 工具分组和批量操作功能
+ * 提供 MCP 工具分组和批量操作能力
  */
 
 import { state } from '../core/state.js';
+import { eventBus } from '../core/events.js';
 import { getAllTools, setToolEnabled, isToolEnabled } from '../tools/manager.js';
 import { showNotification } from './notifications.js';
+import { getIcon } from '../utils/icons.js';
+import { escapeHtml } from '../utils/helpers.js';
+import { selectTool } from './tool-manager.js';
+import { logger } from '../utils/logger.js';
 
-// 保存原始的 renderToolsList 函数
-let originalRenderToolsList = null;
+let initialized = false;
+let isBatchUpdating = false;
+const unsubscribeCallbacks = [];
+const collapsedServerIds = new Set();
 
-/**
- * 获取服务器名称
- */
+function getToolManagerModal() {
+    return document.getElementById('tool-manager-modal');
+}
+
+function getToolsListContainer() {
+    return getToolManagerModal()?.querySelector('#tools-list-container') || null;
+}
+
+function isToolManagerOpen() {
+    const modal = getToolManagerModal();
+    return Boolean(modal && modal.classList.contains('active'));
+}
+
 function getServerName(serverId) {
-    const server = state.mcpServers?.find(s => s.id === serverId);
+    const server = state.mcpServers?.find((item) => item.id === serverId);
     return server?.name || serverId;
 }
 
-/**
- * 渲染 MCP 服务器分组
- */
-function renderMCPServerGroup(serverId, serverName, tools) {
-    const allEnabled = tools.every(tool => isToolEnabled(tool.id));
-    const someEnabled = tools.some(tool => isToolEnabled(tool.id));
-
-    const html = `
-        <div class="mcp-server-group" data-server-id="${serverId}">
-            <div class="mcp-server-header">
-                <div class="mcp-server-info">
-                    <svg class="collapse-icon" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                        <path d="M6 10l4-4-4-4v8z"/>
-                    </svg>
-                    <span class="mcp-server-name">${serverName}</span>
-                    <span class="mcp-server-count">(${tools.length})</span>
-                </div>
-                <div class="mcp-batch-actions">
-                    <button class="mcp-batch-btn"
-                            data-action="toggle-all"
-                            data-server-id="${serverId}">
-                        ${allEnabled ? '全部禁用' : (someEnabled ? '全部启用' : '全部启用')}
-                    </button>
-                </div>
-            </div>
-            <div class="mcp-tools-container">
-                ${tools.map(tool => renderToolItem(tool)).join('')}
-            </div>
-        </div>
-    `;
-
-    return html;
+function getVisibleTools() {
+    return getAllTools().filter((tool) => !tool.hidden);
 }
 
-/**
- * 渲染单个工具项
- */
-function renderToolItem(tool) {
-    const enabled = isToolEnabled(tool.id);
-    const iconHtml = getToolIcon(tool.id, tool.type);
-
-    return `
-        <div class="tool-item ${enabled ? 'enabled' : ''}"
-             data-tool-id="${tool.id}"
-             data-tool-type="${tool.type}">
-            <div class="tool-info">
-                <div class="tool-icon">
-                    ${iconHtml}
-                </div>
-                <span class="tool-name">${tool.name || tool.id}</span>
-            </div>
-            <input type="checkbox"
-                   class="tool-enable-switch"
-                   data-tool-id="${tool.id}"
-                   ${enabled ? 'checked' : ''}>
-        </div>
-    `;
+function getSelectedToolId() {
+    return getToolManagerModal()?.querySelector('.tool-item.selected')?.dataset.toolId || null;
 }
 
-/**
- * 获取工具图标（复用原有逻辑）
- */
 function getToolIcon(toolId, type) {
-    // 内置工具图标映射
     const iconMap = {
-        'web_search': 'globe',
-        'calculator': 'barChart',
-        'datetime': 'clock',
-        'unit_converter': 'barChart',
-        'text_formatter': 'type',
-        'random_generator': 'star'
+        web_search: 'globe',
+        calculator: 'barChart',
+        datetime: 'clock',
+        unit_converter: 'barChart',
+        text_formatter: 'type',
+        random_generator: 'star'
     };
 
-    // MCP 工具使用插头图标
-    if (type === 'mcp') {
-        return '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm0 1.5a5.5 5.5 0 110 11 5.5 5.5 0 010-11zM8 5a3 3 0 100 6 3 3 0 000-6zm0 1.5a1.5 1.5 0 110 3 1.5 1.5 0 010-3z"/></svg>';
+    let iconName = iconMap[toolId];
+    if (!iconName) {
+        if (type === 'mcp') iconName = 'plug';
+        else if (type === 'custom') iconName = 'tool';
+        else iconName = 'settings';
     }
 
-    // 自定义工具使用齿轮图标
-    if (type === 'custom') {
-        return '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 4.754a3.246 3.246 0 100 6.492 3.246 3.246 0 000-6.492zM5.754 8a2.246 2.246 0 114.492 0 2.246 2.246 0 01-4.492 0z"/><path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 01-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 01-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 01.52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 011.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 011.255-.52l.292.16c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 01.52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 01-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 01-1.255-.52l-.094-.319z"/></svg>';
-    }
-
-    // 其他使用默认图标
-    return '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6"/></svg>';
+    return getIcon(iconName, { size: 16, className: 'tool-icon' });
 }
 
-/**
- * 增强的渲染工具列表函数
- */
-function enhancedRenderToolsList() {
-    const modal = document.getElementById('tool-manager-modal');
-    if (!modal) return;
+function renderToolItem(tool, type, selectedToolId) {
+    const enabled = isToolEnabled(tool.id);
+    const selected = selectedToolId === tool.id ? 'selected' : '';
+    const toolName = escapeHtml(tool.name || tool.id);
+    const icon = getToolIcon(tool.id, type);
 
-    const listContainer = modal.querySelector('#tools-list-container');
-    if (!listContainer) return;
-
-    // 过滤掉 hidden 工具
-    const allTools = getAllTools().filter(t => !t.hidden);
-
-    // 按类型分组
-    const builtinTools = allTools.filter(t => t.type === 'builtin');
-    const mcpTools = allTools.filter(t => t.type === 'mcp');
-    const customTools = allTools.filter(t => t.type === 'custom');
-
-    // 对 MCP 工具按服务器分组
-    const mcpToolsByServer = {};
-    mcpTools.forEach(tool => {
-        const serverId = tool.serverId || 'unknown';
-        if (!mcpToolsByServer[serverId]) {
-            mcpToolsByServer[serverId] = {
-                tools: [],
-                serverName: getServerName(serverId)
-            };
-        }
-        mcpToolsByServer[serverId].tools.push(tool);
-    });
-
-    // 渲染内容
-    let html = renderToolGroup('内置工具', builtinTools, 'builtin');
-
-    // 渲染 MCP 工具（按服务器分组）
-    if (Object.keys(mcpToolsByServer).length > 0) {
-        html += '<div class="tool-group">';
-        html += '<div class="tool-group-header">';
-        html += '<span class="tool-group-title">MCP 工具</span>';
-        html += `<span class="tool-group-count">(${mcpTools.length})</span>`;
-        html += '</div>';
-        html += '<div class="tool-group-items">';
-
-        for (const [serverId, serverData] of Object.entries(mcpToolsByServer)) {
-            html += renderMCPServerGroup(serverId, serverData.serverName, serverData.tools);
-        }
-
-        html += '</div>';
-        html += '</div>';
-    }
-
-    html += renderToolGroup('自定义工具', customTools, 'custom');
-
-    listContainer.innerHTML = html;
-
-    // 绑定所有事件
-    bindEnhancedEvents();
+    return `
+        <div class="tool-item ${selected}" data-tool-id="${escapeHtml(tool.id)}" data-type="${type}">
+            <div class="tool-item-content">
+                <span class="tool-icon">${icon}</span>
+                <span class="tool-name">${toolName}</span>
+            </div>
+            <label class="tool-enable-switch-container">
+                <input
+                    type="checkbox"
+                    class="tool-enable-switch"
+                    data-tool-id="${escapeHtml(tool.id)}"
+                    ${enabled ? 'checked' : ''}>
+                <span class="switch-slider"></span>
+            </label>
+        </div>
+    `;
 }
 
-/**
- * 渲染标准工具组（复用原有结构）
- */
-function renderToolGroup(title, tools, type) {
+function renderStandardGroup(title, tools, type, selectedToolId) {
     if (tools.length === 0) return '';
 
-    const toolsHtml = tools.map(tool => {
-        const enabled = isToolEnabled(tool.id);
-        const iconHtml = getToolIcon(tool.id, type);
-
-        return `
-            <div class="tool-item ${enabled ? 'enabled' : ''}"
-                 data-tool-id="${tool.id}"
-                 data-tool-type="${type}">
-                <div class="tool-info">
-                    <div class="tool-icon">
-                        ${iconHtml}
-                    </div>
-                    <span class="tool-name">${tool.name || tool.id}</span>
-                </div>
-                <input type="checkbox"
-                       class="tool-enable-switch"
-                       data-tool-id="${tool.id}"
-                       ${enabled ? 'checked' : ''}>
-            </div>
-        `;
-    }).join('');
+    const itemsHtml = tools.map((tool) => renderToolItem(tool, type, selectedToolId)).join('');
 
     return `
         <div class="tool-group">
@@ -199,140 +99,184 @@ function renderToolGroup(title, tools, type) {
                 <span class="tool-group-count">(${tools.length})</span>
             </div>
             <div class="tool-group-items">
-                ${toolsHtml}
+                ${itemsHtml}
             </div>
         </div>
     `;
 }
 
-/**
- * 绑定增强的事件处理器
- */
-function bindEnhancedEvents() {
-    const modal = document.getElementById('tool-manager-modal');
-    if (!modal) return;
+function renderMCPServerGroup(serverId, serverName, tools, selectedToolId) {
+    const allEnabled = tools.every((tool) => isToolEnabled(tool.id));
+    const collapsed = collapsedServerIds.has(serverId) ? 'collapsed' : '';
+    const serverTitle = escapeHtml(serverName);
+    const itemsHtml = tools.map((tool) => renderToolItem(tool, 'mcp', selectedToolId)).join('');
 
-    // 绑定工具项点击事件
-    const toolItems = modal.querySelectorAll('.tool-item');
-    toolItems.forEach(item => {
-        item.addEventListener('click', (e) => {
-            // 如果点击的是开关，不处理
-            if (e.target.classList.contains('tool-enable-switch')) return;
-
-            const toolId = item.dataset.toolId;
-            selectTool(toolId);
-        });
-    });
-
-    // 绑定启用开关
-    const enableSwitches = modal.querySelectorAll('.tool-enable-switch');
-    enableSwitches.forEach(switchEl => {
-        switchEl.addEventListener('change', (e) => {
-            e.stopPropagation();
-            const toolId = e.target.dataset.toolId;
-            const enabled = e.target.checked;
-            setToolEnabled(toolId, enabled);
-        });
-    });
-
-    // 绑定 MCP 服务器折叠/展开
-    const serverHeaders = modal.querySelectorAll('.mcp-server-header');
-    serverHeaders.forEach(header => {
-        header.addEventListener('click', (e) => {
-            // 如果点击的是批量操作按钮，不处理折叠
-            if (e.target.classList.contains('mcp-batch-btn')) return;
-
-            const serverGroup = header.closest('.mcp-server-group');
-            serverGroup.classList.toggle('collapsed');
-        });
-    });
-
-    // 绑定批量操作按钮
-    const batchBtns = modal.querySelectorAll('.mcp-batch-btn');
-    batchBtns.forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const serverId = btn.dataset.serverId;
-            const action = btn.dataset.action;
-
-            if (action === 'toggle-all') {
-                toggleAllServerTools(serverId);
-            }
-        });
-    });
+    return `
+        <div class="tool-group mcp-server-group ${collapsed}" data-server-id="${escapeHtml(serverId)}">
+            <div class="tool-group-header mcp-server-header">
+                <div class="mcp-server-info">
+                    <svg class="collapse-icon" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                        <path d="M6 10l4-4-4-4v8z"/>
+                    </svg>
+                    <span class="tool-group-title">MCP · ${serverTitle}</span>
+                    <span class="tool-group-count">(${tools.length})</span>
+                </div>
+                <div class="mcp-batch-actions">
+                    <button type="button" class="mcp-batch-btn" data-server-id="${escapeHtml(serverId)}">
+                        ${allEnabled ? '全部禁用' : '全部启用'}
+                    </button>
+                </div>
+            </div>
+            <div class="tool-group-items mcp-tools-container">
+                ${itemsHtml}
+            </div>
+        </div>
+    `;
 }
 
-/**
- * 选择工具（触发详情显示）
- */
-function selectTool(toolId) {
-    // 调用原有的选择逻辑
-    const event = new CustomEvent('tool-selected', { detail: { toolId } });
-    document.dispatchEvent(event);
+function renderEnhancedToolsList() {
+    const listContainer = getToolsListContainer();
+    if (!listContainer) return;
+
+    const allTools = getVisibleTools();
+    if (allTools.length === 0) {
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
+        listContainer.innerHTML = '<div class="empty-state">暂无可用工具</div>';
+        return;
+    }
+
+    const selectedToolId = getSelectedToolId();
+    const builtinTools = allTools.filter((tool) => tool.type === 'builtin');
+    const customTools = allTools.filter((tool) => tool.type === 'custom');
+    const mcpTools = allTools.filter((tool) => tool.type === 'mcp');
+
+    const toolsByServer = new Map();
+    mcpTools.forEach((tool) => {
+        const serverId = tool.serverId || 'unknown';
+        if (!toolsByServer.has(serverId)) {
+            toolsByServer.set(serverId, []);
+        }
+        toolsByServer.get(serverId).push(tool);
+    });
+
+    let html = '';
+    html += renderStandardGroup('内置工具', builtinTools, 'builtin', selectedToolId);
+
+    const sortedServerIds = Array.from(toolsByServer.keys()).sort((left, right) => {
+        return getServerName(left).localeCompare(getServerName(right), 'zh-CN');
+    });
+
+    sortedServerIds.forEach((serverId) => {
+        const serverTools = toolsByServer.get(serverId) || [];
+        html += renderMCPServerGroup(
+            serverId,
+            getServerName(serverId),
+            serverTools,
+            selectedToolId
+        );
+    });
+
+    html += renderStandardGroup('自定义工具', customTools, 'custom', selectedToolId);
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
+    listContainer.innerHTML = html;
 }
 
-/**
- * 批量切换服务器工具状态
- */
+function handleListClick(event) {
+    const batchButton = event.target.closest('.mcp-batch-btn');
+    if (batchButton) {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleAllServerTools(batchButton.dataset.serverId);
+        return;
+    }
+
+    const serverHeader = event.target.closest('.mcp-server-header');
+    if (serverHeader) {
+        const serverGroup = serverHeader.closest('.mcp-server-group');
+        if (!serverGroup) return;
+
+        const serverId = serverGroup.dataset.serverId;
+        if (collapsedServerIds.has(serverId)) {
+            collapsedServerIds.delete(serverId);
+            serverGroup.classList.remove('collapsed');
+        } else {
+            collapsedServerIds.add(serverId);
+            serverGroup.classList.add('collapsed');
+        }
+        return;
+    }
+
+    const toolItem = event.target.closest('.tool-item');
+    if (!toolItem || event.target.closest('.tool-enable-switch-container')) {
+        return;
+    }
+
+    selectTool(toolItem.dataset.toolId);
+}
+
+function handleListChange(event) {
+    const switchElement = event.target.closest('.tool-enable-switch');
+    if (!switchElement) return;
+
+    const { toolId } = switchElement.dataset;
+    const enabled = switchElement.checked;
+    setToolEnabled(toolId, enabled);
+    showNotification(`工具 ${enabled ? '已启用' : '已禁用'}`, 'success');
+}
+
 function toggleAllServerTools(serverId) {
-    const allTools = getAllTools().filter(t => t.type === 'mcp' && t.serverId === serverId);
+    const serverTools = getVisibleTools().filter(
+        (tool) => tool.type === 'mcp' && tool.serverId === serverId
+    );
+    if (serverTools.length === 0) return;
 
-    // 检查当前状态
-    const allEnabled = allTools.every(tool => isToolEnabled(tool.id));
-    const newState = !allEnabled;
+    const shouldEnable = !serverTools.every((tool) => isToolEnabled(tool.id));
+    const serverName = getServerName(serverId);
 
-    // 批量更新状态
-    allTools.forEach(tool => {
-        setToolEnabled(tool.id, newState);
-    });
+    isBatchUpdating = true;
+    try {
+        serverTools.forEach((tool) => {
+            setToolEnabled(tool.id, shouldEnable);
+        });
+    } finally {
+        isBatchUpdating = false;
+    }
 
-    // 显示通知
-    const server = state.mcpServers?.find(s => s.id === serverId);
-    const serverName = server?.name || serverId;
+    if (isToolManagerOpen()) {
+        renderEnhancedToolsList();
+    }
+
     showNotification(
-        `已${newState ? '启用' : '禁用'} ${serverName} 的所有工具 (${allTools.length} 个)`,
+        `已${shouldEnable ? '启用' : '禁用'} ${serverName} 的所有工具 (${serverTools.length} 个)`,
         'success'
     );
-
-    // 重新渲染列表
-    enhancedRenderToolsList();
 }
 
-/**
- * 初始化增强功能
- */
+function refreshWhenOpen() {
+    if (isBatchUpdating || !isToolManagerOpen()) return;
+    renderEnhancedToolsList();
+}
+
 export function initToolManagerMCPEnhancements() {
-    console.log('[Tool Manager MCP] 初始化 MCP 增强功能...');
+    if (initialized) return;
 
-    // 等待原始模块加载
-    const checkAndEnhance = () => {
-        const modal = document.getElementById('tool-manager-modal');
-        if (!modal) {
-            setTimeout(checkAndEnhance, 100);
-            return;
-        }
+    const listContainer = getToolsListContainer();
+    if (!listContainer) {
+        logger.warn('[Tool Manager MCP] 未找到工具列表容器，跳过增强初始化');
+        return;
+    }
 
-        // 替换渲染函数
-        if (window.renderToolsList && !originalRenderToolsList) {
-            originalRenderToolsList = window.renderToolsList;
-            window.renderToolsList = enhancedRenderToolsList;
-        }
+    listContainer.addEventListener('click', handleListClick);
+    listContainer.addEventListener('change', handleListChange);
 
-        // 监听工具管理器打开事件，确保增强功能生效
-        document.addEventListener('tool-manager-opened', () => {
-            setTimeout(enhancedRenderToolsList, 0);
-        });
+    unsubscribeCallbacks.push(
+        eventBus.on('tool-manager:opened', renderEnhancedToolsList),
+        eventBus.on('tool:enabled:changed', refreshWhenOpen),
+        eventBus.on('tool:registered', refreshWhenOpen),
+        eventBus.on('tool:removed', refreshWhenOpen),
+        eventBus.on('tools:updated', refreshWhenOpen)
+    );
 
-        // 监听工具状态变化事件
-        document.addEventListener('tool:enabled:changed', () => {
-            enhancedRenderToolsList();
-        });
-
-        console.log('[Tool Manager MCP] MCP 增强功能已初始化');
-    };
-
-    checkAndEnhance();
+    initialized = true;
+    logger.debug('[Tool Manager MCP] MCP 增强功能已初始化');
 }
-
-// 导出供调试
-window.toggleAllServerTools = toggleAllServerTools;

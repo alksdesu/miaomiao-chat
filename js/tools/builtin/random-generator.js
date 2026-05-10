@@ -8,13 +8,23 @@
  */
 export const randomGeneratorTool = {
     name: 'random_generator',
-    description: '随机生成器。支持类型: number（数字）, string（字符串）, uuid（UUID）, password（密码）, color（颜色）, boolean（布尔值）, choice（选择）。',
+    description:
+        '随机生成器。支持类型: number（数字）, string（字符串）, uuid（UUID）, password（密码）, color（颜色）, boolean（布尔值）, choice（选择）。',
     parameters: {
         type: 'object',
         properties: {
             type: {
                 type: 'string',
-                enum: ['number', 'string', 'uuid', 'password', 'color', 'boolean', 'choice', 'array'],
+                enum: [
+                    'number',
+                    'string',
+                    'uuid',
+                    'password',
+                    'color',
+                    'boolean',
+                    'choice',
+                    'array'
+                ],
                 description: '生成类型'
             },
             min: {
@@ -31,7 +41,15 @@ export const randomGeneratorTool = {
             },
             charset: {
                 type: 'string',
-                enum: ['alphanumeric', 'alphabetic', 'numeric', 'lowercase', 'uppercase', 'symbols', 'hex'],
+                enum: [
+                    'alphanumeric',
+                    'alphabetic',
+                    'numeric',
+                    'lowercase',
+                    'uppercase',
+                    'symbols',
+                    'hex'
+                ],
                 description: '字符集（用于 string 类型）'
             },
             include_symbols: {
@@ -71,9 +89,21 @@ export const randomGeneratorTool = {
  * @returns {Promise<Object>} 生成结果
  */
 export async function randomGeneratorHandler(args) {
-    const { type, min, max, length, charset, include_symbols, include_numbers, include_uppercase, format, choices, count } = args;
+    const {
+        type,
+        min,
+        max,
+        length,
+        charset,
+        include_symbols,
+        include_numbers,
+        include_uppercase,
+        format,
+        choices,
+        count
+    } = args;
 
-    console.log(`[RandomGenerator] 生成类型: ${type}`, args);
+    logger.debug(`[RandomGenerator] 生成类型: ${type}`, args);
 
     try {
         let result;
@@ -152,9 +182,8 @@ export async function randomGeneratorHandler(args) {
             metadata,
             timestamp: Date.now()
         };
-
     } catch (error) {
-        console.error(`[RandomGenerator] 错误:`, error);
+        logger.error(`[RandomGenerator] 错误:`, error);
         throw new Error(`随机生成失败: ${error.message}`);
     }
 }
@@ -204,9 +233,9 @@ function generateRandomString(length, charset) {
  * @returns {string}
  */
 function generateUUID() {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-        const r = Math.random() * 16 | 0;
-        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+        const r = (Math.random() * 16) | 0;
+        const v = c === 'x' ? r : (r & 0x3) | 0x8;
         return v.toString(16);
     });
 }
@@ -261,7 +290,7 @@ function generateRandomColor(format) {
 
     switch (format) {
         case 'hex':
-            return '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
+            return '#' + [r, g, b].map((x) => x.toString(16).padStart(2, '0')).join('');
         case 'rgb':
             return `rgb(${r}, ${g}, ${b})`;
         case 'hsl': {
@@ -269,7 +298,7 @@ function generateRandomColor(format) {
             return `hsl(${h}, ${s}%, ${l}%)`;
         }
         default:
-            return '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
+            return '#' + [r, g, b].map((x) => x.toString(16).padStart(2, '0')).join('');
     }
 }
 
@@ -281,8 +310,11 @@ function generateRandomColor(format) {
  * @returns {Object}
  */
 function rgbToHsl(r, g, b) {
-    r /= 255; g /= 255; b /= 255;
-    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    r /= 255;
+    g /= 255;
+    b /= 255;
+    const max = Math.max(r, g, b),
+        min = Math.min(r, g, b);
     let h, s;
     const l = (max + min) / 2;
 
@@ -292,9 +324,15 @@ function rgbToHsl(r, g, b) {
         const d = max - min;
         s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
         switch (max) {
-            case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
-            case g: h = ((b - r) / d + 2) / 6; break;
-            case b: h = ((r - g) / d + 4) / 6; break;
+            case r:
+                h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+                break;
+            case g:
+                h = ((b - r) / d + 2) / 6;
+                break;
+            case b:
+                h = ((r - g) / d + 4) / 6;
+                break;
         }
     }
 
@@ -335,10 +373,16 @@ function generateRandomArray(count, arrayType, args) {
     return result;
 }
 
-console.log('[RandomGenerator Tool] 🎲 随机生成器工具已加载');
+logger.debug('[RandomGenerator Tool] 🎲 随机生成器工具已加载');
 
 // ========== 标准化工具对象 ==========
 
 import { buildToolFromLegacy } from '../build-tool.js';
+import { logger } from '../../utils/logger.js';
 
-export const randomGenerator = buildToolFromLegacy('random_generator', randomGeneratorTool, randomGeneratorHandler, { isReadOnly: () => true });
+export const randomGenerator = buildToolFromLegacy(
+    'random_generator',
+    randomGeneratorTool,
+    randomGeneratorHandler,
+    { isReadOnly: () => true }
+);

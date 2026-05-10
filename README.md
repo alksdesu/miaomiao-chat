@@ -12,10 +12,10 @@
 
 64+ settings. Three-layer prefill. Three platforms. Zero backend.
 
-[![Release](https://img.shields.io/github/v/release/Alks0/miaomiao-chat?style=flat-square)][release-link]
-[![License](https://img.shields.io/github/license/Alks0/miaomiao-chat?style=flat-square)][license-link]
+[![Release](https://img.shields.io/github/v/release/alksdesu/miaomiao-chat?style=flat-square)][release-link]
+[![License](https://img.shields.io/github/license/alksdesu/miaomiao-chat?style=flat-square)][license-link]
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Android%20%7C%20Web-blue?style=flat-square)](#downloads)
-[![Stars](https://img.shields.io/github/stars/Alks0/miaomiao-chat?style=flat-square)][repo-link]
+[![Stars](https://img.shields.io/github/stars/alksdesu/miaomiao-chat?style=flat-square)][repo-link]
 
 **English** | [简体中文](#简体中文)
 
@@ -132,19 +132,19 @@ Zero backend. Pure frontend ES6 modules. Deploy to Cloudflare Pages, Vercel, Ngi
 </tr>
 <tr>
 <td align="center">
-<a href="https://github.com/Alks0/miaomiao-chat/releases/latest">Setup .exe</a><br>
-<a href="https://github.com/Alks0/miaomiao-chat/releases/latest">Portable .exe</a>
+<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">Setup .exe</a><br>
+<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">Portable .exe</a>
 </td>
 <td align="center">
-<a href="https://github.com/Alks0/miaomiao-chat/releases/latest">.dmg</a><br>
-<a href="https://github.com/Alks0/miaomiao-chat/releases/latest">.zip</a>
+<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">.dmg</a><br>
+<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">.zip</a>
 </td>
 <td align="center">
-<a href="https://github.com/Alks0/miaomiao-chat/releases/latest">AppImage</a><br>
-<a href="https://github.com/Alks0/miaomiao-chat/releases/latest">.deb</a>
+<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">AppImage</a><br>
+<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">.deb</a>
 </td>
 <td align="center">
-<a href="https://github.com/Alks0/miaomiao-chat/releases/latest">.apk</a>
+<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">.apk</a>
 </td>
 </tr>
 </table>
@@ -167,7 +167,7 @@ Supports OpenAI, Gemini, Claude, and OpenAI Responses API formats out of the box
 ## Development
 
 ```bash
-git clone https://github.com/Alks0/miaomiao-chat.git
+git clone https://github.com/alksdesu/miaomiao-chat.git
 cd miaomiao-chat
 npm install
 
@@ -219,7 +219,7 @@ Issues and PRs welcome. Development happens on `main`.
 
 <div align="center">
 
-Made with ❤️ by [Alks0](https://github.com/Alks0)
+Made with ❤️ by [alksdesu](https://github.com/alksdesu)
 
 </div>
 
@@ -241,10 +241,10 @@ Made with ❤️ by [Alks0](https://github.com/Alks0)
 
 64+ 设置项。三层预填充。三端运行。零后端依赖。
 
-[![Release](https://img.shields.io/github/v/release/Alks0/miaomiao-chat?style=flat-square)][release-link]
-[![License](https://img.shields.io/github/license/Alks0/miaomiao-chat?style=flat-square)][license-link]
+[![Release](https://img.shields.io/github/v/release/alksdesu/miaomiao-chat?style=flat-square)][release-link]
+[![License](https://img.shields.io/github/license/alksdesu/miaomiao-chat?style=flat-square)][license-link]
 [![Platform](https://img.shields.io/badge/平台-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Android%20%7C%20Web-blue?style=flat-square)](#下载安装)
-[![Stars](https://img.shields.io/github/stars/Alks0/miaomiao-chat?style=flat-square)][repo-link]
+[![Stars](https://img.shields.io/github/stars/alksdesu/miaomiao-chat?style=flat-square)][repo-link]
 
 </div>
 
@@ -353,19 +353,19 @@ Made with ❤️ by [Alks0](https://github.com/Alks0)
 </tr>
 <tr>
 <td align="center">
-<a href="https://github.com/Alks0/miaomiao-chat/releases/latest">安装版 .exe</a><br>
-<a href="https://github.com/Alks0/miaomiao-chat/releases/latest">便携版 .exe</a>
+<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">安装版 .exe</a><br>
+<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">便携版 .exe</a>
 </td>
 <td align="center">
-<a href="https://github.com/Alks0/miaomiao-chat/releases/latest">.dmg</a><br>
-<a href="https://github.com/Alks0/miaomiao-chat/releases/latest">.zip</a>
+<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">.dmg</a><br>
+<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">.zip</a>
 </td>
 <td align="center">
-<a href="https://github.com/Alks0/miaomiao-chat/releases/latest">AppImage</a><br>
-<a href="https://github.com/Alks0/miaomiao-chat/releases/latest">.deb</a>
+<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">AppImage</a><br>
+<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">.deb</a>
 </td>
 <td align="center">
-<a href="https://github.com/Alks0/miaomiao-chat/releases/latest">.apk</a>
+<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">.apk</a>
 </td>
 </tr>
 </table>
@@ -388,7 +388,7 @@ Made with ❤️ by [Alks0](https://github.com/Alks0)
 ## 开发
 
 ```bash
-git clone https://github.com/Alks0/miaomiao-chat.git
+git clone https://github.com/alksdesu/miaomiao-chat.git
 cd miaomiao-chat
 npm install
 
@@ -440,11 +440,11 @@ npm run cap:build     # Android APK
 
 <div align="center">
 
-Made with ❤️ by [Alks0](https://github.com/Alks0)
+Made with ❤️ by [alksdesu](https://github.com/alksdesu)
 
 </div>
 
 <!-- Link references -->
-[release-link]: https://github.com/Alks0/miaomiao-chat/releases
-[license-link]: https://github.com/Alks0/miaomiao-chat/blob/main/LICENSE
-[repo-link]: https://github.com/Alks0/miaomiao-chat
+[release-link]: https://github.com/alksdesu/miaomiao-chat/releases
+[license-link]: https://github.com/alksdesu/miaomiao-chat/blob/main/LICENSE
+[repo-link]: https://github.com/alksdesu/miaomiao-chat

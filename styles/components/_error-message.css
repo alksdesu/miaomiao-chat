@@ -76,4 +76,11 @@
     overflow-y: auto;
 }
 
-
+/* 流式响应错误时的部分保存提示 */
+.stream-error-partial-save {
+    margin-top: 8px;
+    padding: 8px;
+    background: rgba(255, 140, 0, 0.1);
+    border-left: 3px solid var(--md-coral);
+    font-size: var(--fs-xs);
+}

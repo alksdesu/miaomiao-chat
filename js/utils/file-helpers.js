@@ -59,9 +59,13 @@ export function categorizeFile(mimeType) {
     if (mimeType.startsWith('image/')) return FileCategory.IMAGE;
     if (mimeType.startsWith('video/')) return FileCategory.VIDEO;
     if (mimeType === 'application/pdf') return FileCategory.PDF;
-    if (mimeType === 'text/plain' ||
-        mimeType === 'text/markdown' ||
-        mimeType.startsWith('text/')) {
+    if (mimeType.startsWith('text/')) return FileCategory.TEXT;
+    if (
+        mimeType === 'application/json' ||
+        mimeType === 'application/xml' ||
+        mimeType === 'application/x-yaml' ||
+        mimeType === 'application/javascript'
+    ) {
         return FileCategory.TEXT;
     }
 
@@ -101,10 +105,9 @@ export function isPDF(mimeType) {
  * @returns {boolean}
  */
 export function isText(mimeType) {
-    return mimeType && (
-        mimeType === 'text/plain' ||
-        mimeType === 'text/markdown' ||
-        mimeType.startsWith('text/')
+    return (
+        mimeType &&
+        (mimeType === 'text/plain' || mimeType === 'text/markdown' || mimeType.startsWith('text/'))
     );
 }
 
@@ -213,34 +216,34 @@ export function guessMimeType(filename) {
 
     const mimeMap = {
         // 图片
-        'jpg': 'image/jpeg',
-        'jpeg': 'image/jpeg',
-        'png': 'image/png',
-        'gif': 'image/gif',
-        'webp': 'image/webp',
-        'bmp': 'image/bmp',
-        'svg': 'image/svg+xml',
-        'mp4': 'video/mp4',
-        'webm': 'video/webm',
-        'ogv': 'video/ogg',
-        'ogg': 'video/ogg',
-        'mov': 'video/quicktime',
-        'mkv': 'video/x-matroska',
-        'avi': 'video/x-msvideo',
+        jpg: 'image/jpeg',
+        jpeg: 'image/jpeg',
+        png: 'image/png',
+        gif: 'image/gif',
+        webp: 'image/webp',
+        bmp: 'image/bmp',
+        svg: 'image/svg+xml',
+        mp4: 'video/mp4',
+        webm: 'video/webm',
+        ogv: 'video/ogg',
+        ogg: 'video/ogg',
+        mov: 'video/quicktime',
+        mkv: 'video/x-matroska',
+        avi: 'video/x-msvideo',
 
         // 文档
-        'pdf': 'application/pdf',
-        'txt': 'text/plain',
-        'md': 'text/markdown',
-        'html': 'text/html',
-        'htm': 'text/html',
-        'csv': 'text/csv',
-        'xml': 'text/xml',
+        pdf: 'application/pdf',
+        txt: 'text/plain',
+        md: 'text/markdown',
+        html: 'text/html',
+        htm: 'text/html',
+        csv: 'text/csv',
+        xml: 'text/xml',
 
         // 代码
-        'js': 'text/javascript',
-        'json': 'application/json',
-        'css': 'text/css',
+        js: 'text/javascript',
+        json: 'application/json',
+        css: 'text/css',
 
         // 默认
         '': 'application/octet-stream'

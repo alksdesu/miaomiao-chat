@@ -74,7 +74,7 @@
     border-radius: 4px;
     background: transparent;
     color: var(--md-muted);
-    font-family: var(--font-mono);
+    font-family: var(--font-ui-accent);
     font-size: var(--fs-base);
     cursor: pointer;
     transition: all 0.15s var(--ease);
@@ -83,6 +83,5 @@
 .add-header-btn:hover {
     border-color: var(--md-green);
     color: var(--md-green);
-    background: rgba(0, 200, 83, 0.05);
+    background: rgba(var(--palette-green-rgb), 0.05);
 }
-

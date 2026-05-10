@@ -23,13 +23,15 @@ math.config({
  */
 export const calculatorTool = {
     name: 'calculator',
-    description: '执行数学计算。支持基本运算（+、-、*、/）、幂运算（^）、括号以及常见数学函数（sin、sqrt、log 等）。',
+    description:
+        '执行数学计算。支持基本运算（+、-、*、/）、幂运算（^）、括号以及常见数学函数（sin、sqrt、log 等）。',
     parameters: {
         type: 'object',
         properties: {
             expression: {
                 type: 'string',
-                description: '要计算的数学表达式，例如: "2 + 3 * 4", "sqrt(16)", "2^10", "sin(pi/2)"'
+                description:
+                    '要计算的数学表达式，例如: "2 + 3 * 4", "sqrt(16)", "2^10", "sin(pi/2)"'
             }
         },
         required: ['expression']
@@ -45,7 +47,7 @@ export const calculatorTool = {
 export async function calculatorHandler(args) {
     const { expression } = args;
 
-    console.log(`[Calculator] 计算表达式: ${expression}`);
+    logger.debug(`[Calculator] 计算表达式: ${expression}`);
 
     try {
         // 安全验证表达式
@@ -64,9 +66,8 @@ export async function calculatorHandler(args) {
             result,
             formatted: formatResult(result)
         };
-
     } catch (error) {
-        console.error(`[Calculator] 计算失败:`, error);
+        logger.error(`[Calculator] 计算失败:`, error);
         throw new Error(`计算错误: ${error.message}`);
     }
 }
@@ -89,10 +90,22 @@ function validateExpression(expression) {
     // 黑名单：禁止危险的函数调用
     // math.js 已经限制了作用域，这里是额外的防护层
     const forbiddenKeywords = [
-        'eval', 'Function', 'setTimeout', 'setInterval',
-        'require', 'import', 'export', 'fetch', 'XMLHttpRequest',
-        'localStorage', 'sessionStorage', 'document', 'window',
-        '__proto__', 'constructor', 'prototype'
+        'eval',
+        'Function',
+        'setTimeout',
+        'setInterval',
+        'require',
+        'import',
+        'export',
+        'fetch',
+        'XMLHttpRequest',
+        'localStorage',
+        'sessionStorage',
+        'document',
+        'window',
+        '__proto__',
+        'constructor',
+        'prototype'
     ];
 
     const lowerExpression = expression.toLowerCase();
@@ -140,16 +153,16 @@ export function testCalculator() {
         'abs(-5)'
     ];
 
-    console.log('=== Calculator 测试 (math.js) ===');
+    logger.debug('=== Calculator 测试 (math.js) ===');
 
     for (const expr of testCases) {
         try {
             const result = calculatorHandler({ expression: expr });
-            result.then(res => {
-                console.log(`${expr} = ${res.formatted}`);
+            result.then((res) => {
+                logger.debug(`${expr} = ${res.formatted}`);
             });
         } catch (error) {
-            console.error(`❌ ${expr} -> ${error.message}`);
+            logger.error(`❌ ${expr} -> ${error.message}`);
         }
     }
 }
@@ -157,5 +170,8 @@ export function testCalculator() {
 // ========== 标准化工具对象 ==========
 
 import { buildToolFromLegacy } from '../build-tool.js';
+import { logger } from '../../utils/logger.js';
 
-export const calculator = buildToolFromLegacy('calculator', calculatorTool, calculatorHandler, { isReadOnly: () => true });
+export const calculator = buildToolFromLegacy('calculator', calculatorTool, calculatorHandler, {
+    isReadOnly: () => true
+});

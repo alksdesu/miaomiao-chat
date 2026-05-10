@@ -3,6 +3,7 @@
  * 压缩图片、下载图片等功能
  */
 
+import { logger } from './logger.js';
 import { detectImageFormat } from './helpers.js';
 import { API_FILE_SIZE_LIMITS } from './constants.js';
 import { PartType, MediaKind } from '../messages/schema.js';
@@ -12,9 +13,9 @@ import { PartType, MediaKind } from '../messages/schema.js';
  * Note: Claude has a stricter limit of 5MB per image
  */
 const API_IMAGE_LIMITS = {
-    'gemini': API_FILE_SIZE_LIMITS.gemini,
-    'openai': API_FILE_SIZE_LIMITS.openai,
-    'claude': 5 * 1024 * 1024     // 5 MB (单张图片限制) - Claude specific
+    gemini: API_FILE_SIZE_LIMITS.gemini,
+    openai: API_FILE_SIZE_LIMITS.openai,
+    claude: 5 * 1024 * 1024 // 5 MB (单张图片限制) - Claude specific
 };
 
 /**
@@ -55,10 +56,10 @@ export function compressImage(base64Data, mimeType, options = {}) {
                 const maxSize = 512;
                 if (targetWidth > maxSize || targetHeight > maxSize) {
                     if (targetWidth > targetHeight) {
-                        targetHeight = Math.round(targetHeight * maxSize / targetWidth);
+                        targetHeight = Math.round((targetHeight * maxSize) / targetWidth);
                         targetWidth = maxSize;
                     } else {
-                        targetWidth = Math.round(targetWidth * maxSize / targetHeight);
+                        targetWidth = Math.round((targetWidth * maxSize) / targetHeight);
                         targetHeight = maxSize;
                     }
                 }
@@ -94,7 +95,7 @@ export function compressImage(base64Data, mimeType, options = {}) {
                             targetWidth = Math.round(targetWidth * scale);
                             targetHeight = Math.round(targetHeight * scale);
                         }
-                        quality = 0.80;
+                        quality = 0.8;
                     } else if (ratio < 2.5) {
                         // 中度超出：压缩到 1024px
                         const maxDim = Math.max(targetWidth, targetHeight);
@@ -112,7 +113,7 @@ export function compressImage(base64Data, mimeType, options = {}) {
                             targetWidth = Math.round(targetWidth * scale);
                             targetHeight = Math.round(targetHeight * scale);
                         }
-                        quality = 0.70;
+                        quality = 0.7;
                     }
                 }
             }
@@ -129,7 +130,9 @@ export function compressImage(base64Data, mimeType, options = {}) {
             const compressedBase64 = compressedDataUrl.split(',')[1];
             const compressedSize = getBase64Size(compressedBase64);
 
-            console.log(`[图片压缩] ${fastMode ? '⚡ 高速模式' : '🎯 智能模式'} | API: ${apiFormat} | 原始: ${(originalSize / 1024 / 1024).toFixed(2)}MB | 压缩后: ${(compressedSize / 1024 / 1024).toFixed(2)}MB | 尺寸: ${img.width}x${img.height} → ${targetWidth}x${targetHeight} | 质量: ${quality}`);
+            logger.debug(
+                `[图片压缩] ${fastMode ? '⚡ 高速模式' : '🎯 智能模式'} | API: ${apiFormat} | 原始: ${(originalSize / 1024 / 1024).toFixed(2)}MB | 压缩后: ${(compressedSize / 1024 / 1024).toFixed(2)}MB | 尺寸: ${img.width}x${img.height} → ${targetWidth}x${targetHeight} | 质量: ${quality}`
+            );
 
             resolve({
                 data: compressedBase64,
@@ -140,7 +143,7 @@ export function compressImage(base64Data, mimeType, options = {}) {
         };
         img.onerror = () => {
             // 压缩失败，返回原数据
-            console.warn('[图片压缩] 加载失败，返回原数据');
+            logger.warn('[图片压缩] 加载失败，返回原数据');
             resolve({
                 data: base64Data,
                 mimeType,
@@ -162,30 +165,33 @@ export function isImageSizeError(error) {
     const errorString = errorMessage.toLowerCase();
 
     // OpenAI 错误模式
-    if (errorString.includes('image') && (
-        errorString.includes('exceeds') ||
-        errorString.includes('too large') ||
-        errorString.includes('20971520') ||  // 20MB in bytes
-        errorString.includes('size limit')
-    )) {
+    if (
+        errorString.includes('image') &&
+        (errorString.includes('exceeds') ||
+            errorString.includes('too large') ||
+            errorString.includes('20971520') || // 20MB in bytes
+            errorString.includes('size limit'))
+    ) {
         return true;
     }
 
     // Gemini 错误模式
-    if (errorString.includes('413') ||
+    if (
+        errorString.includes('413') ||
         errorString.includes('request entity too large') ||
-        errorString.includes('payload') && errorString.includes('20') ||
+        (errorString.includes('payload') && errorString.includes('20')) ||
         errorString.includes('request size exceeds')
     ) {
         return true;
     }
 
     // Claude 错误模式
-    if (errorString.includes('image') && (
-        errorString.includes('5') && errorString.includes('mb') ||
-        errorString.includes('5242880') ||  // 5MB in bytes
-        errorString.includes('exceeds the limit')
-    )) {
+    if (
+        errorString.includes('image') &&
+        ((errorString.includes('5') && errorString.includes('mb')) ||
+            errorString.includes('5242880') || // 5MB in bytes
+            errorString.includes('exceeds the limit'))
+    ) {
         return true;
     }
 
@@ -216,7 +222,10 @@ export async function compressImagesInMessages(messages, apiFormat, fastMode = f
                     const match = url.match(/^data:([^;]+);base64,(.+)$/);
                     if (match) {
                         const [, mimeType, base64Data] = match;
-                        const compressed = await compressImage(base64Data, mimeType, { fastMode, apiFormat });
+                        const compressed = await compressImage(base64Data, mimeType, {
+                            fastMode,
+                            apiFormat
+                        });
                         compressedMsg.content.push({
                             ...part,
                             image_url: {
@@ -224,13 +233,19 @@ export async function compressImagesInMessages(messages, apiFormat, fastMode = f
                                 url: `data:${compressed.mimeType};base64,${compressed.data}`
                             }
                         });
-                        console.log(`[重试] 压缩图片: ${(compressed.originalSize / 1024 / 1024).toFixed(2)}MB → ${(compressed.compressedSize / 1024 / 1024).toFixed(2)}MB`);
+                        logger.debug(
+                            `[重试] 压缩图片: ${(compressed.originalSize / 1024 / 1024).toFixed(2)}MB → ${(compressed.compressedSize / 1024 / 1024).toFixed(2)}MB`
+                        );
                     } else {
                         compressedMsg.content.push(part);
                     }
                 } else if (part.type === 'image' && part.source?.data) {
                     // Claude 格式
-                    const compressed = await compressImage(part.source.data, part.source.media_type, { fastMode, apiFormat });
+                    const compressed = await compressImage(
+                        part.source.data,
+                        part.source.media_type,
+                        { fastMode, apiFormat }
+                    );
                     compressedMsg.content.push({
                         ...part,
                         source: {
@@ -239,7 +254,9 @@ export async function compressImagesInMessages(messages, apiFormat, fastMode = f
                             data: compressed.data
                         }
                     });
-                    console.log(`[重试] 压缩图片: ${(compressed.originalSize / 1024 / 1024).toFixed(2)}MB → ${(compressed.compressedSize / 1024 / 1024).toFixed(2)}MB`);
+                    logger.debug(
+                        `[重试] 压缩图片: ${(compressed.originalSize / 1024 / 1024).toFixed(2)}MB → ${(compressed.compressedSize / 1024 / 1024).toFixed(2)}MB`
+                    );
                 } else {
                     compressedMsg.content.push(part);
                 }
@@ -250,7 +267,11 @@ export async function compressImagesInMessages(messages, apiFormat, fastMode = f
             for (const part of msg.parts) {
                 if (part.inlineData) {
                     // Gemini 格式
-                    const compressed = await compressImage(part.inlineData.data, part.inlineData.mimeType, { fastMode, apiFormat });
+                    const compressed = await compressImage(
+                        part.inlineData.data,
+                        part.inlineData.mimeType,
+                        { fastMode, apiFormat }
+                    );
                     compressedMsg.parts.push({
                         ...part,
                         inlineData: {
@@ -258,19 +279,30 @@ export async function compressImagesInMessages(messages, apiFormat, fastMode = f
                             data: compressed.data
                         }
                     });
-                    console.log(`[重试] 压缩图片: ${(compressed.originalSize / 1024 / 1024).toFixed(2)}MB → ${(compressed.compressedSize / 1024 / 1024).toFixed(2)}MB`);
-                } else if (part.type === PartType.MEDIA && part.media === MediaKind.IMAGE && part.url) {
+                    logger.debug(
+                        `[重试] 压缩图片: ${(compressed.originalSize / 1024 / 1024).toFixed(2)}MB → ${(compressed.compressedSize / 1024 / 1024).toFixed(2)}MB`
+                    );
+                } else if (
+                    part.type === PartType.MEDIA &&
+                    part.media === MediaKind.IMAGE &&
+                    part.url
+                ) {
                     // 新格式：{type:'media', media:'image', url:'data:...'}
                     const match = part.url.match(/^data:([^;]+);base64,(.+)$/);
                     if (match) {
                         const [, mimeType, base64Data] = match;
-                        const compressed = await compressImage(base64Data, mimeType, { fastMode, apiFormat });
+                        const compressed = await compressImage(base64Data, mimeType, {
+                            fastMode,
+                            apiFormat
+                        });
                         compressedMsg.parts.push({
                             ...part,
                             url: `data:${compressed.mimeType};base64,${compressed.data}`,
-                            mime: compressed.mimeType,
+                            mime: compressed.mimeType
                         });
-                        console.log(`[重试] 压缩图片: ${(compressed.originalSize / 1024 / 1024).toFixed(2)}MB → ${(compressed.compressedSize / 1024 / 1024).toFixed(2)}MB`);
+                        logger.debug(
+                            `[重试] 压缩图片: ${(compressed.originalSize / 1024 / 1024).toFixed(2)}MB → ${(compressed.compressedSize / 1024 / 1024).toFixed(2)}MB`
+                        );
                     } else {
                         compressedMsg.parts.push(part);
                     }
@@ -330,12 +362,12 @@ export function downloadImage(dataUrl, filename) {
         // 释放 URL
         URL.revokeObjectURL(url);
 
-        console.log(`下载图片: ${correctFilename}`);
-        console.log(`  声明格式: ${declaredMime}`);
-        console.log(`  实际格式: ${detected.mime}`);
-        console.log(`  文件大小: ${(bytes.length / 1024 / 1024).toFixed(2)} MB`);
+        logger.debug(`下载图片: ${correctFilename}`);
+        logger.debug(`  声明格式: ${declaredMime}`);
+        logger.debug(`  实际格式: ${detected.mime}`);
+        logger.debug(`  文件大小: ${(bytes.length / 1024 / 1024).toFixed(2)} MB`);
     } catch (e) {
-        console.error('下载图片失败:', e);
+        logger.error('下载图片失败:', e);
         window.open(dataUrl, '_blank');
     }
 }

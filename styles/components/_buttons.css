@@ -1,6 +1,6 @@
 /* ========== 按钮通用 ========== */
 .icon-button {
-    width: 44px;  /* WCAG触摸目标最小尺寸 */
+    width: 44px; /* WCAG触摸目标最小尺寸 */
     height: 44px;
     border: var(--border);
     background: var(--color-bg-surface);
@@ -50,7 +50,7 @@
 .ripple {
     position: absolute;
     border-radius: 50%;
-    background: rgba(255, 255, 255, 0.6);
+    background: rgba(var(--color-bg-surface-rgb), 0.6);
     transform: scale(0);
     animation: ripple-animation 0.6s ease-out;
     pointer-events: none;
@@ -78,4 +78,3 @@
     position: relative;
     overflow: hidden;
 }
-

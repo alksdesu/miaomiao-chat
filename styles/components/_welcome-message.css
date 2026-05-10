@@ -1,6 +1,7 @@
 /* ========== 欢迎消息 ========== */
 .welcome-message {
-    background: linear-gradient(135deg,
+    background: linear-gradient(
+        135deg,
         var(--welcome-gradient-start) 0%,
         var(--welcome-gradient-mid) 50%,
         var(--welcome-gradient-end) 100%
@@ -18,8 +19,13 @@
 }
 
 @keyframes gradientShift {
-    0%, 100% { background-position: 0% 50%; }
-    50% { background-position: 100% 50%; }
+    0%,
+    100% {
+        background-position: 0% 50%;
+    }
+    50% {
+        background-position: 100% 50%;
+    }
 }
 
 .welcome-message::before {
@@ -33,15 +39,19 @@
         90deg,
         transparent,
         transparent 20px,
-        rgba(255,255,255,0.05) 20px,
-        rgba(255,255,255,0.05) 40px
+        rgba(var(--color-bg-surface-rgb), 0.05) 20px,
+        rgba(var(--color-bg-surface-rgb), 0.05) 40px
     );
     pointer-events: none;
 }
 
 @keyframes moveStripes {
-    0% { transform: translateX(0); }
-    100% { transform: translateX(40px); }
+    0% {
+        transform: translateX(0);
+    }
+    100% {
+        transform: translateX(40px);
+    }
 }
 
 .welcome-message > * {
@@ -57,12 +67,17 @@
 }
 
 @keyframes float {
-    0%, 100% { transform: translateY(0); }
-    50% { transform: translateY(-8px); }
+    0%,
+    100% {
+        transform: translateY(0);
+    }
+    50% {
+        transform: translateY(-8px);
+    }
 }
 
 .welcome-message h2 {
-    font-family: var(--font-mono);
+    font-family: var(--font-ui-accent);
     font-size: var(--fs-4xl);
     font-weight: 700;
     margin-bottom: 8px;
@@ -76,7 +91,8 @@
 /* ========== 暗色主题适配 ========== */
 .dark-theme .welcome-message {
     /* 渐变色已由 CSS 变量在 .dark-theme 中覆盖 */
-    background: linear-gradient(135deg,
+    background: linear-gradient(
+        135deg,
         var(--welcome-gradient-start) 0%,
         var(--welcome-gradient-mid) 50%,
         var(--welcome-gradient-end) 100%
@@ -90,8 +106,7 @@
         90deg,
         transparent,
         transparent 20px,
-        rgba(255,255,255,0.02) 20px,
-        rgba(255,255,255,0.02) 40px
+        rgba(var(--color-bg-surface-rgb), 0.02) 20px,
+        rgba(var(--color-bg-surface-rgb), 0.02) 40px
     );
 }
-

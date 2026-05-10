@@ -2,18 +2,18 @@
  * 跨格式兼容性转换器
  * 处理工具调用 ID 重映射和 thoughtSignature 保存/恢复
  *
- * P0 
+ * P0
  * - 规范化 ID 解决双向查询问题
  * - Gemini 生成唯一 ID（不再 null）
  * - 会话清空时清理映射表
  * - LRU 淘汰策略防止内存泄漏
  *
- * P1 
+ * P1
  * - 签名备份/恢复机制
  * - ID 计数器避免并发冲突
  */
 
-import { state } from '../core/state.js';
+import { logger } from '../utils/logger.js';
 import { PartType } from '../messages/schema.js';
 
 // ========== ID 映射管理 ==========
@@ -48,8 +48,11 @@ const MAX_MAPPINGS = 1000;
  */
 function normalizeId(id) {
     if (!id) return null;
-    // 移除前缀：call_xxx -> xxx, toolu_xxx -> xxx, gemini_xxx -> xxx
-    return id.replace(/^(call_|toolu_|gemini_)/, '');
+    // 保留格式前缀标识避免跨格式碰撞
+    if (id.startsWith('call_')) return 'openai:' + id.slice(5);
+    if (id.startsWith('toolu_')) return 'claude:' + id.slice(6);
+    if (id.startsWith('gemini_')) return 'gemini:' + id.slice(7);
+    return 'raw:' + id;
 }
 
 /**
@@ -105,7 +108,9 @@ function evictOldMappings() {
         }
     }
 
-    console.log(`[Format Converter] 🧹 LRU 淘汰: 移除 ${toRemove} 个旧映射，当前 ${idMappings.size} 个`);
+    logger.debug(
+        `[Format Converter] 🧹 LRU 淘汰: 移除 ${toRemove} 个旧映射，当前 ${idMappings.size} 个`
+    );
 }
 
 /**
@@ -132,9 +137,11 @@ function touchId(canonicalId) {
 export function getOrCreateMappedId(originalId, targetFormat) {
     if (!originalId) {
         // 空 ID，直接生成新的
-        return targetFormat === 'claude' ? generateClaudeId() :
-               targetFormat === 'gemini' ? generateGeminiId() :
-               generateOpenAIId();
+        return targetFormat === 'claude'
+            ? generateClaudeId()
+            : targetFormat === 'gemini'
+              ? generateGeminiId()
+              : generateOpenAIId();
     }
 
     // 先查反向索引，看是否已有映射
@@ -189,7 +196,7 @@ export function clearIdMappings() {
     idIndex.clear();
     lruQueue.length = 0;
     idCounter = 0;
-    console.log('[Format Converter] 🧹 已清空所有工具调用 ID 映射');
+    logger.debug('[Format Converter] 🧹 已清空所有工具调用 ID 映射');
 }
 
 // ========== thoughtSignature 管理 ==========
@@ -266,8 +273,14 @@ export function clearThoughtSignatures(messages, fromIndex) {
                 }
             }
 
-            if (msg.thoughtSignature) { delete msg.thoughtSignature; count++; }
-            if (msg.thinkingSignature) { delete msg.thinkingSignature; count++; }
+            if (msg.thoughtSignature) {
+                delete msg.thoughtSignature;
+                count++;
+            }
+            if (msg.thinkingSignature) {
+                delete msg.thinkingSignature;
+                count++;
+            }
         }
     }
 
@@ -297,14 +310,16 @@ export function hasThoughtSignatures(messages, fromIndex = 0) {
 export function sanitizeMessageForExport(message) {
     const hasToolCalls = !!message.tool_calls;
     const hasParts = Array.isArray(message.parts);
-    const hasPrivateTopLevel = message._schemaVersion !== undefined;
+    const hasPrivateFields = Object.keys(message).some(
+        (k) => k.startsWith('_') && k !== '_schemaVersion'
+    );
 
-    if (!hasToolCalls && !hasParts && !hasPrivateTopLevel) return message;
+    if (!hasToolCalls && !hasParts && !hasPrivateFields) return message;
 
     const result = { ...message };
 
     if (hasToolCalls) {
-        result.tool_calls = message.tool_calls.map(tc => {
+        result.tool_calls = message.tool_calls.map((tc) => {
             // 移除所有私有字段（以 _ 开头）
             const { _thoughtSignature, _toolName, ...rest } = tc;
             return rest;
@@ -313,17 +328,20 @@ export function sanitizeMessageForExport(message) {
 
     // 清理 parts 中的私有字段
     if (hasParts) {
-        result.parts = message.parts.map(p => {
+        result.parts = message.parts.map((p) => {
             const clean = { ...p };
-            Object.keys(clean).forEach(k => {
+            Object.keys(clean).forEach((k) => {
                 if (k.startsWith('_')) delete clean[k];
             });
             return clean;
         });
     }
 
-    // 移除顶层私有字段
-    if (hasPrivateTopLevel) delete result._schemaVersion;
+    // _schemaVersion 保留：导入时需要判断是否需要迁移
+    // 清理其他顶层私有字段
+    Object.keys(result).forEach((k) => {
+        if (k.startsWith('_') && k !== '_schemaVersion') delete result[k];
+    });
 
     return result;
 }

@@ -30,25 +30,60 @@
 }
 
 /* ========== 兼容旧类名（隐藏旧输入区）========== */
-.glass {}
-.input-container { display: none !important; }
-.input-area { display: none !important; }
-.input-wrapper { display: none !important; }
-.input-wrapper .text-input { display: none !important; } /* 只隐藏旧输入区的 text-input，不影响对话框 */
-.input-actions { display: none !important; }
-.input-footer { display: none !important; }
-.model-selector { display: none !important; }
-.model-dropdown { display: none !important; }
+.glass {
+}
+.input-container {
+    display: none !important;
+}
+.input-area {
+    display: none !important;
+}
+.input-wrapper {
+    display: none !important;
+}
+.input-wrapper .text-input {
+    display: none !important;
+} /* 只隐藏旧输入区的 text-input，不影响对话框 */
+.input-actions {
+    display: none !important;
+}
+.input-footer {
+    display: none !important;
+}
+.model-selector {
+    display: none !important;
+}
+.model-dropdown {
+    display: none !important;
+}
 /* 旧版 UI 元素隐藏（已迁移到设置面板） */
-.config-dropdown { display: none !important; }
-.image-size-dropdown { display: none !important; }
-.reply-count-dropdown { display: none !important; }
-.refresh-button { display: none !important; }
-.api-format-row { display: none !important; }
-.reply-count-config { display: none !important; }
-.config-btn { display: none !important; }
-.api-input { display: none !important; }
-.image-preview-container { display: none !important; }
+.config-dropdown {
+    display: none !important;
+}
+.image-size-dropdown {
+    display: none !important;
+}
+.reply-count-dropdown {
+    display: none !important;
+}
+.refresh-button {
+    display: none !important;
+}
+.api-format-row {
+    display: none !important;
+}
+.reply-count-config {
+    display: none !important;
+}
+.config-btn {
+    display: none !important;
+}
+.api-input {
+    display: none !important;
+}
+.image-preview-container {
+    display: none !important;
+}
 .message-images {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
@@ -64,7 +99,9 @@
     border-radius: 4px;
     object-fit: cover;
     cursor: pointer;
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    transition:
+        transform 0.2s ease,
+        box-shadow 0.2s ease;
     box-shadow: var(--shadow-sm);
 }
 
@@ -92,15 +129,15 @@
     align-items: center;
     gap: 8px;
     padding: 8px 12px;
-    background: rgba(255, 255, 255, 0.1);
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    background: rgba(var(--color-bg-surface-rgb), 0.1);
+    border: 1px solid rgba(var(--color-bg-surface-rgb), 0.2);
     border-radius: 6px;
     font-size: var(--fs-md);
     transition: background 0.2s ease;
 }
 
 .message-file-item:hover {
-    background: rgba(255, 255, 255, 0.15);
+    background: rgba(var(--color-bg-surface-rgb), 0.15);
 }
 
 .message-file-item svg {
@@ -116,7 +153,7 @@
 
 /* PDF 文件 - 红色 */
 .message-file-item.pdf {
-    border-color: rgba(239, 83, 80, 0.4);
+    border-color: rgba(var(--palette-coral-rgb), 0.4);
 }
 
 .message-file-item.pdf svg {
@@ -125,7 +162,7 @@
 
 /* TXT 文件 - 蓝色 */
 .message-file-item.txt {
-    border-color: rgba(66, 165, 245, 0.4);
+    border-color: rgba(var(--palette-blue-rgb), 0.4);
 }
 
 .message-file-item.txt svg {
@@ -134,7 +171,7 @@
 
 /* MD 文件 - 紫色 */
 .message-file-item.md {
-    border-color: rgba(156, 39, 176, 0.4);
+    border-color: rgba(var(--accent-purple-rgb), 0.4);
 }
 
 .message-file-item.md svg {
@@ -143,11 +180,10 @@
 
 /* AI 消息中的文件样式（深色背景上） */
 .message.assistant .message-file-item {
-    background: rgba(0, 0, 0, 0.05);
+    background: rgba(var(--shadow-color-rgb), 0.05);
     border-color: var(--md-border);
 }
 
 .message.assistant .message-file-item:hover {
-    background: rgba(0, 0, 0, 0.08);
+    background: rgba(var(--shadow-color-rgb), 0.08);
 }
-

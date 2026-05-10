@@ -8,7 +8,7 @@
 /* 设置面板滚动条始终可见 */
 .settings-content {
     scrollbar-width: auto;
-    scrollbar-color: var(--md-orange) rgba(56, 56, 56, 0.05);
+    scrollbar-color: var(--md-orange) rgba(var(--color-text-primary-rgb), 0.05);
 }
 
 /* Webkit浏览器 - 纯色像素风格 */
@@ -47,7 +47,7 @@
 }
 
 .settings-content::-webkit-scrollbar-track {
-    background: rgba(249, 115, 22, 0.08);
+    background: rgba(var(--palette-orange-rgb), 0.08);
     border: 2px solid var(--color-border-primary);
     margin: 8px 0;
 }
@@ -80,4 +80,3 @@
 .session-list::-webkit-scrollbar-thumb:hover {
     background: var(--md-pink);
 }
-

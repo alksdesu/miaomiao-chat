@@ -5,6 +5,7 @@
 
 import { eventBus } from '../core/events.js';
 import { openclawClient } from '../api/openclaw.js';
+import { logger } from '../utils/logger.js';
 
 let countdownTimer = null;
 let countdownSeconds = 60;
@@ -54,7 +55,12 @@ function showApprovalModal(payload) {
     // 风险等级
     if (riskEl) {
         const riskLabels = { low: '低', medium: '中', high: '高', critical: '极高' };
-        const riskColors = { low: '#4caf50', medium: '#ff9800', high: '#f44336', critical: '#d32f2f' };
+        const riskColors = {
+            low: '#4caf50',
+            medium: '#ff9800',
+            high: '#f44336',
+            critical: '#d32f2f'
+        };
         const level = riskLevel || 'medium';
         riskEl.textContent = riskLabels[level] || level;
         riskEl.style.color = riskColors[level] || '#ff9800';
@@ -92,8 +98,8 @@ async function respondApproval(approved) {
 
     try {
         await openclawClient.approveAction(approvalId, approved);
-        console.log(`[OpenClaw] 审批响应: ${approved ? '允许' : '拒绝'} (${approvalId})`);
+        logger.debug(`[OpenClaw] 审批响应: ${approved ? '允许' : '拒绝'} (${approvalId})`);
     } catch (e) {
-        console.error('[OpenClaw] 审批响应失败:', e);
+        logger.error('[OpenClaw] 审批响应失败:', e);
     }
 }

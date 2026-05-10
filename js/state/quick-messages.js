@@ -8,15 +8,17 @@ import { elements } from '../core/elements.js';
 import { eventBus } from '../core/events.js';
 import { showNotification } from '../ui/notifications.js';
 import { saveCurrentConfig } from './config.js';
+import { setQuickMessages } from '../core/state-mutations.js';
 // 新增：IndexedDB 快捷消息 API
-import { loadAllQuickMessages, saveQuickMessage, deleteQuickMessage as deleteQuickMessageFromDB } from './storage.js';
+import { loadAllQuickMessages, saveQuickMessage } from './storage.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * 初始化快捷消息（从存储加载）
  */
 export async function initQuickMessages() {
     await loadQuickMessagesFromStorage();
-    console.log('Quick Messages initialized');
+    logger.debug('Quick Messages initialized');
 }
 
 /**
@@ -27,21 +29,21 @@ async function loadQuickMessagesFromStorage() {
         // 优先从 IndexedDB 加载
         if (state.storageMode !== 'localStorage') {
             const messages = await loadAllQuickMessages();
-            state.quickMessages = messages || [];
-            console.log('[loadQuickMessages] 从 IndexedDB 加载:', state.quickMessages.length);
+            setQuickMessages(messages || []);
+            logger.debug('[loadQuickMessages] 从 IndexedDB 加载:', state.quickMessages.length);
             return;
         }
 
         // 降级：从 localStorage 加载
         const saved = localStorage.getItem('quickMessages');
         if (saved) {
-            state.quickMessages = JSON.parse(saved);
-            console.log('[loadQuickMessages] 从 localStorage 加载（降级模式）');
+            setQuickMessages(JSON.parse(saved));
+            logger.debug('[loadQuickMessages] 从 localStorage 加载（降级模式）');
         } else {
-            state.quickMessages = [];
+            setQuickMessages([]);
         }
     } catch (error) {
-        console.error('加载快捷消息失败:', error);
+        logger.error('加载快捷消息失败:', error);
         state.quickMessages = [];
     }
 }
@@ -56,14 +58,14 @@ async function saveQuickMessagesToStorage() {
             for (const msg of state.quickMessages) {
                 await saveQuickMessage(msg);
             }
-            console.log('[saveQuickMessages] 已保存到 IndexedDB:', state.quickMessages.length);
+            logger.debug('[saveQuickMessages] 已保存到 IndexedDB:', state.quickMessages.length);
         } else {
             // 降级：保存到 localStorage
             localStorage.setItem('quickMessages', JSON.stringify(state.quickMessages));
-            console.log('[saveQuickMessages] 已保存到 localStorage（降级模式）');
+            logger.debug('[saveQuickMessages] 已保存到 localStorage（降级模式）');
         }
     } catch (error) {
-        console.error('保存快捷消息失败:', error);
+        logger.error('保存快捷消息失败:', error);
         // 降级处理
         localStorage.setItem('quickMessages', JSON.stringify(state.quickMessages));
         showNotification('保存快捷消息失败', 'error');
@@ -104,7 +106,7 @@ export function createQuickMessage(name, content, category = '常用') {
  * @returns {boolean} 是否更新成功
  */
 export function updateQuickMessage(id, updates) {
-    const index = state.quickMessages.findIndex(m => m.id === id);
+    const index = state.quickMessages.findIndex((m) => m.id === id);
     if (index === -1) {
         showNotification('快捷消息不存在', 'error');
         return false;
@@ -139,7 +141,7 @@ export function updateQuickMessage(id, updates) {
  * @returns {boolean} 是否删除成功
  */
 export function deleteQuickMessage(id) {
-    const index = state.quickMessages.findIndex(m => m.id === id);
+    const index = state.quickMessages.findIndex((m) => m.id === id);
     if (index === -1) {
         showNotification('快捷消息不存在', 'error');
         return false;
@@ -163,7 +165,7 @@ export function deleteQuickMessage(id) {
  * @returns {Object|null} 快捷消息对象
  */
 export function getQuickMessage(id) {
-    return state.quickMessages.find(m => m.id === id) || null;
+    return state.quickMessages.find((m) => m.id === id) || null;
 }
 
 /**

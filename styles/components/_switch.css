@@ -7,6 +7,10 @@
     color: var(--md-text);
 }
 
+.settings-group > .toggle-row + .toggle-row {
+    margin-top: 10px;
+}
+
 .switch {
     position: relative;
     display: inline-block;
@@ -32,7 +36,7 @@
 
 .slider::before {
     position: absolute;
-    content: "";
+    content: '';
     height: 18px;
     width: 18px;
     left: 3px;
@@ -40,7 +44,7 @@
     background: var(--color-bg-surface);
     transition: 0.3s;
     border-radius: 50%;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    box-shadow: 0 2px 4px rgba(var(--shadow-color-rgb), 0.2);
 }
 
 input:checked + .slider {
@@ -52,7 +56,7 @@ input:checked + .slider::before {
 }
 
 input:focus + .slider {
-    box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.3);
+    box-shadow: 0 0 0 3px rgba(var(--palette-blue-rgb), 0.3);
 }
 
 .settings-hint {
@@ -62,4 +66,3 @@ input:focus + .slider {
     font-style: italic;
     line-height: 1.4;
 }
-

@@ -22,10 +22,5 @@
 
 .stream-stats svg {
     flex-shrink: 0;
-    opacity: 0.7;
+    opacity: var(--stream-stats-icon-opacity);
 }
-
-.dark-theme .stream-stats svg {
-    opacity: 0.6;
-}
-

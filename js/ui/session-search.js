@@ -1,177 +1,531 @@
 /**
  * 会话搜索模块
- * 支持全局搜索所有会话的消息内容（OpenAI/Gemini/Claude 三种格式）
+ * 使用持久化搜索索引为所有会话提供统一的正文搜索来源。
  */
 
 import { state } from '../core/state.js';
 import { elements } from '../core/elements.js';
 import { eventBus } from '../core/events.js';
 import { escapeHtml } from '../utils/helpers.js';
-import { PartType, hasParts } from '../messages/schema.js';
+import {
+    loadAllSessionSearchIndexes,
+    loadSessionMessages,
+    saveSessionSearchIndex
+} from '../state/storage.js';
+import {
+    buildSessionSearchIndex,
+    isSessionSearchIndexUsable
+} from '../state/session-search-index.js';
+import { logger } from '../utils/logger.js';
 
-// 搜索状态
+const SEARCH_DEBOUNCE_DELAY = 300;
+const SEARCH_REFRESH_DELAY = 120;
+const SEARCH_PREVIEW_LIMIT = 3;
+const searchIndexStore = new Map();
+const indexBuildFailureIds = new Set();
+
+const searchState = {
+    query: '',
+    isActive: false,
+    results: null,
+    indexing: {
+        totalCount: 0,
+        pendingCount: 0,
+        failedCount: 0,
+        isRunning: false,
+        error: ''
+    }
+};
+
+let _initialized = false;
 let searchDebounceTimer = null;
-let currentQuery = '';
+let searchRefreshTimer = null;
+let indexBackfillRunning = false;
+let indexBackfillRestartRequested = false;
 
-/**
- * 初始化会话搜索
- */
 export function initSessionSearch() {
+    if (_initialized) {
+        return;
+    }
+
+    _initialized = true;
     bindSearchEvents();
-    console.log('Session Search initialized');
+    bindSearchStateEvents();
+    syncCurrentSessionSearchIndex();
+    void hydratePersistedSearchIndexes();
+    updateSearchHint();
+    logger.debug('Session Search initialized');
 }
 
-/**
- * 绑定搜索事件
- */
 function bindSearchEvents() {
-    // 输入事件（防抖 300ms）
-    elements.sessionSearchInput?.addEventListener('input', (e) => {
-        const query = e.target.value;
-        currentQuery = query;
-
-        // 显示/隐藏清除按钮
-        if (elements.sessionSearchClear) {
-            elements.sessionSearchClear.style.display = query ? 'block' : 'none';
-        }
-
-        // 防抖搜索
-        clearTimeout(searchDebounceTimer);
-        searchDebounceTimer = setTimeout(() => {
-            performSearch(query);
-        }, 300);
+    elements.sessionSearchInput?.addEventListener('input', (event) => {
+        const rawQuery = event.target.value;
+        updateClearButtonVisibility(rawQuery);
+        scheduleSearch(rawQuery);
     });
 
-    // 清除按钮
     elements.sessionSearchClear?.addEventListener('click', clearSearch);
 
-    // ESC 快捷键清除搜索
-    elements.sessionSearchInput?.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') {
+    elements.sessionSearchInput?.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
             clearSearch();
         }
     });
+}
 
-    // 监听会话列表更新，刷新当前会话的搜索缓存并清理已删除会话的缓存
-    eventBus.on('sessions:updated', ({ sessions }) => {
-        // 清理已删除会话的缓存
-        if (sessions) {
-            const activeIds = new Set(sessions.map(s => s.id));
-            for (const cachedId of searchTextCache.keys()) {
-                if (!activeIds.has(cachedId)) {
-                    searchTextCache.delete(cachedId);
-                }
-            }
-        }
-        buildSearchCacheForCurrentSession(); // 覆盖旧缓存
-        if (currentQuery) {
-            performSearch(currentQuery);
+function bindSearchStateEvents() {
+    eventBus.on('sessions:loaded', () => {
+        pruneSearchIndexes();
+        void hydratePersistedSearchIndexes();
+    });
+
+    eventBus.on('sessions:updated', () => {
+        pruneSearchIndexes();
+        syncCurrentSessionSearchIndex();
+        scheduleSearchIndexBackfill();
+
+        if (searchState.isActive) {
+            scheduleActiveSearchRefresh();
+        } else {
+            refreshIndexingState();
         }
     });
 
-    // 切换离开前：为当前会话快照搜索缓存（之后消息从内存释放）
     eventBus.on('session:before-switch', () => {
-        buildSearchCacheForCurrentSession();
+        syncCurrentSessionSearchIndex();
     });
 
-    // 切换完成后：为新会话构建搜索缓存
     eventBus.on('session:switched', () => {
-        buildSearchCacheForCurrentSession();
+        syncCurrentSessionSearchIndex();
+        scheduleSearchIndexBackfill();
+
+        if (searchState.isActive) {
+            scheduleActiveSearchRefresh();
+        } else {
+            refreshIndexingState();
+        }
+    });
+
+    eventBus.on('messages:changed', () => {
+        syncCurrentSessionSearchIndex();
+        if (searchState.isActive) {
+            scheduleActiveSearchRefresh();
+        }
+    });
+
+    eventBus.on('state:messages-replaced', () => {
+        syncCurrentSessionSearchIndex();
+        if (searchState.isActive) {
+            scheduleActiveSearchRefresh();
+        }
+    });
+
+    eventBus.on('session-search:index-updated', ({ sessionId, searchIndex }) => {
+        if (!sessionId || !searchIndex) {
+            return;
+        }
+
+        searchIndexStore.set(sessionId, searchIndex);
+        indexBuildFailureIds.delete(sessionId);
+
+        if (searchState.isActive) {
+            scheduleActiveSearchRefresh();
+        } else {
+            refreshIndexingState();
+        }
     });
 }
 
-/**
- * 清除搜索
- */
+function normalizeQuery(query) {
+    return typeof query === 'string' ? query.trim() : '';
+}
+
+function clearPendingSearchTimers() {
+    if (searchDebounceTimer) {
+        clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = null;
+    }
+
+    if (searchRefreshTimer) {
+        clearTimeout(searchRefreshTimer);
+        searchRefreshTimer = null;
+    }
+}
+
+function scheduleSearch(rawQuery) {
+    clearPendingSearchTimers();
+
+    const normalizedQuery = normalizeQuery(rawQuery);
+    if (!normalizedQuery) {
+        setSearchInactive();
+        return;
+    }
+
+    searchDebounceTimer = setTimeout(() => {
+        performSearch(normalizedQuery);
+    }, SEARCH_DEBOUNCE_DELAY);
+}
+
+function scheduleActiveSearchRefresh() {
+    if (!searchState.isActive) {
+        return;
+    }
+
+    if (searchRefreshTimer) {
+        clearTimeout(searchRefreshTimer);
+    }
+
+    searchRefreshTimer = setTimeout(() => {
+        performSearch(searchState.query);
+    }, SEARCH_REFRESH_DELAY);
+}
+
+function updateClearButtonVisibility(rawQuery) {
+    if (!elements.sessionSearchClear) {
+        return;
+    }
+
+    elements.sessionSearchClear.style.display = rawQuery ? 'block' : 'none';
+}
+
+function setSearchInactive() {
+    searchState.query = '';
+    searchState.isActive = false;
+    searchState.results = null;
+    emitSearchStateChange();
+}
+
 function clearSearch() {
+    clearPendingSearchTimers();
+
     if (elements.sessionSearchInput) {
         elements.sessionSearchInput.value = '';
     }
-    if (elements.sessionSearchClear) {
-        elements.sessionSearchClear.style.display = 'none';
-    }
-    currentQuery = '';
-    performSearch('');
+
+    updateClearButtonVisibility('');
+    setSearchInactive();
 }
 
-/**
- * 执行搜索
- * @param {string} query - 搜索关键词
- */
 function performSearch(query) {
-    const searchResults = searchSessions(query);
-
-    // 显示/隐藏搜索提示
-    if (query && searchResults.length < state.sessions.length) {
-        showSearchHint(searchResults.length, state.sessions.length);
-    } else {
-        hideSearchHint();
+    const normalizedQuery = normalizeQuery(query);
+    if (!normalizedQuery) {
+        setSearchInactive();
+        return;
     }
 
-    // 触发会话列表更新事件，携带搜索结果
-    eventBus.emit('sessions:search-filter', {
-        searchResults,
-        query
+    searchState.query = normalizedQuery;
+    searchState.isActive = true;
+    searchState.results = searchSessions(normalizedQuery);
+    emitSearchStateChange();
+}
+
+function emitSearchStateChange() {
+    updateSearchHint();
+    eventBus.emit('sessions:search-state-changed', getSessionSearchState());
+}
+
+function getSearchHintElement() {
+    let hint = document.getElementById('session-search-hint');
+    if (hint) {
+        return hint;
+    }
+
+    hint = document.createElement('div');
+    hint.id = 'session-search-hint';
+    hint.className = 'session-search-hint';
+    hint.setAttribute('role', 'status');
+    hint.setAttribute('aria-live', 'polite');
+
+    const searchBar = elements.sessionSearchInput?.parentElement;
+    if (searchBar) {
+        searchBar.after(hint);
+    }
+
+    return hint;
+}
+
+function buildSearchHintText() {
+    const hintParts = [];
+
+    if (searchState.isActive) {
+        const resultCount = Array.isArray(searchState.results) ? searchState.results.length : 0;
+        hintParts.push(`找到 ${resultCount} / ${state.sessions.length} 个会话`);
+    }
+
+    if (searchState.indexing.isRunning && searchState.indexing.totalCount > 0) {
+        const completedCount = Math.max(
+            0,
+            searchState.indexing.totalCount - searchState.indexing.pendingCount
+        );
+        hintParts.push(`正在建立搜索索引（${completedCount}/${searchState.indexing.totalCount}）`);
+    } else if (!searchState.isActive && searchState.indexing.pendingCount > 0) {
+        hintParts.push(`待建立搜索索引 ${searchState.indexing.pendingCount} 个会话`);
+    }
+
+    if (searchState.indexing.failedCount > 0) {
+        hintParts.push(searchState.indexing.error || '部分会话索引建立失败，搜索结果可能不完整');
+    }
+
+    return hintParts.join(' · ');
+}
+
+function updateSearchHint() {
+    const hintText = buildSearchHintText();
+    const hint = document.getElementById('session-search-hint');
+
+    if (!hintText) {
+        if (hint) {
+            hint.style.display = 'none';
+        }
+        return;
+    }
+
+    const targetHint = hint || getSearchHintElement();
+    if (!targetHint) {
+        return;
+    }
+
+    targetHint.textContent = hintText;
+    targetHint.style.display = 'block';
+}
+
+async function hydratePersistedSearchIndexes() {
+    try {
+        const records = await loadAllSessionSearchIndexes();
+        searchIndexStore.clear();
+
+        records.forEach((record) => {
+            if (record?.sessionId) {
+                searchIndexStore.set(record.sessionId, record);
+            }
+        });
+
+        pruneSearchIndexes();
+        syncCurrentSessionSearchIndex();
+        scheduleSearchIndexBackfill();
+
+        if (searchState.isActive) {
+            scheduleActiveSearchRefresh();
+        } else {
+            refreshIndexingState();
+        }
+    } catch (error) {
+        logger.error('[SessionSearch] 加载会话搜索索引失败:', error);
+        searchState.indexing.error = '加载会话搜索索引失败';
+        scheduleSearchIndexBackfill();
+        emitSearchStateChange();
+    }
+}
+
+function pruneSearchIndexes() {
+    const activeSessionIds = new Set(state.sessions.map((session) => session.id));
+
+    for (const sessionId of searchIndexStore.keys()) {
+        if (!activeSessionIds.has(sessionId)) {
+            searchIndexStore.delete(sessionId);
+        }
+    }
+
+    for (const sessionId of indexBuildFailureIds) {
+        if (!activeSessionIds.has(sessionId)) {
+            indexBuildFailureIds.delete(sessionId);
+        }
+    }
+}
+
+function getMissingSearchIndexSessions() {
+    return state.sessions.filter((session) => {
+        if (!session?.id) {
+            return false;
+        }
+
+        if (indexBuildFailureIds.has(session.id)) {
+            return false;
+        }
+
+        const expectedMessageCount = Number.isFinite(session.messageCount)
+            ? session.messageCount
+            : null;
+        const storedIndex = searchIndexStore.get(session.id);
+        return !isSessionSearchIndexUsable(storedIndex, expectedMessageCount);
     });
 }
 
-/**
- * 搜索所有会话
- * @param {string} query - 搜索关键词
- * @returns {Array} 匹配的会话数组（增强版，包含匹配消息信息）
- */
-// 搜索文本缓存：sessionId -> { text, messages } （避免每次搜索都遍历消息数组）
-const searchTextCache = new Map();
+function getIndexingErrorText() {
+    const failedCount = indexBuildFailureIds.size;
+    if (failedCount === 0) {
+        return '';
+    }
 
-/**
- * 获取会话的搜索文本（优先缓存，否则从当前 state 或 IndexedDB 加载）
- */
-function getSearchableMessages(session) {
-    // 当前会话：直接从 state 取（统一格式）
+    return `${failedCount} 个会话索引建立失败，搜索结果可能不完整`;
+}
+
+function refreshIndexingState() {
+    const pendingCount = getMissingSearchIndexSessions().length;
+
+    searchState.indexing.pendingCount = pendingCount;
+    searchState.indexing.failedCount = indexBuildFailureIds.size;
+    searchState.indexing.error = getIndexingErrorText() || searchState.indexing.error;
+
+    if (!searchState.indexing.isRunning) {
+        searchState.indexing.totalCount = pendingCount;
+    }
+
+    if (searchState.indexing.failedCount === 0) {
+        searchState.indexing.error = '';
+    }
+
+    emitSearchStateChange();
+}
+
+function scheduleSearchIndexBackfill() {
+    if (indexBackfillRunning) {
+        indexBackfillRestartRequested = true;
+        return;
+    }
+
+    void backfillMissingSearchIndexes();
+}
+
+async function backfillMissingSearchIndexes() {
+    indexBackfillRunning = true;
+    searchState.indexing.error = getIndexingErrorText();
+
+    try {
+        do {
+            indexBackfillRestartRequested = false;
+            const missingSessions = getMissingSearchIndexSessions();
+
+            if (missingSessions.length === 0) {
+                searchState.indexing.isRunning = false;
+                searchState.indexing.totalCount = 0;
+                searchState.indexing.pendingCount = 0;
+                searchState.indexing.failedCount = indexBuildFailureIds.size;
+                searchState.indexing.error = getIndexingErrorText();
+                emitSearchStateChange();
+                continue;
+            }
+
+            searchState.indexing.isRunning = true;
+            searchState.indexing.totalCount = missingSessions.length;
+            searchState.indexing.pendingCount = missingSessions.length;
+            searchState.indexing.failedCount = indexBuildFailureIds.size;
+            searchState.indexing.error = getIndexingErrorText();
+            emitSearchStateChange();
+
+            for (const session of missingSessions) {
+                if (indexBackfillRestartRequested) {
+                    break;
+                }
+
+                try {
+                    await buildAndPersistSessionSearchIndex(session);
+                } catch (error) {
+                    logger.error(`[SessionSearch] 建立会话 ${session.id} 搜索索引失败:`, error);
+                    indexBuildFailureIds.add(session.id);
+                }
+
+                searchState.indexing.pendingCount = getMissingSearchIndexSessions().length;
+                searchState.indexing.failedCount = indexBuildFailureIds.size;
+                searchState.indexing.error = getIndexingErrorText();
+                emitSearchStateChange();
+                await yieldToMainThread();
+            }
+        } while (indexBackfillRestartRequested);
+    } finally {
+        indexBackfillRunning = false;
+        searchState.indexing.isRunning = false;
+        searchState.indexing.pendingCount = getMissingSearchIndexSessions().length;
+        searchState.indexing.totalCount = searchState.indexing.pendingCount;
+        searchState.indexing.failedCount = indexBuildFailureIds.size;
+        searchState.indexing.error = getIndexingErrorText();
+        emitSearchStateChange();
+    }
+}
+
+async function buildAndPersistSessionSearchIndex(session) {
+    if (!session?.id || !state.sessions.some((item) => item.id === session.id)) {
+        return;
+    }
+
+    let messages = [];
+
     if (session.id === state.currentSessionId) {
-        return { messages: state.messages, format: 'openai' };
-    }
-    // 非当前会话：使用缓存的搜索文本
-    const cached = searchTextCache.get(session.id);
-    if (cached) return cached;
-    // 没有缓存——无法同步搜索非当前会话的消息内容
-    // 返回空（只搜名称）
-    return { messages: [], format: session.apiFormat || 'openai' };
-}
-
-/**
- * 为当前会话构建搜索缓存
- */
-export function buildSearchCacheForCurrentSession() {
-    if (!state.currentSessionId) return;
-    const messages = state.messages;
-    // 提取所有消息文本用于搜索
-    const extracted = messages.map((msg, index) => ({
-        text: extractMessageText(msg, 'openai'),
-        role: msg.role || 'unknown',
-        id: msg.id || `msg_${index}`,
-        index
-    }));
-    searchTextCache.set(state.currentSessionId, { messages: extracted, format: 'openai' });
-}
-
-/**
- * 清除指定会话的搜索缓存
- */
-export function clearSearchCache(sessionId) {
-    if (sessionId) {
-        searchTextCache.delete(sessionId);
+        messages = state.messages;
     } else {
-        searchTextCache.clear();
+        const storedMessages = await loadSessionMessages(session.id);
+        if (storedMessages?.messages) {
+            messages = storedMessages.messages;
+        } else if (Array.isArray(session._pendingMessages)) {
+            messages = session._pendingMessages;
+        } else if ((session.messageCount || 0) > 0) {
+            throw new Error('会话元数据存在消息计数，但找不到对应消息数据');
+        }
     }
+
+    const searchIndex = buildSessionSearchIndex(messages);
+    searchIndexStore.set(session.id, {
+        sessionId: session.id,
+        ...searchIndex
+    });
+    indexBuildFailureIds.delete(session.id);
+
+    if (session.id === state.currentSessionId && state.sessionDirty) {
+        return;
+    }
+
+    await saveSessionSearchIndex(session.id, searchIndex);
+}
+
+function yieldToMainThread() {
+    return new Promise((resolve) => {
+        requestIdleCallback(() => resolve(), { timeout: 50 });
+    });
+}
+
+function syncCurrentSessionSearchIndex() {
+    if (!state.currentSessionId) {
+        return null;
+    }
+
+    const currentSession = state.sessions.find((session) => session.id === state.currentSessionId);
+    if (!currentSession) {
+        return null;
+    }
+
+    const searchIndex = buildSessionSearchIndex(state.messages);
+    searchIndexStore.set(state.currentSessionId, {
+        sessionId: state.currentSessionId,
+        ...searchIndex
+    });
+    indexBuildFailureIds.delete(state.currentSessionId);
+    return searchIndex;
+}
+
+function buildPreviewText(text, lowerQuery) {
+    const lowerText = text.toLowerCase();
+    const matchIndex = lowerText.indexOf(lowerQuery);
+    const contextStart = Math.max(0, matchIndex - 50);
+    const contextEnd = Math.min(text.length, matchIndex + lowerQuery.length + 50);
+
+    let preview = text.slice(contextStart, contextEnd);
+    if (contextStart > 0) {
+        preview = `...${preview}`;
+    }
+    if (contextEnd < text.length) {
+        preview = `${preview}...`;
+    }
+
+    return preview;
 }
 
 export function searchSessions(query) {
-    if (!query || query.trim() === '') {
-        return state.sessions.map(s => ({ session: s, matchedMessages: [] }));
+    const normalizedQuery = normalizeQuery(query);
+    if (!normalizedQuery) {
+        return [];
     }
 
-    const lowerQuery = query.toLowerCase().trim();
+    const lowerQuery = normalizedQuery.toLowerCase();
     const results = [];
 
     for (const session of state.sessions) {
@@ -179,177 +533,77 @@ export function searchSessions(query) {
         let matchedInName = false;
         const matchedMessages = [];
 
-        // 1. 搜索会话名称
         if (session.name && session.name.toLowerCase().includes(lowerQuery)) {
             matchCount += 10;
             matchedInName = true;
         }
 
-        // 2. 搜索消息内容
-        const searchData = getSearchableMessages(session);
-        const messagesArray = searchData.messages || [];
-        const format = searchData.format || session.apiFormat || 'openai';
+        const searchIndex = searchIndexStore.get(session.id);
+        const entries = Array.isArray(searchIndex?.entries) ? searchIndex.entries : [];
 
-        // 如果是预提取的缓存格式
-        messagesArray.forEach((item, idx) => {
-            const text = item.text !== undefined ? item.text : extractMessageText(item, format);
+        for (const entry of entries) {
+            const text = entry.text || '';
             const lowerText = text.toLowerCase();
+            if (!lowerText.includes(lowerQuery)) {
+                continue;
+            }
 
-            if (lowerText.includes(lowerQuery)) {
-                matchCount++;
-
-                const matchIndex = lowerText.indexOf(lowerQuery);
-                const contextStart = Math.max(0, matchIndex - 50);
-                const contextEnd = Math.min(text.length, matchIndex + lowerQuery.length + 50);
-                let preview = text.slice(contextStart, contextEnd);
-                if (contextStart > 0) preview = '...' + preview;
-                if (contextEnd < text.length) preview = preview + '...';
-
-                const role = item.role || item.role || 'unknown';
-                const index = item.index !== undefined ? item.index : idx;
-
+            matchCount += 1;
+            if (matchedMessages.length < SEARCH_PREVIEW_LIMIT) {
                 matchedMessages.push({
-                    index,
-                    messageId: item.id || `msg_${index}`,
-                    role,
-                    preview,
+                    index: entry.index,
+                    messageId: entry.id || `msg_${entry.index}`,
+                    role: entry.role || 'unknown',
+                    preview: buildPreviewText(text, lowerQuery),
                     fullText: text
                 });
             }
-        });
+        }
 
         if (matchCount > 0) {
             results.push({
                 session,
                 matchCount,
                 matchedInName,
-                matchedMessages: matchedMessages.slice(0, 3)
+                matchedMessages
             });
         }
     }
 
-    results.sort((a, b) => {
-        if (a.matchedInName && !b.matchedInName) return -1;
-        if (!a.matchedInName && b.matchedInName) return 1;
-        return b.matchCount - a.matchCount;
+    results.sort((left, right) => {
+        if (left.matchedInName && !right.matchedInName) return -1;
+        if (!left.matchedInName && right.matchedInName) return 1;
+        if (right.matchCount !== left.matchCount) return right.matchCount - left.matchCount;
+        return (right.session.updatedAt || 0) - (left.session.updatedAt || 0);
     });
 
     return results;
 }
 
-/**
- * 提取消息文本（支持三种格式）
- * @param {Object} message - 消息对象
- * @param {string} format - 'openai' | 'gemini' | 'claude'
- * @returns {string} 提取的文本
- */
-function extractMessageText(message, format) {
-    if (!message) return '';
-
-    // 新格式：优先从 parts 读取
-    if (hasParts(message)) {
-        return message.parts
-            .filter(p => p.type === PartType.TEXT)
-            .map(p => p.text)
-            .join(' ');
-    }
-
-    switch (format) {
-        case 'openai':
-        case 'openai-responses':  // Responses API 消息格式与 OpenAI 相同
-        case 'openclaw':          // OpenClaw 使用 OpenAI 格式存储
-            // OpenAI 格式：content 可以是字符串或数组
-            if (typeof message.content === 'string') {
-                return message.content;
-            }
-            if (Array.isArray(message.content)) {
-                return message.content
-                    .filter(part => part.type === 'text')
-                    .map(part => part.text)
-                    .join(' ');
-            }
-            return '';
-
-        case 'gemini':
-            // Gemini 格式：parts 数组中的 text 字段
-            if (Array.isArray(message.parts)) {
-                return message.parts
-                    .filter(part => part.text)
-                    .map(part => part.text)
-                    .join(' ');
-            }
-            return '';
-
-        case 'claude':
-            // Claude 格式：content 数组中 type=text 的项
-            if (typeof message.content === 'string') {
-                return message.content;
-            }
-            if (Array.isArray(message.content)) {
-                return message.content
-                    .filter(part => part.type === 'text')
-                    .map(part => part.text)
-                    .join(' ');
-            }
-            return '';
-
-        default:
-            return '';
-    }
-}
-
-/**
- * 高亮匹配文本（安全的HTML高亮）
- * @param {string} text - 原始文本
- * @param {string} query - 搜索关键词
- * @returns {string} 高亮后的 HTML
- */
 export function highlightMatch(text, query) {
     if (!query || !text) return escapeHtml(text);
 
     const escapedText = escapeHtml(text);
-    const escapedQuery = escapeHtml(query).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // 转义正则特殊字符
-
-    // 使用正则替换（不区分大小写）
+    const escapedQuery = escapeHtml(query).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const regex = new RegExp(`(${escapedQuery})`, 'gi');
     return escapedText.replace(regex, '<mark>$1</mark>');
 }
 
-/**
- * 显示搜索提示
- * @param {number} resultCount - 搜索结果数量
- * @param {number} totalCount - 总会话数量
- */
-function showSearchHint(resultCount, totalCount) {
-    let hint = document.getElementById('session-search-hint');
-    if (!hint) {
-        hint = document.createElement('div');
-        hint.id = 'session-search-hint';
-        hint.className = 'session-search-hint';
-        // 插入到搜索框后面
-        const searchBar = elements.sessionSearchInput?.parentElement;
-        if (searchBar) {
-            searchBar.after(hint);
+export function getSessionSearchState() {
+    return {
+        query: searchState.query,
+        isActive: searchState.isActive,
+        results: searchState.results,
+        indexing: {
+            totalCount: searchState.indexing.totalCount,
+            pendingCount: searchState.indexing.pendingCount,
+            failedCount: searchState.indexing.failedCount,
+            isRunning: searchState.indexing.isRunning,
+            error: searchState.indexing.error
         }
-    }
-    hint.textContent = `找到 ${resultCount} / ${totalCount} 个会话`;
-    hint.style.display = 'block';
+    };
 }
 
-/**
- * 隐藏搜索提示
- */
-function hideSearchHint() {
-    const hint = document.getElementById('session-search-hint');
-    if (hint) {
-        hint.style.display = 'none';
-    }
-}
-
-/**
- * 获取当前搜索关键词（用于高亮显示）
- * @returns {string} 当前搜索关键词
- */
 export function getCurrentQuery() {
-    return currentQuery;
+    return searchState.query;
 }

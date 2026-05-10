@@ -86,8 +86,8 @@
 /* 为所有按钮添加统一的禁用样式 */
 button:disabled,
 .btn:disabled,
-[class*="btn"]:disabled,
-[class*="button"]:disabled {
+[class*='btn']:disabled,
+[class*='button']:disabled {
     opacity: 0.5;
     cursor: not-allowed;
     pointer-events: none;
@@ -126,4 +126,3 @@ button:disabled,
 .notification-close:active {
     transform: translate(1px, 1px) scale(0.98);
 }
-

@@ -4,9 +4,10 @@
  */
 
 import { eventBus } from '../core/events.js';
-import { state } from '../core/state.js';
 import { getIcon } from '../utils/icons.js';
+import { escapeHtml } from '../utils/helpers.js';
 import { getAllTools, isToolEnabled, setToolEnabled } from '../tools/manager.js';
+import { logger } from '../utils/logger.js';
 
 let selectorPanel = null;
 let isOpen = false;
@@ -23,7 +24,8 @@ let removeFocusTrap = null;
 function createFocusTrap(container) {
     if (!container) return () => {};
 
-    const focusableSelector = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+    const focusableSelector =
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
     function handleTab(e) {
         if (e.key !== 'Tab') return;
@@ -63,7 +65,7 @@ function createFocusTrap(container) {
 export function initToolsQuickSelector() {
     const toggleBtn = document.getElementById('toggle-tools');
     if (!toggleBtn) {
-        console.warn('[ToolsQuickSelector] 未找到工具按钮 #toggle-tools');
+        logger.warn('[ToolsQuickSelector] 未找到工具按钮 #toggle-tools');
         return;
     }
 
@@ -82,7 +84,12 @@ export function initToolsQuickSelector() {
 
     // 点击外部区域关闭
     document.addEventListener('click', (e) => {
-        if (isOpen && selectorPanel && !selectorPanel.contains(e.target) && !toggleBtn.contains(e.target)) {
+        if (
+            isOpen &&
+            selectorPanel &&
+            !selectorPanel.contains(e.target) &&
+            !toggleBtn.contains(e.target)
+        ) {
             closeSelector();
         }
     });
@@ -105,7 +112,7 @@ export function initToolsQuickSelector() {
     // 初始化按钮状态（启动时恢复工具状态后需要更新按钮颜色）
     updateButtonState();
 
-    console.log('[ToolsQuickSelector] 快捷工具选择器已初始化');
+    logger.debug('[ToolsQuickSelector] 快捷工具选择器已初始化');
 }
 
 /**
@@ -117,6 +124,7 @@ function createSelectorPanel() {
     selectorPanel.setAttribute('role', 'dialog');
     selectorPanel.setAttribute('aria-label', '工具选择器');
 
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     selectorPanel.innerHTML = `
         <div class="selector-header">
             <span class="selector-title">
@@ -201,14 +209,14 @@ function closeSelector() {
  */
 function renderToolsList() {
     // 过滤掉 hidden 工具（如 Computer Use）
-    const tools = getAllTools().filter(t => !t.hidden);
+    const tools = getAllTools().filter((t) => !t.hidden);
     const container = selectorPanel.querySelector('.tools-list-container');
 
     // 按类型分组
     const groups = {
-        builtin: tools.filter(t => t.type === 'builtin'),
-        mcp: tools.filter(t => t.type === 'mcp'),
-        custom: tools.filter(t => t.type === 'custom')
+        builtin: tools.filter((t) => t.type === 'builtin'),
+        mcp: tools.filter((t) => t.type === 'mcp'),
+        custom: tools.filter((t) => t.type === 'custom')
     };
 
     let html = '';
@@ -232,6 +240,7 @@ function renderToolsList() {
         html = '<p class="empty-state">暂无可用工具<br>点击下方"管理"添加工具</p>';
     }
 
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     container.innerHTML = html;
 
     // 更新统计
@@ -242,7 +251,7 @@ function renderToolsList() {
  * 渲染工具组
  */
 function renderToolsGroup(groupName, groupIcon, tools) {
-    const enabledCount = tools.filter(t => isToolEnabled(t.id)).length;
+    const enabledCount = tools.filter((t) => isToolEnabled(t.id)).length;
     const totalCount = tools.length;
 
     let html = `
@@ -254,7 +263,7 @@ function renderToolsGroup(groupName, groupIcon, tools) {
             </div>
     `;
 
-    tools.forEach(tool => {
+    tools.forEach((tool) => {
         const toolId = tool.id || '';
         const toolName = tool.name || '未命名工具';
         const toolIcon = tool.icon || '🔧';
@@ -262,14 +271,14 @@ function renderToolsGroup(groupName, groupIcon, tools) {
         const isMCP = tool.type === 'mcp';
 
         html += `
-            <label class="tool-checkbox-item" data-tool-id="${toolId}">
+            <label class="tool-checkbox-item" data-tool-id="${escapeHtml(toolId)}">
                 <input type="checkbox"
-                       data-tool-id="${toolId}"
+                       data-tool-id="${escapeHtml(toolId)}"
                        ${enabled ? 'checked' : ''}
-                       aria-label="${toolName}">
+                       aria-label="${escapeHtml(toolName)}">
                 <span class="checkbox-custom" aria-hidden="true"></span>
-                <span class="tool-icon">${toolIcon}</span>
-                <span class="tool-name">${toolName}</span>
+                <span class="tool-icon">${escapeHtml(toolIcon)}</span>
+                <span class="tool-name">${escapeHtml(toolName)}</span>
                 ${isMCP ? '<span class="tool-badge mcp">MCP</span>' : ''}
             </label>
         `;
@@ -348,7 +357,7 @@ function toggleTool(toolId, enabled) {
     updateToolsCount();
     updateButtonState();
 
-    console.log(`[ToolsQuickSelector] ${enabled ? '启用' : '禁用'}工具: ${toolId}`);
+    logger.debug(`[ToolsQuickSelector] ${enabled ? '启用' : '禁用'}工具: ${toolId}`);
 }
 
 /**
@@ -356,7 +365,7 @@ function toggleTool(toolId, enabled) {
  */
 function toggleAllTools(enabled) {
     const checkboxes = selectorPanel.querySelectorAll('input[type="checkbox"][data-tool-id]');
-    checkboxes.forEach(checkbox => {
+    checkboxes.forEach((checkbox) => {
         if (checkbox.checked !== enabled) {
             checkbox.checked = enabled;
             const toolId = checkbox.dataset.toolId;
@@ -372,8 +381,8 @@ function toggleAllTools(enabled) {
  */
 function updateToolsCount() {
     // 过滤掉 hidden 工具（如 Computer Use）
-    const tools = getAllTools().filter(t => !t.hidden);
-    const enabledCount = tools.filter(t => isToolEnabled(t.id)).length;
+    const tools = getAllTools().filter((t) => !t.hidden);
+    const enabledCount = tools.filter((t) => isToolEnabled(t.id)).length;
     const totalCount = tools.length;
 
     const enabledEl = selectorPanel.querySelector('#enabled-count');
@@ -388,8 +397,8 @@ function updateToolsCount() {
  */
 function updateButtonState() {
     // 过滤掉 hidden 工具（如 Computer Use）
-    const tools = getAllTools().filter(t => !t.hidden);
-    const hasEnabled = tools.some(t => isToolEnabled(t.id));
+    const tools = getAllTools().filter((t) => !t.hidden);
+    const hasEnabled = tools.some((t) => isToolEnabled(t.id));
     const toggleBtn = document.getElementById('toggle-tools');
 
     if (toggleBtn) {
@@ -404,7 +413,7 @@ function filterTools(query) {
     const items = selectorPanel.querySelectorAll('.tool-checkbox-item');
     const lowerQuery = query.toLowerCase();
 
-    items.forEach(item => {
+    items.forEach((item) => {
         const toolNameEl = item.querySelector('.tool-name');
         if (toolNameEl) {
             const toolName = toolNameEl.textContent.toLowerCase();
@@ -415,10 +424,12 @@ function filterTools(query) {
 
     // 隐藏空组
     const groups = selectorPanel.querySelectorAll('.tools-group');
-    groups.forEach(group => {
-        const visibleItems = Array.from(group.querySelectorAll('.tool-checkbox-item')).filter(item => {
-            return item.style.display !== 'none';
-        });
+    groups.forEach((group) => {
+        const visibleItems = Array.from(group.querySelectorAll('.tool-checkbox-item')).filter(
+            (item) => {
+                return item.style.display !== 'none';
+            }
+        );
         group.style.display = visibleItems.length > 0 ? 'block' : 'none';
     });
 }

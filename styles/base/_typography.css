@@ -185,15 +185,15 @@
 .message-content kbd {
     display: inline-block;
     padding: 3px 8px;
-    font-family: var(--font-mono);
+    font-family: var(--font-ui-accent);
     font-size: var(--fs-base);
     color: var(--color-text-primary);
     background: var(--color-bg-surface);
     border: var(--border);
     border-radius: 4px;
     box-shadow:
-        0 2px 0 rgba(56, 56, 56, 0.2),
-        inset 0 0 0 1px rgba(255, 255, 255, 0.5);
+        0 2px 0 rgba(var(--color-text-primary-rgb), 0.2),
+        inset 0 0 0 1px rgba(var(--color-bg-surface-rgb), 0.5);
     margin: 0 2px;
 }
 
@@ -204,20 +204,46 @@
         line-height: 1.7;
     }
 
-    .message-content h1 { font-size: var(--fs-4xl); margin-top: 24px; }
-    .message-content h2 { font-size: var(--fs-3xl); margin-top: 20px; }
-    .message-content h3 { font-size: var(--fs-2xl); }
-    .message-content h4 { font-size: var(--fs-xl); }
-    .message-content h5 { font-size: var(--fs-lg); }
-    .message-content h6 { font-size: var(--fs-md); }
+    .message-content h1 {
+        font-size: var(--fs-4xl);
+        margin-top: 24px;
+    }
+    .message-content h2 {
+        font-size: var(--fs-3xl);
+        margin-top: 20px;
+    }
+    .message-content h3 {
+        font-size: var(--fs-2xl);
+    }
+    .message-content h4 {
+        font-size: var(--fs-xl);
+    }
+    .message-content h5 {
+        font-size: var(--fs-lg);
+    }
+    .message-content h6 {
+        font-size: var(--fs-md);
+    }
 
-    .message-content p { margin-bottom: 12px; }
+    .message-content p {
+        margin-bottom: 12px;
+    }
     .message-content ul,
-    .message-content ol { margin: 12px 0; }
-    .message-content pre { margin: 16px 0; }
-    .message-content blockquote { margin: 16px 0; }
-    .message-content table { margin: 20px 0; }
-    .message-content hr { margin: 20px 0; }
+    .message-content ol {
+        margin: 12px 0;
+    }
+    .message-content pre {
+        margin: 16px 0;
+    }
+    .message-content blockquote {
+        margin: 16px 0;
+    }
+    .message-content table {
+        margin: 20px 0;
+    }
+    .message-content hr {
+        margin: 20px 0;
+    }
 }
 
 /* 代码块容器 - 像素风格直角 */
@@ -240,8 +266,8 @@
     align-items: center;
     gap: 12px;
     padding: 10px 14px;
-    background: rgba(74, 144, 226, 0.1);
-    border-bottom: 2px solid rgba(74, 144, 226, 0.3);
+    background: rgba(var(--accent-blue-rgb), 0.1);
+    border-bottom: 2px solid rgba(var(--accent-blue-rgb), 0.3);
 }
 
 .code-language {
@@ -259,7 +285,7 @@
     -webkit-appearance: none;
     -moz-appearance: none;
     padding: 6px 32px 6px 12px;
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    border: 1px solid rgba(var(--color-bg-surface-rgb), 0.2);
     border-radius: 4px;
     background-color: var(--overlay-light);
     color: var(--color-text-inverse);
@@ -275,7 +301,7 @@
 }
 
 .code-language-selector:hover {
-    background-color: rgba(74, 144, 226, 0.2);
+    background-color: rgba(var(--accent-blue-rgb), 0.2);
     border-color: var(--md-blue);
 }
 
@@ -302,9 +328,9 @@
 .code-block-content code {
     display: block;
     padding: 16px;
-    white-space: pre-wrap;        /* 保留空格和换行，允许自动换行 */
-    word-wrap: break-word;        /* 长单词换行 */
-    overflow-wrap: break-word;    /* 更好的换行支持 */
+    white-space: pre-wrap; /* 保留空格和换行，允许自动换行 */
+    word-wrap: break-word; /* 长单词换行 */
+    overflow-wrap: break-word; /* 更好的换行支持 */
     line-height: 1.6;
 }
 
@@ -315,16 +341,16 @@
 }
 
 .code-block-content::-webkit-scrollbar-track {
-    background: rgba(0, 0, 0, 0.2);
+    background: rgba(var(--shadow-color-rgb), 0.2);
 }
 
 .code-block-content::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.3);
+    background: rgba(var(--color-bg-surface-rgb), 0.3);
     border-radius: 4px;
 }
 
 .code-block-content::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.5);
+    background: rgba(var(--color-bg-surface-rgb), 0.5);
 }
 
 /* 行内代码 */
@@ -332,7 +358,9 @@
     background: var(--color-bg-primary);
     padding: 2px 6px;
     border: 1px solid var(--md-border);
-    font-family: var(--font-mono);
+    font-family:
+        'Space Mono', 'JetBrains Mono', 'Cascadia Code', 'SF Mono', 'Consolas', 'PingFang SC',
+        'Microsoft YaHei', '微软雅黑', monospace;
     font-size: 0.9em;
     border-radius: 3px;
 }
@@ -343,6 +371,7 @@
     border: none;
     color: inherit;
     border-radius: 0;
+    font-family: var(--font-mono);
 }
 
 .message-content a {
@@ -376,7 +405,7 @@
 }
 
 /* 外部链接图标 */
-.message-content a[href^="http"]::after {
+.message-content a[href^='http']::after {
     content: ' ▸';
     font-size: 0.85em;
     opacity: 0.6;
@@ -438,17 +467,27 @@
     border: 2px solid var(--color-border-primary);
 }
 
-.message-content ol li:nth-child(2)::before { background: var(--md-teal); }
-.message-content ol li:nth-child(3)::before { background: var(--md-orange); }
-.message-content ol li:nth-child(4)::before { background: var(--md-coral); }
-.message-content ol li:nth-child(5)::before { background: var(--md-yellow); }
-.message-content ol li:nth-child(n+6)::before { background: var(--md-pink); }
+.message-content ol li:nth-child(2)::before {
+    background: var(--md-teal);
+}
+.message-content ol li:nth-child(3)::before {
+    background: var(--md-orange);
+}
+.message-content ol li:nth-child(4)::before {
+    background: var(--md-coral);
+}
+.message-content ol li:nth-child(5)::before {
+    background: var(--md-yellow);
+}
+.message-content ol li:nth-child(n + 6)::before {
+    background: var(--md-pink);
+}
 
 .message-content blockquote {
     border-left: 4px solid var(--md-orange);
     padding: 16px 20px;
     margin: 16px 0;
-    background: rgba(249, 115, 22, 0.05);
+    background: rgba(var(--palette-orange-rgb), 0.05);
     border-radius: 0 4px 4px 0;
     position: relative;
     font-style: italic;
@@ -524,4 +563,3 @@
     top: 4px;
     right: 4px;
 }
-

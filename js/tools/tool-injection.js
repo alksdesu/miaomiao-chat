@@ -5,6 +5,7 @@
 
 import { state } from '../core/state.js';
 import { convertToolsToXML } from './xml-formatter.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * 为 OpenAI 格式注入 XML 工具描述
@@ -19,7 +20,7 @@ export function injectToolsToOpenAI(messages, tools) {
     const xmlToolsDescription = convertToolsToXML(tools);
 
     // 注入到 system message
-    const systemMsg = messages.find(m => m.role === 'system');
+    const systemMsg = messages.find((m) => m.role === 'system');
     if (systemMsg) {
         systemMsg.content += xmlToolsDescription;
     } else {
@@ -30,7 +31,7 @@ export function injectToolsToOpenAI(messages, tools) {
         });
     }
 
-    console.log('[Tool Injection] XML 工具描述已注入 OpenAI system prompt');
+    logger.debug('[Tool Injection] XML 工具描述已注入 OpenAI system prompt');
 }
 
 /**
@@ -52,7 +53,7 @@ export function injectToolsToClaude(requestBody, tools) {
         requestBody.system = xmlToolsDescription;
     }
 
-    console.log('[Tool Injection] XML 工具描述已注入 Claude system 参数');
+    logger.debug('[Tool Injection] XML 工具描述已注入 Claude system 参数');
 }
 
 /**
@@ -66,7 +67,7 @@ export function injectToolsToGemini(requestBody, tools) {
     }
 
     // 提取扁平的工具列表（去除 functionDeclarations 包装）
-    const flatTools = tools.flatMap(t => t.functionDeclarations || [t]);
+    const flatTools = tools.flatMap((t) => t.functionDeclarations || [t]);
     const xmlToolsDescription = convertToolsToXML(flatTools);
 
     // 注入到 systemInstruction.parts（Gemini 支持多段）
@@ -78,7 +79,7 @@ export function injectToolsToGemini(requestBody, tools) {
         };
     }
 
-    console.log('[Tool Injection] XML 工具描述已注入 Gemini systemInstruction');
+    logger.debug('[Tool Injection] XML 工具描述已注入 Gemini systemInstruction');
 }
 
 /**
@@ -127,8 +128,8 @@ export function trackXMLToolCall(success, tokenCount, error = null) {
         metrics.xmlToolCallsSucceeded++;
         // 计算平均 token 消耗（增量计算）
         metrics.averageXMLTokens =
-            (metrics.averageXMLTokens * (metrics.xmlToolCallsSucceeded - 1) + tokenCount)
-            / metrics.xmlToolCallsSucceeded;
+            (metrics.averageXMLTokens * (metrics.xmlToolCallsSucceeded - 1) + tokenCount) /
+            metrics.xmlToolCallsSucceeded;
     } else {
         metrics.errors.push({ timestamp: Date.now(), error });
         if (metrics.errors.length > 100) metrics.errors.shift();
@@ -136,7 +137,7 @@ export function trackXMLToolCall(success, tokenCount, error = null) {
 
     // 每 100 次调用上报一次（可选：发送到监控服务）
     if (metrics.xmlToolCallsAttempted % 100 === 0) {
-        console.log('[Tool Injection] 📊 XML Tool Calling Metrics:', metrics);
+        logger.debug('[Tool Injection] 📊 XML Tool Calling Metrics:', metrics);
         // 可选：发送到监控服务
         // sendToMonitoringService(metrics);
     }
@@ -148,10 +149,13 @@ export function trackXMLToolCall(success, tokenCount, error = null) {
 export function getMetrics() {
     return {
         ...metrics,
-        successRate: metrics.xmlToolCallsAttempted > 0
-            ? (metrics.xmlToolCallsSucceeded / metrics.xmlToolCallsAttempted * 100).toFixed(2) + '%'
-            : 'N/A',
-        recentErrors: metrics.errors.slice(-10)  // 最近 10 个错误
+        successRate:
+            metrics.xmlToolCallsAttempted > 0
+                ? ((metrics.xmlToolCallsSucceeded / metrics.xmlToolCallsAttempted) * 100).toFixed(
+                      2
+                  ) + '%'
+                : 'N/A',
+        recentErrors: metrics.errors.slice(-10) // 最近 10 个错误
     };
 }
 
@@ -164,5 +168,5 @@ export function resetMetrics() {
     metrics.nativeToolCallsUsed = 0;
     metrics.averageXMLTokens = 0;
     metrics.errors = [];
-    console.log('[Tool Injection] 🧹 监控指标已重置');
+    logger.debug('[Tool Injection] 🧹 监控指标已重置');
 }

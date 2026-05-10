@@ -155,7 +155,7 @@ class GlobalDOMCacheHelper {
      * 清理所有缓存
      */
     clearAll() {
-        this.caches.forEach(cache => cache.invalidateAll());
+        this.caches.forEach((cache) => cache.invalidateAll());
         this.caches.clear();
     }
 }

@@ -10,15 +10,16 @@
 import { eventBus } from '../core/events.js';
 import { getIcon } from '../utils/icons.js';
 import { showConfirmDialog } from '../utils/dialogs.js';
+import { logger } from '../utils/logger.js';
 
 // 工具名称映射
 const TOOL_DISPLAY_NAMES = {
-    'calculator': '计算器',
-    'web_search': '网络搜索',
-    'read_file': '读取文件',
-    'write_file': '写入文件',
-    'run_code': '执行代码',
-    'get_weather': '天气查询'
+    calculator: '计算器',
+    web_search: '网络搜索',
+    read_file: '读取文件',
+    write_file: '写入文件',
+    run_code: '执行代码',
+    get_weather: '天气查询'
 };
 
 // 每个 group DOM 元素 → 详情数据
@@ -42,6 +43,7 @@ function getOrCreateGroup(targetContainer) {
     const btn = document.createElement('button');
     btn.className = 'tool-calls-summary-btn';
     btn.setAttribute('data-status', 'executing');
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     btn.innerHTML = `
         ${getIcon('tool', { size: 14 })}
         <span class="summary-text">1 个工具调用</span>
@@ -61,7 +63,7 @@ function getOrCreateGroup(targetContainer) {
 
     // 初始化数据存储
     toolCallsDataMap.set(group, {
-        tools: [],          // { id, name, args, status, result, error, startTime, duration }
+        tools: [], // { id, name, args, status, result, error, startTime, duration }
         completedCount: 0,
         failedCount: 0,
         totalCount: 0
@@ -79,10 +81,13 @@ function getOrCreateGroup(targetContainer) {
  */
 export async function createToolCallUI(toolCall, targetContainer = null) {
     const { state } = await import('../core/state.js');
-    const target = targetContainer || state.currentAssistantMessage || document.querySelector('.message.assistant:last-child .message-content');
+    const target =
+        targetContainer ||
+        state.currentAssistantMessage ||
+        document.querySelector('.message.assistant:last-child .message-content');
 
     if (!target) {
-        console.warn('[ToolDisplay] 未找到 assistant 消息元素');
+        logger.warn('[ToolDisplay] 未找到 assistant 消息元素');
         return null;
     }
 
@@ -91,8 +96,8 @@ export async function createToolCallUI(toolCall, targetContainer = null) {
     const existingGroup = messageScope.querySelector('.tool-calls-group');
     if (existingGroup) {
         const data = toolCallsDataMap.get(existingGroup);
-        if (data && data.tools.some(t => t.id === toolCall.id)) {
-            console.warn(`[ToolDisplay] 工具已存在，跳过: ${toolCall.id}`);
+        if (data && data.tools.some((t) => t.id === toolCall.id)) {
+            logger.warn(`[ToolDisplay] 工具已存在，跳过: ${toolCall.id}`);
             return existingGroup;
         }
     }
@@ -120,8 +125,6 @@ export async function createToolCallUI(toolCall, targetContainer = null) {
     const chatArea = document.getElementById('chat');
     if (chatArea) chatArea.scrollTop = chatArea.scrollHeight;
 
-    eventBus.emit('tool:ui:created', { toolId: toolCall.id, toolName: toolCall.name });
-
     return group;
 }
 
@@ -136,7 +139,7 @@ export function updateToolCallStatus(toolId, status, data = {}) {
     for (const g of document.querySelectorAll('.tool-calls-group')) {
         const gData = toolCallsDataMap.get(g);
         if (!gData) continue;
-        const found = gData.tools.find(t => t.id === toolId);
+        const found = gData.tools.find((t) => t.id === toolId);
         if (found) {
             group = g;
             toolInfo = found;
@@ -145,7 +148,7 @@ export function updateToolCallStatus(toolId, status, data = {}) {
     }
 
     if (!group || !toolInfo) {
-        console.warn(`[ToolDisplay] 未找到工具: ${toolId}`);
+        logger.warn(`[ToolDisplay] 未找到工具: ${toolId}`);
         return;
     }
 
@@ -174,7 +177,11 @@ export function updateToolCallStatus(toolId, status, data = {}) {
 
     if (status === 'executing') {
         toolInfo.status = 'executing';
-        eventBus.emit('tool:status:changed', { toolId, status: 'executing', message: data.message });
+        eventBus.emit('tool:status:changed', {
+            toolId,
+            status: 'executing',
+            message: data.message
+        });
     }
 
     // 更新按钮状态
@@ -230,7 +237,7 @@ function extractMediaToGroup(group, result, _toolName) {
     if (!mediaArea) return;
 
     // 解包嵌套 result
-    const obj = (result.success === true && result.result !== undefined) ? result.result : result;
+    const obj = result.success === true && result.result !== undefined ? result.result : result;
 
     const mediaItems = collectMedia(obj);
 
@@ -334,6 +341,7 @@ function createImageWrapper(url) {
     downloadBtn.type = 'button';
     downloadBtn.className = 'download-image-btn';
     downloadBtn.title = '下载原图';
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     downloadBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
     downloadBtn.onclick = (e) => {
         e.stopPropagation();
@@ -402,6 +410,7 @@ function openToolDetailModal(group) {
     title.textContent = '工具调用详情';
     const closeBtn = document.createElement('button');
     closeBtn.className = 'tool-detail-close-btn';
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     closeBtn.innerHTML = '&times;';
     closeBtn.onclick = null; // 由下方 closeModal 统一设置
     header.append(title, closeBtn);
@@ -420,6 +429,7 @@ function openToolDetailModal(group) {
 
     const undoBtn = document.createElement('button');
     undoBtn.className = 'tool-undo-button';
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     undoBtn.innerHTML = `
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M3 7v6h6"></path>
@@ -453,7 +463,10 @@ function openToolDetailModal(group) {
                 eventBus.emit('ui:notification', { message: '撤销失败', type: 'error' });
             }
         } catch (err) {
-            eventBus.emit('ui:notification', { message: `撤销失败: ${err.message}`, type: 'error' });
+            eventBus.emit('ui:notification', {
+                message: `撤销失败: ${err.message}`,
+                type: 'error'
+            });
         } finally {
             undoBtn.disabled = false;
         }
@@ -493,10 +506,13 @@ function createToolDetailItem(tool) {
     const statusIcon = document.createElement('span');
     statusIcon.className = 'tool-detail-status-icon';
     if (tool.status === 'completed') {
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
         statusIcon.innerHTML = getIcon('checkCircle', { size: 16 });
     } else if (tool.status === 'failed') {
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
         statusIcon.innerHTML = getIcon('xCircle', { size: 16 });
     } else {
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
         statusIcon.innerHTML = getIcon('loader', { size: 16 });
     }
 
@@ -520,6 +536,7 @@ function createToolDetailItem(tool) {
     // 参数
     const argsSection = document.createElement('div');
     argsSection.className = 'tool-detail-section';
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     argsSection.innerHTML = `<div class="tool-detail-section-label">参数</div>`;
     const argsPre = document.createElement('pre');
     argsPre.className = 'tool-detail-json';
@@ -532,6 +549,7 @@ function createToolDetailItem(tool) {
     if (tool.status === 'completed' && tool.result != null) {
         const resultSection = document.createElement('div');
         resultSection.className = 'tool-detail-section';
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
         resultSection.innerHTML = `<div class="tool-detail-section-label">结果</div>`;
         const resultContent = document.createElement('div');
         resultContent.className = 'tool-detail-result-content';
@@ -543,6 +561,7 @@ function createToolDetailItem(tool) {
     if (tool.status === 'failed' && tool.error) {
         const errorSection = document.createElement('div');
         errorSection.className = 'tool-detail-section tool-detail-error';
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
         errorSection.innerHTML = `<div class="tool-detail-section-label">错误</div>`;
         const errorMsg = document.createElement('div');
         errorMsg.className = 'tool-detail-error-msg';
@@ -559,7 +578,8 @@ function createToolDetailItem(tool) {
  * 在弹窗中渲染工具结果
  */
 function renderDetailResult(container, result) {
-    const normalized = (result?.success === true && result.result !== undefined) ? result.result : result;
+    const normalized =
+        result?.success === true && result.result !== undefined ? result.result : result;
 
     if (typeof normalized === 'string') {
         container.textContent = normalized;
@@ -626,7 +646,11 @@ function renderDetailResult(container, result) {
 
         // 其他字段
         const other = { ...normalized };
-        delete other.image; delete other.images; delete other.video; delete other.videos; delete other.text;
+        delete other.image;
+        delete other.images;
+        delete other.video;
+        delete other.videos;
+        delete other.text;
         if (Object.keys(other).length > 0) {
             const pre = document.createElement('pre');
             pre.className = 'tool-detail-json';
@@ -714,7 +738,7 @@ export async function restoreToolCallsGroup(toolCalls, contentDiv) {
             args: tc.arguments || tc.input || {},
             status: tc.status || 'completed',
             result: tc.result || null,
-            error: tc.error ? (tc.error.message || tc.error) : null,
+            error: tc.error ? tc.error.message || tc.error : null,
             startTime: 0,
             duration: tc.duration || null
         };
@@ -726,8 +750,10 @@ export async function restoreToolCallsGroup(toolCalls, contentDiv) {
 
         // 提取已完成的媒体
         if (toolInfo.status === 'completed' && toolInfo.result) {
-            const normalized = (toolInfo.result?.success === true && toolInfo.result.result !== undefined)
-                ? toolInfo.result.result : toolInfo.result;
+            const normalized =
+                toolInfo.result?.success === true && toolInfo.result.result !== undefined
+                    ? toolInfo.result.result
+                    : toolInfo.result;
             const mediaItems = collectMedia(normalized);
             for (const item of mediaItems) {
                 if (item.type === 'image') {
@@ -754,6 +780,7 @@ export async function restoreToolCallsGroup(toolCalls, contentDiv) {
     }
 
     btn.setAttribute('data-status', statusAttr);
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     btn.innerHTML = `
         ${getIcon('tool', { size: 14 })}
         <span class="summary-text">${data.totalCount} 个工具调用</span>
@@ -767,7 +794,7 @@ export async function restoreToolCallsGroup(toolCalls, contentDiv) {
 
 // restore.js 通过事件解耦，避免 messages 层直接导入 UI 层
 eventBus.on('restore:tool-calls', ({ toolCalls, contentDiv }) => {
-    restoreToolCallsGroup(toolCalls, contentDiv).catch(err => {
-        console.error('[ToolDisplay] 恢复工具 UI 失败:', err);
+    restoreToolCallsGroup(toolCalls, contentDiv).catch((err) => {
+        logger.error('[ToolDisplay] 恢复工具 UI 失败:', err);
     });
 });

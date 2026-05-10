@@ -67,7 +67,7 @@
 .param-item input:focus {
     outline: none;
     border-color: var(--md-blue);
-    box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.1);
+    box-shadow: 0 0 0 2px rgba(var(--palette-green-rgb), 0.1);
 }
 
 .param-item input::placeholder {

@@ -1,3 +1,4 @@
+import { logger } from '../../utils/logger.js';
 /**
  * MCP 工具定义缓存
  * 启动时先加载缓存的工具列表，后台更新。避免每次刷新都等 tools/list
@@ -11,13 +12,16 @@ const DEFAULT_MAX_AGE = 24 * 3600 * 1000; // 24 小时
  */
 export function cacheTools(serverId, tools) {
     try {
-        localStorage.setItem(`${CACHE_PREFIX}${serverId}`, JSON.stringify({
-            tools,
-            timestamp: Date.now()
-        }));
+        localStorage.setItem(
+            `${CACHE_PREFIX}${serverId}`,
+            JSON.stringify({
+                tools,
+                timestamp: Date.now()
+            })
+        );
     } catch (e) {
         // localStorage 满了就跳过，不影响功能
-        console.warn('[ToolCache] 缓存写入失败:', e.message);
+        logger.warn('[ToolCache] 缓存写入失败:', e.message);
     }
 }
 
@@ -46,7 +50,9 @@ export function getCachedTools(serverId, maxAge = DEFAULT_MAX_AGE) {
 export function clearToolCache(serverId) {
     try {
         localStorage.removeItem(`${CACHE_PREFIX}${serverId}`);
-    } catch { /* ignore */ }
+    } catch {
+        /* ignore */
+    }
 }
 
 /**
@@ -61,6 +67,8 @@ export function clearAllToolCaches() {
                 keysToRemove.push(key);
             }
         }
-        keysToRemove.forEach(k => localStorage.removeItem(k));
-    } catch { /* ignore */ }
+        keysToRemove.forEach((k) => localStorage.removeItem(k));
+    } catch {
+        /* ignore */
+    }
 }

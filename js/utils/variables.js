@@ -17,7 +17,7 @@ export function processVariables(template, options = {}) {
         '{{char}}': options.charName || 'Assistant',
         '{{user}}': options.userName || 'User',
         '{{date}}': now.toLocaleDateString('zh-CN'),
-        '{{time}}': now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+        '{{time}}': now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
     };
 
     let result = template;
@@ -41,8 +41,8 @@ export function getPrefillMessages(prefillMessages, format, variableOptions) {
     if (!prefillMessages || !prefillMessages.length) return [];
 
     return prefillMessages
-        .filter(m => m.role !== 'system')  // 过滤 system，避免混入对话
-        .map(m => {
+        .filter((m) => m.role !== 'system') // 过滤 system，避免混入对话
+        .map((m) => {
             const content = processVariables(m.content, variableOptions);
 
             if (format === 'gemini') {

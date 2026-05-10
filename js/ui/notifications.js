@@ -7,15 +7,38 @@ import { eventBus } from '../core/events.js';
 
 const activeNotifications = [];
 const MAX_NOTIFICATIONS = 5;
-const BASE_TOP = 70;
-const NOTIFICATION_GAP = 60;
+const NOTIFICATION_SPACING = 12;
+let repositionFrameId = 0;
+
+/**
+ * 立即计算所有活跃通知的位置
+ */
+function applyNotificationPositions() {
+    let offset = 0;
+    activeNotifications.forEach((notification) => {
+        notification.style.setProperty('--notification-offset', `${offset}px`);
+        offset += notification.offsetHeight + NOTIFICATION_SPACING;
+    });
+}
 
 /**
  * 重新计算所有活跃通知的位置
+ * @param {{ immediate?: boolean }} options - 是否立即执行重排
  */
-function repositionNotifications() {
-    activeNotifications.forEach((n, i) => {
-        n.style.top = `${BASE_TOP + i * NOTIFICATION_GAP}px`;
+function repositionNotifications(options = {}) {
+    if (repositionFrameId) {
+        cancelAnimationFrame(repositionFrameId);
+        repositionFrameId = 0;
+    }
+
+    if (options.immediate) {
+        applyNotificationPositions();
+        return;
+    }
+
+    repositionFrameId = requestAnimationFrame(() => {
+        repositionFrameId = 0;
+        applyNotificationPositions();
     });
 }
 
@@ -31,20 +54,23 @@ export function showNotification(message, type = 'info', duration = 3000) {
         const oldest = activeNotifications.shift();
         if (oldest && oldest.parentNode) {
             oldest.remove();
+            repositionNotifications();
         }
     }
 
     const notification = document.createElement('div');
 
-    const typeClass = type === 'error' ? 'notification-error' :
-                      type === 'success' ? 'notification-success' :
-                      type === 'warning' ? 'notification-warning' : '';
+    const typeClass =
+        type === 'error'
+            ? 'notification-error'
+            : type === 'success'
+              ? 'notification-success'
+              : type === 'warning'
+                ? 'notification-warning'
+                : '';
     notification.className = `notification${typeClass ? ' ' + typeClass : ''}`;
     notification.setAttribute('role', 'alert');
     notification.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');
-
-    // 根据当前活跃通知数量计算位置
-    notification.style.top = `${BASE_TOP + activeNotifications.length * NOTIFICATION_GAP}px`;
 
     const messageSpan = document.createElement('span');
     messageSpan.textContent = message;
@@ -52,6 +78,7 @@ export function showNotification(message, type = 'info', duration = 3000) {
 
     const closeBtn = document.createElement('button');
     closeBtn.className = 'notification-close';
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     closeBtn.innerHTML = '×';
     closeBtn.setAttribute('aria-label', '关闭通知');
 
@@ -73,6 +100,7 @@ export function showNotification(message, type = 'info', duration = 3000) {
 
     activeNotifications.push(notification);
     document.body.appendChild(notification);
+    repositionNotifications({ immediate: true });
 
     setTimeout(removeNotification, duration);
 }

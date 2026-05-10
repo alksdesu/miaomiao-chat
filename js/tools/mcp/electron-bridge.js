@@ -6,17 +6,17 @@
 
 import { eventBus } from '../../core/events.js';
 import { getIpcRenderer } from '../../utils/platform.js';
+import { logger } from '../../utils/logger.js';
 
 const IPC_EVENTS = [
     'mcp:server-started',
     'mcp:server-stopped',
     'mcp:server-error',
     'mcp:server-exited',
-    'mcp:notification',
     'mcp:server-restarting',
     'mcp:server-restarted',
     'mcp:server-restart-failed',
-    'mcp:restart-limit-exceeded',
+    'mcp:restart-limit-exceeded'
 ];
 
 export function initElectronMCPBridge() {
@@ -29,5 +29,5 @@ export function initElectronMCPBridge() {
         });
     }
 
-    console.log('[MCP] Electron IPC bridge initialized');
+    logger.debug('[MCP] Electron IPC bridge initialized');
 }

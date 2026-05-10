@@ -1,3 +1,5 @@
+import { logger } from './logger.js';
+
 /**
  * 媒体工具函数
  * 统一处理图片/视频类型判断与下载逻辑
@@ -231,7 +233,8 @@ export async function downloadMedia(mediaUrl, filename = '') {
             const base64Data = mediaUrl.split(',')[1] || '';
             const blob = base64ToBlob(base64Data, mimeType);
 
-            const finalName = filename || `media-${Date.now()}.${getExtensionFromMimeType(mimeType, 'bin')}`;
+            const finalName =
+                filename || `media-${Date.now()}.${getExtensionFromMimeType(mimeType, 'bin')}`;
             triggerBlobDownload(blob, finalName);
             return;
         }
@@ -245,7 +248,10 @@ export async function downloadMedia(mediaUrl, filename = '') {
             if (readResult?.success && readResult.base64) {
                 const mimeType = readResult.mimeType || 'application/octet-stream';
                 const blob = base64ToBlob(readResult.base64, mimeType);
-                const finalName = filename || readResult.fileName || `media-${Date.now()}.${getExtensionFromMimeType(mimeType, 'bin')}`;
+                const finalName =
+                    filename ||
+                    readResult.fileName ||
+                    `media-${Date.now()}.${getExtensionFromMimeType(mimeType, 'bin')}`;
                 triggerBlobDownload(blob, finalName);
                 return;
             }
@@ -260,7 +266,9 @@ export async function downloadMedia(mediaUrl, filename = '') {
 
             const blob = await response.blob();
             const inferredMimeType = blob.type || 'application/octet-stream';
-            const finalName = filename || `media-${Date.now()}.${getMediaExtension(mediaUrl, inferredMimeType, 'bin')}`;
+            const finalName =
+                filename ||
+                `media-${Date.now()}.${getMediaExtension(mediaUrl, inferredMimeType, 'bin')}`;
             triggerBlobDownload(blob, finalName);
             return;
         }
@@ -277,7 +285,7 @@ export async function downloadMedia(mediaUrl, filename = '') {
         link.click();
         document.body.removeChild(link);
     } catch (error) {
-        console.error('[Media] 下载失败:', error);
+        logger.error('[Media] 下载失败:', error);
         try {
             window.open(mediaUrl, '_blank');
         } catch {

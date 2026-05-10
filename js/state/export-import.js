@@ -5,15 +5,34 @@
 
 import { state } from '../core/state.js';
 import { elements } from '../core/elements.js';
-import { loadAllSessionsFromDB, saveSessionToDB, loadSessionMessages, saveSessionMessages, loadConfig as loadConfigFromDB, loadSavedConfigs as loadSavedConfigsFromDB, saveConfig as saveConfigToDB, saveSavedConfigs as saveSavedConfigsToDB, loadPreference, savePreference } from './storage.js';
+import {
+    loadAllSessionsFromDB,
+    saveSessionToDB,
+    loadSessionMessages,
+    saveSessionMessages,
+    loadConfig as loadConfigFromDB,
+    loadSavedConfigs as loadSavedConfigsFromDB,
+    saveConfig as saveConfigToDB,
+    saveSavedConfigs as saveSavedConfigsToDB,
+    loadPreference,
+    savePreference,
+    STORES,
+    loadAllFromStore
+} from './storage.js';
 import { loadSavedConfigs } from './config.js';
 import { loadSessions } from './sessions.js';
 import { showNotification } from '../ui/notifications.js';
 import { showConfirmDialog } from '../utils/dialogs.js';
-import { sanitizeMessageForExport } from '../api/format-converter.js';  // 过滤私有字段
+import { sanitizeMessageForExport } from '../api/format-converter.js'; // 过滤私有字段
 import { categorizeFile } from '../utils/file-helpers.js';
-import { SCHEMA_VERSION } from '../messages/schema.js';
+import {
+    SCHEMA_VERSION,
+    isSchemaFormatParts,
+    getTextContent,
+    getThinkingContent
+} from '../messages/schema.js';
 import { migrateSession } from '../messages/migration.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * 生成导出文件名
@@ -50,7 +69,8 @@ function downloadJSON(data, filename) {
 function filterRuntimeState(config) {
     if (!config) return null;
 
-    const { selectedModel, ...filteredConfig } = config;
+    const filteredConfig = { ...config };
+    delete filteredConfig.selectedModel;
     return filteredConfig;
 }
 
@@ -77,7 +97,7 @@ async function loadMessagesForSessions(sessions) {
                     merged.messages = msgData.messages || [];
                 }
             } catch (e) {
-                console.warn(`[Export] 加载会话 ${merged.id} 消息失败:`, e);
+                logger.warn(`[Export] 加载会话 ${merged.id} 消息失败:`, e);
             }
         }
         results.push(merged);
@@ -98,7 +118,7 @@ function sanitizeSession(session) {
 
     // 清理 messages 数组
     if (Array.isArray(cleaned.messages)) {
-        cleaned.messages = cleaned.messages.map(msg => sanitizeMessageForExport(msg));
+        cleaned.messages = cleaned.messages.map((msg) => sanitizeMessageForExport(msg));
     }
 
     return cleaned;
@@ -123,7 +143,7 @@ export async function exportConfig() {
 
         if (state.storageMode !== 'localStorage') {
             currentConfig = await loadConfigFromDB();
-            savedConfigs = await loadSavedConfigsFromDB() || [];
+            savedConfigs = (await loadSavedConfigsFromDB()) || [];
         }
 
         // 降级：从 localStorage 读取
@@ -148,7 +168,7 @@ export async function exportConfig() {
                 toolsEnabled = JSON.parse(toolsEnabledJson);
             }
         } catch (error) {
-            console.warn('[Export] 读取工具状态失败:', error);
+            logger.warn('[Export] 读取工具状态失败:', error);
         }
 
         const exportData = {
@@ -158,14 +178,14 @@ export async function exportConfig() {
             data: {
                 currentConfig: filteredCurrentConfig,
                 savedConfigs: filteredSavedConfigs,
-                toolsEnabled: toolsEnabled  // 包含工具状态
+                toolsEnabled: toolsEnabled // 包含工具状态
             }
         };
 
         downloadJSON(exportData, generateExportFilename('config'));
         showNotification('配置已导出', 'success');
     } catch (error) {
-        console.error('导出配置失败:', error);
+        logger.error('导出配置失败:', error);
         showNotification('导出配置失败: ' + error.message, 'error');
     }
 }
@@ -181,20 +201,23 @@ export async function exportSessions() {
         const sessionsWithMessages = await loadMessagesForSessions(sessions);
 
         // 清理会话中的私有字段
-        const cleanedSessions = sessionsWithMessages.map(session => sanitizeSession(session));
+        const cleanedSessions = sessionsWithMessages.map((session) => sanitizeSession(session));
+
+        const folders = await loadAllFromStore(STORES.FOLDERS);
 
         const exportData = {
             type: 'sessions',
             version: 1,
             exportDate: new Date().toISOString(),
             totalSessions: cleanedSessions.length,
-            sessions: cleanedSessions
+            sessions: cleanedSessions,
+            folders
         };
 
         downloadJSON(exportData, generateExportFilename('sessions'));
         showNotification(`已导出 ${cleanedSessions.length} 个会话`, 'success');
     } catch (error) {
-        console.error('导出会话失败:', error);
+        logger.error('导出会话失败:', error);
         showNotification('导出会话失败: ' + error.message, 'error');
     }
 }
@@ -219,7 +242,7 @@ export async function exportAllData() {
 
         if (state.storageMode !== 'localStorage') {
             currentConfig = await loadConfigFromDB();
-            savedConfigs = await loadSavedConfigsFromDB() || [];
+            savedConfigs = (await loadSavedConfigsFromDB()) || [];
         }
 
         // 降级：从 localStorage 读取
@@ -238,7 +261,9 @@ export async function exportAllData() {
 
         // 清理会话中的私有字段
         const sessionsWithMessages = await loadMessagesForSessions(sessions);
-        const cleanedSessions = sessionsWithMessages.map(session => sanitizeSession(session));
+        const cleanedSessions = sessionsWithMessages.map((session) => sanitizeSession(session));
+
+        const folders = await loadAllFromStore(STORES.FOLDERS);
 
         const exportData = {
             type: 'full-backup',
@@ -252,13 +277,14 @@ export async function exportAllData() {
                 currentConfig: filteredCurrentConfig,
                 savedConfigs: filteredSavedConfigs
             },
-            sessions: cleanedSessions
+            sessions: cleanedSessions,
+            folders
         };
 
         downloadJSON(exportData, generateExportFilename('backup'));
         showNotification(`已导出完整备份（${cleanedSessions.length} 个会话）`, 'success');
     } catch (error) {
-        console.error('导出失败:', error);
+        logger.error('导出失败:', error);
         showNotification('导出失败: ' + error.message, 'error');
     }
 }
@@ -297,9 +323,9 @@ async function importConfig(data) {
         if (data.data.toolsEnabled) {
             try {
                 await savePreference('toolsEnabled', JSON.stringify(data.data.toolsEnabled));
-                console.log('[Import] 工具状态已导入');
+                logger.debug('[Import] 工具状态已导入');
             } catch (error) {
-                console.warn('[Import] 导入工具状态失败:', error);
+                logger.warn('[Import] 导入工具状态失败:', error);
             }
         }
 
@@ -307,13 +333,15 @@ async function importConfig(data) {
         loadSavedConfigs();
 
         // 新增：触发模型列表刷新
-        import('../ui/models.js').then(({ populateModelSelect }) => {
-            populateModelSelect();
-        }).catch(err => console.warn('Failed to refresh model list:', err));
+        import('../ui/models.js')
+            .then(({ populateModelSelect }) => {
+                populateModelSelect();
+            })
+            .catch((err) => logger.warn('Failed to refresh model list:', err));
 
         showNotification('配置已导入，请刷新页面应用更改', 'success');
     } catch (error) {
-        console.error('导入配置失败:', error);
+        logger.error('导入配置失败:', error);
         // 降级处理
         if (data.data.currentConfig) {
             const filtered = filterRuntimeState(data.data.currentConfig);
@@ -342,7 +370,7 @@ async function importSessions(data) {
     for (const session of data.sessions) {
         try {
             // 检查会话是否已存在
-            const existing = state.sessions.find(s => s.id === session.id);
+            const existing = state.sessions.find((s) => s.id === session.id);
             if (existing) {
                 // 询问是否覆盖
                 const overwrite = await showConfirmDialog(
@@ -357,27 +385,58 @@ async function importSessions(data) {
             await saveSessionToDB(sessionMeta);
             if (messages && messages.length > 0) {
                 // 检查是否需要迁移旧格式消息
-                const needsMigration = !messages[0]?._schemaVersion || messages[0]._schemaVersion < SCHEMA_VERSION;
+                // 如果消息已有有效的 schema parts，即使没有 _schemaVersion 也不需要迁移
+                const firstMsg = messages[0];
+                const hasValidParts =
+                    firstMsg?.parts && isSchemaFormatParts(firstMsg.parts, firstMsg);
+                const needsMigration =
+                    !hasValidParts &&
+                    (!firstMsg?._schemaVersion || firstMsg._schemaVersion < SCHEMA_VERSION);
                 let finalMessages = messages;
                 if (needsMigration) {
                     try {
                         const migrated = migrateSession(messages);
                         if (migrated.messages.length > 0) {
                             finalMessages = migrated.messages;
-                            console.log(`[Import] 迁移会话 ${session.id}: ${messages.length} → ${finalMessages.length} 条消息`);
+                            logger.debug(
+                                `[Import] 迁移会话 ${session.id}: ${messages.length} → ${finalMessages.length} 条消息`
+                            );
                         }
                     } catch (e) {
-                        console.warn(`[Import] 迁移失败，使用原始格式:`, e);
+                        logger.warn(`[Import] 迁移失败，使用原始格式:`, e);
                     }
                 }
                 await saveSessionMessages(session.id, {
-                    messages: finalMessages,
+                    messages: finalMessages
                 });
             }
             importCount++;
         } catch (error) {
-            console.error(`导入会话 ${session.id} 失败:`, error);
+            logger.error(`导入会话 ${session.id} 失败:`, error);
             errors.push(session.name);
+        }
+    }
+
+    // 导入 folders
+    if (Array.isArray(data.folders) && data.folders.length > 0) {
+        try {
+            const { loadFolders } = await import('./folders.js');
+            const { getDB } = await import('./storage.js');
+            const db = getDB();
+            if (db) {
+                const tx = db.transaction([STORES.FOLDERS], 'readwrite');
+                const store = tx.objectStore(STORES.FOLDERS);
+                for (const folder of data.folders) {
+                    store.put(folder);
+                }
+                await new Promise((resolve, reject) => {
+                    tx.oncomplete = resolve;
+                    tx.onerror = () => reject(tx.error);
+                });
+            }
+            await loadFolders();
+        } catch (e) {
+            logger.warn('[Import] 导入 folders 失败:', e);
         }
     }
 
@@ -423,11 +482,21 @@ async function importFullBackup(data) {
         let importCount = 0;
         for (const session of data.sessions) {
             try {
-                const { messages, geminiContents: _gc, claudeContents: _cc, ...sessionMeta } = session;
+                const {
+                    messages,
+                    geminiContents: _gc,
+                    claudeContents: _cc,
+                    ...sessionMeta
+                } = session;
                 await saveSessionToDB(sessionMeta);
                 if (messages && messages.length > 0) {
                     // 检查是否需要迁移旧格式消息
-                    const needsMigration = !messages[0]?._schemaVersion || messages[0]._schemaVersion < SCHEMA_VERSION;
+                    const firstMsg = messages[0];
+                    const hasValidParts =
+                        firstMsg?.parts && isSchemaFormatParts(firstMsg.parts, firstMsg);
+                    const needsMigration =
+                        !hasValidParts &&
+                        (!firstMsg?._schemaVersion || firstMsg._schemaVersion < SCHEMA_VERSION);
                     let finalMessages = messages;
                     if (needsMigration) {
                         try {
@@ -436,17 +505,35 @@ async function importFullBackup(data) {
                                 finalMessages = migrated.messages;
                             }
                         } catch (e) {
-                            console.warn(`[Import] 迁移失败，使用原始格式:`, e);
+                            logger.warn(`[Import] 迁移失败，使用原始格式:`, e);
                         }
                     }
                     await saveSessionMessages(session.id, {
-                        messages: finalMessages,
+                        messages: finalMessages
                     });
                 }
                 importCount++;
             } catch (error) {
-                console.error(`导入会话 ${session.id} 失败:`, error);
+                logger.error(`导入会话 ${session.id} 失败:`, error);
             }
+        }
+
+        if (Array.isArray(data.folders)) {
+            const { loadFolders } = await import('./folders.js');
+            const { getDB } = await import('./storage.js');
+            const db = getDB();
+            if (db) {
+                const tx = db.transaction([STORES.FOLDERS], 'readwrite');
+                const store = tx.objectStore(STORES.FOLDERS);
+                for (const folder of data.folders) {
+                    store.put(folder);
+                }
+                await new Promise((resolve, reject) => {
+                    tx.oncomplete = resolve;
+                    tx.onerror = () => reject(tx.error);
+                });
+            }
+            await loadFolders();
         }
 
         // 重新加载配置和会话列表
@@ -454,13 +541,18 @@ async function importFullBackup(data) {
         await loadSessions();
 
         // 新增：触发模型列表刷新
-        import('../ui/models.js').then(({ populateModelSelect }) => {
-            populateModelSelect();
-        }).catch(err => console.warn('Failed to refresh model list:', err));
+        import('../ui/models.js')
+            .then(({ populateModelSelect }) => {
+                populateModelSelect();
+            })
+            .catch((err) => logger.warn('Failed to refresh model list:', err));
 
-        showNotification(`已导入完整备份（${importCount} 个会话），请刷新页面应用配置更改`, 'success');
+        showNotification(
+            `已导入完整备份（${importCount} 个会话），请刷新页面应用配置更改`,
+            'success'
+        );
     } catch (error) {
-        console.error('导入完整备份失败:', error);
+        logger.error('导入完整备份失败:', error);
         // 降级处理
         if (data.config.currentConfig) {
             const filtered = filterRuntimeState(data.config.currentConfig);
@@ -510,9 +602,8 @@ export async function handleImportFile(event) {
             default:
                 throw new Error(`不支持的备份类型: ${data.type}`);
         }
-
     } catch (error) {
-        console.error('导入失败:', error);
+        logger.error('导入失败:', error);
         showNotification('导入失败: ' + error.message, 'error');
     } finally {
         // 清空文件输入
@@ -557,7 +648,7 @@ export function initExportImport() {
     window.exportAllData = exportAllData;
     window.triggerImport = triggerImport;
 
-    console.log('Export/Import initialized');
+    logger.debug('Export/Import initialized');
 }
 
 // ========== 会话 Markdown 导出 ==========
@@ -570,11 +661,13 @@ function getExportMessages(session) {
 }
 
 function getSelectedReply(msg) {
-    const repliesAll = msg?.replies?.all || msg?.allReplies;
+    const repliesAll = msg?.replies?.all;
     if (!Array.isArray(repliesAll) || repliesAll.length === 0) {
         return null;
     }
-    const selectedIndex = msg?.replies?.selected ?? (Number.isInteger(msg?.selectedReplyIndex) ? msg.selectedReplyIndex : 0);
+    const selectedIndex =
+        msg?.replies?.selected ??
+        (Number.isInteger(msg?.selectedReplyIndex) ? msg.selectedReplyIndex : 0);
     return repliesAll[selectedIndex] || repliesAll[0] || null;
 }
 
@@ -623,30 +716,17 @@ function extractTextFromParts(parts = []) {
 function extractThinkingContent(msg) {
     const selectedReply = getSelectedReply(msg);
 
-    if (Array.isArray(msg?.parts)) {
-        const thinking = msg.parts
-            .filter(part => (part?.type === 'thinking' || part?.thought) && typeof part.text === 'string')
-            .map(part => part.text)
-            .join('\n\n')
-            .trim();
-        if (thinking) return thinking;
-    }
-    if (selectedReply?.thinkingContent) {
-        return selectedReply.thinkingContent;
-    }
-    if (msg?.thinkingContent) {
-        return msg.thinkingContent;
+    // 新格式优先：从 parts 提取
+    const thinking = getThinkingContent(msg);
+    if (thinking) return thinking;
+
+    // selectedReply 可能有独立的 thinkingContent（通过 getThinkingContent 兜底）
+    if (selectedReply) {
+        const replyThinking = getThinkingContent(selectedReply);
+        if (replyThinking) return replyThinking;
     }
     if (msg?.thought) {
         return msg.thought;
-    }
-    if (Array.isArray(msg?.contentParts)) {
-        const thinking = msg.contentParts
-            .filter(part => part?.type === 'thinking' && typeof part.text === 'string')
-            .map(part => part.text)
-            .join('\n\n')
-            .trim();
-        if (thinking) return thinking;
     }
     return '';
 }
@@ -655,32 +735,17 @@ function extractMessageBody(msg) {
     const selectedReply = getSelectedReply(msg);
 
     if (selectedReply) {
-        if (Array.isArray(selectedReply.parts) && selectedReply.parts.length > 0) {
-            return extractTextFromParts(selectedReply.parts);
-        }
-        if (typeof selectedReply.content === 'string' && selectedReply.content.trim()) {
-            return selectedReply.content.trim();
-        }
-        if (Array.isArray(selectedReply.contentParts) && selectedReply.contentParts.length > 0) {
-            return extractTextFromParts(selectedReply.contentParts);
-        }
+        // 用 schema 工具函数提取（内部处理 parts + content 回退）
+        const replyText = getTextContent(selectedReply);
+        if (replyText) return replyText;
         if (Array.isArray(selectedReply.claudeContent) && selectedReply.claudeContent.length > 0) {
             return extractTextFromParts(selectedReply.claudeContent);
         }
     }
 
-    if (Array.isArray(msg?.parts) && msg.parts.length > 0) {
-        return extractTextFromParts(msg.parts);
-    }
-    if (typeof msg?.content === 'string') {
-        return msg.content.trim();
-    }
-    if (Array.isArray(msg?.content)) {
-        return extractTextFromParts(msg.content);
-    }
-    if (Array.isArray(msg?.contentParts)) {
-        return extractTextFromParts(msg.contentParts);
-    }
+    // 用 schema 工具函数提取（内部处理 parts + content 回退）
+    const text = getTextContent(msg);
+    if (text) return text;
     return '';
 }
 
@@ -688,9 +753,9 @@ function extractToolCalls(msg) {
     // 新格式：从 parts 提取
     if (Array.isArray(msg?.parts)) {
         const tcNames = msg.parts
-            .filter(p => p.type === 'tool_call' && p.name)
-            .map(p => p.name);
-        if (tcNames.length > 0) return tcNames.map(n => `- ${n}`).join('\n');
+            .filter((p) => p.type === 'tool_call' && p.name)
+            .map((p) => p.name);
+        if (tcNames.length > 0) return tcNames.map((n) => `- ${n}`).join('\n');
     }
     // 旧格式回退
     const toolCalls = msg?.toolCalls;
@@ -698,10 +763,10 @@ function extractToolCalls(msg) {
         return '';
     }
     const lines = toolCalls
-        .map(toolCall => toolCall?.name || toolCall?.function?.name || toolCall?.id || '')
+        .map((toolCall) => toolCall?.name || toolCall?.function?.name || toolCall?.id || '')
         .filter(Boolean);
     if (lines.length === 0) return '';
-    return lines.map(name => `- ${name}`).join('\n');
+    return lines.map((name) => `- ${name}`).join('\n');
 }
 
 /**
@@ -723,7 +788,7 @@ export function sessionToMarkdown(session) {
         const roleName = msg.role === 'user' ? 'User' : 'Assistant';
         markdown += `## ${roleName}\n\n`;
 
-        const thinkingContent = extractThinkingContent(msg);
+        const thinkingContent = extractThinkingContent(msg); // 运行时变量，非旧格式字段
         if (thinkingContent) {
             markdown += `> **Thinking:**\n> ${thinkingContent.replace(/\n/g, '\n> ')}\n\n`;
         }

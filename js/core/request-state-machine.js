@@ -5,20 +5,21 @@
 
 import { eventBus } from './events.js';
 import { elements } from './elements.js';
-import { state } from './state.js';
+import { setIsLoading, setIsSending } from './state-mutations.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * 请求状态枚举
  */
 export const RequestState = {
-    IDLE: 'idle',                   // 空闲状态
-    SENDING: 'sending',             // 正在发送用户消息
-    STREAMING: 'streaming',         // 正在接收流式响应
-    TOOL_CALLING: 'tool_calling',   // 正在执行工具调用
-    CONTINUATION: 'continuation',   // 工具调用后的续写
-    COMPLETED: 'completed',         // 请求完成（临时状态，会立即转回 IDLE）
-    ERROR: 'error',                 // 请求错误（临时状态，会立即转回 IDLE）
-    CANCELLED: 'cancelled'          // 请求取消（临时状态，会立即转回 IDLE）
+    IDLE: 'idle', // 空闲状态
+    SENDING: 'sending', // 正在发送用户消息
+    STREAMING: 'streaming', // 正在接收流式响应
+    TOOL_CALLING: 'tool_calling', // 正在执行工具调用
+    CONTINUATION: 'continuation', // 工具调用后的续写
+    COMPLETED: 'completed', // 请求完成（临时状态，会立即转回 IDLE）
+    ERROR: 'error', // 请求错误（临时状态，会立即转回 IDLE）
+    CANCELLED: 'cancelled' // 请求取消（临时状态，会立即转回 IDLE）
 };
 
 /**
@@ -26,9 +27,7 @@ export const RequestState = {
  * 定义哪些状态可以转换到哪些状态
  */
 const VALID_TRANSITIONS = {
-    [RequestState.IDLE]: [
-        RequestState.SENDING
-    ],
+    [RequestState.IDLE]: [RequestState.SENDING],
     [RequestState.SENDING]: [
         RequestState.STREAMING,
         RequestState.ERROR,
@@ -48,21 +47,16 @@ const VALID_TRANSITIONS = {
         RequestState.CANCELLED
     ],
     [RequestState.CONTINUATION]: [
+        RequestState.SENDING,
         RequestState.STREAMING,
         RequestState.TOOL_CALLING,
         RequestState.COMPLETED,
         RequestState.ERROR,
         RequestState.CANCELLED
     ],
-    [RequestState.COMPLETED]: [
-        RequestState.IDLE
-    ],
-    [RequestState.ERROR]: [
-        RequestState.IDLE
-    ],
-    [RequestState.CANCELLED]: [
-        RequestState.IDLE
-    ]
+    [RequestState.COMPLETED]: [RequestState.IDLE],
+    [RequestState.ERROR]: [RequestState.IDLE],
+    [RequestState.CANCELLED]: [RequestState.IDLE]
 };
 
 /**
@@ -101,9 +95,9 @@ export class RequestStateMachine {
     transition(newState, metadata = {}) {
         // 验证转换是否合法
         if (!this.canTransition(newState)) {
-            console.error(`[StateMachine] ❌ 非法状态转换: ${this.state} -> ${newState}`);
-            console.error('[StateMachine] 当前状态:', this.state);
-            console.error('[StateMachine] 允许的转换:', VALID_TRANSITIONS[this.state]);
+            logger.error(`[StateMachine] 非法状态转换: ${this.state} -> ${newState}`);
+            logger.error('[StateMachine] 当前状态:', this.state);
+            logger.error('[StateMachine] 允许的转换:', VALID_TRANSITIONS[this.state]);
             // 不抛出错误，而是记录日志，防止阻塞正常流程
             return false;
         }
@@ -118,7 +112,9 @@ export class RequestStateMachine {
         this.state = newState;
 
         // 记录状态历史（精简 metadata，避免存储大对象）
-        const metaSummary = metadata ? { type: typeof metadata, keys: Object.keys(metadata).join(',') } : null;
+        const metaSummary = metadata
+            ? { type: typeof metadata, keys: Object.keys(metadata).join(',') }
+            : null;
         this.stateHistory.push({
             from: oldState,
             to: newState,
@@ -129,24 +125,26 @@ export class RequestStateMachine {
             this.stateHistory.shift();
         }
 
-        console.log(`[StateMachine] 状态转换: ${oldState} -> ${newState}`, metadata);
+        logger.debug(`[StateMachine] 状态转换: ${oldState} -> ${newState}`, metadata);
 
         // 同步旧版标志位
-        state.isLoading = [RequestState.SENDING, RequestState.STREAMING, RequestState.TOOL_CALLING, RequestState.CONTINUATION].includes(newState);
-        state.isSending = newState === RequestState.SENDING;
+        setIsLoading(
+            [
+                RequestState.SENDING,
+                RequestState.STREAMING,
+                RequestState.TOOL_CALLING,
+                RequestState.CONTINUATION
+            ].includes(newState)
+        );
+        setIsSending(newState === RequestState.SENDING);
 
         // 执行状态进入钩子
         this._onEnterState(newState, metadata);
 
-        // 发送状态变化事件
-        eventBus.emit('request:state-changed', {
-            from: oldState,
-            to: newState,
-            metadata
-        });
-
         // 自动转换临时状态
-        if ([RequestState.COMPLETED, RequestState.ERROR, RequestState.CANCELLED].includes(newState)) {
+        if (
+            [RequestState.COMPLETED, RequestState.ERROR, RequestState.CANCELLED].includes(newState)
+        ) {
             // 短暂延迟后转回 IDLE（确保 UI 更新完成）
             this._autoIdleTimer = setTimeout(() => {
                 this._autoIdleTimer = null;
@@ -213,7 +211,7 @@ export class RequestStateMachine {
             cancelButtonVisible: false
         });
 
-        console.log('[StateMachine] 已进入 IDLE 状态，所有资源已清理');
+        logger.debug('[StateMachine] 已进入 IDLE 状态，所有资源已清理');
     }
 
     /**
@@ -230,7 +228,7 @@ export class RequestStateMachine {
             clearTimeout(this.sendLockTimeout);
         }
         this.sendLockTimeout = setTimeout(() => {
-            console.warn('[StateMachine] 请求超时（240秒），强制释放');
+            logger.warn('[StateMachine] 请求超时（240秒），强制释放');
             if (this.state !== RequestState.IDLE) {
                 this.forceReset();
             }
@@ -302,7 +300,7 @@ export class RequestStateMachine {
      * COMPLETED 状态钩子
      */
     _onCompleted() {
-        console.log('[StateMachine] 请求完成');
+        logger.debug('[StateMachine] 请求完成');
 
         // 立即重置 UI 按钮状态
         this._updateUI({
@@ -317,7 +315,7 @@ export class RequestStateMachine {
      */
     _onError(metadata) {
         const { error } = metadata || {};
-        console.error('[StateMachine] 请求错误:', error);
+        logger.error('[StateMachine] 请求错误:', error);
 
         // 立即重置 UI 按钮状态，不依赖 auto-idle 定时器
         this._updateUI({
@@ -331,13 +329,15 @@ export class RequestStateMachine {
      * CANCELLED 状态钩子
      */
     _onCancelled() {
-        console.log('[StateMachine] 请求已取消');
+        logger.debug('[StateMachine] 请求已取消');
 
         // 性能优化：缓存 querySelectorAll 结果，避免在 forEach 中重复调用
-        const allLoadingElements = document.querySelectorAll('.thinking-dots, .continuation-loading, .retry-loading');
+        const allLoadingElements = document.querySelectorAll(
+            '.thinking-dots, .continuation-loading, .retry-loading'
+        );
         if (allLoadingElements.length > 0) {
-            allLoadingElements.forEach(el => {
-                console.log('[StateMachine] 移除 loading 元素:', el.className);
+            allLoadingElements.forEach((el) => {
+                logger.debug('[StateMachine] 移除 loading 元素:', el.className);
                 el.remove();
             });
         }
@@ -352,7 +352,9 @@ export class RequestStateMachine {
             elements.sendButton.style.display = sendButtonVisible ? 'inline-flex' : 'none';
         }
         if (elements.cancelRequestButton) {
-            elements.cancelRequestButton.style.display = cancelButtonVisible ? 'inline-flex' : 'none';
+            elements.cancelRequestButton.style.display = cancelButtonVisible
+                ? 'inline-flex'
+                : 'none';
         }
     }
 
@@ -363,7 +365,7 @@ export class RequestStateMachine {
      * @param {boolean} options.silent - 是否静默（不显示通知）
      */
     forceReset({ skipAbort = false, silent = false } = {}) {
-        console.warn('[StateMachine] 强制重置到 IDLE 状态', skipAbort ? '(保留请求)' : '');
+        logger.warn('[StateMachine] 强制重置到 IDLE 状态', skipAbort ? '(保留请求)' : '');
 
         // 清理自动回 IDLE 定时器
         if (this._autoIdleTimer) {
@@ -377,15 +379,17 @@ export class RequestStateMachine {
                 if (!this.abortController.signal.aborted) {
                     this.abortController.abort();
                 }
-            } catch (e) {
+            } catch (_error) {
                 // 忽略 abort 错误
             }
         }
 
         // 清理 loading 元素
-        const allLoadingElements = document.querySelectorAll('.thinking-dots, .continuation-loading, .retry-loading');
+        const allLoadingElements = document.querySelectorAll(
+            '.thinking-dots, .continuation-loading, .retry-loading'
+        );
         if (allLoadingElements.length > 0) {
-            allLoadingElements.forEach(el => el.remove());
+            allLoadingElements.forEach((el) => el.remove());
         }
 
         // 强制设置为 IDLE 状态（跳过状态验证）
@@ -404,13 +408,6 @@ export class RequestStateMachine {
             this.stateHistory.shift();
         }
 
-        // 发送事件
-        eventBus.emit('request:state-changed', {
-            from: oldState,
-            to: RequestState.IDLE,
-            metadata: { forced: true }
-        });
-
         if (!silent) {
             eventBus.emit('ui:notification', {
                 message: '已强制重置请求状态',
@@ -423,11 +420,11 @@ export class RequestStateMachine {
      * 取消当前请求
      */
     cancel() {
-        console.log('[StateMachine] 取消请求');
+        logger.debug('[StateMachine] 取消请求');
 
         // 检查当前状态是否允许取消
         if (this.state === RequestState.IDLE) {
-            console.warn('[StateMachine] 当前为 IDLE 状态，无需取消');
+            logger.warn('[StateMachine] 当前为 IDLE 状态，无需取消');
             return false;
         }
 
@@ -471,10 +468,10 @@ export class RequestStateMachine {
      * 打印状态历史（用于调试）
      */
     printHistory() {
-        console.log('[StateMachine] 状态历史:');
+        logger.debug('[StateMachine] 状态历史:');
         this.stateHistory.forEach((record, index) => {
             const time = new Date(record.timestamp).toLocaleTimeString();
-            console.log(`  ${index + 1}. [${time}] ${record.from} -> ${record.to}`, record.meta);
+            logger.debug(`  ${index + 1}. [${time}] ${record.from} -> ${record.to}`, record.meta);
         });
     }
 }

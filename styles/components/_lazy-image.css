@@ -30,12 +30,8 @@
 /* 加载错误状态 */
 .lazy-image.error {
     opacity: 1;
-    background-color: #fee;
+    background-color: var(--color-bg-error-image);
     border: 2px dashed var(--color-error);
-}
-
-.dark-theme .lazy-image.error {
-    background-color: #3a2020;
 }
 
 /* 图片加载指示器容器 */
@@ -52,7 +48,7 @@
 .image-loader .spinner {
     width: 32px;
     height: 32px;
-    border: 3px solid rgba(255, 255, 255, 0.1);
+    border: 3px solid rgba(var(--color-bg-surface-rgb), 0.1);
     border-top-color: var(--color-primary);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;

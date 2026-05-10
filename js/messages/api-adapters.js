@@ -11,6 +11,17 @@
 import { PartType, MediaKind, Role } from './schema.js';
 import { getOrCreateMappedId } from '../api/format-converter.js';
 import { parseDataURL } from '../utils/file-helpers.js';
+import { logger } from '../utils/logger.js';
+
+/**
+ * 判断 FILE part 是否为纯文本内容（非 base64 数据）
+ * 优先读 encoding 字段，旧数据兜底用 parseDataURL 试探
+ */
+function isTextFile(p) {
+    if (p.encoding === 'text') return true;
+    if (p.encoding === 'base64') return false;
+    return !parseDataURL(p.url);
+}
 
 /**
  * 检测消息是否为旧格式（无 parts 字段）
@@ -74,7 +85,7 @@ export function toOpenAIMessages(msgs, opts = {}) {
         const toolCalls = [];
         let hasToolCalls = false;
 
-        for (const p of (msg.parts || [])) {
+        for (const p of msg.parts || []) {
             switch (p.type) {
                 case PartType.TEXT:
                     contentItems.push({ type: 'text', text: p.text });
@@ -83,19 +94,36 @@ export function toOpenAIMessages(msgs, opts = {}) {
                     if (p.media === MediaKind.IMAGE) {
                         contentItems.push({ type: 'image_url', image_url: { url: p.url } });
                     } else if (p.media === MediaKind.VIDEO) {
-                        contentItems.push({ type: 'video_url', video_url: { url: p.url, mime_type: p.mime } });
+                        contentItems.push({
+                            type: 'video_url',
+                            video_url: { url: p.url, mime_type: p.mime }
+                        });
                     } else if (p.media === MediaKind.AUDIO) {
                         // OpenAI input_audio 需要纯 base64 和简短格式名
                         const audioParsed = parseDataURL(p.url);
                         if (audioParsed) {
                             const fmt = (audioParsed.mimeType || '').split('/').pop() || 'wav';
-                            contentItems.push({ type: 'input_audio', input_audio: { data: audioParsed.base64, format: fmt } });
+                            contentItems.push({
+                                type: 'input_audio',
+                                input_audio: { data: audioParsed.base64, format: fmt }
+                            });
                         }
                     }
                     break;
-                case PartType.FILE:
-                    contentItems.push({ type: 'file', file: { filename: p.name, file_data: p.url } });
+                case PartType.FILE: {
+                    if (isTextFile(p)) {
+                        contentItems.push({
+                            type: 'text',
+                            text: `<document name="${p.name}">\n${p.url}\n</document>`
+                        });
+                    } else {
+                        contentItems.push({
+                            type: 'file',
+                            file: { filename: p.name, file_data: p.url }
+                        });
+                    }
                     break;
+                }
                 case PartType.TOOL_CALL:
                     hasToolCalls = true;
                     toolCalls.push({
@@ -103,8 +131,9 @@ export function toOpenAIMessages(msgs, opts = {}) {
                         type: 'function',
                         function: {
                             name: p.name,
-                            arguments: typeof p.args === 'string' ? p.args : JSON.stringify(p.args || {}),
-                        },
+                            arguments:
+                                typeof p.args === 'string' ? p.args : JSON.stringify(p.args || {})
+                        }
                     });
                     break;
                 // THINKING: 忽略
@@ -139,14 +168,17 @@ export function toOpenAIMessages(msgs, opts = {}) {
         // 拆出 tool 结果为独立消息
         if (hasToolCalls) {
             for (const p of msg.parts) {
-                if (p.type !== PartType.TOOL_CALL || !p.result) continue;
+                if (p.type !== PartType.TOOL_CALL) continue;
+                const resultContent = p.result
+                    ? typeof p.result.content === 'string'
+                        ? p.result.content
+                        : JSON.stringify(p.result.content || '')
+                    : 'Tool execution was interrupted';
                 out.push({
                     role: 'tool',
                     tool_call_id: p.id,
-                    content: typeof p.result.content === 'string'
-                        ? p.result.content
-                        : JSON.stringify(p.result.content || ''),
-                    _toolName: p.name,
+                    content: resultContent,
+                    _toolName: p.name
                 });
             }
         }
@@ -175,14 +207,18 @@ export function toClaudeMessages(msgs) {
         if (isOldFormat(msg)) {
             // Claude 不接受 role:"tool"，需要转换为 role:"user" + tool_result
             if (msg.role === 'tool') {
-                const claudeId = msg.tool_call_id ? getOrCreateMappedId(msg.tool_call_id, 'claude') : msg.tool_call_id;
+                const claudeId = msg.tool_call_id
+                    ? getOrCreateMappedId(msg.tool_call_id, 'claude')
+                    : msg.tool_call_id;
                 out.push({
                     role: 'user',
-                    content: [{
-                        type: 'tool_result',
-                        tool_use_id: claudeId,
-                        content: msg.content || '',
-                    }]
+                    content: [
+                        {
+                            type: 'tool_result',
+                            tool_use_id: claudeId,
+                            content: msg.content || ''
+                        }
+                    ]
                 });
             } else {
                 // assistant 消息：将 OpenAI tool_calls 转为 Claude tool_use content
@@ -193,9 +229,18 @@ export function toClaudeMessages(msgs) {
                         const claudeId = getOrCreateMappedId(tc.id, 'claude');
                         let input = tc.function?.arguments || '{}';
                         if (typeof input === 'string') {
-                            try { input = JSON.parse(input); } catch { input = {}; }
+                            try {
+                                input = JSON.parse(input);
+                            } catch {
+                                input = {};
+                            }
                         }
-                        content.push({ type: 'tool_use', id: claudeId, name: tc.function?.name || '', input });
+                        content.push({
+                            type: 'tool_use',
+                            id: claudeId,
+                            name: tc.function?.name || '',
+                            input
+                        });
                     }
                     out.push({ role: 'assistant', content });
                 } else {
@@ -209,11 +254,15 @@ export function toClaudeMessages(msgs) {
         const content = [];
         const toolCallParts = [];
 
-        for (const p of (msg.parts || [])) {
+        for (const p of msg.parts || []) {
             switch (p.type) {
                 case PartType.THINKING:
                     if (p.signature) {
-                        content.push({ type: 'thinking', thinking: p.text, signature: p.signature });
+                        content.push({
+                            type: 'thinking',
+                            thinking: p.text,
+                            signature: p.signature
+                        });
                     }
                     break;
                 case PartType.TEXT:
@@ -225,47 +274,76 @@ export function toClaudeMessages(msgs) {
                         if (parsed) {
                             content.push({
                                 type: 'image',
-                                source: { type: 'base64', media_type: parsed.mimeType, data: parsed.base64 },
+                                source: {
+                                    type: 'base64',
+                                    media_type: parsed.mimeType,
+                                    data: parsed.base64
+                                }
                             });
                         } else {
-                            console.warn('[Claude Adapter] 图片非 base64 格式，已降级为文本:', p.url?.substring(0, 60));
-                            content.push({ type: 'text', text: '[图片附件无法发送：仅支持 base64 格式]' });
+                            logger.warn(
+                                '[Claude Adapter] 图片非 base64 格式，已降级为文本:',
+                                p.url?.substring(0, 60)
+                            );
+                            content.push({
+                                type: 'text',
+                                text: '[图片附件无法发送：仅支持 base64 格式]'
+                            });
                         }
                     } else if (p.media === MediaKind.VIDEO || p.media === MediaKind.AUDIO) {
                         // Claude API 不支持 video/audio inline，添加文本占位
-                        content.push({ type: 'text', text: `[${p.media === MediaKind.VIDEO ? '视频' : '音频'}附件已省略]` });
+                        content.push({
+                            type: 'text',
+                            text: `[${p.media === MediaKind.VIDEO ? '视频' : '音频'}附件已省略]`
+                        });
                     }
                     break;
-                case PartType.FILE:
-                    if (p.mime === 'application/pdf') {
-                        const parsed = parseDataURL(p.url);
-                        if (parsed) {
+                case PartType.FILE: {
+                    if (isTextFile(p)) {
+                        content.push({
+                            type: 'text',
+                            text: `<document name="${p.name}">\n${p.url}\n</document>`
+                        });
+                    } else {
+                        const fileParsed = parseDataURL(p.url);
+                        if (fileParsed) {
                             content.push({
                                 type: 'document',
-                                source: { type: 'base64', media_type: parsed.mimeType, data: parsed.base64 },
+                                source: {
+                                    type: 'base64',
+                                    media_type: fileParsed.mimeType,
+                                    data: fileParsed.base64
+                                }
                             });
-                        } else {
-                            console.warn('[Claude Adapter] PDF 非 base64 格式，已跳过:', p.name);
                         }
                     }
                     break;
+                }
                 case PartType.TOOL_CALL: {
                     if (p.server) {
-                        // 服务端工具 — 原样回传为 server_tool_use + result
-                        content.push({ type: 'server_tool_use', id: p.id, name: p.name, input: p.args || {} });
-                        // 结果紧跟其后（在同一个 assistant content 数组中）
+                        // 服务端工具（web_search 等）— 原样回传
+                        content.push({
+                            type: 'server_tool_use',
+                            id: p.id,
+                            name: p.name,
+                            input: p.args || {}
+                        });
                         if (p.result) {
                             content.push({
                                 type: p.result.type || `${p.name}_tool_result`,
                                 tool_use_id: p.id,
-                                content: p.result.content,
+                                content: p.result.content
                             });
                         }
                     } else {
                         const claudeId = getOrCreateMappedId(p.id, 'claude');
                         let input = p.args || {};
                         if (typeof input === 'string') {
-                            try { input = JSON.parse(input); } catch { /* keep string */ }
+                            try {
+                                input = JSON.parse(input);
+                            } catch {
+                                /* keep string */
+                            }
                         }
                         content.push({ type: 'tool_use', id: claudeId, name: p.name, input });
                         toolCallParts.push(p);
@@ -281,9 +359,8 @@ export function toClaudeMessages(msgs) {
         }
 
         // 纯文本简化
-        const outContent = content.length === 1 && content[0].type === 'text'
-            ? content[0].text
-            : content;
+        const outContent =
+            content.length === 1 && content[0].type === 'text' ? content[0].text : content;
 
         out.push({ role, content: outContent });
 
@@ -291,13 +368,14 @@ export function toClaudeMessages(msgs) {
         if (toolCallParts.length > 0) {
             const toolResults = [];
             for (const p of toolCallParts) {
-                if (!p.result) continue;
                 const claudeId = getOrCreateMappedId(p.id, 'claude');
-                const resultContent = buildClaudeToolResultContent(p.result);
+                const resultContent = p.result
+                    ? buildClaudeToolResultContent(p.result)
+                    : 'Tool execution was interrupted';
                 toolResults.push({
                     type: 'tool_result',
                     tool_use_id: claudeId,
-                    content: resultContent,
+                    content: resultContent
                 });
             }
             if (toolResults.length > 0) {
@@ -327,12 +405,12 @@ function buildClaudeToolResultContent(result) {
                 if (parsed) {
                     parts.push({
                         type: 'image',
-                        source: { type: 'base64', media_type: parsed.mimeType, data: parsed.base64 },
+                        source: { type: 'base64', media_type: parsed.mimeType, data: parsed.base64 }
                     });
                 }
             }
         }
-        return parts.length > 0 ? parts : (result.content || '');
+        return parts.length > 0 ? parts : result.content || '';
     }
 
     return result.content || '';
@@ -362,7 +440,11 @@ export function toGeminiContents(msgs) {
         }
 
         // 已经是 Gemini 原生格式的消息（buildToolResultMessages 直接返回的）
-        if (!msg._schemaVersion && msg.parts && msg.parts.some(p => p.functionCall || p.functionResponse)) {
+        if (
+            !msg._schemaVersion &&
+            msg.parts &&
+            msg.parts.some((p) => p.functionCall || p.functionResponse)
+        ) {
             out.push(msg);
             continue;
         }
@@ -372,7 +454,7 @@ export function toGeminiContents(msgs) {
         const toolCallParts = [];
         let thoughtSignature = null;
 
-        for (const p of (msg.parts || [])) {
+        for (const p of msg.parts || []) {
             switch (p.type) {
                 case PartType.THINKING:
                     parts.push({ text: p.text, thought: true });
@@ -383,11 +465,22 @@ export function toGeminiContents(msgs) {
                     break;
                 case PartType.MEDIA:
                 case PartType.FILE: {
-                    const parsed = parseDataURL(p.url);
-                    if (parsed) {
-                        parts.push({ inlineData: { mimeType: parsed.mimeType, data: parsed.base64 } });
+                    if (p.type === PartType.FILE && isTextFile(p)) {
+                        parts.push({
+                            text: `<document name="${p.name}">\n${p.url}\n</document>`
+                        });
                     } else {
-                        console.warn('[Gemini Adapter] 媒体非 base64 格式，已跳过:', p.name || p.url?.substring(0, 60));
+                        const parsed = parseDataURL(p.url);
+                        if (parsed) {
+                            parts.push({
+                                inlineData: { mimeType: parsed.mimeType, data: parsed.base64 }
+                            });
+                        } else {
+                            logger.warn(
+                                '[Gemini Adapter] 媒体非 base64 格式，已跳过:',
+                                p.name || p.url?.substring(0, 60)
+                            );
+                        }
                     }
                     break;
                 }
@@ -395,10 +488,14 @@ export function toGeminiContents(msgs) {
                     getOrCreateMappedId(p.id, 'gemini');
                     let args = p.args || {};
                     if (typeof args === 'string') {
-                        try { args = JSON.parse(args); } catch { args = {}; }
+                        try {
+                            args = JSON.parse(args);
+                        } catch {
+                            args = {};
+                        }
                     }
                     const callPart = {
-                        functionCall: { name: p.name, args },
+                        functionCall: { name: p.name, args }
                     };
                     if (thoughtSignature) {
                         callPart.thoughtSignature = thoughtSignature;
@@ -425,9 +522,10 @@ export function toGeminiContents(msgs) {
         if (toolCallParts.length > 0) {
             const responseParts = [];
             for (const p of toolCallParts) {
-                if (!p.result) continue;
                 const geminiId = getOrCreateMappedId(p.id, 'gemini');
-                const response = buildGeminiToolResponse(p.result);
+                const response = p.result
+                    ? buildGeminiToolResponse(p.result)
+                    : { content: 'Tool execution was interrupted' };
                 const frPart = { functionResponse: { name: p.name, response } };
                 // 只对非自动生成的 ID 传递
                 if (!geminiId.startsWith('gemini_tc_')) {
@@ -475,8 +573,11 @@ function buildGeminiToolResponse(result) {
 }
 
 function tryParseJSON(str) {
-    try { return JSON.parse(str); }
-    catch { return str || ''; }
+    try {
+        return JSON.parse(str);
+    } catch {
+        return str || '';
+    }
 }
 
 /**
@@ -489,15 +590,19 @@ function convertOldMsgToGemini(msg) {
 
     // role:"tool" → Gemini functionResponse
     if (msg.role === 'tool') {
-        return [{
-            role: 'user',
-            parts: [{
-                functionResponse: {
-                    name: msg._toolName || 'unknown',
-                    response: { result: tryParseJSON(msg.content) },
-                },
-            }],
-        }];
+        return [
+            {
+                role: 'user',
+                parts: [
+                    {
+                        functionResponse: {
+                            name: msg._toolName || 'unknown',
+                            response: { result: tryParseJSON(msg.content) }
+                        }
+                    }
+                ]
+            }
+        ];
     }
 
     const parts = [];
@@ -509,8 +614,11 @@ function convertOldMsgToGemini(msg) {
             const callPart = {
                 functionCall: {
                     name: tc.function?.name || tc.name,
-                    args: typeof rawArgs === 'string' ? tryParseJSON(rawArgs) : (rawArgs || tc.args || {}),
-                },
+                    args:
+                        typeof rawArgs === 'string'
+                            ? tryParseJSON(rawArgs)
+                            : rawArgs || tc.args || {}
+                }
             };
             if (tc._thoughtSignature) callPart.thoughtSignature = tc._thoughtSignature;
             parts.push(callPart);

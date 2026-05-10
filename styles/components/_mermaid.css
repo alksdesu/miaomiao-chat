@@ -1,0 +1,220 @@
+/* ========== Mermaid 图表块 ========== */
+
+.mermaid-block {
+    display: block;
+    margin: 16px 0;
+    padding: 0;
+    border: var(--border);
+    border-radius: var(--radius-md);
+    background: var(--color-bg-accent);
+    color: var(--color-text-inverse);
+    box-shadow: var(--shadow-md);
+    overflow: hidden;
+    white-space: normal;
+}
+
+.mermaid-block[data-mermaid-status='load-error'],
+.mermaid-block[data-mermaid-status='syntax-error'],
+.mermaid-block[data-mermaid-status='render-error'] {
+    border-color: var(--md-coral);
+    box-shadow: var(--shadow-md), var(--glow-coral);
+}
+
+.mermaid-header,
+.mermaid-status {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+}
+
+.mermaid-header {
+    justify-content: space-between;
+    background: rgba(var(--palette-blue-rgb), 0.12);
+    border-bottom: 1px solid rgba(var(--color-bg-surface-rgb), 0.14);
+}
+
+.mermaid-title-wrap,
+.mermaid-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.mermaid-title-wrap {
+    min-width: 0;
+}
+
+.mermaid-icon {
+    color: var(--md-blue);
+    font-size: var(--fs-lg);
+    line-height: 1;
+}
+
+.mermaid-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-ui-accent);
+    font-size: var(--fs-lg);
+    font-weight: 700;
+}
+
+.mermaid-status {
+    justify-content: space-between;
+    border-bottom: 1px solid rgba(var(--color-bg-surface-rgb), 0.1);
+    font-family: var(--font-ui-accent);
+    font-size: var(--fs-base);
+}
+
+.mermaid-status-text {
+    min-width: 0;
+    flex: 1;
+    color: rgba(var(--color-bg-surface-rgb), 0.82);
+}
+
+.mermaid-block[data-mermaid-status='ready'] .mermaid-status-text {
+    color: rgba(var(--color-bg-surface-rgb), 0.68);
+}
+
+.mermaid-block[data-mermaid-status='load-error'] .mermaid-status-text,
+.mermaid-block[data-mermaid-status='syntax-error'] .mermaid-status-text,
+.mermaid-block[data-mermaid-status='render-error'] .mermaid-status-text {
+    color: var(--md-coral);
+}
+
+.mermaid-action-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 30px;
+    padding: 6px 10px;
+    border: 1px solid rgba(var(--color-bg-surface-rgb), 0.18);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-text-inverse);
+    font-family: var(--font-ui-accent);
+    font-size: var(--fs-sm);
+    line-height: 1;
+    cursor: pointer;
+    transition:
+        background var(--duration-fast) var(--ease),
+        border-color var(--duration-fast) var(--ease),
+        transform var(--duration-fast) var(--ease);
+}
+
+.mermaid-action-btn:hover {
+    background: rgba(var(--palette-blue-rgb), 0.22);
+    border-color: var(--md-blue);
+    transform: var(--hover-offset-sm);
+}
+
+.mermaid-action-btn:focus-visible {
+    outline: 2px solid var(--md-blue);
+    outline-offset: 2px;
+}
+
+.mermaid-action-btn.copied {
+    background: var(--md-teal);
+    border-color: var(--md-teal);
+}
+
+.mermaid-retry-render {
+    flex-shrink: 0;
+}
+
+.mermaid-canvas {
+    display: block;
+    padding: 16px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    background: var(--color-bg-surface);
+    color: var(--color-text-primary);
+    transition: background var(--duration-fast) var(--ease);
+}
+
+.mermaid-canvas:empty {
+    display: none;
+}
+
+.mermaid-canvas > .mermaid-render-output {
+    display: block;
+    height: auto;
+    margin: 0 auto;
+}
+
+.mermaid-canvas > .mermaid-render-output:not(svg) {
+    width: fit-content;
+}
+
+.mermaid-canvas > .mermaid-render-output svg,
+.mermaid-canvas > svg.mermaid-render-output {
+    display: block;
+    height: auto;
+}
+
+.mermaid-block[data-mermaid-theme-refreshing] .mermaid-canvas svg {
+    opacity: 0;
+}
+
+.mermaid-source-panel {
+    display: block;
+    padding: 16px;
+    border-top: 1px solid rgba(var(--color-bg-surface-rgb), 0.1);
+    background: rgba(var(--shadow-color-rgb), 0.2);
+    overflow-x: auto;
+}
+
+.mermaid-source-panel[hidden] {
+    display: none !important;
+}
+
+.mermaid-source-text {
+    display: block;
+    white-space: pre;
+    font-family: var(--font-mono);
+    font-size: var(--fs-md);
+    line-height: 1.6;
+    color: var(--color-text-inverse);
+}
+
+.mermaid-source-panel::-webkit-scrollbar,
+.mermaid-canvas::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+.mermaid-source-panel::-webkit-scrollbar-track,
+.mermaid-canvas::-webkit-scrollbar-track {
+    background: rgba(var(--shadow-color-rgb), 0.18);
+}
+
+.mermaid-source-panel::-webkit-scrollbar-thumb,
+.mermaid-canvas::-webkit-scrollbar-thumb {
+    background: rgba(var(--color-bg-surface-rgb), 0.24);
+    border-radius: var(--radius-full);
+}
+
+.mermaid-source-panel::-webkit-scrollbar-thumb:hover,
+.mermaid-canvas::-webkit-scrollbar-thumb:hover {
+    background: rgba(var(--color-bg-surface-rgb), 0.38);
+}
+
+@media (max-width: 768px) {
+    .mermaid-header,
+    .mermaid-status {
+        flex-wrap: wrap;
+        align-items: flex-start;
+    }
+
+    .mermaid-actions {
+        width: 100%;
+        justify-content: flex-start;
+        flex-wrap: wrap;
+    }
+
+    .mermaid-status {
+        gap: 10px;
+    }
+}

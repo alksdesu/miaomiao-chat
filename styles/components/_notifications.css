@@ -1,8 +1,8 @@
 /* ========== 通知 ========== */
 .notification {
     position: fixed;
-    top: 70px;
-    right: 20px;
+    top: calc(var(--notification-base-top, 70px) + var(--notification-offset, 0px));
+    right: calc(20px + var(--app-safe-right));
     /* 使用 CSS Grid 叠加：通知内容和关闭按钮占据同一网格单元 */
     display: grid;
     grid-template: 1fr / 1fr; /* 单行单列网格 */
@@ -12,14 +12,31 @@
     border: var(--border);
     box-shadow: var(--shadow-md);
     z-index: var(--z-notification);
-    font-family: var(--font-mono);
+    font-family: var(--font-sans);
     font-size: var(--fs-md);
     animation: slideInRight 0.3s var(--ease);
 }
 
 @keyframes slideInRight {
-    from { transform: translateX(100px); opacity: 0; }
-    to { transform: translateX(0); opacity: 1; }
+    from {
+        transform: translateX(100px);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+@keyframes slideOut {
+    from {
+        transform: translateX(0);
+        opacity: 1;
+    }
+    to {
+        transform: translateX(100px);
+        opacity: 0;
+    }
 }
 
 .notification-error {
@@ -39,8 +56,8 @@
     /* 使用 CSS Grid 叠加定位到右侧居中 */
     grid-row-start: 1;
     grid-column-start: 1;
-    justify-self: end;     /* 水平靠右 */
-    align-self: center;    /* 垂直居中 */
+    justify-self: end; /* 水平靠右 */
+    align-self: center; /* 垂直居中 */
     margin-right: 8px;
     width: 44px;
     height: 44px;
@@ -69,4 +86,3 @@
     outline: 2px solid var(--color-border-primary);
     outline-offset: 2px;
 }
-

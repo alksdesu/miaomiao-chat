@@ -4,7 +4,6 @@
  */
 
 const { exec } = require('child_process');
-const path = require('path');
 
 /**
  * 执行 Bash 命令

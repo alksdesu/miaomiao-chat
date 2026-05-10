@@ -3,7 +3,14 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const { pathToFileURL, fileURLToPath } = require('url');
-const { initUpdater, checkForUpdatesManually, setSilentUpdate, quitAndInstall } = require('./updater');
+const {
+    initUpdater,
+    bindUpdaterWindow,
+    checkForUpdatesManually,
+    setSilentUpdate,
+    downloadUpdate,
+    quitAndInstall
+} = require('./updater');
 const { mcpManager } = require('./mcp-manager');
 
 let mainWindow;
@@ -37,7 +44,10 @@ const VIDEO_MIME_TO_EXT = {
 };
 
 function getVideoMimeTypeByExtension(filePath) {
-    const ext = path.extname(filePath || '').replace('.', '').toLowerCase();
+    const ext = path
+        .extname(filePath || '')
+        .replace('.', '')
+        .toLowerCase();
     const extToMime = {
         mp4: 'video/mp4',
         webm: 'video/webm',
@@ -61,7 +71,9 @@ function isPathInsideDirectory(filePath, directoryPath) {
     if (!filePath || !directoryPath) return false;
     const normalizedFilePath = path.resolve(filePath);
     const normalizedDirectoryPath = path.resolve(directoryPath);
-    const compareDir = normalizedDirectoryPath.endsWith(path.sep) ? normalizedDirectoryPath : `${normalizedDirectoryPath}${path.sep}`;
+    const compareDir = normalizedDirectoryPath.endsWith(path.sep)
+        ? normalizedDirectoryPath
+        : `${normalizedDirectoryPath}${path.sep}`;
 
     if (process.platform === 'win32') {
         return normalizedFilePath.toLowerCase().startsWith(compareDir.toLowerCase());
@@ -80,7 +92,10 @@ function getVideoStorageCandidates() {
 
 async function ensureDirectoryWritable(directoryPath) {
     await fs.promises.mkdir(directoryPath, { recursive: true });
-    const testFile = path.join(directoryPath, `.write-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    const testFile = path.join(
+        directoryPath,
+        `.write-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    );
     await fs.promises.writeFile(testFile, 'ok');
     await fs.promises.unlink(testFile);
 }
@@ -115,7 +130,7 @@ function parseVideoDataUrl(dataUrl) {
 }
 
 function createWindow() {
-    mainWindow = new BrowserWindow({
+    const windowInstance = new BrowserWindow({
         width: 1200,
         height: 800,
         frame: false,
@@ -128,43 +143,76 @@ function createWindow() {
         icon: path.join(__dirname, '../assets/icon.png')
     });
 
+    mainWindow = windowInstance;
+    bindUpdaterWindow(windowInstance);
+
     // 去掉原生菜单栏
     Menu.setApplicationMenu(null);
 
     // 设置 CSP 响应头（在 Electron 中生效，包含 frame-ancestors）
     // 安全备注：connect-src 包含 http: 和 ws: 是因为用户可能使用本地 HTTP API 代理（如 localhost）
     // 如非必要，生产环境应收紧为仅 https: 和 wss:
-    mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+    windowInstance.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+        // chii 本地 HTTP server 的响应不加 CSP，否则 frame-ancestors 会阻止 iframe 嵌入
+        if (details.url.startsWith('http://127.0.0.1:')) {
+            callback({ responseHeaders: details.responseHeaders });
+            return;
+        }
         callback({
             responseHeaders: {
                 ...details.responseHeaders,
                 'Content-Security-Policy': [
                     "default-src 'self'; " +
-                    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; " +
-                    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
-                    "img-src 'self' data: blob: https: http:; " +
-                    "font-src 'self' data: https://fonts.gstatic.com; " +
-                    "connect-src 'self' https://api.openai.com https://api.anthropic.com https://generativelanguage.googleapis.com https://aiplatform.googleapis.com https: http: wss: ws:; " +
-                    "media-src 'self' data: blob: https: http: file:; " +
-                    "object-src 'none'; " +
-                    "base-uri 'self'; " +
-                    "form-action 'self'; " +
-                    "frame-ancestors 'none';"
+                        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net http://127.0.0.1:*; " +
+                        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com http://127.0.0.1:*; " +
+                        "img-src 'self' data: blob: https: http:; " +
+                        "font-src 'self' data: https://fonts.gstatic.com; " +
+                        "connect-src 'self' https://api.openai.com https://api.anthropic.com https://generativelanguage.googleapis.com https://aiplatform.googleapis.com https: http: wss: ws:; " +
+                        "media-src 'self' data: blob: https: http: file:; " +
+                        "frame-src 'self' file: http://127.0.0.1:*; " +
+                        "object-src 'none'; " +
+                        "base-uri 'self'; " +
+                        "form-action 'self'; " +
+                        "frame-ancestors 'none';"
                 ]
             }
         });
     });
 
-    mainWindow.loadFile('index.html');
+    windowInstance.loadFile('index.html');
 
-    // 开发模式：打开 DevTools
+    // 注册 DevTools 快捷键（Menu 被设为 null 后内置快捷键失效，需手动注册）
+    windowInstance.webContents.on('before-input-event', (event, input) => {
+        if (
+            input.key === 'F12' ||
+            (input.control && input.shift && input.key.toLowerCase() === 'i') ||
+            (input.meta && input.alt && input.key.toLowerCase() === 'i')
+        ) {
+            windowInstance.webContents.toggleDevTools();
+            event.preventDefault();
+        }
+    });
+
     if (process.env.NODE_ENV === 'development') {
-        mainWindow.webContents.openDevTools();
+        windowInstance.webContents.openDevTools();
     }
 
     // ✅ 安全：拦截外部链接，用系统默认浏览器打开
     // 防止点击消息中的超链接导致应用窗口导航离开
-    mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    windowInstance.webContents.setWindowOpenHandler(({ url }) => {
+        // 允许 Network 独立窗口
+        if (url.includes('network-window.html')) {
+            return {
+                action: 'allow',
+                overrideBrowserWindowOptions: {
+                    frame: false,
+                    webPreferences: {
+                        nodeIntegration: false,
+                        contextIsolation: true
+                    }
+                }
+            };
+        }
         if (isSafeExternalUrl(url)) {
             shell.openExternal(url);
         } else {
@@ -173,9 +221,9 @@ function createWindow() {
         return { action: 'deny' };
     });
 
-    mainWindow.webContents.on('will-navigate', (event, url) => {
+    windowInstance.webContents.on('will-navigate', (event, url) => {
         // 只允许加载应用自身的页面，外部链接用浏览器打开
-        if (url !== mainWindow.webContents.getURL()) {
+        if (url !== windowInstance.webContents.getURL()) {
             event.preventDefault();
             if (isSafeExternalUrl(url)) {
                 shell.openExternal(url);
@@ -185,12 +233,76 @@ function createWindow() {
         }
     });
 
-    mainWindow.on('closed', () => {
-        mainWindow = null;
+    windowInstance.on('closed', () => {
+        if (mainWindow === windowInstance) {
+            mainWindow = null;
+        }
+
+        bindUpdaterWindow(null);
     });
 }
 
-app.whenReady().then(() => {
+const http = require('http');
+
+let chiiPort = 0;
+
+function startChiiServer() {
+    return new Promise((resolve, reject) => {
+        let chiiDir = path.join(__dirname, '..', 'libs', 'chii');
+        // asar 打包后文件在 app.asar.unpacked 目录
+        if (chiiDir.includes('app.asar')) {
+            chiiDir = chiiDir.replace('app.asar', 'app.asar.unpacked');
+        }
+
+        // 检查目录是否存在
+        if (!fs.existsSync(chiiDir)) {
+            return reject(new Error(`chii directory not found: ${chiiDir}`));
+        }
+        const mimeTypes = {
+            '.html': 'text/html',
+            '.js': 'application/javascript',
+            '.css': 'text/css',
+            '.json': 'application/json',
+            '.png': 'image/png',
+            '.svg': 'image/svg+xml',
+            '.woff2': 'font/woff2',
+            '.woff': 'font/woff'
+        };
+        const server = http.createServer((req, res) => {
+            const urlPath = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+            const filePath = path.resolve(chiiDir, urlPath.replace(/^\//, ''));
+            if (!filePath.startsWith(chiiDir)) {
+                res.writeHead(403);
+                res.end();
+                return;
+            }
+            fs.readFile(filePath, (err, data) => {
+                if (err) {
+                    res.writeHead(404);
+                    res.end();
+                    return;
+                }
+                const ext = path.extname(filePath);
+                res.writeHead(200, {
+                    'Content-Type': mimeTypes[ext] || 'application/octet-stream'
+                });
+                res.end(data);
+            });
+        });
+        server.on('error', reject);
+        server.listen(0, '127.0.0.1', () => {
+            chiiPort = server.address().port;
+            resolve(chiiPort);
+        });
+    });
+}
+
+app.whenReady().then(async () => {
+    try {
+        await startChiiServer();
+    } catch (e) {
+        console.error('Chii server failed to start:', e);
+    }
     createWindow();
 
     let updaterInitialized = false;
@@ -274,24 +386,26 @@ ipcMain.handle('get-app-version', () => {
     return app.getVersion();
 });
 
+ipcMain.handle('get-chii-port', () => {
+    return chiiPort;
+});
+
 // ✅ IPC：下载更新（立刻更新）
 ipcMain.on('download-update', () => {
     console.log('[Main] 用户选择：立刻更新');
-    const { autoUpdater } = require('electron-updater');
-    autoUpdater.downloadUpdate();
+    downloadUpdate({ silent: false, triggerSource: 'renderer' });
 });
 
 // ✅ IPC：下载更新（静默模式）
 ipcMain.on('download-update-silent', () => {
     console.log('[Main] 用户选择：静默更新');
-    const { autoUpdater } = require('electron-updater');
-    autoUpdater.downloadUpdate();
+    downloadUpdate({ silent: true, triggerSource: 'renderer' });
 });
 
 // ✅ IPC：立即安装更新并重启
 ipcMain.on('install-update', () => {
     console.log('[Main] 用户选择：立即安装更新');
-    quitAndInstall();  // ✅ 调用 updater.js 的导出函数
+    quitAndInstall(); // ✅ 调用 updater.js 的导出函数
 });
 
 // ========== MCP IPC 处理器 ==========
@@ -300,8 +414,8 @@ function normalizeMcpTools(rawPayload) {
     const asArray = (value) => {
         if (Array.isArray(value)) return value;
         if (value && typeof value === 'object') {
-            const toolEntries = Object.entries(value).filter(([, tool]) =>
-                tool && typeof tool === 'object' && !Array.isArray(tool)
+            const toolEntries = Object.entries(value).filter(
+                ([, tool]) => tool && typeof tool === 'object' && !Array.isArray(tool)
             );
             if (toolEntries.length === 0) return [];
             return toolEntries.map(([name, tool]) => ({
@@ -325,12 +439,14 @@ function normalizeMcpTools(rawPayload) {
         const tools = asArray(candidate);
         if (tools.length > 0) {
             return tools
-                .map(tool => ({
+                .map((tool) => ({
                     ...tool,
                     name: tool?.name || tool?.id || '',
-                    inputSchema: tool?.inputSchema || tool?.input_schema || tool?.parameters || { type: 'object', properties: {} }
+                    inputSchema: tool?.inputSchema ||
+                        tool?.input_schema ||
+                        tool?.parameters || { type: 'object', properties: {} }
                 }))
-                .filter(tool => typeof tool.name === 'string' && tool.name.trim().length > 0);
+                .filter((tool) => typeof tool.name === 'string' && tool.name.trim().length > 0);
         }
     }
 
@@ -445,7 +561,10 @@ ipcMain.handle('mcp:store-video', async (event, payload = {}) => {
         }
 
         const directoryPath = await resolveVideoStorageDirectory();
-        const fileExtension = (extension || getVideoExtensionByMimeType(finalMimeType)).replace(/^\./, '');
+        const fileExtension = (extension || getVideoExtensionByMimeType(finalMimeType)).replace(
+            /^\./,
+            ''
+        );
         const fileName = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}.${fileExtension}`;
         const filePath = path.join(directoryPath, fileName);
 
@@ -479,15 +598,21 @@ ipcMain.handle('mcp:read-media-file', async (event, payload = {}) => {
 
         let filePath;
         try {
-            filePath = fileUrl.startsWith('file://') ? fileURLToPath(fileUrl) : path.resolve(fileUrl);
+            filePath = fileUrl.startsWith('file://')
+                ? fileURLToPath(fileUrl)
+                : path.resolve(fileUrl);
         } catch (error) {
             return { success: false, error: `无效 fileUrl: ${error.message}` };
         }
 
         const preferredDirectory = await resolveVideoStorageDirectory();
-        const allowedDirectories = Array.from(new Set([preferredDirectory, ...getVideoStorageCandidates()]));
+        const allowedDirectories = Array.from(
+            new Set([preferredDirectory, ...getVideoStorageCandidates()])
+        );
 
-        const isAllowed = allowedDirectories.some(directoryPath => isPathInsideDirectory(filePath, directoryPath));
+        const isAllowed = allowedDirectories.some((directoryPath) =>
+            isPathInsideDirectory(filePath, directoryPath)
+        );
         if (!isAllowed) {
             return { success: false, error: '拒绝访问非媒体目录文件' };
         }

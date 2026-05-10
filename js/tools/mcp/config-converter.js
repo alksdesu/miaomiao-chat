@@ -1,3 +1,4 @@
+import { logger } from '../../utils/logger.js';
 /**
  * MCP 配置格式转换器
  * 支持标准 MCP JSON 格式（Claude Desktop、Cursor 等）与内部格式的双向转换
@@ -22,7 +23,7 @@ export function standardToInternal(standardConfig) {
             const internalServer = convertSingleServer(serverName, config);
             servers.push(internalServer);
         } catch (error) {
-            console.warn(`[MCP Config] 跳过无效服务器 "${serverName}": ${error.message}`);
+            logger.warn(`[MCP Config] 跳过无效服务器 "${serverName}": ${error.message}`);
         }
     }
 
@@ -165,7 +166,7 @@ export function internalToStandard(internalServers) {
             const standardServer = convertToStandardFormat(server);
             standardConfig.mcpServers[serverName] = standardServer;
         } catch (error) {
-            console.warn(`[MCP Config] 跳过无效服务器 "${serverName}": ${error.message}`);
+            logger.warn(`[MCP Config] 跳过无效服务器 "${serverName}": ${error.message}`);
         }
     }
 
@@ -220,7 +221,7 @@ function convertToStandardFormat(server) {
             standardServer.headers = server.customHeaders;
         } else if (server.apiKey) {
             standardServer.headers = {
-                'Authorization': `Bearer ${server.apiKey}`
+                Authorization: `Bearer ${server.apiKey}`
             };
         }
     } else {
@@ -294,8 +295,13 @@ export function validateStandardConfig(config) {
         if (transportType === 'https') transportType = 'http';
         if (transportType === 'ws' || transportType === 'wss') transportType = 'websocket';
 
-        if (transportType && !['sse', 'streamable-http', 'http', 'websocket'].includes(transportType)) {
-            errors.push(`服务器 "${serverName}" 的传输类型 "${serverConfig.type}" 无效（支持: sse, streamable-http, http, websocket）`);
+        if (
+            transportType &&
+            !['sse', 'streamable-http', 'http', 'websocket'].includes(transportType)
+        ) {
+            errors.push(
+                `服务器 "${serverName}" 的传输类型 "${serverConfig.type}" 无效（支持: sse, streamable-http, http, websocket）`
+            );
         }
     }
 
@@ -312,13 +318,13 @@ export function validateStandardConfig(config) {
  */
 export function generateTemplate(templateName) {
     const templates = {
-        'empty': {
+        empty: {
             mcpServers: {}
         },
 
-        'filesystem': {
+        filesystem: {
             mcpServers: {
-                'filesystem': {
+                filesystem: {
                     command: 'npx',
                     args: ['-y', '@modelcontextprotocol/server-filesystem', '/path/to/directory'],
                     enabled: true
@@ -326,9 +332,9 @@ export function generateTemplate(templateName) {
             }
         },
 
-        'memory': {
+        memory: {
             mcpServers: {
-                'memory': {
+                memory: {
                     command: 'npx',
                     args: ['-y', '@modelcontextprotocol/server-memory'],
                     enabled: true
@@ -336,9 +342,9 @@ export function generateTemplate(templateName) {
             }
         },
 
-        'fetch': {
+        fetch: {
             mcpServers: {
-                'fetch': {
+                fetch: {
                     command: 'uvx',
                     args: ['mcp-server-fetch', '--ignore-robots-txt'],
                     enabled: true
@@ -346,9 +352,9 @@ export function generateTemplate(templateName) {
             }
         },
 
-        'sqlite': {
+        sqlite: {
             mcpServers: {
-                'sqlite': {
+                sqlite: {
                     command: 'uvx',
                     args: ['mcp-server-sqlite', '--db-path', '/path/to/database.db'],
                     enabled: true
@@ -356,26 +362,26 @@ export function generateTemplate(templateName) {
             }
         },
 
-        'github': {
+        github: {
             mcpServers: {
-                'github': {
+                github: {
                     command: 'npx',
                     args: ['-y', '@modelcontextprotocol/server-github'],
                     env: {
-                        'GITHUB_PERSONAL_ACCESS_TOKEN': 'your-token-here'
+                        GITHUB_PERSONAL_ACCESS_TOKEN: 'your-token-here'
                     },
                     enabled: true
                 }
             }
         },
 
-        'sse': {
+        sse: {
             mcpServers: {
                 'my-sse-server': {
                     type: 'sse',
                     url: 'http://localhost:8001/sse',
                     headers: {
-                        'Authorization': 'Bearer your-token-here'
+                        Authorization: 'Bearer your-token-here'
                     },
                     enabled: true
                 }
@@ -409,6 +415,10 @@ export function getAvailableTemplates() {
         { id: 'sqlite', name: 'SQLite (UVX)', description: 'SQLite 数据库服务器' },
         { id: 'github', name: 'GitHub (NPX)', description: 'GitHub API 服务器' },
         { id: 'sse', name: 'SSE 远程服务器', description: '使用 Server-Sent Events 的远程服务器' },
-        { id: 'streamable-http', name: 'Streamable HTTP 远程服务器', description: '使用 Streamable HTTP 的远程服务器' }
+        {
+            id: 'streamable-http',
+            name: 'Streamable HTTP 远程服务器',
+            description: '使用 Streamable HTTP 的远程服务器'
+        }
     ];
 }

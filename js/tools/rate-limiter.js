@@ -1,3 +1,4 @@
+import { logger } from '../utils/logger.js';
 /**
  * 工具速率限制器
  * 使用滑动窗口算法防止工具调用超过配置的速率限制
@@ -11,8 +12,8 @@
 // ========== 配置 ==========
 
 const TIME_UNITS = {
-    minute: 60 * 1000,      // 60秒
-    hour: 60 * 60 * 1000,   // 3600秒
+    minute: 60 * 1000, // 60秒
+    hour: 60 * 60 * 1000, // 3600秒
     day: 24 * 60 * 60 * 1000 // 86400秒
 };
 
@@ -42,7 +43,7 @@ export function checkRateLimit(toolId, rateLimit) {
     const windowMs = TIME_UNITS[unit];
 
     if (!windowMs) {
-        console.warn(`[RateLimiter] 未知的时间单位: ${unit}`);
+        logger.warn(`[RateLimiter] 未知的时间单位: ${unit}`);
         return;
     }
 
@@ -59,7 +60,7 @@ export function checkRateLimit(toolId, rateLimit) {
     const now = Date.now();
 
     // 清理过期的时间戳（滑动窗口）
-    store.timestamps = store.timestamps.filter(ts => now - ts < windowMs);
+    store.timestamps = store.timestamps.filter((ts) => now - ts < windowMs);
 
     // 检查是否超过限制
     if (store.timestamps.length >= max) {
@@ -67,22 +68,25 @@ export function checkRateLimit(toolId, rateLimit) {
         const waitTimeMs = windowMs - (now - oldestTimestamp);
         const waitTimeSec = Math.ceil(waitTimeMs / 1000);
 
-        const unitText = {
-            minute: '分钟',
-            hour: '小时',
-            day: '天'
-        }[unit] || unit;
+        const unitText =
+            {
+                minute: '分钟',
+                hour: '小时',
+                day: '天'
+            }[unit] || unit;
 
         throw new Error(
             `速率限制: 工具 "${toolId}" 在 1 ${unitText} 内最多调用 ${max} 次，` +
-            `请等待 ${waitTimeSec} 秒后重试`
+                `请等待 ${waitTimeSec} 秒后重试`
         );
     }
 
     // 记录此次调用
     store.timestamps.push(now);
 
-    console.log(`[RateLimiter] 工具 "${toolId}" 调用记录: ${store.timestamps.length}/${max} (${unit})`);
+    logger.debug(
+        `[RateLimiter] 工具 "${toolId}" 调用记录: ${store.timestamps.length}/${max} (${unit})`
+    );
 }
 
 /**
@@ -92,7 +96,7 @@ export function checkRateLimit(toolId, rateLimit) {
 export function resetRateLimit(toolId) {
     if (rateLimitStore.has(toolId)) {
         rateLimitStore.delete(toolId);
-        console.log(`[RateLimiter] 已重置工具 "${toolId}" 的速率限制`);
+        logger.debug(`[RateLimiter] 已重置工具 "${toolId}" 的速率限制`);
     }
 }
 
@@ -110,7 +114,7 @@ export function getRateLimitStatus(toolId) {
     const now = Date.now();
 
     // 清理过期的时间戳
-    store.timestamps = store.timestamps.filter(ts => now - ts < store.window);
+    store.timestamps = store.timestamps.filter((ts) => now - ts < store.window);
 
     if (store.timestamps.length === 0) {
         return {
@@ -138,7 +142,7 @@ export function getRateLimitStatus(toolId) {
 export function clearAllRateLimits() {
     const count = rateLimitStore.size;
     rateLimitStore.clear();
-    console.log(`[RateLimiter] 已清除 ${count} 个工具的速率限制数据`);
+    logger.debug(`[RateLimiter] 已清除 ${count} 个工具的速率限制数据`);
 }
 
 /**
@@ -169,11 +173,11 @@ function cleanupExpiredTimestamps() {
 
     for (const [toolId, store] of rateLimitStore) {
         const beforeCount = store.timestamps.length;
-        store.timestamps = store.timestamps.filter(ts => now - ts < store.window);
+        store.timestamps = store.timestamps.filter((ts) => now - ts < store.window);
         const afterCount = store.timestamps.length;
 
         if (beforeCount > afterCount) {
-            cleanedCount += (beforeCount - afterCount);
+            cleanedCount += beforeCount - afterCount;
         }
 
         // 如果清理后没有时间戳了，移除整个存储
@@ -183,7 +187,7 @@ function cleanupExpiredTimestamps() {
     }
 
     if (cleanedCount > 0) {
-        console.log(`[RateLimiter] 定时清理: 移除 ${cleanedCount} 个过期时间戳`);
+        logger.debug(`[RateLimiter] 定时清理: 移除 ${cleanedCount} 个过期时间戳`);
     }
 }
 
@@ -191,4 +195,4 @@ function cleanupExpiredTimestamps() {
 const CLEANUP_INTERVAL = 5 * 60 * 1000;
 setInterval(cleanupExpiredTimestamps, CLEANUP_INTERVAL);
 
-console.log('[RateLimiter] 速率限制器已初始化');
+logger.debug('[RateLimiter] 速率限制器已初始化');

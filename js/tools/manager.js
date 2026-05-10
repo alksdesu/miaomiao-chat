@@ -8,9 +8,7 @@
  * 发布事件:
  * - tool:registered { toolId, type }
  * - tool:enabled:changed { toolId, enabled }
- * - tools:added (触发保存)
  * - tools:updated (触发保存)
- * - tools:removed (触发保存)
  */
 
 import { eventBus } from '../core/events.js';
@@ -19,6 +17,7 @@ import { mcpClient } from './mcp/client.js';
 import { savePreference, loadPreference } from '../state/storage.js';
 import { state } from '../core/state.js';
 import { buildTool, buildToolFromLegacy } from './build-tool.js';
+import { logger } from '../utils/logger.js';
 
 // ========== 核心存储 ==========
 
@@ -62,7 +61,7 @@ function parseSavedToolStates(rawStates) {
         try {
             parsed = JSON.parse(rawStates);
         } catch (error) {
-            console.error('[Tools] 解析工具状态 JSON 失败:', error);
+            logger.error('[Tools] 解析工具状态 JSON 失败:', error);
             return null;
         }
     }
@@ -105,7 +104,7 @@ export function registerTool(tool) {
     const toolId = tool.id || tool.name;
 
     if (tools.has(toolId)) {
-        console.warn(`[Tools] 工具 "${toolId}" 已存在，将被覆盖`);
+        logger.warn(`[Tools] 工具 "${toolId}" 已存在，将被覆盖`);
     }
 
     // 确保 id 字段存在
@@ -118,10 +117,9 @@ export function registerTool(tool) {
     tools.set(toolId, tool);
     addToNameIndex(tool.name || toolId, toolId);
 
-    console.log(`[Tools] 已注册工具: ${toolId} (${tool.type})`);
+    logger.debug(`[Tools] 已注册工具: ${toolId} (${tool.type})`);
 
     eventBus.emit('tool:registered', { toolId, type: tool.type || 'builtin' });
-    eventBus.emit('tools:added', { toolId });
 }
 
 /**
@@ -176,10 +174,11 @@ export async function registerMCPTool(serverId, toolName, toolDefinition) {
     tools.set(toolId, tool);
     addToNameIndex(toolName, toolId);
 
-    console.log(`[Tools] 已注册 MCP 工具: ${toolId} (来自 ${serverId}), 状态: ${enabled ? '启用' : '禁用'}`);
+    logger.debug(
+        `[Tools] 已注册 MCP 工具: ${toolId} (来自 ${serverId}), 状态: ${enabled ? '启用' : '禁用'}`
+    );
 
     eventBus.emit('tool:registered', { toolId, type: 'mcp', serverId });
-    eventBus.emit('tools:added', { toolId });
 
     return toolId;
 }
@@ -198,25 +197,27 @@ export function registerCustomTool(toolConfig, skipSave = false) {
         id: toolId,
         name: toolConfig.name || toolId,
         description: toolConfig.description || '',
-        parameters: toolConfig.parameters || toolConfig.inputSchema || { type: 'object', properties: {} },
+        parameters: toolConfig.parameters ||
+            toolConfig.inputSchema || { type: 'object', properties: {} },
         type: 'custom',
         enabled: toolConfig.enabled !== false,
         call: async () => {
-            throw new Error(`自定义工具 "${toolConfig.name || toolId}" 无本地处理器，由 API 后端执行`);
+            throw new Error(
+                `自定义工具 "${toolConfig.name || toolId}" 无本地处理器，由 API 后端执行`
+            );
         }
     });
 
     tools.set(toolId, tool);
     addToNameIndex(tool.name || toolId, toolId);
 
-    console.log(`[Tools] 已注册自定义工具: ${toolId}`);
+    logger.debug(`[Tools] 已注册自定义工具: ${toolId}`);
 
     if (!skipSave) {
         saveCustomTools();
     }
 
     eventBus.emit('tool:registered', { toolId, type: 'custom' });
-    eventBus.emit('tools:added', { toolId });
 
     return toolId;
 }
@@ -236,7 +237,7 @@ export function getAllTools() {
  * @returns {Array}
  */
 export function getEnabledTools() {
-    return Array.from(tools.values()).filter(tool => tool.enabled === true);
+    return Array.from(tools.values()).filter((tool) => tool.enabled === true);
 }
 
 /**
@@ -249,10 +250,10 @@ export function getToolsForAPI(apiFormat) {
 
     // Computer Use 特殊处理
     if (apiFormat === 'claude' && !state.xmlToolCallingEnabled) {
-        enabledTools = enabledTools.filter(tool => tool.name !== 'computer');
+        enabledTools = enabledTools.filter((tool) => tool.name !== 'computer');
     } else if (apiFormat !== 'claude') {
         if (!state.computerUseEnabled) {
-            enabledTools = enabledTools.filter(tool => tool.name !== 'computer');
+            enabledTools = enabledTools.filter((tool) => tool.name !== 'computer');
         }
     }
 
@@ -267,7 +268,7 @@ export function getToolsForAPI(apiFormat) {
         case 'claude':
             return enabledTools.map(convertToClaudeFormat);
         default:
-            console.warn(`[Tools] 未知 API 格式: ${apiFormat}`);
+            logger.warn(`[Tools] 未知 API 格式: ${apiFormat}`);
             return [];
     }
 }
@@ -279,7 +280,7 @@ export function getToolsForAPI(apiFormat) {
  */
 export function getTool(toolId) {
     // 直接 ID 查找
-    let tool = tools.get(toolId);
+    const tool = tools.get(toolId);
     if (tool) return tool;
 
     // 名称索引查找（兼容 MCP 工具名与 ID 不一致的情况）
@@ -334,7 +335,9 @@ function convertToOpenAIFormat(tool) {
         function: {
             name: tool.name || tool.id,
             description: tool.description,
-            parameters: tool.parameters || tool.inputSchema || tool.input_schema || { type: 'object', properties: {} }
+            parameters: tool.parameters ||
+                tool.inputSchema ||
+                tool.input_schema || { type: 'object', properties: {} }
         }
     };
 }
@@ -344,12 +347,16 @@ function convertToResponsesFormat(tool) {
         type: 'function',
         name: tool.name || tool.id,
         description: tool.description,
-        parameters: tool.parameters || tool.inputSchema || tool.input_schema || { type: 'object', properties: {} }
+        parameters: tool.parameters ||
+            tool.inputSchema ||
+            tool.input_schema || { type: 'object', properties: {} }
     };
 }
 
 function convertToGeminiFormat(tool) {
-    const schema = tool.parameters || tool.inputSchema || tool.input_schema || { type: 'object', properties: {} };
+    const schema = tool.parameters ||
+        tool.inputSchema ||
+        tool.input_schema || { type: 'object', properties: {} };
     return {
         name: tool.name || tool.id,
         description: tool.description,
@@ -364,13 +371,14 @@ function cleanSchemaForGemini(schema) {
 
     for (const combiner of ['anyOf', 'oneOf']) {
         if (Array.isArray(cleaned[combiner]) && cleaned[combiner].length > 0) {
-            const candidates = cleaned[combiner].filter(s => s && s.type !== 'null');
+            const candidates = cleaned[combiner].filter((s) => s && s.type !== 'null');
             if (candidates.length > 0) {
                 const first = candidates[0];
                 if (first.type && !cleaned.type) cleaned.type = first.type;
                 if (first.properties && !cleaned.properties) cleaned.properties = first.properties;
                 if (first.items && !cleaned.items) cleaned.items = first.items;
-                if (first.description && !cleaned.description) cleaned.description = first.description;
+                if (first.description && !cleaned.description)
+                    cleaned.description = first.description;
             }
             delete cleaned[combiner];
         }
@@ -380,7 +388,8 @@ function cleanSchemaForGemini(schema) {
         for (const sub of cleaned.allOf) {
             if (sub && typeof sub === 'object') {
                 if (sub.type && !cleaned.type) cleaned.type = sub.type;
-                if (sub.properties) cleaned.properties = { ...(cleaned.properties || {}), ...sub.properties };
+                if (sub.properties)
+                    cleaned.properties = { ...(cleaned.properties || {}), ...sub.properties };
                 if (sub.required && Array.isArray(sub.required)) {
                     cleaned.required = [...new Set([...(cleaned.required || []), ...sub.required])];
                 }
@@ -390,14 +399,25 @@ function cleanSchemaForGemini(schema) {
     }
 
     const unsupportedFields = [
-        '$schema', 'additionalProperties', 'title', 'examples', 'default',
-        '$defs', 'definitions', 'patternProperties', 'dependencies', 'not'
+        '$schema',
+        'additionalProperties',
+        'title',
+        'examples',
+        'default',
+        '$defs',
+        'definitions',
+        'patternProperties',
+        'dependencies',
+        'not'
     ];
     for (const field of unsupportedFields) delete cleaned[field];
 
     if (cleaned.properties && typeof cleaned.properties === 'object') {
         cleaned.properties = Object.fromEntries(
-            Object.entries(cleaned.properties).map(([key, value]) => [key, cleanSchemaForGemini(value)])
+            Object.entries(cleaned.properties).map(([key, value]) => [
+                key,
+                cleanSchemaForGemini(value)
+            ])
         );
     }
     if (cleaned.items && typeof cleaned.items === 'object') {
@@ -408,7 +428,9 @@ function cleanSchemaForGemini(schema) {
 }
 
 function convertToClaudeFormat(tool) {
-    const schema = tool.input_schema || tool.inputSchema || tool.parameters || { type: 'object', properties: {} };
+    const schema = tool.input_schema ||
+        tool.inputSchema ||
+        tool.parameters || { type: 'object', properties: {} };
     return {
         name: tool.name || tool.id,
         description: tool.description,
@@ -426,14 +448,14 @@ function convertToClaudeFormat(tool) {
 export function setToolEnabled(toolId, enabled) {
     const tool = tools.get(toolId);
     if (!tool) {
-        console.warn(`[Tools] 工具不存在: ${toolId}`);
+        logger.warn(`[Tools] 工具不存在: ${toolId}`);
         return;
     }
 
     const normalizedEnabled = normalizeToolEnabledValue(enabled);
     tool.enabled = normalizedEnabled;
 
-    console.log(`[Tools] 工具 "${toolId}" 已${normalizedEnabled ? '启用' : '禁用'}`);
+    logger.debug(`[Tools] 工具 "${toolId}" 已${normalizedEnabled ? '启用' : '禁用'}`);
 
     eventBus.emit('tool:enabled:changed', { toolId, enabled: normalizedEnabled });
     eventBus.emit('tools:updated', { toolId });
@@ -458,24 +480,23 @@ export function isToolEnabled(toolId) {
 export function removeTool(toolId) {
     const tool = tools.get(toolId);
     if (!tool) {
-        console.warn(`[Tools] 工具不存在: ${toolId}`);
+        logger.warn(`[Tools] 工具不存在: ${toolId}`);
         return;
     }
 
     if (tool.type === 'builtin') {
-        console.warn(`[Tools] 无法移除内置工具: ${toolId}`);
+        logger.warn(`[Tools] 无法移除内置工具: ${toolId}`);
         return;
     }
 
     if (tool.name) removeFromNameIndex(tool.name, toolId);
     tools.delete(toolId);
 
-    console.log(`[Tools] 已移除工具: ${toolId}`);
+    logger.debug(`[Tools] 已移除工具: ${toolId}`);
 
     if (tool.type === 'custom') saveCustomTools();
 
     eventBus.emit('tool:removed', { toolId });
-    eventBus.emit('tools:removed', { toolId });
 }
 
 /**
@@ -484,19 +505,21 @@ export function removeTool(toolId) {
  */
 export async function clearMCPTools(serverId) {
     const mcpTools = Array.from(tools.values()).filter(
-        tool => tool.type === 'mcp' && tool.serverId === serverId
+        (tool) => tool.type === 'mcp' && tool.serverId === serverId
     );
 
     // 先禁用再清除
-    mcpTools.forEach(tool => { tool.enabled = false; });
+    mcpTools.forEach((tool) => {
+        tool.enabled = false;
+    });
     await saveToolStates();
 
-    mcpTools.forEach(tool => {
+    mcpTools.forEach((tool) => {
         if (tool.name) removeFromNameIndex(tool.name, tool.id);
         tools.delete(tool.id);
     });
 
-    console.log(`[Tools] 已清空 MCP 服务器 "${serverId}" 的 ${mcpTools.length} 个工具`);
+    logger.debug(`[Tools] 已清空 MCP 服务器 "${serverId}" 的 ${mcpTools.length} 个工具`);
     eventBus.emit('tool:enabled:changed', {});
 }
 
@@ -504,14 +527,14 @@ export async function clearMCPTools(serverId) {
 
 export function getToolStats() {
     const allTools = Array.from(tools.values());
-    const visibleTools = allTools.filter(t => !t.hidden);
+    const visibleTools = allTools.filter((t) => !t.hidden);
 
     return {
         total: visibleTools.length,
-        enabled: visibleTools.filter(t => t.enabled).length,
-        builtin: visibleTools.filter(t => t.type === 'builtin').length,
-        mcp: visibleTools.filter(t => t.type === 'mcp').length,
-        custom: visibleTools.filter(t => t.type === 'custom').length
+        enabled: visibleTools.filter((t) => t.enabled).length,
+        builtin: visibleTools.filter((t) => t.type === 'builtin').length,
+        mcp: visibleTools.filter((t) => t.type === 'mcp').length,
+        custom: visibleTools.filter((t) => t.type === 'custom').length
     };
 }
 
@@ -532,20 +555,20 @@ export async function cleanupExpiredToolStates() {
 
         if (cleanedCount > 0) {
             await savePreference('toolsEnabled', JSON.stringify(savedStates));
-            console.log(`[Tools] 已清理 ${cleanedCount} 个过期工具状态`);
+            logger.debug(`[Tools] 已清理 ${cleanedCount} 个过期工具状态`);
         }
     } catch (error) {
-        console.error('[Tools] 清理过期工具状态失败:', error);
+        logger.error('[Tools] 清理过期工具状态失败:', error);
     }
 }
 
 export function debugTools() {
-    console.log('工具管理器状态:');
-    console.log(getToolStats());
-    console.log('已注册工具:');
+    logger.debug('工具管理器状态:');
+    logger.debug(getToolStats());
+    logger.debug('已注册工具:');
 
     tools.forEach((tool, id) => {
-        console.log(`  ${tool.enabled ? '✅' : '⭕'} [${tool.type}] ${id} - ${tool.description}`);
+        logger.debug(`  ${tool.enabled ? '✅' : '⭕'} [${tool.type}] ${id} - ${tool.description}`);
     });
 }
 
@@ -554,9 +577,9 @@ export function debugTools() {
 export async function syncMCPTools(serverId) {
     // 清理该服务器旧工具（保留状态到 _preloadedStates）
     const oldTools = Array.from(tools.values()).filter(
-        tool => tool.type === 'mcp' && tool.serverId === serverId
+        (tool) => tool.type === 'mcp' && tool.serverId === serverId
     );
-    oldTools.forEach(tool => {
+    oldTools.forEach((tool) => {
         // 保存当前状态到预加载缓存
         _preloadedStates.set(tool.id, tool.enabled);
         if (tool.name) removeFromNameIndex(tool.name, tool.id);
@@ -570,7 +593,7 @@ export async function syncMCPTools(serverId) {
         await registerMCPTool(serverId, tool.name, tool.mcpDefinition);
     }
 
-    console.log(`[Tools] 已同步 ${mcpTools.length} 个工具 (MCP 服务器: ${serverId})`);
+    logger.debug(`[Tools] 已同步 ${mcpTools.length} 个工具 (MCP 服务器: ${serverId})`);
 
     // 同步后恢复持久化状态
     const toolsWithSavedState = new Set();
@@ -591,12 +614,12 @@ export async function syncMCPTools(serverId) {
                 }
             }
             if (restoredCount > 0) {
-                console.log(`[Tools] 额外恢复了 ${restoredCount} 个工具状态`);
+                logger.debug(`[Tools] 额外恢复了 ${restoredCount} 个工具状态`);
                 eventBus.emit('tool:enabled:changed', {});
             }
         }
     } catch (error) {
-        console.error('[Tools] 恢复 MCP 工具状态失败:', error);
+        logger.error('[Tools] 恢复 MCP 工具状态失败:', error);
     }
 
     // 自动启用该服务器的新工具（跳过已有持久化状态的工具）
@@ -611,7 +634,7 @@ export async function syncMCPTools(serverId) {
         }
     }
     if (autoEnabledCount > 0) {
-        console.log(`[Tools] 自动启用 ${autoEnabledCount} 个 MCP 工具 (${serverId})`);
+        logger.debug(`[Tools] 自动启用 ${autoEnabledCount} 个 MCP 工具 (${serverId})`);
         await saveToolStates();
     }
 
@@ -626,12 +649,12 @@ export function getMCPToolHandler(toolId) {
 
 // MCP 事件监听
 eventBus.on('mcp:tools-discovered', async ({ serverId, tools: discoveredTools }) => {
-    console.log(`[Tools] 检测到 MCP 工具发现: ${serverId} (${discoveredTools.length} 个)`);
+    logger.debug(`[Tools] 检测到 MCP 工具发现: ${serverId} (${discoveredTools.length} 个)`);
     await syncMCPTools(serverId);
 });
 
 eventBus.on('mcp:disconnected', async ({ serverId }) => {
-    console.log(`[Tools] MCP 断开连接: ${serverId}`);
+    logger.debug(`[Tools] MCP 断开连接: ${serverId}`);
     await clearMCPTools(serverId);
 });
 
@@ -642,7 +665,7 @@ async function loadSavedToolStates() {
         const statesRaw = await loadPreference('toolsEnabled');
         return parseSavedToolStates(statesRaw);
     } catch (error) {
-        console.error('[Tools] 读取工具状态失败:', error);
+        logger.error('[Tools] 读取工具状态失败:', error);
         return null;
     }
 }
@@ -657,7 +680,7 @@ async function saveToolStates() {
 
         await savePreference('toolsEnabled', JSON.stringify(states));
     } catch (error) {
-        console.error('[Tools] 保存工具状态失败:', error);
+        logger.error('[Tools] 保存工具状态失败:', error);
     }
 }
 
@@ -688,12 +711,12 @@ export async function loadToolStates(includeUnregistered = false) {
             }
         }
 
-        console.log(`[Tools] 已恢复 ${restoredCount} 个工具状态`);
+        logger.debug(`[Tools] 已恢复 ${restoredCount} 个工具状态`);
         if (unregisteredCount > 0) {
-            console.log(`[Tools] 预加载了 ${unregisteredCount} 个未注册工具的状态`);
+            logger.debug(`[Tools] 预加载了 ${unregisteredCount} 个未注册工具的状态`);
         }
     } catch (error) {
-        console.error('[Tools] 加载工具状态失败:', error);
+        logger.error('[Tools] 加载工具状态失败:', error);
     }
 }
 
@@ -716,7 +739,7 @@ export async function saveCustomTools() {
 
         await savePreference('customTools', JSON.stringify(customTools));
     } catch (error) {
-        console.error('[Tools] 保存自定义工具失败:', error);
+        logger.error('[Tools] 保存自定义工具失败:', error);
     }
 }
 
@@ -733,8 +756,8 @@ export async function loadCustomTools() {
             loadedCount++;
         }
 
-        console.log(`[Tools] 已加载 ${loadedCount} 个自定义工具`);
+        logger.debug(`[Tools] 已加载 ${loadedCount} 个自定义工具`);
     } catch (error) {
-        console.error('[Tools] 加载自定义工具失败:', error);
+        logger.error('[Tools] 加载自定义工具失败:', error);
     }
 }

@@ -1,0 +1,374 @@
+/* 主题编辑器 Modal */
+.theme-editor-modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-modal);
+    align-items: center;
+    justify-content: center;
+    background: var(--overlay-backdrop);
+}
+
+.theme-editor-content {
+    width: 90vw;
+    max-width: 560px;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--color-bg-surface);
+    border: var(--border);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-lg);
+    overflow: hidden;
+}
+
+/* 头部 */
+.theme-editor-header {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    grid-template-rows: auto auto;
+    align-items: center;
+    gap: var(--sp-2) var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+    border-bottom: var(--border-thin);
+}
+
+.theme-editor-header h2 {
+    font-size: var(--fs-lg);
+    font-weight: 700;
+    margin: 0;
+    white-space: nowrap;
+    grid-column: 1;
+    grid-row: 1;
+}
+
+.theme-editor-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    grid-column: 1 / -1;
+    grid-row: 2;
+    flex-wrap: wrap;
+}
+
+.close-theme-editor {
+    grid-column: 3;
+    grid-row: 1;
+}
+
+#theme-preset-select {
+    flex: 1;
+    min-width: 100px;
+    max-width: 200px;
+    padding: var(--sp-1) var(--sp-2);
+    border: 1px solid var(--color-border-secondary);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-input);
+    color: var(--color-text-primary);
+    font-size: var(--fs-sm);
+    font-family: var(--font-sans);
+}
+
+.theme-editor-actions button {
+    padding: var(--sp-1) var(--sp-3);
+    border: 1px solid var(--color-border-secondary);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-elevated);
+    color: var(--color-text-primary);
+    font-size: var(--fs-xs);
+    font-family: var(--font-sans);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background var(--duration-fast) var(--ease);
+}
+
+.theme-editor-actions button:hover {
+    background: var(--color-bg-accent);
+    color: var(--color-text-inverse);
+}
+
+.theme-editor-actions button.danger {
+    color: var(--md-coral);
+}
+
+.theme-editor-actions button.danger:hover {
+    background: var(--md-coral);
+    color: var(--color-text-inverse);
+}
+
+.close-theme-editor {
+    padding: var(--sp-1) var(--sp-2);
+    border: none;
+    background: none;
+    color: var(--color-text-muted);
+    font-size: var(--fs-xl);
+    cursor: pointer;
+    line-height: 1;
+    justify-self: end;
+}
+
+.close-theme-editor:hover {
+    color: var(--color-text-primary);
+}
+
+/* Tab 导航 */
+.theme-editor-tabs {
+    display: flex;
+    border-bottom: var(--border-thin);
+    overflow-x: auto;
+    scrollbar-width: none;
+    flex-shrink: 0;
+}
+
+.theme-editor-tabs::-webkit-scrollbar {
+    display: none;
+}
+
+.theme-editor-tabs button {
+    flex: 1;
+    padding: var(--sp-3) var(--sp-4);
+    border: none;
+    background: none;
+    color: var(--color-text-secondary);
+    font-size: var(--fs-sm);
+    font-family: var(--font-sans);
+    cursor: pointer;
+    white-space: nowrap;
+    border-bottom: 2px solid transparent;
+    transition: all var(--duration-fast) var(--ease);
+}
+
+.theme-editor-tabs button:hover {
+    color: var(--color-text-primary);
+    background: rgba(var(--color-text-primary-rgb), 0.05);
+}
+
+.theme-editor-tabs button.active {
+    color: var(--md-blue);
+    border-bottom-color: var(--md-blue);
+    font-weight: 600;
+}
+
+/* 内容区 */
+.theme-editor-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: var(--sp-4) var(--sp-5);
+}
+
+/* 属性分组 */
+.theme-prop-section {
+    margin-bottom: var(--sp-5);
+}
+
+.theme-prop-section-title {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--color-text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin: 0 0 var(--sp-3) 0;
+    padding-bottom: var(--sp-2);
+    border-bottom: 1px solid var(--color-border-secondary);
+}
+
+/* 属性行 */
+.theme-prop-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    padding: var(--sp-2) 0;
+    min-height: 32px;
+}
+
+.theme-prop-label {
+    flex: 1;
+    font-size: var(--fs-sm);
+    color: var(--color-text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* 颜色色块 */
+.color-swatch {
+    width: 28px;
+    height: 28px;
+    border: var(--border-thin);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    flex-shrink: 0;
+    padding: 0;
+    transition:
+        transform var(--duration-fast) var(--ease),
+        box-shadow var(--duration-fast) var(--ease);
+}
+
+.color-swatch:hover {
+    transform: scale(1.15);
+    box-shadow: 0 0 0 2px var(--color-focus);
+}
+
+.theme-prop-value {
+    font-size: var(--fs-xs);
+    font-family: var(--font-mono);
+    color: var(--color-text-muted);
+    min-width: 60px;
+    text-align: right;
+}
+
+/* 输入框 */
+.theme-prop-input {
+    padding: var(--sp-1) var(--sp-2);
+    border: 1px solid var(--color-border-secondary);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-input);
+    color: var(--color-text-primary);
+    font-size: var(--fs-sm);
+    font-family: var(--font-sans);
+}
+
+.theme-prop-input:focus {
+    outline: none;
+    border-color: var(--color-focus);
+}
+
+.theme-font-input {
+    flex: 2;
+    min-width: 0;
+}
+
+.theme-size-input {
+    width: 64px;
+    text-align: center;
+    font-family: var(--font-mono);
+    -moz-appearance: textfield;
+    appearance: textfield;
+}
+
+.theme-size-input::-webkit-outer-spin-button,
+.theme-size-input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.theme-prop-unit {
+    font-size: var(--fs-xs);
+    color: var(--color-text-muted);
+    min-width: 16px;
+}
+
+/* 重置按钮 */
+.theme-prop-reset {
+    border: none;
+    background: none;
+    color: var(--color-text-muted);
+    font-size: var(--fs-md);
+    cursor: pointer;
+    padding: var(--sp-1);
+    line-height: 1;
+    flex-shrink: 0;
+    opacity: 0.5;
+    transition: opacity var(--duration-fast) var(--ease);
+}
+
+.theme-prop-reset:hover {
+    opacity: 1;
+    color: var(--md-coral);
+}
+
+/* 自定义 CSS 编辑器 */
+.theme-css-editor {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 300px;
+}
+
+.theme-css-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-3);
+    margin-bottom: var(--sp-3);
+}
+
+.theme-css-hint {
+    font-size: var(--fs-xs);
+    color: var(--color-text-muted);
+    margin: 0;
+}
+
+.theme-css-template-btn {
+    padding: var(--sp-1) var(--sp-3);
+    border: 1px solid var(--color-border-secondary);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-elevated);
+    color: var(--md-blue);
+    font-size: var(--fs-xs);
+    font-family: var(--font-sans);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background var(--duration-fast) var(--ease);
+}
+
+.theme-css-template-btn:hover {
+    background: var(--md-blue);
+    color: var(--color-text-inverse);
+}
+
+.theme-css-textarea {
+    flex: 1;
+    min-height: 250px;
+    padding: var(--sp-4);
+    border: 1px solid var(--color-border-secondary);
+    border-radius: var(--radius-md);
+    background: var(--color-bg-code);
+    color: var(--color-text-primary);
+    font-family: var(--font-mono);
+    font-size: var(--fs-sm);
+    line-height: 1.6;
+    resize: vertical;
+    tab-size: 2;
+}
+
+.theme-css-textarea:focus {
+    outline: none;
+    border-color: var(--color-focus);
+}
+
+/* 移动端适配 */
+@media (max-width: 768px) {
+    .theme-editor-content {
+        width: 100vw;
+        max-width: none;
+        max-height: 100vh;
+        border-radius: 0;
+        height: 100vh;
+    }
+
+    .theme-editor-header {
+        padding: var(--sp-3);
+    }
+
+    .theme-editor-actions {
+        order: 3;
+        width: 100%;
+    }
+
+    #theme-preset-select {
+        max-width: none;
+    }
+
+    .theme-editor-body {
+        padding: var(--sp-3);
+    }
+
+    .theme-prop-row {
+        flex-wrap: wrap;
+    }
+
+    .theme-prop-label {
+        min-width: 80px;
+    }
+}

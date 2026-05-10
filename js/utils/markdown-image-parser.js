@@ -47,8 +47,8 @@ export function parseMarkdownImages(text) {
         }
 
         // 添加图片
-        const altText = match[1];  // 图片的 alt 文本
-        const dataUrl = match[2];  // data URL
+        const altText = match[1]; // 图片的 alt 文本
+        const dataUrl = match[2]; // data URL
 
         parts.push({
             type: 'image_url',
@@ -96,7 +96,6 @@ export function parseStreamingMarkdownImages(chunk, buffer = '') {
     const parts = [];
     let lastIndex = 0;
     let match;
-    const hasIncompleteImage = false;
 
     while ((match = imageRegex.exec(fullText)) !== null) {
         // 添加图片前的文本

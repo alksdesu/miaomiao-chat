@@ -65,20 +65,20 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 16px 20px;
+    padding: calc(16px + var(--app-safe-top)) 20px 16px;
     background: var(--md-teal);
     border-bottom: var(--border);
 }
 
 .settings-header h2 {
-    font-family: var(--font-mono);
+    font-family: var(--font-ui-accent);
     font-size: var(--fs-xl);
     font-weight: 600;
     color: var(--color-text-primary);
 }
 
 .close-settings-btn {
-    width: 44px;  /* WCAG触摸目标最小尺寸 */
+    width: 44px; /* WCAG触摸目标最小尺寸 */
     height: 44px;
     border: var(--border);
     background: var(--color-bg-surface);
@@ -108,7 +108,11 @@
         radial-gradient(farthest-side at 50% 100%, var(--scroll-shadow-color), transparent) 0 100%;
     background-repeat: no-repeat;
     background-color: var(--color-bg-primary);
-    background-size: 100% 40px, 100% 40px, 100% 14px, 100% 14px;
+    background-size:
+        100% 40px,
+        100% 40px,
+        100% 14px,
+        100% 14px;
     background-attachment: local, local, scroll, scroll;
 }
 
@@ -116,50 +120,39 @@
     margin-bottom: 20px;
     padding: 16px;
     border-radius: 4px;
-    background: rgba(255, 255, 255, 0.3);
-    border: 1px solid rgba(56, 56, 56, 0.1);
+    background: var(--color-bg-settings-group);
+    border: 1px solid var(--color-border-settings-group);
     transition: all 0.3s ease;
     position: relative;
 }
 
 .settings-group:hover {
-    background: rgba(255, 255, 255, 0.5);
-    border-color: rgba(56, 56, 56, 0.2);
+    background: var(--color-bg-settings-group-hover);
+    border-color: var(--color-border-settings-group-hover);
     transform: translateX(-2px);
 }
 
-/* 暗色主题适配 */
-.dark-theme .settings-group {
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.dark-theme .settings-group:hover {
-    background: rgba(255, 255, 255, 0.08);
-    border-color: rgba(255, 255, 255, 0.15);
-}
-
 /* 交替配色方案 - 使用不同颜色区分设置组 */
-.settings-group:nth-child(4n+1) {
+.settings-group:nth-child(4n + 1) {
     border-left: 3px solid var(--md-blue);
 }
 
-.settings-group:nth-child(4n+2) {
+.settings-group:nth-child(4n + 2) {
     border-left: 3px solid var(--md-orange);
 }
 
-.settings-group:nth-child(4n+3) {
+.settings-group:nth-child(4n + 3) {
     border-left: 3px solid var(--md-teal);
 }
 
-.settings-group:nth-child(4n+4) {
+.settings-group:nth-child(4n + 4) {
     border-left: 3px solid var(--md-coral);
 }
 
 .settings-label {
     display: flex;
     align-items: center;
-    font-family: var(--font-mono);
+    font-family: var(--font-ui-accent);
     font-size: var(--fs-base);
     font-weight: 600;
     color: var(--md-muted);
@@ -180,19 +173,19 @@
 }
 
 /* 不同设置组的标签颜色 */
-.settings-group:nth-child(4n+1) .settings-label {
+.settings-group:nth-child(4n + 1) .settings-label {
     color: var(--md-blue);
 }
 
-.settings-group:nth-child(4n+2) .settings-label {
+.settings-group:nth-child(4n + 2) .settings-label {
     color: var(--md-orange);
 }
 
-.settings-group:nth-child(4n+3) .settings-label {
+.settings-group:nth-child(4n + 3) .settings-label {
     color: var(--md-teal);
 }
 
-.settings-group:nth-child(4n+4) .settings-label {
+.settings-group:nth-child(4n + 4) .settings-label {
     color: var(--md-coral);
 }
 
@@ -215,7 +208,7 @@
     border: var(--border);
     background: var(--color-bg-surface);
     color: var(--color-text-primary);
-    font-family: var(--font-mono);
+    font-family: var(--font-ui-accent);
     font-size: var(--fs-md);
     cursor: pointer;
 }
@@ -244,18 +237,18 @@
 }
 
 /* 表单验证状态 */
-.settings-input[aria-invalid="true"],
+.settings-input[aria-invalid='true'],
 .settings-input.error {
     border-color: var(--md-coral);
-    background: rgba(255, 113, 105, 0.1);
+    background: rgba(var(--palette-coral-rgb), 0.1);
 }
 
-.settings-input[aria-invalid="true"]:focus,
+.settings-input[aria-invalid='true']:focus,
 .settings-input.error:focus {
     outline-color: var(--md-coral);
 }
 
-.settings-input[aria-invalid="false"],
+.settings-input[aria-invalid='false'],
 .settings-input.valid {
     border-color: var(--md-teal);
 }
@@ -278,8 +271,8 @@
     /* 使用 CSS Grid 叠加定位到右侧 */
     grid-row-start: 1;
     grid-column-start: 1;
-    justify-self: end;     /* 水平靠右 */
-    align-self: stretch;   /* 垂直拉伸填满 */
+    justify-self: end; /* 水平靠右 */
+    align-self: stretch; /* 垂直拉伸填满 */
     width: 36px;
     background: var(--color-bg-primary);
     border: var(--border);
@@ -321,7 +314,7 @@
     padding: 4px 8px;
     background: var(--md-coral);
     border: var(--border);
-    font-family: var(--font-mono);
+    font-family: var(--font-sans);
     font-size: var(--fs-sm);
     color: var(--color-text-primary);
 }
@@ -337,7 +330,7 @@
     padding: 4px 8px;
     background: var(--md-teal);
     border: var(--border);
-    font-family: var(--font-mono);
+    font-family: var(--font-sans);
     font-size: var(--fs-sm);
     color: var(--color-text-primary);
 }
@@ -347,7 +340,7 @@
 }
 
 .settings-icon-btn {
-    width: 44px;  /* WCAG触摸目标最小尺寸 */
+    width: 44px; /* WCAG触摸目标最小尺寸 */
     height: 44px;
     border: var(--border);
     background: var(--color-bg-surface);
@@ -428,7 +421,7 @@
     border: none;
     background: transparent;
     color: var(--md-muted);
-    font-family: var(--font-mono);
+    font-family: var(--font-ui-accent);
     font-size: var(--fs-md);
     font-weight: 500;
     cursor: pointer;
@@ -457,10 +450,10 @@
     }
 
     /* 覆盖 nth-child 的 3px border-left */
-    .settings-group:nth-child(4n+1),
-    .settings-group:nth-child(4n+2),
-    .settings-group:nth-child(4n+3),
-    .settings-group:nth-child(4n+4) {
+    .settings-group:nth-child(4n + 1),
+    .settings-group:nth-child(4n + 2),
+    .settings-group:nth-child(4n + 3),
+    .settings-group:nth-child(4n + 4) {
         border-left-width: 2px;
     }
 
@@ -534,4 +527,3 @@
         transform: rotate(180deg);
     }
 }
-

@@ -6,9 +6,11 @@
 import { state } from '../core/state.js';
 import { elements } from '../core/elements.js';
 import { eventBus } from '../core/events.js';
+import { setUploadedImages, setEditingElement, setEditingIndex } from '../core/state-mutations.js';
 import { toggleSettings } from './settings.js';
 import { toggleSidebar } from './sidebar.js';
 import { closeImageViewer } from './viewer.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * 取消编辑（通过全局访问）
@@ -21,11 +23,12 @@ function cancelEdit() {
     if (elements.userInput.style) {
         elements.userInput.style.height = 'auto';
     }
-    state.uploadedImages = [];
+    setUploadedImages([]);
 
     // 更新图片预览
     const previewContainer = document.getElementById('image-preview-container');
     if (previewContainer) {
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
         previewContainer.innerHTML = '';
         previewContainer.classList.remove('has-images');
     }
@@ -33,9 +36,9 @@ function cancelEdit() {
     // 重置编辑状态
     if (state.editingElement) {
         state.editingElement.classList.remove('editing');
-        state.editingElement = null;
+        setEditingElement(null);
     }
-    state.editingIndex = null;
+    setEditingIndex(null);
 
     // 隐藏保存和取消按钮
     const cancelBtn = document.getElementById('cancel-edit');
@@ -80,5 +83,5 @@ export function initKeyboard() {
         }
     });
 
-    console.log('Keyboard shortcuts initialized');
+    logger.debug('Keyboard shortcuts initialized');
 }

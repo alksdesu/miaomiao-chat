@@ -1,0 +1,14 @@
+node_modules
+electron
+dist
+android
+www
+.git
+.github
+.vscode
+docs
+scripts
+resources
+*.md
+*.log
+*.lock

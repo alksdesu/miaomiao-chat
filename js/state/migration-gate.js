@@ -10,9 +10,13 @@ import { SCHEMA_VERSION } from '../messages/schema.js';
 import { migrateSession, validateMigration } from '../messages/migration.js';
 import { validateMessages } from '../messages/schema.js';
 import {
-    loadAllSessionsFromDB, loadSessionMessages, saveSessionMessages,
-    savePreference, loadPreference,
+    loadAllSessionsFromDB,
+    loadSessionMessages,
+    saveSessionMessages,
+    savePreference,
+    loadPreference
 } from './storage.js';
+import { logger } from '../utils/logger.js';
 
 const PREF_KEY = 'message_schema_version';
 const LOCK_NAME = 'webchat-schema-migration';
@@ -40,10 +44,12 @@ export async function runMigrationIfNeeded() {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 30000);
         try {
-            return await navigator.locks.request(LOCK_NAME, { signal: controller.signal }, () => doMigration(result));
+            return await navigator.locks.request(LOCK_NAME, { signal: controller.signal }, () =>
+                doMigration(result)
+            );
         } catch (e) {
             if (e.name === 'AbortError') {
-                console.warn('[migration-gate] 等待锁超时（30s），直接执行迁移');
+                logger.warn('[migration-gate] 等待锁超时（30s），直接执行迁移');
                 return doMigration(result);
             }
             throw e;
@@ -70,14 +76,16 @@ async function doMigration(result) {
     try {
         sessions = await loadAllSessionsFromDB();
     } catch (err) {
-        console.error('[migration-gate] 无法加载会话列表:', err);
+        logger.error('[migration-gate] 无法加载会话列表:', err);
         result.errors.push({ sessionId: null, error: err.message });
         return result;
     }
 
     if (!sessions || sessions.length === 0) {
-        try { await savePreference(PREF_KEY, SCHEMA_VERSION); } catch (e) {
-            console.warn('[migration-gate] 版本号保存失败:', e);
+        try {
+            await savePreference(PREF_KEY, SCHEMA_VERSION);
+        } catch (e) {
+            logger.warn('[migration-gate] 版本号保存失败:', e);
         }
         return result;
     }
@@ -97,7 +105,10 @@ async function doMigration(result) {
             let msgData = await loadSessionMessages(session.id);
 
             // 兼容 v3 未迁移数据：messages store 为空时回退到 session._pendingMessages
-            if ((!msgData || !msgData.messages || msgData.messages.length === 0) && session._pendingMessages) {
+            if (
+                (!msgData || !msgData.messages || msgData.messages.length === 0) &&
+                session._pendingMessages
+            ) {
                 msgData = { messages: session._pendingMessages };
             }
 
@@ -112,27 +123,29 @@ async function doMigration(result) {
             const migrated = migrateSession(
                 msgData.messages,
                 msgData.geminiContents || [],
-                msgData.claudeContents || [],
+                msgData.claudeContents || []
             );
 
             const countCheck = validateMigration(
                 msgData.messages.length,
                 migrated.messages.length,
-                migrated.toolMsgCount,
+                migrated.toolMsgCount
             );
 
             if (!countCheck.valid) {
-                console.warn(`[migration-gate] 会话 ${session.id} 数量校验失败:`, countCheck.error);
+                logger.warn(`[migration-gate] 会话 ${session.id} 数量校验失败:`, countCheck.error);
             }
 
             const validation = validateMessages(migrated.messages);
             if (!validation.valid) {
-                console.warn(`[migration-gate] 会话 ${session.id} 有 ${validation.errors.length} 条消息校验警告`);
+                logger.warn(
+                    `[migration-gate] 会话 ${session.id} 有 ${validation.errors.length} 条消息校验警告`
+                );
                 // 校验 warning 记录但不阻止版本号更新
             }
 
             await saveSessionMessages(session.id, {
-                messages: migrated.messages,
+                messages: migrated.messages
             });
 
             result.count++;
@@ -140,16 +153,15 @@ async function doMigration(result) {
             if (migrated.errors.length > 0) {
                 result.errors.push({
                     sessionId: session.id,
-                    errors: migrated.errors,
+                    errors: migrated.errors
                 });
                 // migrateSession 的错误是降级处理（createFallbackMessage），不是致命错误
             }
 
             // 每个会话后让出主线程
             await yieldToMain();
-
         } catch (err) {
-            console.error(`[migration-gate] 会话 ${session.id} 迁移失败:`, err);
+            logger.error(`[migration-gate] 会话 ${session.id} 迁移失败:`, err);
             result.errors.push({ sessionId: session.id, error: err.message });
             fatalErrors++;
         }
@@ -161,27 +173,30 @@ async function doMigration(result) {
         try {
             await savePreference(PREF_KEY, SCHEMA_VERSION);
         } catch (e) {
-            console.warn('[migration-gate] 版本号保存失败，下次启动将重新迁移:', e);
+            logger.warn('[migration-gate] 版本号保存失败，下次启动将重新迁移:', e);
         }
     } else {
-        console.warn(`[migration-gate] ${fatalErrors} 个会话迁移失败，不更新版本号，下次启动将重试`);
+        logger.warn(`[migration-gate] ${fatalErrors} 个会话迁移失败，不更新版本号，下次启动将重试`);
     }
 
     overlay.remove();
 
     result.migrated = true;
-    console.log(`[migration-gate] 迁移完成: ${result.count}/${total} 个会话，${result.errors.length} 个错误`);
+    logger.debug(
+        `[migration-gate] 迁移完成: ${result.count}/${total} 个会话，${result.errors.length} 个错误`
+    );
 
     return result;
 }
 
 function yieldToMain() {
-    return new Promise(resolve => setTimeout(resolve, 0));
+    return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 function createProgressOverlay() {
     const overlay = document.createElement('div');
     overlay.id = 'migration-overlay';
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     overlay.innerHTML = `
         <style>
             #migration-overlay {
@@ -192,7 +207,7 @@ function createProgressOverlay() {
                 align-items: center;
                 justify-content: center;
                 background: rgba(0, 0, 0, 0.85);
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', '微软雅黑', sans-serif;
             }
             #migration-overlay .migration-card {
                 background: #1a1a2e;

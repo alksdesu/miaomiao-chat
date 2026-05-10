@@ -1,19 +1,63 @@
 /**
  * 主题切换功能
- * 管理明暗主题
+ * 管理明暗主题，集成主题引擎
  */
 
 import { elements } from '../core/elements.js';
+import { eventBus } from '../core/events.js';
 import { state } from '../core/state.js';
-// 新增：IndexedDB 偏好设置 API
 import { savePreference } from '../state/storage.js';
+import {
+    applyTheme as applyCustomTheme,
+    restoreThemeFromCache,
+    getActiveThemeId,
+    getBuiltinTheme,
+    resetTheme,
+    cacheThemeToLocalStorage
+} from './theme-engine.js';
+import { loadTheme as loadThemeFromStore } from '../state/theme-storage.js';
+import { updateVisibleMermaidTheme } from '../utils/mermaid.js';
+import { logger } from '../utils/logger.js';
 
-function applyTheme(theme) {
-    if (theme === 'light') {
-        document.documentElement.classList.remove('dark-theme');
-        return;
-    }
-    document.documentElement.classList.add('dark-theme');
+let mermaidThemeRefreshTaskId = 0;
+
+function enqueueMicrotask(task) {
+    Promise.resolve().then(task);
+}
+
+function getAppliedTheme() {
+    return document.documentElement.classList.contains('dark-theme') ? 'dark' : 'light';
+}
+
+function scheduleMermaidThemeRefresh(expectedTheme) {
+    mermaidThemeRefreshTaskId += 1;
+    const taskId = mermaidThemeRefreshTaskId;
+
+    enqueueMicrotask(async () => {
+        try {
+            const { failedCount } = await updateVisibleMermaidTheme();
+            if (taskId !== mermaidThemeRefreshTaskId || expectedTheme !== getAppliedTheme()) {
+                return;
+            }
+
+            if (failedCount > 0) {
+                eventBus.emit('ui:notification', {
+                    message: '部分 Mermaid 图表主题更新失败',
+                    type: 'warning'
+                });
+            }
+        } catch (error) {
+            if (taskId !== mermaidThemeRefreshTaskId || expectedTheme !== getAppliedTheme()) {
+                return;
+            }
+
+            logger.error('Mermaid 主题刷新失败:', error);
+            eventBus.emit('ui:notification', {
+                message: 'Mermaid 图表主题刷新失败',
+                type: 'warning'
+            });
+        }
+    });
 }
 
 function getSystemTheme() {
@@ -27,57 +71,100 @@ function getSystemTheme() {
 export async function toggleTheme() {
     const html = document.documentElement;
     const isDark = html.classList.contains('dark-theme');
+    const newBase = isDark ? 'light' : 'dark';
 
-    // 启用过渡动画
     html.classList.add('theme-transition');
+    setTimeout(() => html.classList.remove('theme-transition'), 300);
 
-    const newTheme = isDark ? 'light' : 'dark';
-
-    applyTheme(newTheme);
-    localStorage.setItem('theme', newTheme);
-
-    // 保存主题到存储
-    try {
-        if (state.storageMode !== 'localStorage') {
-            await savePreference('theme', newTheme);
+    const activeId = getActiveThemeId();
+    if (activeId && !activeId.startsWith('__')) {
+        // 自定义主题：从存储加载完整数据，切换 base 后重新 apply
+        try {
+            const theme = await loadThemeFromStore(activeId);
+            if (theme) {
+                theme.base = newBase;
+                await applyCustomTheme(theme, { skipMermaid: true });
+                cacheThemeToLocalStorage(theme);
+            } else {
+                await applyCustomTheme({ base: newBase });
+            }
+        } catch {
+            await applyCustomTheme({ base: newBase });
         }
-    } catch (error) {
-        console.error('保存主题失败:', error);
+        localStorage.setItem('theme', newBase);
+    } else if (activeId && activeId.startsWith('__')) {
+        // 内置预设：切换到对应 base 的内置预设
+        const preset = getBuiltinTheme(newBase === 'dark' ? '__dark__' : '__light__');
+        resetTheme();
+        cacheThemeToLocalStorage(preset);
+        await applyCustomTheme(preset);
+    } else {
+        // 无自定义主题
+        await applyCustomTheme({ base: newBase });
+        localStorage.setItem('theme', newBase);
     }
 
-    // 过渡结束后移除过渡类，避免其他样式变化触发不必要的动画
-    setTimeout(() => {
-        html.classList.remove('theme-transition');
-    }, 300);
+    try {
+        if (state.storageMode !== 'localStorage') {
+            await savePreference('theme', newBase);
+        }
+    } catch (error) {
+        logger.error('保存主题失败:', error);
+    }
+
+    scheduleMermaidThemeRefresh(newBase);
 }
 
 /**
- * 加载保存的主题设置（同步函数，在 IndexedDB 初始化前调用）
+ * 加载保存的主题设置（同步，在 IndexedDB 初始化前调用）
  */
 export function loadTheme() {
     const savedTheme = localStorage.getItem('theme');
-    if (savedTheme === 'light' || savedTheme === 'dark') {
-        applyTheme(savedTheme);
-        return;
-    }
+    const theme = savedTheme === 'light' || savedTheme === 'dark' ? savedTheme : getSystemTheme();
 
-    applyTheme(getSystemTheme());
+    // 同步设 base class（防 FOUC）
+    document.documentElement.classList.toggle('dark-theme', theme !== 'light');
+
+    // 同步恢复自定义主题缓存
+    restoreThemeFromCache();
+
+    // 异步刷新 Mermaid（不阻塞首屏）
+    scheduleMermaidThemeRefresh(theme);
+    eventBus.emit('ui:theme-applied', { theme, themeId: getActiveThemeId() });
 }
 
 /**
  * 初始化主题切换
  */
 export function initTheming() {
-    // 绑定主题切换按钮
     elements.themeToggle?.addEventListener('click', toggleTheme);
 
-    // 未设置显式偏好时，跟随系统主题变化
     const media = window.matchMedia?.('(prefers-color-scheme: light)');
     media?.addEventListener?.('change', () => {
         const savedTheme = localStorage.getItem('theme');
         if (savedTheme === 'light' || savedTheme === 'dark') return;
-        applyTheme(getSystemTheme());
+
+        applyCustomTheme({ base: getSystemTheme() })
+            .then(() => {
+                scheduleMermaidThemeRefresh(getSystemTheme());
+            })
+            .catch((e) => {
+                logger.error('系统主题切换失败:', e);
+            });
     });
 
-    console.log('Theme toggle initialized');
+    // 跨标签页主题同步：监听 localStorage 变更
+    window.addEventListener('storage', (e) => {
+        if (e.key === 'activeThemeCache' || e.key === 'theme') {
+            const savedTheme = localStorage.getItem('theme');
+            if (savedTheme === 'light' || savedTheme === 'dark') {
+                document.documentElement.classList.toggle('dark-theme', savedTheme === 'dark');
+            }
+            resetTheme();
+            restoreThemeFromCache();
+            scheduleMermaidThemeRefresh(getAppliedTheme());
+        }
+    });
+
+    logger.debug('主题切换已初始化');
 }

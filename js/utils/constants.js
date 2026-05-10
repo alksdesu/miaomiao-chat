@@ -11,7 +11,7 @@ export const MAX_FILE_SIZE = 20 * 1024 * 1024;
 export const API_FILE_SIZE_LIMITS = {
     gemini: 20 * 1024 * 1024,
     openai: 20 * 1024 * 1024,
-    claude: 20 * 1024 * 1024,
+    claude: 20 * 1024 * 1024
 };
 
 // ========== 消息限制 ==========
@@ -26,7 +26,7 @@ export const MAX_MARKDOWN_LENGTH = 100000;
 export const MAX_ATTACHMENTS = 10;
 
 /** 自动转换为文档的 token 阈值 */
-export const AUTO_DOCUMENT_TOKEN_THRESHOLD = 5000;
+export const AUTO_DOCUMENT_TOKEN_THRESHOLD = 30000;
 
 // ========== 超时 ==========
 

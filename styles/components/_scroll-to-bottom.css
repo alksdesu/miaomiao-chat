@@ -47,8 +47,13 @@
 }
 
 @keyframes bounce-arrow {
-    0%, 100% { transform: translateY(0); }
-    50% { transform: translateY(3px); }
+    0%,
+    100% {
+        transform: translateY(0);
+    }
+    50% {
+        transform: translateY(3px);
+    }
 }
 
 /* 移动端调整 */
@@ -60,4 +65,3 @@
         right: 12px;
     }
 }
-

@@ -6,7 +6,7 @@
  *
  * 设计决策：
  * - 单层 Proxy（非递归），避免 Map/Set/Array 内部操作误触发
- * - 事件名与 state-mutations.js 一致：state:{key} + state:property-changed
+ * - 事件名：state:{key}（如 state:isLoading）
  * - batch() 支持批量更新合并事件
  */
 
@@ -31,6 +31,12 @@ const _rawState = {
     currentAbortController: null, // 用于取消当前请求
     requestTimeout: 300000, // 请求超时时间（毫秒），默认 5 分钟
 
+    // 工具调用续传状态
+    isToolCallPending: false, // 工具正在执行中
+    isSavingContinuation: false, // 正在保存 continuation 消息
+    isToolCallContinuation: false, // 下次 sendToAPI 复用消息元素
+    toolCallContinuationElement: null, // 要复用的消息 DOM 元素
+
     // 图片处理
     imageBuffers: new Map(), // 存储正在接收的图片分块数据
     imageIdCounter: 0,
@@ -40,6 +46,11 @@ const _rawState = {
     imageSize: '2K', // '2K' | '4K'
     fastImageCompression: false, // 高速压缩模式（512px 超级压缩）
     pdfMode: 'standard', // PDF 处理模式: 'standard' | 'compat' | 'render'
+
+    // 图片压缩重试状态
+    isImageCompressionRetry: false, // 下次 sendToAPI 以重试模式运行
+    imageRetryMessageElement: null, // 重试时复用的消息 DOM 元素
+    _imageCompressionRetried: false, // 防止无限重试的标记
 
     // 消息编辑
     lastUserMessage: null,
@@ -68,9 +79,9 @@ const _rawState = {
     customHeaders: [],
 
     // 提供商管理
-    providers: [],                    // 提供商列表
-    currentProviderId: null,          // 当前使用的提供商 ID
-    selectedModel: '',                // 当前选中的模型ID（从下拉列表）
+    providers: [], // 提供商列表
+    currentProviderId: null, // 当前使用的提供商 ID
+    selectedModel: '', // 当前选中的模型ID（从下拉列表）
 
     // 模型参数
     modelParams: {
@@ -85,7 +96,7 @@ const _rawState = {
             temperature: null,
             maxOutputTokens: null,
             topP: null,
-            topK: null,
+            topK: null
         },
         claude: {
             temperature: null,
@@ -100,42 +111,47 @@ const _rawState = {
     thinkingEnabled: false,
     thinkingStrength: 'high', // 'low' | 'medium' | 'high' | 'custom'
     thinkingBudget: 32768,
-    thinkingNoneMode: false,  // 关闭时是否发送 none（Responses API 模式）
-    claudeAdaptiveThinking: false, // Claude 4.6 adaptive thinking 模式
-    claudeEffortLevel: 'high', // Claude adaptive effort: 'low' | 'medium' | 'high'
+    thinkingNoneMode: false, // 关闭时是否发送 none（Responses API 模式）
+    claudeAdaptiveThinking: false, // Claude adaptive thinking 模式
+    claudeEffortLevel: 'high', // Claude adaptive effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+    claudeShowThinking: true, // 是否显式请求返回思考摘要（display: summarized）
     webSearchEnabled: false,
+    monitorEnabled: false,
     geminiApiKeyInHeader: false,
     prefillEnabled: true,
 
     // 输出详细度配置
-    verbosityEnabled: false,  // 是否启用输出详细度控制
-    outputVerbosity: 'medium',  // 'low' | 'medium' | 'high'
+    verbosityEnabled: false, // 是否启用输出详细度控制
+    outputVerbosity: 'medium', // 'low' | 'medium' | 'high'
 
     // Code Execution 开关
-    codeExecutionEnabled: false,  // 代码执行功能（支持 Gemini、OpenAI、Claude）
+    codeExecutionEnabled: false, // 代码执行功能（支持 Gemini、OpenAI、Claude）
 
     // Computer Use 开关和配置（仅 Electron 环境）
-    computerUseEnabled: false,  // 计算机控制功能（仅 Claude + Electron）
+    computerUseEnabled: false, // 计算机控制功能（仅 Claude + Electron）
     computerUsePermissions: {
-        mouse: true,        // 允许鼠标控制
-        keyboard: true,     // 允许键盘控制
-        screenshot: true,   // 允许屏幕截图
-        bash: true,         // 允许执行 Bash 命令
-        textEditor: true    // 允许编辑文件
+        mouse: true, // 允许鼠标控制
+        keyboard: true, // 允许键盘控制
+        screenshot: true, // 允许屏幕截图
+        bash: true, // 允许执行 Bash 命令
+        textEditor: true // 允许编辑文件
     },
     bashConfig: {
-        workingDirectory: '',  // 默认工作目录（空表示应用根目录）
-        timeout: 30,           // 超时时间（秒）
-        requireConfirmation: true   // 是否需要用户确认
+        workingDirectory: '', // 默认工作目录（空表示应用根目录）
+        timeout: 30, // 超时时间（秒）
+        requireConfirmation: true // 是否需要用户确认
     },
 
     // 工具调用兜底
-    xmlToolCallingEnabled: false,  // XML 工具调用兜底（兼容不支持原生 tools 的后端）
+    xmlToolCallingEnabled: false, // XML 工具调用兜底（兼容不支持原生 tools 的后端）
 
     // 配置管理
     savedConfigs: [],
     currentConfigName: '',
     pendingModelSelection: null,
+
+    // 文件夹管理
+    folders: [],
 
     // 会话管理
     sessions: [],
@@ -149,16 +165,16 @@ const _rawState = {
     selectedReplyIndex: 0,
 
     // 工具调用历史
-    toolCallHistory: [],           // 工具调用历史记录
-    maxToolHistorySize: 100,       // 最大历史记录数
-    toolHistoryEnabled: true,      // 是否启用历史记录
+    toolCallHistory: [], // 工具调用历史记录
+    maxToolHistorySize: 100, // 最大历史记录数
+    toolHistoryEnabled: true, // 是否启用历史记录
 
     // 工具调用权限
     toolPermissions: {
-        enabled: false,            // 是否启用权限系统
-        mode: 'whitelist',         // 'whitelist' | 'blacklist'
-        whitelist: [],             // 白名单（仅允许列表中的工具）
-        blacklist: [],             // 黑名单（禁止列表中的工具）
+        enabled: false, // 是否启用权限系统
+        mode: 'whitelist', // 'whitelist' | 'blacklist'
+        whitelist: [], // 白名单（仅允许列表中的工具）
+        blacklist: [], // 黑名单（禁止列表中的工具）
         requireConfirmation: false // 是否需要用户确认
     },
 
@@ -190,6 +206,10 @@ const _rawState = {
     savedGeminiPartsPresets: [],
     currentGeminiPartsPresetName: '',
 
+    // 统一预设系统
+    prefillPresets: [],
+    activePrefillPresetId: null,
+
     // 防抖控制
     isSending: false,
     sendLockTimeout: null,
@@ -199,8 +219,8 @@ const _rawState = {
     quickMessagesCategories: ['常用', '问候', '告别'],
 
     // MCP 配置（Model Context Protocol）
-    mcpServers: [],      // MCP 服务器列表
-    tools: []            // 工具列表（内置 + MCP + 自定义）
+    mcpServers: [], // MCP 服务器列表
+    tools: [] // 工具列表（内置 + MCP + 自定义）
 };
 
 // ========== Proxy 响应式包装 ==========
@@ -214,7 +234,6 @@ let _batchedChanges = [];
  */
 function _emitChange(key, oldValue, newValue) {
     eventBus.emit(`state:${String(key)}`, { oldValue, newValue });
-    eventBus.emit('state:property-changed', { key: String(key), oldValue, newValue });
 }
 
 /**
@@ -259,7 +278,10 @@ export const state = new Proxy(_rawState, {
 // 重新导出 elements（便于其他模块导入）
 export { elements } from './elements.js';
 
-// 获取当前状态
+/**
+ * 获取当前状态对象引用
+ * @returns {Object} 响应式 state 对象
+ */
 export const getState = () => state;
 
 /**

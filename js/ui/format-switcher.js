@@ -7,7 +7,8 @@ import { state } from '../core/state.js';
 import { elements } from '../core/elements.js';
 import { saveCurrentConfig } from '../state/config.js';
 import { populateModelSelect } from './models.js';
-import { rebuildMessageIdMap } from '../core/state-mutations.js';
+import { rebuildMessageIdMap, setApiFormat as setStateApiFormat } from '../core/state-mutations.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * 切换 API 格式
@@ -17,15 +18,15 @@ import { rebuildMessageIdMap } from '../core/state-mutations.js';
 export function setApiFormat(format, shouldFetchModels = true) {
     // 验证格式有效性（支持 openai-responses）
     if (!['openai', 'openai-responses', 'gemini', 'claude', 'openclaw'].includes(format)) {
-        console.warn(`无效的 API 格式: ${format}`);
+        logger.warn(`无效的 API 格式: ${format}`);
         return;
     }
 
     const oldFormat = state.apiFormat;
-    state.apiFormat = format;
+    setStateApiFormat(format);
 
     // 更新配置面板显示：只显示当前格式对应的配置面板
-    document.querySelectorAll('.api-config').forEach(panel => {
+    document.querySelectorAll('.api-config').forEach((panel) => {
         panel.style.display = 'none';
     });
     const configPanel = document.getElementById(`${format}-config`);
@@ -44,7 +45,7 @@ export function setApiFormat(format, shouldFetchModels = true) {
     // 如果有历史消息，从旧格式转换到新格式
     if (hasHistory) {
         rebuildMessageIdMap();
-        console.log(`消息已从 ${oldFormat} 格式转换`);
+        logger.debug(`消息已从 ${oldFormat} 格式转换`);
     }
 
     // 显示/隐藏 Gemini 图片配置 (兼容旧 UI)
@@ -86,5 +87,5 @@ export function initFormatSwitcher() {
         });
     });
 
-    console.log('Format switcher initialized');
+    logger.debug('Format switcher initialized');
 }

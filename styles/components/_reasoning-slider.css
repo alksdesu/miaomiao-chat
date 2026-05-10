@@ -7,17 +7,17 @@
 
 .strength-btn {
     flex: 1;
-    padding: 8px 8px;  /* 减小内边距以适应更多按钮 */
+    padding: 8px 8px; /* 减小内边距以适应更多按钮 */
     border: 2px solid var(--md-border);
     background: var(--md-surface);
     color: var(--md-muted);
-    font-family: var(--font-mono);
+    font-family: var(--font-ui-accent);
     font-size: var(--fs-base);
     font-weight: 500;
     cursor: pointer;
     border-radius: 4px;
     transition: all 0.15s var(--ease);
-    min-width: 0;  /* 允许按钮缩小 */
+    min-width: 0; /* 允许按钮缩小 */
 }
 
 .strength-btn:hover {
@@ -72,4 +72,3 @@
     color: var(--md-muted);
     white-space: nowrap;
 }
-

@@ -5,12 +5,37 @@
 
 import { state } from '../core/state.js';
 import { elements } from '../core/elements.js';
-import { saveCurrentConfig, syncUIWithState, saveSavedConfigs, applyConfigToState, buildConfigObject } from '../state/config.js';
+import {
+    saveCurrentConfig,
+    syncUIWithState,
+    saveSavedConfigs,
+    applyConfigToState,
+    buildConfigObject
+} from '../state/config.js';
 import { eventBus } from '../core/events.js';
+import {
+    setThinkingEnabled,
+    setThinkingBudget,
+    setThinkingStrength,
+    setClaudeAdaptiveThinking,
+    setClaudeEffortLevel,
+    setClaudeShowThinking,
+    setCurrentConfigName,
+    setImageSize,
+    setGeminiApiKeyInHeader,
+    setStreamEnabled,
+    setWebSearchEnabled,
+    setXmlToolCallingEnabled,
+    setReplyCount,
+    setThinkingNoneMode,
+    setVerbosityEnabled,
+    setOutputVerbosity
+} from '../core/state-mutations.js';
 import { syncQuickToggles } from './quick-toggles.js';
 import { showNotification } from './notifications.js';
 import { showInputDialog, showConfirmDialog } from '../utils/dialogs.js';
 import { getIcon } from '../utils/icons.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * 初始化三格式端点输入监听
@@ -18,7 +43,7 @@ import { getIcon } from '../utils/icons.js';
 export function initEndpointInputListeners() {
     const formats = ['openai', 'gemini', 'claude'];
 
-    formats.forEach(format => {
+    formats.forEach((format) => {
         const endpointInput = document.getElementById(`${format}-endpoint`);
         const apikeyInput = document.getElementById(`${format}-apikey`);
         const customModelInput = document.getElementById(`${format}-custom-model`);
@@ -44,9 +69,11 @@ export function initEndpointInputListeners() {
 
                 // 新逻辑：直接刷新模型列表（从提供商聚合）
                 if (format === state.apiFormat) {
-                    import('../ui/models.js').then(({ populateModelSelect }) => {
-                        populateModelSelect();
-                    }).catch(err => console.warn('Failed to refresh model list:', err));
+                    import('../ui/models.js')
+                        .then(({ populateModelSelect }) => {
+                            populateModelSelect();
+                        })
+                        .catch((err) => logger.warn('Failed to refresh model list:', err));
                 }
 
                 saveCurrentConfig();
@@ -62,17 +89,17 @@ export function initEndpointInputListeners() {
  * 通用参数映射表（填一次，同步到所有格式）
  */
 const UNIVERSAL_PARAMS = {
-    'temperature': {
+    temperature: {
         openai: 'temperature',
         gemini: 'temperature',
         claude: 'temperature'
     },
-    'max_tokens': {
+    max_tokens: {
         openai: 'max_tokens',
         gemini: 'maxOutputTokens',
         claude: 'max_tokens'
     },
-    'top_p': {
+    top_p: {
         openai: 'top_p',
         gemini: 'topP',
         claude: 'top_p'
@@ -127,9 +154,10 @@ function syncUniversalParams() {
 
     Object.entries(UNIVERSAL_PARAMS).forEach(([paramName, mapping]) => {
         // 查找第一个非空值
-        const value = state.modelParams.openai[mapping.openai]
-            ?? state.modelParams.gemini[mapping.gemini]
-            ?? state.modelParams.claude[mapping.claude];
+        const value =
+            state.modelParams.openai[mapping.openai] ??
+            state.modelParams.gemini[mapping.gemini] ??
+            state.modelParams.claude[mapping.claude];
 
         if (value !== null && value !== undefined) {
             // 检查是否需要同步
@@ -144,7 +172,7 @@ function syncUniversalParams() {
                 state.modelParams.gemini[mapping.gemini] = value;
                 state.modelParams.claude[mapping.claude] = value;
                 synced = true;
-                console.log(`[Config] 初始化时同步通用参数 ${paramName}: ${value}`);
+                logger.debug(`[Config] 初始化时同步通用参数 ${paramName}: ${value}`);
             }
         }
     });
@@ -172,7 +200,7 @@ function setupParamListeners(format, paramsMap) {
 
                 // 检查是否为通用参数（需要同步到所有格式）
                 const universalParam = Object.keys(UNIVERSAL_PARAMS).find(
-                    key => UNIVERSAL_PARAMS[key][format] === paramKey
+                    (key) => UNIVERSAL_PARAMS[key][format] === paramKey
                 );
 
                 if (universalParam) {
@@ -182,11 +210,13 @@ function setupParamListeners(format, paramsMap) {
                     state.modelParams.gemini[mapping.gemini] = numValue;
                     state.modelParams.claude[mapping.claude] = numValue;
 
-                    console.log(`[Config] 通用参数 ${universalParam} 已同步到所有格式: ${numValue}`);
+                    logger.debug(
+                        `[Config] 通用参数 ${universalParam} 已同步到所有格式: ${numValue}`
+                    );
                 } else {
                     // 📌 特殊参数：仅更新当前格式
                     state.modelParams[format][paramKey] = numValue;
-                    console.log(`[Config] ${format} 特殊参数 ${paramKey} 已更新: ${numValue}`);
+                    logger.debug(`[Config] ${format} 特殊参数 ${paramKey} 已更新: ${numValue}`);
                 }
 
                 saveCurrentConfig();
@@ -224,7 +254,7 @@ export function initThinkingControls() {
         updateBudgetInputVisibility();
 
         thinkingEnabled.addEventListener('change', (e) => {
-            state.thinkingEnabled = e.target.checked;
+            setThinkingEnabled(e.target.checked);
             if (thinkingStrengthGroup) {
                 thinkingStrengthGroup.style.display = e.target.checked ? 'flex' : 'none';
             }
@@ -243,7 +273,7 @@ export function initThinkingControls() {
         budgetInput.addEventListener('change', (e) => {
             const value = parseInt(e.target.value, 10);
             if (value >= 1024 && value <= 131072) {
-                state.thinkingBudget = value;
+                setThinkingBudget(value);
                 saveCurrentConfig();
             } else {
                 e.target.value = state.thinkingBudget;
@@ -252,7 +282,7 @@ export function initThinkingControls() {
         });
     }
 
-    strengthBtns.forEach(btn => {
+    strengthBtns.forEach((btn) => {
         // 跳过 Claude effort 按钮（由下方单独处理）
         if (btn.classList.contains('claude-effort-btn')) return;
 
@@ -263,8 +293,8 @@ export function initThinkingControls() {
         }
 
         btn.addEventListener('click', () => {
-            state.thinkingStrength = btn.dataset.strength;
-            strengthBtns.forEach(b => {
+            setThinkingStrength(btn.dataset.strength);
+            strengthBtns.forEach((b) => {
                 if (!b.classList.contains('claude-effort-btn')) {
                     b.classList.remove('active');
                 }
@@ -298,13 +328,13 @@ export function initThinkingControls() {
         updateClaudeAdaptiveVisibility();
 
         claudeAdaptiveCheckbox.addEventListener('change', (e) => {
-            state.claudeAdaptiveThinking = e.target.checked;
+            setClaudeAdaptiveThinking(e.target.checked);
             updateClaudeAdaptiveVisibility();
             saveCurrentConfig();
         });
     }
 
-    claudeEffortBtns.forEach(btn => {
+    claudeEffortBtns.forEach((btn) => {
         if (btn.dataset.effort === state.claudeEffortLevel) {
             btn.classList.add('active');
         } else {
@@ -312,12 +342,22 @@ export function initThinkingControls() {
         }
 
         btn.addEventListener('click', () => {
-            state.claudeEffortLevel = btn.dataset.effort;
-            claudeEffortBtns.forEach(b => b.classList.remove('active'));
+            setClaudeEffortLevel(btn.dataset.effort);
+            claudeEffortBtns.forEach((b) => b.classList.remove('active'));
             btn.classList.add('active');
             saveCurrentConfig();
         });
     });
+
+    // 返回思考摘要开关
+    const claudeShowThinkingCheckbox = document.getElementById('claude-show-thinking');
+    if (claudeShowThinkingCheckbox) {
+        claudeShowThinkingCheckbox.checked = state.claudeShowThinking;
+        claudeShowThinkingCheckbox.addEventListener('change', (e) => {
+            setClaudeShowThinking(e.target.checked);
+            saveCurrentConfig();
+        });
+    }
 }
 
 /**
@@ -330,9 +370,7 @@ function handleConfigSelect() {
     const config = state.savedConfigs[parseInt(index)];
     if (!config) return;
 
-    state.currentConfigName = config.name;
-
-    // 复用统一的配置还原函数，避免字段遗漏
+    setCurrentConfigName(config.name);
     applyConfigToState(config);
 
     saveCurrentConfig();
@@ -358,14 +396,14 @@ async function handleSaveConfig() {
     const config = buildConfigObject();
     config.name = name;
 
-    const existingIndex = state.savedConfigs.findIndex(c => c.name === name);
+    const existingIndex = state.savedConfigs.findIndex((c) => c.name === name);
     if (existingIndex >= 0) {
         state.savedConfigs[existingIndex] = config;
     } else {
         state.savedConfigs.push(config);
     }
 
-    state.currentConfigName = name;
+    setCurrentConfigName(name);
     saveCurrentConfig();
     await saveSavedConfigs(); // 保存配置列表到持久化存储
     updateConfigSelect();
@@ -385,15 +423,12 @@ async function handleDeleteConfig() {
     const config = state.savedConfigs[parseInt(index)];
     if (!config) return;
 
-    const confirmed = await showConfirmDialog(
-        `确定删除配置 "${config.name}" 吗？`,
-        '确认删除'
-    );
+    const confirmed = await showConfirmDialog(`确定删除配置 "${config.name}" 吗？`, '确认删除');
     if (!confirmed) return;
 
     state.savedConfigs.splice(parseInt(index), 1);
     if (state.currentConfigName === config.name) {
-        state.currentConfigName = '';
+        setCurrentConfigName('');
     }
 
     saveCurrentConfig();
@@ -408,6 +443,7 @@ async function handleDeleteConfig() {
 function updateConfigSelect() {
     if (!elements.configSelect) return;
 
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     elements.configSelect.innerHTML = '<option value="">选择配置...</option>';
     state.savedConfigs.forEach((config, index) => {
         const option = document.createElement('option');
@@ -432,7 +468,7 @@ export function initConfigManagement() {
     // 初始化下拉框
     updateConfigSelect();
 
-    console.log('Config management initialized');
+    logger.debug('Config management initialized');
 }
 
 /**
@@ -441,13 +477,13 @@ export function initConfigManagement() {
 export function initOtherConfigInputs() {
     // Gemini 图片大小
     elements.imageSizeSelect?.addEventListener('change', (e) => {
-        state.imageSize = e.target.value;
+        setImageSize(e.target.value);
         saveCurrentConfig();
     });
 
     // Gemini API Key 传递方式
     elements.geminiApiKeyInHeaderToggle?.addEventListener('change', (e) => {
-        state.geminiApiKeyInHeader = e.target.checked;
+        setGeminiApiKeyInHeader(e.target.checked);
         saveCurrentConfig();
     });
 
@@ -456,7 +492,7 @@ export function initOtherConfigInputs() {
     if (streamEnabled) {
         streamEnabled.checked = state.streamEnabled;
         streamEnabled.addEventListener('change', (e) => {
-            state.streamEnabled = e.target.checked;
+            setStreamEnabled(e.target.checked);
             syncQuickToggles();
             saveCurrentConfig();
         });
@@ -467,7 +503,7 @@ export function initOtherConfigInputs() {
     if (webSearchEnabled) {
         webSearchEnabled.checked = state.webSearchEnabled;
         webSearchEnabled.addEventListener('change', (e) => {
-            state.webSearchEnabled = e.target.checked;
+            setWebSearchEnabled(e.target.checked);
             syncQuickToggles();
             saveCurrentConfig();
         });
@@ -478,12 +514,12 @@ export function initOtherConfigInputs() {
     if (xmlToolCalling) {
         xmlToolCalling.checked = state.xmlToolCallingEnabled || false;
         xmlToolCalling.addEventListener('change', (e) => {
-            state.xmlToolCallingEnabled = e.target.checked;
+            setXmlToolCallingEnabled(e.target.checked);
             saveCurrentConfig();
 
             // 提示用户
             if (e.target.checked) {
-                console.log('[Config] XML 工具调用兜底已启用，将在 system prompt 中注入工具描述');
+                logger.debug('[Config] XML 工具调用兜底已启用，将在 system prompt 中注入工具描述');
             }
         });
     }
@@ -511,11 +547,11 @@ export function initOtherConfigInputs() {
                     return;
                 }
             } catch (error) {
-                console.warn('[ConfigHelpers] 工具系统未加载:', error);
+                logger.warn('[ConfigHelpers] 工具系统未加载:', error);
             }
         }
 
-        state.replyCount = newCount;
+        setReplyCount(newCount);
         saveCurrentConfig();
     });
 
@@ -523,7 +559,7 @@ export function initOtherConfigInputs() {
     if (elements.thinkingNoneMode) {
         elements.thinkingNoneMode.checked = state.thinkingNoneMode || false;
         elements.thinkingNoneMode.addEventListener('change', (e) => {
-            state.thinkingNoneMode = e.target.checked;
+            setThinkingNoneMode(e.target.checked);
             saveCurrentConfig();
         });
     }
@@ -541,14 +577,14 @@ export function initOtherConfigInputs() {
 
         // 开关监听
         verbosityEnabled.addEventListener('change', (e) => {
-            state.verbosityEnabled = e.target.checked;
+            setVerbosityEnabled(e.target.checked);
             verbositySelectGroup.style.display = e.target.checked ? 'block' : 'none';
             saveCurrentConfig();
         });
 
         // 选择器监听
         outputVerbosity.addEventListener('change', (e) => {
-            state.outputVerbosity = e.target.value;
+            setOutputVerbosity(e.target.value);
             saveCurrentConfig();
         });
     }
@@ -564,13 +600,15 @@ export function initOtherConfigInputs() {
             });
 
             // 自动禁用该工具
-            import('../tools/manager.js').then(({ setToolEnabled }) => {
-                setToolEnabled(toolId, false);
-            }).catch(err => {
-                console.error('[ConfigHelpers] 禁用工具失败:', err);
-            });
+            import('../tools/manager.js')
+                .then(({ setToolEnabled }) => {
+                    setToolEnabled(toolId, false);
+                })
+                .catch((err) => {
+                    logger.error('[ConfigHelpers] 禁用工具失败:', err);
+                });
         }
     });
 
-    console.log('Other config inputs initialized');
+    logger.debug('Other config inputs initialized');
 }

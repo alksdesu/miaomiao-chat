@@ -69,7 +69,9 @@ function handleScreenCapture(data) {
     // 添加缩略图
     const timeline = container.querySelector('.openclaw-screen-timeline');
     if (timeline) {
-        timeline.querySelectorAll('.openclaw-screen-thumb').forEach(t => t.classList.remove('active'));
+        timeline
+            .querySelectorAll('.openclaw-screen-thumb')
+            .forEach((t) => t.classList.remove('active'));
 
         const thumb = document.createElement('img');
         thumb.className = 'openclaw-screen-thumb active';
@@ -95,6 +97,7 @@ function getOrCreateScreenViewer() {
 
     viewer = document.createElement('div');
     viewer.className = 'openclaw-screen-viewer';
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     viewer.innerHTML = `
         <div class="openclaw-screen-main">
             <img class="openclaw-screen-current" src="" alt="屏幕截图" />
@@ -129,7 +132,7 @@ function selectScreenshot(container, index) {
     const mainImg = container.querySelector('.openclaw-screen-current');
     if (mainImg) mainImg.src = screenshots[index].image;
 
-    container.querySelectorAll('.openclaw-screen-thumb').forEach(t => {
+    container.querySelectorAll('.openclaw-screen-thumb').forEach((t) => {
         t.classList.toggle('active', parseInt(t.dataset.index) === index);
     });
 }
@@ -138,8 +141,10 @@ function selectScreenshot(container, index) {
  * 标记截图流结束
  */
 function markScreenEnded() {
-    document.querySelectorAll('.openclaw-screen-viewer .openclaw-screen-badge:not(.ended)').forEach(badge => {
-        badge.classList.add('ended');
-        badge.textContent = '已结束';
-    });
+    document
+        .querySelectorAll('.openclaw-screen-viewer .openclaw-screen-badge:not(.ended)')
+        .forEach((badge) => {
+            badge.classList.add('ended');
+            badge.textContent = '已结束';
+        });
 }

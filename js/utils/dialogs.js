@@ -3,6 +3,8 @@
  * 替代 Electron 中不支持的 prompt() 和 confirm()
  */
 
+import { bindTopmostEscape } from './modal-stack.js';
+
 /**
  * 显示输入对话框（替代 prompt）
  * @param {string} message - 提示消息
@@ -24,6 +26,7 @@ export function showInputDialog(message, defaultValue = '', title = '输入') {
         titleEl.textContent = title;
         messageEl.textContent = message;
         input.value = defaultValue;
+        let removeEscapeListener = null;
 
         // 显示对话框
         modal.style.display = 'flex';
@@ -49,6 +52,9 @@ export function showInputDialog(message, defaultValue = '', title = '输入') {
 
         // 清理函数 - 正确移除所有事件监听器
         const cleanup = () => {
+            removeEscapeListener?.();
+            removeEscapeListener = null;
+
             modal.style.display = 'none';
             confirmBtn.removeEventListener('click', handleConfirm);
             cancelBtn.removeEventListener('click', handleCancel);
@@ -69,9 +75,6 @@ export function showInputDialog(message, defaultValue = '', title = '输入') {
             if (e.key === 'Enter') {
                 e.preventDefault();
                 handleConfirm();
-            } else if (e.key === 'Escape') {
-                e.preventDefault();
-                handleCancel();
             }
         };
 
@@ -81,6 +84,8 @@ export function showInputDialog(message, defaultValue = '', title = '输入') {
         closeBtn.addEventListener('click', handleCancel);
         modal.addEventListener('click', handleOverlayClick);
         input.addEventListener('keydown', handleKeydown);
+
+        removeEscapeListener = bindTopmostEscape(modal, handleCancel);
     });
 }
 
@@ -102,6 +107,7 @@ export function showConfirmDialog(message, title = '确认') {
         // 设置内容
         titleEl.textContent = title;
         messageEl.textContent = message;
+        let removeEscapeListener = null;
 
         // 显示对话框
         modal.style.display = 'flex';
@@ -125,12 +131,14 @@ export function showConfirmDialog(message, title = '确认') {
 
         // 清理函数
         const cleanup = () => {
+            removeEscapeListener?.();
+            removeEscapeListener = null;
+
             modal.style.display = 'none';
             confirmBtn.removeEventListener('click', handleConfirm);
             cancelBtn.removeEventListener('click', handleCancel);
             closeBtn.removeEventListener('click', handleCancel);
             modal.removeEventListener('click', handleOverlayClick);
-            document.removeEventListener('keydown', handleKeydown);
         };
 
         // 点击遮罩层关闭（点击模态框内容区域外的部分）
@@ -140,22 +148,14 @@ export function showConfirmDialog(message, title = '确认') {
             }
         };
 
-        // 键盘事件
-        const handleKeydown = (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                handleConfirm();
-            } else if (e.key === 'Escape') {
-                e.preventDefault();
-                handleCancel();
-            }
-        };
-
         // 绑定事件
         confirmBtn.addEventListener('click', handleConfirm);
         cancelBtn.addEventListener('click', handleCancel);
         closeBtn.addEventListener('click', handleCancel);
         modal.addEventListener('click', handleOverlayClick);
-        document.addEventListener('keydown', handleKeydown);
+        // 打开后默认聚焦确定按钮，因此常规路径下回车仍会确认；
+        // 若用户主动切到其他控件，则遵循当前焦点元素的原生行为，避免对话框外误触发确认
+
+        removeEscapeListener = bindTopmostEscape(modal, handleCancel);
     });
 }

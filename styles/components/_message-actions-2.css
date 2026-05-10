@@ -3,9 +3,9 @@
     /* 使用 CSS Grid 叠加定位到右上角 */
     grid-row-start: 1;
     grid-column-start: 1;
-    grid-column-end: 3;    /* 跨越两列（头像列 + 内容列） */
-    justify-self: end;     /* 水平靠右 */
-    align-self: start;     /* 垂直靠上 */
+    grid-column-end: 3; /* 跨越两列（头像列 + 内容列） */
+    justify-self: end; /* 水平靠右 */
+    align-self: start; /* 垂直靠上 */
     margin: 8px;
     display: flex;
     gap: 4px;
@@ -104,7 +104,7 @@
     padding: 6px 14px;
     font-size: var(--fs-base);
     cursor: pointer;
-    font-family: var(--font-mono);
+    font-family: var(--font-ui-accent);
     font-weight: 500;
     transition: all 0.15s var(--ease);
     border: var(--border);
@@ -142,4 +142,3 @@
     transform: translate(2px, -2px);
     box-shadow: none;
 }
-

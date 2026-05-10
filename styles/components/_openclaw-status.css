@@ -27,7 +27,7 @@
 
 .openclaw-sb-btn {
     background: transparent;
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    border: 1px solid rgba(var(--color-bg-surface-rgb), 0.2);
     color: inherit;
     border-radius: 4px;
     padding: 2px 8px;
@@ -41,7 +41,7 @@
 }
 
 .openclaw-sb-btn:hover {
-    background: rgba(255, 255, 255, 0.12);
+    background: rgba(var(--color-bg-surface-rgb), 0.12);
 }
 
 /* 移动端 */

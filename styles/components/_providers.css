@@ -7,51 +7,12 @@
     margin-left: 8px;
 }
 
-/* ========== 模态框基础样式 ========== */
-.modal {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    z-index: var(--z-modal-settings);
-    display: none;
-    align-items: center;
-    justify-content: center;
-}
+/* 共享模态框外壳、紧凑型约束已迁移到 _modal-shell.css */
 
-.modal.active {
-    display: flex;
-}
-
-.modal-overlay {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: var(--overlay-heavy);
-    cursor: pointer;
-}
-
-.modal-content {
-    position: relative;
-    background: var(--color-bg-primary);
-    border-radius: 16px;
-    box-shadow: 0 8px 48px rgba(0, 0, 0, 0.4);
-    overflow: hidden;
-    animation: modalFadeIn 0.2s ease-out;
-    z-index: var(--z-base);
-    will-change: opacity;
-}
-
-@keyframes modalFadeIn {
-    from {
-        opacity: 0;
-    }
-    to {
-        opacity: 1;
-    }
+/* 提供商下的二级弹层显式占用嵌套层级，避免依赖 DOM 顺序 */
+#models-manage-modal,
+#edit-model-modal {
+    --modal-layer-z-index: var(--z-modal-settings-nested);
 }
 
 /* ========== 提供商管理模态框（左右分栏） ========== */
@@ -137,7 +98,7 @@
 
 .provider-item.current.selected {
     border-color: var(--md-green);
-    box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.2);
+    box-shadow: 0 0 0 2px rgba(var(--palette-green-rgb), 0.2);
 }
 
 .provider-item-avatar {
@@ -158,7 +119,7 @@
 }
 
 .provider-item-avatar.openai-responses {
-    background: linear-gradient(135deg, #f59e0b, #fb923c);  /* 黄橙色渐变（MotherDuck风格） */
+    background: linear-gradient(135deg, #f59e0b, #fb923c); /* 黄橙色渐变（MotherDuck风格） */
 }
 
 .provider-item-avatar.gemini {
@@ -207,17 +168,17 @@
 }
 
 .toggle-switch.on {
-    background: rgba(34, 197, 94, 0.15);
+    background: rgba(var(--palette-green-rgb), 0.15);
     color: var(--md-green);
 }
 
 .toggle-switch.off {
-    background: rgba(136, 136, 136, 0.15);
+    background: rgba(var(--color-text-secondary-rgb), 0.15);
     color: var(--md-muted);
 }
 
 .provider-item.selected .toggle-switch.on {
-    background: rgba(255, 255, 255, 0.2);
+    background: rgba(var(--color-bg-surface-rgb), 0.2);
     color: var(--color-text-inverse);
 }
 
@@ -322,8 +283,8 @@
     margin-bottom: 8px;
 }
 
-.form-group input[type="text"],
-.form-group input[type="password"],
+.form-group input[type='text'],
+.form-group input[type='password'],
 .form-group select,
 .text-input {
     width: 100%;
@@ -343,7 +304,7 @@
     border-color: var(--md-blue);
 }
 
-.form-group input[type="checkbox"] {
+.form-group input[type='checkbox'] {
     width: 16px;
     height: 16px;
     margin-right: 8px;
@@ -402,15 +363,17 @@
 
 .toggle-slider:before {
     position: absolute;
-    content: "";
+    content: '';
     height: 20px;
     width: 20px;
     left: 4px;
     bottom: 4px;
-    background-color: var(--color-text-inverse, #FFFFFF);
+    background-color: var(--color-text-inverse, #ffffff);
     border-radius: 50%;
-    transition: transform 0.3s ease, box-shadow 0.3s ease;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    transition:
+        transform 0.3s ease,
+        box-shadow 0.3s ease;
+    box-shadow: 0 2px 4px rgba(var(--shadow-color-rgb), 0.2);
 }
 
 .toggle-switch-modern input:checked + .toggle-slider {
@@ -419,11 +382,11 @@
 
 .toggle-switch-modern input:checked + .toggle-slider:before {
     transform: translateX(20px);
-    box-shadow: 0 2px 6px rgba(33, 150, 243, 0.4);
+    box-shadow: 0 2px 6px rgba(var(--palette-blue-rgb), 0.4);
 }
 
 .toggle-switch-modern input:focus + .toggle-slider {
-    box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.2);
+    box-shadow: 0 0 0 3px rgba(var(--palette-blue-rgb), 0.2);
 }
 
 .toggle-label-group {
@@ -455,9 +418,9 @@
     /* 使用 CSS Grid 叠加定位到右侧居中 */
     grid-row-start: 1;
     grid-column-start: 1;
-    justify-self: end;     /* 水平靠右 */
-    align-self: center;    /* 垂直居中 */
-    margin-right: 12px;    /* 距离右边缘的间距 */
+    justify-self: end; /* 水平靠右 */
+    align-self: center; /* 垂直居中 */
+    margin-right: 12px; /* 距离右边缘的间距 */
     background: none;
     border: none;
     color: var(--md-muted);
@@ -488,6 +451,7 @@
     border-radius: 8px;
     font-size: var(--fs-lg);
     font-weight: 500;
+    font-family: var(--font-ui-accent);
     cursor: pointer;
     transition: all 0.2s;
     border: var(--border);
@@ -591,7 +555,7 @@
     font-size: var(--fs-sm);
     padding: 2px 8px;
     border-radius: 10px;
-    background: rgba(34, 197, 94, 0.15);
+    background: rgba(var(--palette-green-rgb), 0.15);
     color: var(--md-green);
     font-weight: 500;
 }
@@ -599,7 +563,7 @@
 .current-key-preview {
     font-size: var(--fs-base);
     color: var(--md-muted);
-    font-family: monospace;
+    font-family: var(--font-mono);
 }
 
 /* 密钥面板内容 */
@@ -621,7 +585,11 @@
         radial-gradient(farthest-side at 50% 100%, var(--scroll-shadow-color), transparent) 0 100%;
     background-repeat: no-repeat;
     background-color: var(--md-bg);
-    background-size: 100% 32px, 100% 32px, 100% 12px, 100% 12px;
+    background-size:
+        100% 32px,
+        100% 32px,
+        100% 12px,
+        100% 12px;
     background-attachment: local, local, scroll, scroll;
     border-radius: 8px;
 }
@@ -650,7 +618,7 @@
 }
 
 .api-key-item.current {
-    background: rgba(33, 150, 243, 0.1);
+    background: rgba(var(--palette-blue-rgb), 0.1);
     border: 1px solid var(--md-blue);
 }
 
@@ -670,7 +638,7 @@
     flex: 1;
 }
 
-.key-select input[type="radio"] {
+.key-select input[type='radio'] {
     width: 16px;
     height: 16px;
     cursor: pointer;
@@ -691,7 +659,7 @@
 .key-preview {
     font-size: var(--fs-sm);
     color: var(--md-muted);
-    font-family: monospace;
+    font-family: var(--font-mono);
 }
 
 .key-stats {
@@ -882,7 +850,11 @@
         radial-gradient(farthest-side at 50% 100%, var(--scroll-shadow-color), transparent) 0 100%;
     background-repeat: no-repeat;
     background-color: var(--md-surface);
-    background-size: 100% 32px, 100% 32px, 100% 12px, 100% 12px;
+    background-size:
+        100% 32px,
+        100% 32px,
+        100% 12px,
+        100% 12px;
     background-attachment: local, local, scroll, scroll;
     margin-bottom: 12px;
 }
@@ -911,6 +883,28 @@
 }
 
 .model-chip .remove-model-btn:hover {
+    opacity: 0.8;
+}
+
+.model-chip-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 200px;
+}
+
+.model-chip .edit-model-btn {
+    background: none;
+    border: none;
+    color: var(--color-text-inverse);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    padding: 0;
+    line-height: 1;
+}
+
+.model-chip .edit-model-btn:hover {
     opacity: 0.8;
 }
 
@@ -1066,7 +1060,7 @@
     background: var(--md-bg);
 }
 
-.model-checkbox-item input[type="checkbox"] {
+.model-checkbox-item input[type='checkbox'] {
     margin-right: 12px;
     width: 18px;
     height: 18px;
@@ -1087,7 +1081,7 @@
     justify-content: space-between;
     padding: 20px 24px;
     border-bottom: var(--border);
-    flex-shrink: 0;  /* 防止被压缩 */
+    flex-shrink: 0; /* 防止被压缩 */
 }
 
 .modal-header h2,
@@ -1131,7 +1125,7 @@
     display: flex;
     gap: 12px;
     justify-content: flex-end;
-    flex-shrink: 0;  /* 防止被压缩 */
+    flex-shrink: 0; /* 防止被压缩 */
 }
 
 /* ========== 响应式 ========== */
@@ -1150,6 +1144,7 @@
     /* 提供商管理模态框 - 列表/详情页面切换 */
     .providers-modal-content {
         width: 100vw;
+        height: 100vh;
         height: 100dvh;
         max-width: 100%;
         max-height: 100%;
@@ -1193,7 +1188,7 @@
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px;
+        padding: calc(10px + var(--app-safe-top)) 12px 10px;
         border-bottom: 1px solid var(--color-border-secondary);
         flex-shrink: 0;
         background: var(--color-bg-accent);
@@ -1202,7 +1197,7 @@
 
     .providers-sidebar-header h2 {
         font-size: var(--fs-lg);
-        font-family: var(--font-mono);
+        font-family: var(--font-ui-accent);
         font-weight: 600;
         margin: 0;
     }
@@ -1261,27 +1256,64 @@
     }
 
     /* 全面缩小 */
-    .providers-modal-content { box-shadow: none; }
-    .provider-item-avatar { width: 32px; height: 32px; font-size: var(--fs-lg); }
-    .providers-search { padding: 8px; }
-    .providers-search input { padding: 8px 10px; }
-    .detail-header { padding: 10px 12px; }
-    .detail-header h2 { font-size: var(--fs-lg); }
-    .detail-footer { padding: 10px 12px; }
-    .provider-form .form-group { margin-bottom: 12px; }
-    .provider-enable-toggle { padding: 12px; }
-    .toggle-container { gap: 10px; }
-    .toggle-title { font-size: var(--fs-md); }
-    .toggle-hint { font-size: var(--fs-sm); }
-    .provider-item.current { border-width: 1px; }
-    .form-hint { font-size: var(--fs-sm); }
-    .form-group label { font-size: var(--fs-md); }
-    .form-group input, .form-group select { padding: 8px 10px; border-width: 1px; }
+    .providers-modal-content {
+        box-shadow: none;
+    }
+    .provider-item-avatar {
+        width: 32px;
+        height: 32px;
+        font-size: var(--fs-lg);
+    }
+    .providers-search {
+        padding: 8px;
+    }
+    .providers-search input {
+        padding: 8px 10px;
+    }
+    .detail-header {
+        padding: calc(10px + var(--app-safe-top)) 12px 10px;
+    }
+    .detail-header h2 {
+        font-size: var(--fs-lg);
+    }
+    .detail-footer {
+        padding: 10px 12px calc(10px + var(--app-safe-bottom));
+    }
+    .provider-form .form-group {
+        margin-bottom: 12px;
+    }
+    .provider-enable-toggle {
+        padding: 12px;
+    }
+    .toggle-container {
+        gap: 10px;
+    }
+    .toggle-title {
+        font-size: var(--fs-md);
+    }
+    .toggle-hint {
+        font-size: var(--fs-sm);
+    }
+    .provider-item.current {
+        border-width: 1px;
+    }
+    .form-hint {
+        font-size: var(--fs-sm);
+    }
+    .form-group label {
+        font-size: var(--fs-md);
+    }
+    .form-group input,
+    .form-group select {
+        padding: 8px 10px;
+        border-width: 1px;
+    }
 
     /* 模型管理弹窗移动端适配 */
     .models-manage-content {
         width: 100vw;
         height: 100vh;
+        height: 100dvh;
         max-width: 100%;
         max-height: 100%;
         border-radius: 0;
@@ -1293,7 +1325,7 @@
 
     .models-checklist {
         padding: 12px;
-        max-height: none;  /* 移除固定高度限制 */
+        max-height: none; /* 移除固定高度限制 */
     }
 
     .model-checkbox-item {
@@ -1307,7 +1339,7 @@
     }
 
     .btn-bulk-action {
-        min-height: 44px;  /* 符合 WCAG 触摸目标标准 */
+        min-height: 44px; /* 符合 WCAG 触摸目标标准 */
         font-size: var(--fs-lg);
     }
 
@@ -1318,7 +1350,7 @@
     .add-provider-btn {
         min-height: 44px;
         padding: 12px 24px;
-        font-size: var(--fs-xl);  /* 增加可读性 */
+        font-size: var(--fs-xl); /* 增加可读性 */
     }
 
     /* 开关按钮也需要增大 */
@@ -1328,12 +1360,12 @@
     }
 
     /* 防止 iOS 自动缩放 */
-    .form-group input[type="text"],
-    .form-group input[type="password"],
-    .form-group input[type="url"],
+    .form-group input[type='text'],
+    .form-group input[type='password'],
+    .form-group input[type='url'],
     .form-group select,
     .form-group textarea {
-        font-size: var(--fs-xl);  /* 最小 16px */
+        font-size: var(--fs-xl); /* 最小 16px */
         padding: 12px 14px;
     }
 
@@ -1406,6 +1438,33 @@
     line-height: 1.5;
 }
 
+.form-hint a {
+    color: var(--md-blue);
+    text-decoration: none;
+}
+
+.form-hint a:hover {
+    text-decoration: underline;
+}
+
+.endpoint-hint--suggestion {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 8px;
+    color: var(--md-green);
+}
+
+.endpoint-hint__value {
+    word-break: break-all;
+}
+
+.endpoint-hint__actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
 /* 能力复选框列表 */
 .capability-toggles {
     display: flex;
@@ -1430,7 +1489,7 @@
     border-color: var(--md-blue);
 }
 
-.capability-item input[type="checkbox"] {
+.capability-item input[type='checkbox'] {
     margin-top: 2px;
     width: 18px;
     height: 18px;
@@ -1482,7 +1541,7 @@
     }
 
     /* 增大触摸目标 */
-    .capability-item input[type="checkbox"] {
+    .capability-item input[type='checkbox'] {
         width: 20px;
         height: 20px;
     }

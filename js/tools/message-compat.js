@@ -13,6 +13,7 @@ import { state } from '../core/state.js';
 import { eventBus } from '../core/events.js';
 import { removeMessageAt } from '../core/state-mutations.js';
 import { PartType } from '../messages/schema.js';
+import { logger } from '../utils/logger.js';
 
 // ========== 消息删除兼容性 ==========
 
@@ -28,7 +29,8 @@ export function hasToolCalls(message) {
     // 兼容字段
     if (message.toolCalls && message.toolCalls.length > 0) return true;
     // 新格式 parts[]
-    if (Array.isArray(message.parts) && message.parts.some(p => p.type === PartType.TOOL_CALL)) return true;
+    if (Array.isArray(message.parts) && message.parts.some((p) => p.type === PartType.TOOL_CALL))
+        return true;
     return false;
 }
 
@@ -57,13 +59,13 @@ export function findAssociatedToolResults(assistantMessageIndex) {
     // 从新格式 parts 或旧格式 tool_calls 提取 tool_call ids
     let toolCallIds;
     if (Array.isArray(assistantMessage.parts)) {
-        const tcParts = assistantMessage.parts.filter(p => p.type === PartType.TOOL_CALL);
+        const tcParts = assistantMessage.parts.filter((p) => p.type === PartType.TOOL_CALL);
         if (tcParts.length > 0) {
-            toolCallIds = new Set(tcParts.map(p => p.id));
+            toolCallIds = new Set(tcParts.map((p) => p.id));
         }
     }
     if (!toolCallIds && assistantMessage.tool_calls) {
-        toolCallIds = new Set(assistantMessage.tool_calls.map(tc => tc.id));
+        toolCallIds = new Set(assistantMessage.tool_calls.map((tc) => tc.id));
     }
     if (!toolCallIds) return [];
 
@@ -105,11 +107,11 @@ export function findAssociatedAssistantMessage(toolResultIndex) {
             let found = false;
             // 新格式
             if (Array.isArray(msg.parts)) {
-                found = msg.parts.some(p => p.type === PartType.TOOL_CALL && p.id === toolCallId);
+                found = msg.parts.some((p) => p.type === PartType.TOOL_CALL && p.id === toolCallId);
             }
             // 旧格式回退
             if (!found && msg.tool_calls) {
-                found = msg.tool_calls.some(tc => tc.id === toolCallId);
+                found = msg.tool_calls.some((tc) => tc.id === toolCallId);
             }
             if (found) {
                 return i;
@@ -144,11 +146,14 @@ export function safeDeleteMessage(index) {
         const toolResultIndices = findAssociatedToolResults(index);
 
         if (toolResultIndices.length > 0) {
-            const tcCount = message.parts?.filter(p => p.type === PartType.TOOL_CALL).length
-                || message.tool_calls?.length || message.toolCalls?.length || 0;
+            const tcCount =
+                message.parts?.filter((p) => p.type === PartType.TOOL_CALL).length ||
+                message.tool_calls?.length ||
+                message.toolCalls?.length ||
+                0;
             warnings.push(
                 `此消息包含 ${tcCount} 个工具调用，` +
-                `将同时删除 ${toolResultIndices.length} 条工具结果消息`
+                    `将同时删除 ${toolResultIndices.length} 条工具结果消息`
             );
             deletedIndices.push(...toolResultIndices);
         }
@@ -161,7 +166,7 @@ export function safeDeleteMessage(index) {
         if (assistantIndex !== null) {
             warnings.push(
                 '此消息是工具结果，删除后可能导致对话上下文不完整。' +
-                '建议同时删除对应的助手消息。'
+                    '建议同时删除对应的助手消息。'
             );
         }
     }
@@ -250,14 +255,20 @@ export function shouldRenderMessage(message) {
     // 包含 tool_calls 但没有 content 的助手消息不单独显示
     if (message.role === 'assistant' && hasToolCalls(message)) {
         // 新格式：检查 parts 中是否有文本
-        if (Array.isArray(message.parts) && message.parts.some(p => p.type === PartType.TEXT && p.text && p.text.trim())) {
+        if (
+            Array.isArray(message.parts) &&
+            message.parts.some((p) => p.type === PartType.TEXT && p.text && p.text.trim())
+        ) {
             return true;
         }
         // 旧格式回退
         if (typeof message.content === 'string' && message.content.trim()) {
             return true;
         }
-        if (Array.isArray(message.content) && message.content.some(p => p.type === 'text' && p.text?.trim())) {
+        if (
+            Array.isArray(message.content) &&
+            message.content.some((p) => p.type === 'text' && p.text?.trim())
+        ) {
             return true;
         }
         return false;
@@ -316,7 +327,7 @@ let initialized = false;
  */
 export function initMessageCompat() {
     if (initialized) {
-        console.warn('[MessageCompat] ⚠️ 模块已初始化，跳过重复注册');
+        logger.warn('[MessageCompat] ⚠️ 模块已初始化，跳过重复注册');
         return;
     }
 
@@ -339,11 +350,14 @@ export function initMessageCompat() {
         if (hasToolCalls(message)) {
             const toolResultIndices = findAssociatedToolResults(index);
             if (toolResultIndices.length > 0) {
-                const tcCount = message.parts?.filter(p => p.type === PartType.TOOL_CALL).length
-                    || message.tool_calls?.length || message.toolCalls?.length || 0;
+                const tcCount =
+                    message.parts?.filter((p) => p.type === PartType.TOOL_CALL).length ||
+                    message.tool_calls?.length ||
+                    message.toolCalls?.length ||
+                    0;
                 warnings.push(
                     `此消息包含 ${tcCount} 个工具调用，` +
-                    `将同时删除 ${toolResultIndices.length} 条关联的工具结果消息`
+                        `将同时删除 ${toolResultIndices.length} 条关联的工具结果消息`
                 );
             }
         }
@@ -351,14 +365,12 @@ export function initMessageCompat() {
         if (isToolResult(message)) {
             const assistantIndex = findAssociatedAssistantMessage(index);
             if (assistantIndex !== null) {
-                warnings.push(
-                    '此消息是工具执行结果，删除后可能导致对话上下文不完整'
-                );
+                warnings.push('此消息是工具执行结果，删除后可能导致对话上下文不完整');
             }
         }
 
         if (warnings.length > 0) {
-            console.warn('[MessageCompat] 删除消息警告:', warnings.join('\n'));
+            logger.warn('[MessageCompat] 删除消息警告:', warnings.join('\n'));
             // 通过 UI 显示警告（不阻止删除，只是提醒）
             eventBus.emit('ui:notification', {
                 message: warnings[0],
@@ -376,20 +388,17 @@ export function initMessageCompat() {
         const checkResult = canEditMessage(index);
 
         if (!checkResult.canEdit) {
-            console.warn('[MessageCompat] 消息不可编辑:', checkResult.reason);
+            logger.warn('[MessageCompat] 消息不可编辑:', checkResult.reason);
             eventBus.emit('ui:notification', {
                 message: checkResult.reason,
                 type: 'error',
                 duration: 3000
             });
-            // 发出阻止事件（但需要 editor.js 监听并响应）
-            eventBus.emit('message:edit-blocked', { index, reason: checkResult.reason });
         }
     });
 
-    console.log('[MessageCompat] 🔧 工具调用消息兼容性模块已加载');
+    logger.debug('[MessageCompat] 🔧 工具调用消息兼容性模块已加载');
 }
 
 // 自动初始化（模块加载时）
 initMessageCompat();
-

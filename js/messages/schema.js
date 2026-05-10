@@ -10,30 +10,30 @@ import { generateMessageId } from '../utils/helpers.js';
 export const SCHEMA_VERSION = 1;
 
 export const Role = Object.freeze({
-    SYSTEM:    'system',
-    USER:      'user',
-    ASSISTANT: 'assistant',
+    SYSTEM: 'system',
+    USER: 'user',
+    ASSISTANT: 'assistant'
 });
 
 export const PartType = Object.freeze({
-    THINKING:  'thinking',
-    TEXT:      'text',
-    MEDIA:     'media',
+    THINKING: 'thinking',
+    TEXT: 'text',
+    MEDIA: 'media',
     TOOL_CALL: 'tool_call',
-    FILE:      'file',
+    FILE: 'file'
 });
 
 export const MediaKind = Object.freeze({
     IMAGE: 'image',
     VIDEO: 'video',
-    AUDIO: 'audio',
+    AUDIO: 'audio'
 });
 
 export const ToolState = Object.freeze({
-    PENDING:  'pending',
-    RUNNING:  'running',
-    DONE:     'done',
-    ERROR:    'error',
+    PENDING: 'pending',
+    RUNNING: 'running',
+    DONE: 'done',
+    ERROR: 'error'
 });
 
 // ========== 工厂函数 ==========
@@ -53,7 +53,7 @@ export function createMessage(role, parts = [], options = {}) {
         meta: options.meta || createMeta(),
         replies: options.replies || null,
         error: options.error || null,
-        _schemaVersion: SCHEMA_VERSION,
+        _schemaVersion: SCHEMA_VERSION
     };
 }
 
@@ -64,7 +64,7 @@ export function createMeta(overrides = {}) {
         usage: null,
         stats: null,
         raw: {},
-        ...overrides,
+        ...overrides
     };
 }
 
@@ -98,18 +98,18 @@ export function toolCallPart(id, name, args = {}) {
         name,
         args,
         state: ToolState.PENDING,
-        result: null,
+        result: null
     };
 }
 
-export function filePart(name, mime, url) {
-    return { type: PartType.FILE, name, mime, url };
+export function filePart(name, mime, url, encoding = 'base64') {
+    return { type: PartType.FILE, name, mime, url, encoding };
 }
 
 // ========== 读取辅助 ==========
 
 export function filterParts(parts, type) {
-    return parts?.filter(p => p.type === type) || [];
+    return parts?.filter((p) => p.type === type) || [];
 }
 
 /**
@@ -117,11 +117,16 @@ export function filterParts(parts, type) {
  */
 export function getTextContent(msg) {
     if (hasParts(msg)) {
-        return filterParts(msg.parts, PartType.TEXT).map(p => p.text).join('');
+        return filterParts(msg.parts, PartType.TEXT)
+            .map((p) => p.text)
+            .join('');
     }
     if (typeof msg.content === 'string') return msg.content;
     if (Array.isArray(msg.content)) {
-        return msg.content.filter(p => p?.type === 'text').map(p => p.text || '').join('');
+        return msg.content
+            .filter((p) => p?.type === 'text')
+            .map((p) => p.text || '')
+            .join('');
     }
     return '';
 }
@@ -131,9 +136,11 @@ export function getTextContent(msg) {
  */
 export function getThinkingContent(msg) {
     if (hasParts(msg)) {
-        return filterParts(msg.parts, PartType.THINKING).map(p => p.text).join('');
+        return filterParts(msg.parts, PartType.THINKING)
+            .map((p) => p.text)
+            .join('');
     }
-    return msg.thinkingContent || '';
+    return msg.thinkingContent || ''; // 旧格式兜底，未迁移数据需要
 }
 
 /**
@@ -234,13 +241,15 @@ export function validateMessage(msg) {
                 else if (!p.text) errors.push(`parts[${i}] thinking.text 为空`);
                 break;
             case PartType.MEDIA:
-                if (!VALID_MEDIA_KINDS.has(p.media)) errors.push(`parts[${i}] 无效的 media: ${p.media}`);
+                if (!VALID_MEDIA_KINDS.has(p.media))
+                    errors.push(`parts[${i}] 无效的 media: ${p.media}`);
                 if (!p.url) errors.push(`parts[${i}] 缺少 url`);
                 break;
             case PartType.TOOL_CALL:
                 if (p.id == null) errors.push(`parts[${i}] 缺少 tool_call id`);
                 if (!p.name) errors.push(`parts[${i}] 缺少 tool_call name`);
-                if (!VALID_TOOL_STATES.has(p.state)) errors.push(`parts[${i}] 无效的 state: ${p.state}`);
+                if (!VALID_TOOL_STATES.has(p.state))
+                    errors.push(`parts[${i}] 无效的 state: ${p.state}`);
                 break;
             case PartType.FILE:
                 if (!p.name) errors.push(`parts[${i}] 缺少 file name`);

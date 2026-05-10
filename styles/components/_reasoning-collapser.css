@@ -22,9 +22,17 @@
 }
 
 @keyframes thinking-dots {
-    0%, 20% { content: '.'; }
-    40% { content: '..'; }
-    60%, 100% { content: '...'; }
+    0%,
+    20% {
+        content: '.';
+    }
+    40% {
+        content: '..';
+    }
+    60%,
+    100% {
+        content: '...';
+    }
 }
 
 .thinking-header {
@@ -33,7 +41,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    font-family: var(--font-mono);
+    font-family: var(--font-ui-accent);
     font-size: var(--fs-base);
     color: var(--md-muted);
     background: var(--color-warning-bg);
@@ -41,7 +49,7 @@
 }
 
 .thinking-header:hover {
-    background: rgba(251, 191, 36, 0.2);
+    background: rgba(var(--palette-yellow-rgb), 0.2);
 }
 
 .thinking-icon {
@@ -82,4 +90,3 @@
 .thinking-content p:last-child {
     margin-bottom: 0;
 }
-

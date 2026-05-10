@@ -1,7 +1,26 @@
+import { logger } from './logger.js';
+
 /**
  * 通用工具函数
  * 纯函数，无副作用，不依赖全局状态
  */
+
+/**
+ * 安全设置元素 HTML 内容，自动走 DOMPurify 清洗
+ * @param {HTMLElement} element - 目标元素
+ * @param {string} html - HTML 内容
+ * @param {Object} [config] - DOMPurify 配置
+ */
+export function safeSetHTML(element, html, config) {
+    if (typeof DOMPurify !== 'undefined') {
+        // eslint-disable-next-line no-restricted-syntax -- safeSetHTML 本身就是安全封装，内部使用 DOMPurify 消毒
+        element.innerHTML = DOMPurify.sanitize(html, config);
+    } else {
+        // DOMPurify 不可用时降级为纯文本，防止未净化的 HTML 导致 XSS
+        logger.warn('DOMPurify 未加载，safeSetHTML 降级为纯文本输出');
+        element.textContent = html;
+    }
+}
 
 /**
  * HTML 转义，防止 XSS 攻击
@@ -31,11 +50,11 @@ export function escapeHtml(text) {
  */
 export function detectImageFormat(bytes) {
     // PNG: 89 50 4E 47 0D 0A 1A 0A
-    if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47) {
+    if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
         return { mime: 'image/png', ext: 'png' };
     }
     // JPEG: FF D8 FF
-    if (bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF) {
+    if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
         return { mime: 'image/jpeg', ext: 'jpg' };
     }
     // GIF: 47 49 46 38
@@ -43,8 +62,16 @@ export function detectImageFormat(bytes) {
         return { mime: 'image/gif', ext: 'gif' };
     }
     // WebP: 52 49 46 46 ... 57 45 42 50
-    if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
-        bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) {
+    if (
+        bytes[0] === 0x52 &&
+        bytes[1] === 0x49 &&
+        bytes[2] === 0x46 &&
+        bytes[3] === 0x46 &&
+        bytes[8] === 0x57 &&
+        bytes[9] === 0x45 &&
+        bytes[10] === 0x42 &&
+        bytes[11] === 0x50
+    ) {
         return { mime: 'image/webp', ext: 'webp' };
     }
     // 默认
@@ -123,8 +150,8 @@ export function generateSessionName(content, maxLength = 25) {
 
     // 1. 清理内容：合并换行和多余空白
     const cleaned = content
-        .replace(/\n+/g, ' ')           // 换行转空格
-        .replace(/\s+/g, ' ')           // 多个空白合并为一个
+        .replace(/\n+/g, ' ') // 换行转空格
+        .replace(/\s+/g, ' ') // 多个空白合并为一个
         .replace(/[^\w\u4e00-\u9fff\s]/g, '') // 保留字母、数字、中文和空格
         .trim();
 

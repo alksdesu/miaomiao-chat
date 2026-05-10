@@ -7,10 +7,22 @@
 import { state } from '../core/state.js';
 import { elements } from '../core/elements.js';
 import { eventBus } from '../core/events.js';
-import { createMessageElement, renderThinkingBlock, renderReplyWithSelector } from '../messages/renderer.js';
+import {
+    createMessageElement,
+    renderThinkingBlock,
+    renderReplyWithSelector
+} from '../messages/renderer.js';
 import { renderStreamStatsFromData } from '../stream/stats.js';
-import { lazyImageManager, preloadImagesInRange } from '../utils/lazy-image.js';
-import { PartType, MediaKind, hasParts, getTextContent, getThinkingContent } from '../messages/schema.js';
+import { lazyImageManager } from '../utils/lazy-image.js';
+import {
+    PartType,
+    MediaKind,
+    hasParts,
+    getTextContent,
+    getThinkingContent
+} from '../messages/schema.js';
+import { escapeHtml } from '../utils/helpers.js';
+import { logger } from '../utils/logger.js';
 
 // 虚拟滚动配置
 const VIRTUAL_SCROLL_CONFIG = {
@@ -31,8 +43,14 @@ const virtualScrollState = {
     itemHeights: new Map(), // 实际测量的每条消息高度 Map<index, height>
     renderedMessages: new Set(), // 已渲染的消息索引
     prefixHeights: [], // 前缀和数组：prefixHeights[i] = 前 i 条消息的总高度
-    messagePool: new Map(), // DOM 对象池：缓存离开可见区域的消息 DOM（index -> element）
+    messagePool: new Map() // DOM 对象池：缓存离开可见区域的消息 DOM（index -> element）
 };
+
+const observedMessageElements = new Set();
+const pendingHeightRefreshIndexes = new Set();
+let messageResizeObserver = null;
+let viewportRefreshRafId = null;
+let heightRefreshRafId = null;
 
 /**
  * 计算智能阈值（考虑图片因素）
@@ -46,14 +64,16 @@ function calculateSmartThreshold(messages) {
     for (const msg of messages) {
         if (hasParts(msg)) {
             // 新格式
-            imageCount += msg.parts.filter(p => p.type === PartType.MEDIA && p.media === MediaKind.IMAGE).length;
+            imageCount += msg.parts.filter(
+                (p) => p.type === PartType.MEDIA && p.media === MediaKind.IMAGE
+            ).length;
             // 旧 Gemini 格式
-            imageCount += msg.parts.filter(p => p.inlineData).length;
+            imageCount += msg.parts.filter((p) => p.inlineData).length;
             if (!hasImage && imageCount > 0) hasImage = true;
         }
         if (msg.content && Array.isArray(msg.content)) {
-            imageCount += msg.content.filter(p => p.type === 'image_url').length;
-            imageCount += msg.content.filter(p => p.type === 'image').length;
+            imageCount += msg.content.filter((p) => p.type === 'image_url').length;
+            imageCount += msg.content.filter((p) => p.type === 'image').length;
             if (!hasImage && imageCount > 0) hasImage = true;
         }
     }
@@ -77,6 +97,133 @@ function calculateSmartThreshold(messages) {
     }
 }
 
+function getVirtualMessageIndex(messageEl) {
+    const index = parseInt(messageEl?.dataset.messageIndex || '', 10);
+    return Number.isNaN(index) ? -1 : index;
+}
+
+function syncMeasuredMessageHeight(index, rawHeight) {
+    if (!Number.isInteger(index) || index < 0) {
+        return false;
+    }
+
+    const nextHeight = Math.max(0, Math.ceil(rawHeight || 0));
+    if (nextHeight === 0) {
+        return false;
+    }
+
+    const hasMeasuredHeight = virtualScrollState.itemHeights.has(index);
+    const previousHeight = hasMeasuredHeight
+        ? virtualScrollState.itemHeights.get(index)
+        : VIRTUAL_SCROLL_CONFIG.itemHeight;
+
+    if (nextHeight === VIRTUAL_SCROLL_CONFIG.itemHeight) {
+        if (!hasMeasuredHeight) {
+            return false;
+        }
+
+        virtualScrollState.itemHeights.delete(index);
+        return previousHeight !== VIRTUAL_SCROLL_CONFIG.itemHeight;
+    }
+
+    if (previousHeight === nextHeight) {
+        return false;
+    }
+
+    virtualScrollState.itemHeights.set(index, nextHeight);
+    return true;
+}
+
+function flushPendingMessageHeightRefresh() {
+    heightRefreshRafId = null;
+
+    if (
+        !virtualScrollState.isActive ||
+        !elements.messagesArea ||
+        pendingHeightRefreshIndexes.size === 0
+    ) {
+        pendingHeightRefreshIndexes.clear();
+        return;
+    }
+
+    let minChanged = Infinity;
+    const indexes = Array.from(pendingHeightRefreshIndexes).sort((left, right) => left - right);
+    pendingHeightRefreshIndexes.clear();
+
+    indexes.forEach((index) => {
+        const messageEl = elements.messagesArea.querySelector(
+            `.message[data-message-index="${index}"]`
+        );
+        if (!messageEl) {
+            return;
+        }
+
+        if (syncMeasuredMessageHeight(index, messageEl.offsetHeight) && index < minChanged) {
+            minChanged = index;
+        }
+    });
+
+    if (minChanged < Infinity) {
+        updatePrefixHeightAt(minChanged);
+        updateVisibleRange();
+        renderVirtualMessages();
+    }
+}
+
+function scheduleMessageHeightRefresh(index) {
+    if (!virtualScrollState.isActive || !Number.isInteger(index) || index < 0) {
+        return;
+    }
+
+    pendingHeightRefreshIndexes.add(index);
+    if (heightRefreshRafId) {
+        return;
+    }
+
+    heightRefreshRafId = requestAnimationFrame(() => {
+        flushPendingMessageHeightRefresh();
+    });
+}
+
+function ensureMessageResizeObserver() {
+    const ResizeObserverCtor = globalThis.ResizeObserver;
+    if (messageResizeObserver || typeof ResizeObserverCtor !== 'function') {
+        return;
+    }
+
+    messageResizeObserver = new ResizeObserverCtor((entries) => {
+        entries.forEach((entry) => {
+            const index = getVirtualMessageIndex(entry.target);
+            if (index >= 0) {
+                scheduleMessageHeightRefresh(index);
+            }
+        });
+    });
+}
+
+function observeRenderedMessage(messageEl) {
+    if (!messageEl || observedMessageElements.has(messageEl)) {
+        return;
+    }
+
+    ensureMessageResizeObserver();
+    if (!messageResizeObserver) {
+        return;
+    }
+
+    messageResizeObserver.observe(messageEl);
+    observedMessageElements.add(messageEl);
+}
+
+function unobserveRenderedMessage(messageEl) {
+    if (!messageEl || !messageResizeObserver || !observedMessageElements.has(messageEl)) {
+        return;
+    }
+
+    messageResizeObserver.unobserve(messageEl);
+    observedMessageElements.delete(messageEl);
+}
+
 /**
  * 初始化虚拟滚动
  * @param {boolean} force - 强制启用/禁用
@@ -87,12 +234,12 @@ export function initVirtualScroll(force = null) {
     // 计算智能阈值
     const smartThreshold = calculateSmartThreshold(messages);
 
-    const shouldEnable = force !== null
-        ? force
-        : (messages.length >= smartThreshold);
+    const shouldEnable = force !== null ? force : messages.length >= smartThreshold;
 
     if (shouldEnable && !virtualScrollState.isActive) {
-        console.log(`[VirtualScroll] 启用虚拟滚动 (${messages.length} 条消息, 阈值: ${smartThreshold})`);
+        logger.debug(
+            `[VirtualScroll] 启用虚拟滚动 (${messages.length} 条消息, 阈值: ${smartThreshold})`
+        );
         enableVirtualScroll();
     } else if (!shouldEnable && virtualScrollState.isActive) {
         disableVirtualScroll();
@@ -108,7 +255,8 @@ function rebuildPrefixHeights() {
     const prefix = new Array(n + 1);
     prefix[0] = 0;
     for (let i = 0; i < n; i++) {
-        prefix[i + 1] = prefix[i] + (virtualScrollState.itemHeights.get(i) || VIRTUAL_SCROLL_CONFIG.itemHeight);
+        prefix[i + 1] =
+            prefix[i] + (virtualScrollState.itemHeights.get(i) || VIRTUAL_SCROLL_CONFIG.itemHeight);
     }
     virtualScrollState.prefixHeights = prefix;
     virtualScrollState.totalHeight = prefix[n];
@@ -127,7 +275,8 @@ function updatePrefixHeightAt(index) {
     const n = messages.length;
     // 从 index 开始重新累加
     for (let i = index; i < n; i++) {
-        prefix[i + 1] = prefix[i] + (virtualScrollState.itemHeights.get(i) || VIRTUAL_SCROLL_CONFIG.itemHeight);
+        prefix[i + 1] =
+            prefix[i] + (virtualScrollState.itemHeights.get(i) || VIRTUAL_SCROLL_CONFIG.itemHeight);
     }
     virtualScrollState.totalHeight = prefix[n];
 }
@@ -137,7 +286,8 @@ function updatePrefixHeightAt(index) {
  */
 function binarySearchPrefix(target) {
     const prefix = virtualScrollState.prefixHeights;
-    let lo = 0, hi = prefix.length - 1;
+    let lo = 0,
+        hi = prefix.length - 1;
     while (lo < hi) {
         const mid = (lo + hi) >>> 1;
         if (prefix[mid + 1] <= target) {
@@ -155,7 +305,7 @@ const MESSAGE_POOL_MAX = 30;
  * 启用虚拟滚动
  */
 function enableVirtualScroll() {
-    console.log('🚀 启用虚拟滚动模式');
+    logger.debug('🚀 启用虚拟滚动模式');
 
     virtualScrollState.isActive = true;
     VIRTUAL_SCROLL_CONFIG.enabled = true;
@@ -166,11 +316,35 @@ function enableVirtualScroll() {
     // 构建前缀和数组
     rebuildPrefixHeights();
 
+    // 监听尺寸变化，确保异步内容与窗口尺寸变化后高度缓存同步
+    window.addEventListener('resize', scheduleVirtualViewportRefresh);
+    document.addEventListener('fullscreenchange', scheduleVirtualViewportRefresh);
+
     // 绑定滚动事件
     elements.messagesArea.addEventListener('scroll', handleVirtualScroll);
 
     // 初始渲染
+    updateVisibleRange();
     renderVirtualMessages();
+}
+
+function scheduleVirtualViewportRefresh() {
+    if (!virtualScrollState.isActive || viewportRefreshRafId) {
+        return;
+    }
+
+    viewportRefreshRafId = requestAnimationFrame(() => {
+        viewportRefreshRafId = null;
+        virtualScrollState.containerHeight = elements.messagesArea?.clientHeight || 0;
+        updateVisibleRange();
+        renderVirtualMessages();
+
+        elements.messagesArea
+            .querySelectorAll('.message[data-message-index]')
+            .forEach((messageEl) => {
+                scheduleMessageHeightRefresh(getVirtualMessageIndex(messageEl));
+            });
+    });
 }
 
 /**
@@ -179,13 +353,28 @@ function enableVirtualScroll() {
 export function disableVirtualScroll() {
     if (!virtualScrollState.isActive) return; // 未激活时跳过
 
-    console.log('📴 禁用虚拟滚动模式');
+    logger.debug('📴 禁用虚拟滚动模式');
 
     virtualScrollState.isActive = false;
     VIRTUAL_SCROLL_CONFIG.enabled = false;
 
     // 解绑事件
     elements.messagesArea.removeEventListener('scroll', handleVirtualScroll);
+    window.removeEventListener('resize', scheduleVirtualViewportRefresh);
+    document.removeEventListener('fullscreenchange', scheduleVirtualViewportRefresh);
+
+    if (viewportRefreshRafId) {
+        cancelAnimationFrame(viewportRefreshRafId);
+        viewportRefreshRafId = null;
+    }
+    if (heightRefreshRafId) {
+        cancelAnimationFrame(heightRefreshRafId);
+        heightRefreshRafId = null;
+    }
+    pendingHeightRefreshIndexes.clear();
+    observedMessageElements.clear();
+    messageResizeObserver?.disconnect();
+    messageResizeObserver = null;
 
     // 清理状态
     virtualScrollState.renderedMessages.clear();
@@ -284,9 +473,10 @@ function renderVirtualMessages() {
 
     // 移除不在可见范围内的消息 → 缓存到对象池
     const existingMessages = Array.from(elements.messagesArea.querySelectorAll('.message'));
-    existingMessages.forEach(msgEl => {
+    existingMessages.forEach((msgEl) => {
         const index = parseInt(msgEl.dataset.messageIndex);
         if (index < start || index >= end) {
+            unobserveRenderedMessage(msgEl);
             msgEl.remove();
             virtualScrollState.renderedMessages.delete(index);
             // 放入对象池（限制大小）
@@ -300,7 +490,7 @@ function renderVirtualMessages() {
     if (virtualScrollState.messagePool.size >= MESSAGE_POOL_MAX) {
         const keys = Array.from(virtualScrollState.messagePool.keys());
         const toRemove = keys.slice(0, keys.length - MESSAGE_POOL_MAX + 10);
-        toRemove.forEach(k => virtualScrollState.messagePool.delete(k));
+        toRemove.forEach((k) => virtualScrollState.messagePool.delete(k));
     }
 
     // 渲染可见范围内的消息
@@ -328,8 +518,9 @@ function renderVirtualMessages() {
     const unmeasuredEls = [];
     for (let i = start; i < end; i++) {
         if (!virtualScrollState.itemHeights.has(i)) {
-            const el = fragment.querySelector?.(`.message[data-message-index="${i}"]`) ||
-                       elements.messagesArea.querySelector(`.message[data-message-index="${i}"]`);
+            const el =
+                fragment.querySelector?.(`.message[data-message-index="${i}"]`) ||
+                elements.messagesArea.querySelector(`.message[data-message-index="${i}"]`);
             if (el) unmeasuredEls.push({ index: i, el });
         }
     }
@@ -338,6 +529,9 @@ function renderVirtualMessages() {
     if (fragment.childNodes.length > 0) {
         elements.messagesArea.insertBefore(fragment, bottomSpacer);
     }
+    elements.messagesArea
+        .querySelectorAll('.message[data-message-index]')
+        .forEach(observeRenderedMessage);
 
     // 批量测量高度 + 一次性更新前缀和（requestIdleCallback 延迟，避免强制 reflow）
     if (unmeasuredEls.length > 0) {
@@ -345,30 +539,39 @@ function renderVirtualMessages() {
             let minChanged = Infinity;
             for (const { index, el } of unmeasuredEls) {
                 // 需要重新查询 DOM（fragment 已插入后引用可能变化）
-                const domEl = el.isConnected ? el : elements.messagesArea.querySelector(`.message[data-message-index="${index}"]`);
+                const domEl = el.isConnected
+                    ? el
+                    : elements.messagesArea.querySelector(
+                          `.message[data-message-index="${index}"]`
+                      );
                 if (!domEl) continue;
-                const h = domEl.offsetHeight;
-                if (h > 0 && h !== VIRTUAL_SCROLL_CONFIG.itemHeight) {
-                    virtualScrollState.itemHeights.set(index, h);
-                    if (index < minChanged) minChanged = index;
+                if (syncMeasuredMessageHeight(index, domEl.offsetHeight) && index < minChanged) {
+                    minChanged = index;
                 }
             }
             // 只从最小变化索引更新一次前缀和
             if (minChanged < Infinity) {
                 updatePrefixHeightAt(minChanged);
+                updateVisibleRange();
+                renderVirtualMessages();
             }
         });
     }
 
     // 观察新插入的懒加载图片
     if (fragment.childNodes.length > 0 || unmeasuredEls.length > 0) {
-        requestIdleCallback(() => {
-            const lazyImages = elements.messagesArea.querySelectorAll('.lazy-image:not(.observed)');
-            lazyImages.forEach(img => {
-                lazyImageManager.observe(img);
-                img.classList.add('observed');
-            });
-        }, { timeout: 500 });
+        requestIdleCallback(
+            () => {
+                const lazyImages = elements.messagesArea.querySelectorAll(
+                    '.lazy-image:not(.observed)'
+                );
+                lazyImages.forEach((img) => {
+                    lazyImageManager.observe(img);
+                    img.classList.add('observed');
+                });
+            },
+            { timeout: 500 }
+        );
     }
 }
 
@@ -387,34 +590,30 @@ function createVirtualMessageElement(msg, index) {
     if (hasParts(msg)) {
         text = getTextContent(msg);
         images = msg.parts
-            .filter(p => p.type === PartType.MEDIA && p.media === MediaKind.IMAGE)
-            .map(p => ({
+            .filter((p) => p.type === PartType.MEDIA && p.media === MediaKind.IMAGE)
+            .map((p) => ({
                 name: '已上传图片',
                 type: p.mime || 'image/*',
                 category: 'image',
-                data: p.url,
+                data: p.url
             }));
         // 文件附件
         const fileAttachments = msg.parts
-            .filter(p => p.type === PartType.FILE)
-            .map(p => ({
+            .filter((p) => p.type === PartType.FILE)
+            .map((p) => ({
                 name: p.name || '已上传文件',
                 type: p.mime || 'application/octet-stream',
                 category: p.mime === 'application/pdf' ? 'pdf' : 'text',
-                data: p.url,
+                data: p.url
             }));
         images = [...images, ...fileAttachments];
     } else {
-        // 旧格式回退：从 content 读取
+        // 旧格式回退：用 schema.js 工具函数读取文本
+        text = getTextContent(msg);
         const content = msg.content;
-        if (typeof content === 'string') {
-            text = content;
-            images = [];
-        } else if (Array.isArray(content)) {
-            text = content.filter(p => p.type === 'text').map(p => p.text).join('');
-            images = content.filter(p => p.type === 'image_url');
+        if (Array.isArray(content)) {
+            images = content.filter((p) => p.type === 'image_url');
         } else {
-            text = '';
             images = [];
         }
     }
@@ -430,39 +629,35 @@ function createVirtualMessageElement(msg, index) {
 
     // 恢复思维链（如果有）
     const openaiMsg = state.messages[index];
-    let thinkingText = '';
-    if (hasParts(msg)) {
-        thinkingText = getThinkingContent(msg);
-    }
-    // 旧格式回退
-    if (!thinkingText) {
-        thinkingText = openaiMsg?.thinkingContent || '';
-    }
+    // getThinkingContent 内部已处理新/旧格式回退
+    const thinkingText = getThinkingContent(msg);
     if (role === 'assistant' && thinkingText) {
         try {
             const contentDiv = messageEl.querySelector('.message-content');
             if (contentDiv) {
+                // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
                 contentDiv.innerHTML = renderThinkingBlock(thinkingText) + contentDiv.innerHTML;
             }
         } catch (e) {
-            console.error('[VirtualScroll] 思维链恢复失败:', e);
+            logger.error('[VirtualScroll] 思维链恢复失败:', e);
         }
     }
 
     // 恢复助手消息的媒体内容（图片/视频/音频）
     if (role === 'assistant' && hasParts(msg)) {
-        const mediaParts = msg.parts.filter(p => p.type === PartType.MEDIA);
+        const mediaParts = msg.parts.filter((p) => p.type === PartType.MEDIA);
         if (mediaParts.length > 0) {
             const contentDiv = messageEl.querySelector('.message-content');
             if (contentDiv) {
                 let mediaHtml = '';
                 for (const p of mediaParts) {
+                    const safeUrl = escapeHtml(p.url);
                     if (p.media === MediaKind.VIDEO) {
-                        mediaHtml += `<div class="image-wrapper video-wrapper"><video src="${p.url}" controls playsinline muted preload="metadata"></video></div>`;
+                        mediaHtml += `<div class="image-wrapper video-wrapper"><video src="${safeUrl}" controls playsinline muted preload="metadata"></video></div>`;
                     } else if (p.media === MediaKind.AUDIO) {
-                        mediaHtml += `<div class="audio-wrapper"><audio src="${p.url}" controls preload="metadata"></audio></div>`;
+                        mediaHtml += `<div class="audio-wrapper"><audio src="${safeUrl}" controls preload="metadata"></audio></div>`;
                     } else {
-                        mediaHtml += `<div class="image-wrapper"><img src="${p.url}" alt="Generated image" style="cursor:pointer;"></div>`;
+                        mediaHtml += `<div class="image-wrapper"><img src="${safeUrl}" alt="Generated image" style="cursor:pointer;"></div>`;
                     }
                 }
                 contentDiv.insertAdjacentHTML('beforeend', mediaHtml);
@@ -482,7 +677,7 @@ function createVirtualMessageElement(msg, index) {
     }
 
     // 恢复多回复（如果有）
-    const repliesAll = openaiMsg?.replies?.all || openaiMsg?.allReplies;
+    const repliesAll = openaiMsg?.replies?.all;
     const repliesSelected = openaiMsg?.replies?.selected ?? openaiMsg?.selectedReplyIndex ?? 0;
     if (repliesAll && repliesAll.length > 1) {
         requestIdleCallback(() => {
@@ -499,27 +694,32 @@ function createVirtualMessageElement(msg, index) {
  * @param {string} behavior - 滚动行为 ('auto' | 'smooth' | 'instant')
  */
 export function scrollToMessage(index, behavior = 'smooth') {
+    if (!Number.isInteger(index) || index < 0 || index >= state.messages.length) {
+        return false;
+    }
+
     if (!virtualScrollState.isActive) {
-        // 非虚拟滚动模式，使用普通滚动
         const messageEl = elements.messagesArea.querySelector(`[data-message-index="${index}"]`);
         if (messageEl) {
             messageEl.scrollIntoView({ behavior, block: 'center' });
+            return true;
         }
-        return;
+
+        return false;
     }
 
-    // 虚拟滚动模式：计算目标位置
-    let targetScrollTop = 0;
-
-    for (let i = 0; i < index; i++) {
-        const itemHeight = virtualScrollState.itemHeights.get(i) || VIRTUAL_SCROLL_CONFIG.itemHeight;
-        targetScrollTop += itemHeight;
+    if (!virtualScrollState.prefixHeights.length) {
+        rebuildPrefixHeights();
     }
+
+    const targetScrollTop = virtualScrollState.prefixHeights[index] || 0;
 
     elements.messagesArea.scrollTo({
         top: targetScrollTop,
         behavior
     });
+
+    return true;
 }
 
 /**
@@ -529,6 +729,64 @@ export function scrollToMessage(index, behavior = 'smooth') {
 export function scrollToBottom(behavior = 'smooth') {
     const messages = state.messages;
     scrollToMessage(messages.length - 1, behavior);
+}
+
+function messageContainsMermaid(messageEl) {
+    return messageEl?.querySelector('.mermaid-block') != null;
+}
+
+function collectMermaidAffectedMessageIndexes() {
+    const indexes = new Set();
+
+    // 仅处理对象池中真正包含 Mermaid 的条目，避免主题切换时整池失效
+    virtualScrollState.messagePool.forEach((messageEl, index) => {
+        if (messageContainsMermaid(messageEl)) {
+            indexes.add(index);
+        }
+    });
+
+    const mermaidBlocks = elements.messagesArea?.querySelectorAll('.message .mermaid-block') || [];
+
+    mermaidBlocks.forEach((block) => {
+        const messageEl = block.closest('.message');
+        const index = parseInt(messageEl?.dataset.messageIndex || '', 10);
+        if (!Number.isNaN(index)) {
+            indexes.add(index);
+        }
+    });
+
+    return indexes;
+}
+
+function handleMermaidLayoutUpdated(payload) {
+    if (!virtualScrollState.isActive) {
+        return;
+    }
+
+    const messageEl = payload?.container?.closest('.message[data-message-index]');
+    const index = getVirtualMessageIndex(messageEl);
+    scheduleMessageHeightRefresh(index);
+}
+
+function invalidateMermaidVirtualCache() {
+    if (!virtualScrollState.isActive || !elements.messagesArea) {
+        return;
+    }
+
+    const affectedIndexes = collectMermaidAffectedMessageIndexes();
+    if (affectedIndexes.size === 0) {
+        return;
+    }
+
+    affectedIndexes.forEach((index) => {
+        virtualScrollState.messagePool.delete(index);
+        virtualScrollState.itemHeights.delete(index);
+    });
+
+    virtualScrollState.containerHeight = elements.messagesArea.clientHeight;
+    rebuildPrefixHeights();
+    updateVisibleRange();
+    renderVirtualMessages();
 }
 
 /**
@@ -550,3 +808,5 @@ export function getVirtualScrollStats() {
 // restore.js 通过事件解耦，避免 messages 层直接导入 UI 层
 eventBus.on('restore:disable-virtual-scroll', () => disableVirtualScroll());
 eventBus.on('restore:init-virtual-scroll', () => initVirtualScroll());
+eventBus.on('mermaid:layout-updated', handleMermaidLayoutUpdated);
+eventBus.on('ui:theme-applied', invalidateMermaidVirtualCache);

@@ -61,8 +61,19 @@ android/.cxx/
 android/captures/
 android/app/release/
 *.jks
-# 保留 debug.keystore 用于 CI 构建
-!android/app/debug.keystore
+*.keystore
 
 # Documentation (temporary)
 docs/
+releases/
+
+# Mermaid 运行时源码映射（运行时不需要）
+libs/mermaid/**/*.map
+coverage/
+.madgerc
+
+# 测试相关（本地保留，不上传）
+tests/
+vitest.config.js
+jsconfig.json
+dev-app-update.yml

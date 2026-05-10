@@ -7,14 +7,27 @@
 import { state } from '../core/state.js';
 import { elements } from '../core/elements.js';
 import { eventBus } from '../core/events.js';
-import { removeMessagesAfter, popLastAssistantMessage, updateMessageAt } from '../core/state-mutations.js';
+import {
+    removeMessagesAfter,
+    popLastAssistantMessage,
+    updateMessageAt,
+    setUploadedImages,
+    setEditingIndex,
+    setEditingElement,
+    setCurrentAssistantMessage,
+    setCurrentReplies,
+    setSelectedReplyIndex
+} from '../core/state-mutations.js';
 // 不直接导入 input.js 的函数，通过 eventBus 解耦（避免循环依赖）
 import { showConfirmDialog } from '../utils/dialogs.js';
 import { canEditMessage, safeDeleteMessage } from '../tools/message-compat.js';
-import { clearThoughtSignatures, hasThoughtSignatures } from '../api/format-converter.js';  // thoughtSignature 清理
+import { clearThoughtSignatures, hasThoughtSignatures } from '../api/format-converter.js'; // thoughtSignature 清理
 import { categorizeFile } from '../utils/file-helpers.js';
-import { enhanceCodeBlocks } from './renderer.js';
-import { PartType, MediaKind } from './schema.js';
+import { escapeHtml } from '../utils/helpers.js';
+import { rerenderMessageContent } from './renderer.js';
+import { PartType, MediaKind, getTextContent, getThinkingContent } from './schema.js';
+import { parseUserContent } from './user-content-parser.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * 自动调整文本框高度（通用函数）
@@ -45,11 +58,11 @@ function getMessageIndexById(messageId) {
 
     // Fallback：遍历数组查找（向后兼容，防止 map 未同步）
     const messages = state.messages;
-    const index = messages.findIndex(msg => msg.id === messageId);
+    const index = messages.findIndex((msg) => msg.id === messageId);
 
     // 如果找到但 map 中没有，同步到 map
     if (index !== -1 && state.messageIdMap) {
-        console.warn(`消息ID ${messageId} 在 map 中缺失，自动同步`);
+        logger.warn(`消息ID ${messageId} 在 map 中缺失，自动同步`);
         state.messageIdMap.set(messageId, index);
     }
 
@@ -67,11 +80,11 @@ export function enterEditMode(messageEl) {
         return;
     }
 
-    console.log('[editor.js] enterEditMode 被调用', { messageEl });
+    logger.debug('[editor.js] enterEditMode 被调用', { messageEl });
     const targetIndex = resolveMessageIndex(messageEl);
-    console.log('[editor.js] targetIndex =', targetIndex);
+    logger.debug('[editor.js] targetIndex =', targetIndex);
     if (targetIndex === -1) {
-        console.error('[ERROR] 无效的 targetIndex');
+        logger.error('[ERROR] 无效的 targetIndex');
         return;
     }
 
@@ -85,32 +98,42 @@ export function enterEditMode(messageEl) {
         for (const p of message.parts) {
             if (p.type === PartType.TEXT) text += p.text;
             else if (p.type === PartType.MEDIA && p.media === MediaKind.IMAGE) {
-                attachments.push({ name: '已上传图片', type: 'image/*', category: 'image', data: p.url });
+                attachments.push({
+                    name: '已上传图片',
+                    type: 'image/*',
+                    category: 'image',
+                    data: p.url
+                });
             } else if (p.type === PartType.FILE) {
-                attachments.push({ name: p.name, type: p.mime, category: categorizeFile(p.mime), data: p.url });
+                attachments.push({
+                    name: p.name,
+                    type: p.mime,
+                    category: categorizeFile(p.mime),
+                    data: p.url
+                });
             }
         }
         elements.userInput.value = text;
-        state.uploadedImages = attachments;
+        setUploadedImages(attachments);
     } else {
         // 旧格式兼容
         const { text, images } = parseUserContent(message.content);
         elements.userInput.value = text;
-        state.uploadedImages = images;
+        setUploadedImages(images);
     }
 
     // 更新编辑状态
     if (state.editingElement) {
         state.editingElement.classList.remove('editing');
     }
-    state.editingIndex = targetIndex;
-    state.editingElement = messageEl;
+    setEditingIndex(targetIndex);
+    setEditingElement(messageEl);
     messageEl.classList.add('editing');
-    console.log('[editor.js] 编辑状态已更新, state.editingIndex =', state.editingIndex);
+    logger.debug('[editor.js] 编辑状态已更新, state.editingIndex =', state.editingIndex);
 
     // 通过 eventBus 通知 input.js 更新图片预览（避免循环依赖）
     eventBus.emit('editor:refresh-attachments');
-    console.log('[editor.js] editor:refresh-attachments 已发出');
+    logger.debug('[editor.js] editor:refresh-attachments 已发出');
 
     // 自动调整输入框高度以适应加载的内容
     eventBus.emit('editor:resize-textarea');
@@ -119,7 +142,7 @@ export function enterEditMode(messageEl) {
     elements.userInput?.focus();
 
     // 通知 UI 更新按钮状态
-    console.log('[editor.js] 发出 editor:mode-changed 事件');
+    logger.debug('[editor.js] 发出 editor:mode-changed 事件');
     eventBus.emit('editor:mode-changed', {
         isEditing: true,
         index: targetIndex
@@ -149,7 +172,7 @@ export function editMessageInPlace(messageEl) {
     // 获取当前内容和图片（统一从 state.messages 读取）
     let textContent = '';
     const images = [];
-    let thinkingContent = '';
+    let thinkingContent = ''; // 运行时局部变量，非旧格式字段
 
     const message = state.messages[index];
     if (!message) return;
@@ -168,24 +191,22 @@ export function editMessageInPlace(messageEl) {
 
     // 旧格式兼容回退
     if (!textContent && message.content) {
-        if (typeof message.content === 'string') {
-            textContent = message.content;
-        } else if (Array.isArray(message.content)) {
-            message.content.forEach(p => {
-                if (p.type === 'text') textContent += p.text || '';
-                else if (p.type === 'image_url' && p.image_url?.url) images.push(p);
+        textContent = getTextContent(message);
+        if (Array.isArray(message.content)) {
+            message.content.forEach((p) => {
+                if (p.type === 'image_url' && p.image_url?.url) images.push(p);
             });
         }
     }
-    if (!thinkingContent && message.thinkingContent) {
-        thinkingContent = message.thinkingContent;
+    if (!thinkingContent) {
+        thinkingContent = getThinkingContent(message);
     }
 
     const contentDiv = messageEl.querySelector('.message-content');
     if (!contentDiv) return;
 
     // 创建编辑界面
-    const originalHTML = contentDiv.innerHTML;
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     contentDiv.innerHTML = '';
 
     // 图片管理区域（现有图片 + 添加按钮）
@@ -197,8 +218,10 @@ export function editMessageInPlace(messageEl) {
 
     // 渲染图片预览
     const renderImagePreviews = () => {
-        const container = imageManager.querySelector('.edit-images-container') || document.createElement('div');
+        const container =
+            imageManager.querySelector('.edit-images-container') || document.createElement('div');
         container.className = 'edit-images-container';
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
         container.innerHTML = '';
 
         editableImages.forEach((img, idx) => {
@@ -212,8 +235,9 @@ export function editMessageInPlace(messageEl) {
                 imgUrl = norm.dataUrl;
             }
 
+            // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
             imgPreview.innerHTML = `
-                <img src="${imgUrl}" alt="图片 ${idx + 1}" title="点击查看大图">
+                <img src="${escapeHtml(imgUrl)}" alt="图片 ${idx + 1}" title="点击查看大图">
                 <button class="edit-image-remove" data-index="${idx}" title="删除图片">×</button>
             `;
 
@@ -235,6 +259,7 @@ export function editMessageInPlace(messageEl) {
         const addBtn = document.createElement('button');
         addBtn.className = 'edit-image-add';
         addBtn.title = '添加图片';
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
         addBtn.innerHTML = `
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
@@ -247,7 +272,10 @@ export function editMessageInPlace(messageEl) {
         container.appendChild(addBtn);
 
         if (imageManager.querySelector('.edit-images-container')) {
-            imageManager.replaceChild(container, imageManager.querySelector('.edit-images-container'));
+            imageManager.replaceChild(
+                container,
+                imageManager.querySelector('.edit-images-container')
+            );
         } else {
             imageManager.appendChild(container);
         }
@@ -262,6 +290,7 @@ export function editMessageInPlace(messageEl) {
         thinkingSection.className = 'edit-thinking-section';
 
         const thinkingLabel = document.createElement('label');
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
         thinkingLabel.innerHTML = '💡 思维链内容 <span class="hint">留空则删除思维链</span>';
 
         thinkingTextarea = document.createElement('textarea');
@@ -272,7 +301,9 @@ export function editMessageInPlace(messageEl) {
 
         // 初始化时自动调整高度
         setTimeout(() => autoResizeGeneric(thinkingTextarea, 80, 400), 0);
-        thinkingTextarea.addEventListener('input', () => autoResizeGeneric(thinkingTextarea, 80, 400));
+        thinkingTextarea.addEventListener('input', () =>
+            autoResizeGeneric(thinkingTextarea, 80, 400)
+        );
 
         thinkingSection.appendChild(thinkingLabel);
         thinkingSection.appendChild(thinkingTextarea);
@@ -298,7 +329,7 @@ export function editMessageInPlace(messageEl) {
     saveBtn.textContent = '保存';
     saveBtn.onclick = () => {
         const newContent = textarea.value.trim();
-        const newThinking = thinkingTextarea?.value.trim() || null;  // 获取思维链
+        const newThinking = thinkingTextarea?.value.trim() || null; // 获取思维链
 
         // 验证：防止保存空消息
         if (!newContent && editableImages.length === 0) {
@@ -315,21 +346,16 @@ export function editMessageInPlace(messageEl) {
         } else {
             updateMessageContentWithImages(index, newContent, editableImages, role);
         }
-        // 重新渲染消息
-        eventBus.emit('message:content-updated', { messageEl, index, newContent, role });
+        if (rerenderMessageContent(messageEl, index, role)) {
+            eventBus.emit('ui:notification', { message: '消息已保存', type: 'success' });
+        }
     };
 
     const cancelBtn = document.createElement('button');
     cancelBtn.className = 'btn-secondary';
     cancelBtn.textContent = '取消';
     cancelBtn.onclick = () => {
-        contentDiv.innerHTML = originalHTML;
-        messageEl.classList.remove('editing');
-        // 恢复 HTML 后事件监听器丢失，清除所有增强标记并重新绑定
-        contentDiv.querySelectorAll('.thinking-header[data-enhanced="true"]').forEach(h => delete h.dataset.enhanced);
-        contentDiv.querySelectorAll('.code-block-enhanced').forEach(el => el.classList.remove('code-block-enhanced'));
-        contentDiv.querySelectorAll('table[data-enhanced="true"]').forEach(t => delete t.dataset.enhanced);
-        enhanceCodeBlocks(contentDiv);
+        rerenderMessageContent(messageEl, index, role);
     };
 
     editActions.appendChild(saveBtn);
@@ -360,14 +386,14 @@ export function updateMessageContent(index, newContent, _role) {
 
     // 新格式 parts：合并所有 text part 为一个，替换为新内容
     if (msg.parts && Array.isArray(msg.parts)) {
-        const nonTextParts = msg.parts.filter(p => p.type !== PartType.TEXT);
+        const nonTextParts = msg.parts.filter((p) => p.type !== PartType.TEXT);
         // 找到第一个 text part 的位置，在该位置插入新 text
-        const firstTextIdx = msg.parts.findIndex(p => p.type === PartType.TEXT);
+        const firstTextIdx = msg.parts.findIndex((p) => p.type === PartType.TEXT);
         const insertIdx = firstTextIdx >= 0 ? firstTextIdx : nonTextParts.length;
         const newParts = [
             ...nonTextParts.slice(0, insertIdx),
             { type: PartType.TEXT, text: newContent },
-            ...nonTextParts.slice(insertIdx),
+            ...nonTextParts.slice(insertIdx)
         ];
         updates.parts = newParts;
     } else {
@@ -416,14 +442,19 @@ export function updateMessageContentWithImages(index, newText, images, _role) {
 
     // 新格式 parts
     if (msg.parts && Array.isArray(msg.parts)) {
-        const thinkingParts = msg.parts.filter(p => p.type === PartType.THINKING);
-        const preservedParts = msg.parts.filter(p =>
-            p.type === PartType.TOOL_CALL || p.type === PartType.FILE
+        const thinkingParts = msg.parts.filter((p) => p.type === PartType.THINKING);
+        const preservedParts = msg.parts.filter(
+            (p) => p.type === PartType.TOOL_CALL || p.type === PartType.FILE
         );
         const newParts = [...thinkingParts, { type: PartType.TEXT, text: newText }];
         if (hasImages) {
             for (const n of normalized) {
-                newParts.push({ type: PartType.MEDIA, media: MediaKind.IMAGE, url: n.dataUrl, mime: n.mimeType });
+                newParts.push({
+                    type: PartType.MEDIA,
+                    media: MediaKind.IMAGE,
+                    url: n.dataUrl,
+                    mime: n.mimeType
+                });
             }
         }
         newParts.push(...preservedParts);
@@ -433,7 +464,12 @@ export function updateMessageContentWithImages(index, newText, images, _role) {
         const newParts = [{ type: PartType.TEXT, text: newText }];
         if (hasImages) {
             for (const n of normalized) {
-                newParts.push({ type: PartType.MEDIA, media: MediaKind.IMAGE, url: n.dataUrl, mime: n.mimeType });
+                newParts.push({
+                    type: PartType.MEDIA,
+                    media: MediaKind.IMAGE,
+                    url: n.dataUrl,
+                    mime: n.mimeType
+                });
             }
         }
         updates.parts = newParts;
@@ -472,8 +508,8 @@ export async function deleteMessage(messageEl) {
 
     // 从 DOM 中移除所有被删除的消息元素
     const allMessages = Array.from(elements.messagesArea.querySelectorAll('.message'));
-    result.deletedIndices.forEach(deletedIndex => {
-        const elToRemove = allMessages.find(el => {
+    result.deletedIndices.forEach((deletedIndex) => {
+        const elToRemove = allMessages.find((el) => {
             const elIndex = parseInt(el.dataset.messageIndex, 10);
             return elIndex === deletedIndex;
         });
@@ -496,9 +532,10 @@ export async function deleteMessage(messageEl) {
     });
 
     // 显示删除通知
-    const message = result.deletedIndices.length > 1
-        ? `已删除 ${result.deletedIndices.length} 条消息`
-        : '消息已删除';
+    const message =
+        result.deletedIndices.length > 1
+            ? `已删除 ${result.deletedIndices.length} 条消息`
+            : '消息已删除';
     eventBus.emit('ui:notification', { message, type: 'info' });
 }
 
@@ -511,15 +548,21 @@ export function removeMessagesAfterAll(index) {
     removeMessagesAfter(index);
 
     const nodes = Array.from(elements.messagesArea.querySelectorAll('.message'));
-    nodes.forEach(node => {
-        const nodeIndex = node.dataset?.messageIndex !== undefined ? parseInt(node.dataset.messageIndex, 10) : NaN;
+    nodes.forEach((node) => {
+        const nodeIndex =
+            node.dataset?.messageIndex !== undefined
+                ? parseInt(node.dataset.messageIndex, 10)
+                : NaN;
         if (!Number.isNaN(nodeIndex) && nodeIndex > index) {
             node.remove();
         }
     });
 
-    const targetNode = nodes.find(node => {
-        const nodeIndex = node.dataset?.messageIndex !== undefined ? parseInt(node.dataset.messageIndex, 10) : NaN;
+    const targetNode = nodes.find((node) => {
+        const nodeIndex =
+            node.dataset?.messageIndex !== undefined
+                ? parseInt(node.dataset.messageIndex, 10)
+                : NaN;
         return !Number.isNaN(nodeIndex) && nodeIndex === index;
     });
     if (targetNode) {
@@ -536,7 +579,7 @@ export function removeMessagesAfterAll(index) {
         node.dataset.messageIndex = idx;
     });
 
-    state.currentAssistantMessage = null;
+    setCurrentAssistantMessage(null);
 
     // 通知会话保存
     eventBus.emit('messages:changed', {
@@ -547,21 +590,21 @@ export function removeMessagesAfterAll(index) {
 
 /**
  * 重试功能（重新生成最后一条助手消息）
- * @param {HTMLElement} messageEl - 消息元素
  */
-export async function handleRetry(messageEl) {
+export async function handleRetry() {
     if (state.isLoading) return;
 
     // 清空当前的多回复状态
-    state.currentReplies = [];
-    state.selectedReplyIndex = 0;
+    setCurrentReplies([]);
+    setSelectedReplyIndex(0);
 
     // 检查是否有内容可以重试
     if (state.messages.length === 0) return;
 
     // 查找最后一条助手消息
     const allAssistantMsgs = elements.messagesArea.querySelectorAll('.message.assistant');
-    const lastAssistantMsg = allAssistantMsgs.length > 0 ? allAssistantMsgs[allAssistantMsgs.length - 1] : null;
+    const lastAssistantMsg =
+        allAssistantMsgs.length > 0 ? allAssistantMsgs[allAssistantMsgs.length - 1] : null;
 
     // 移除最后一条助手消息
     popLastAssistantMessage();
@@ -592,7 +635,7 @@ function resolveMessageIndex(messageEl) {
     if (messageId) {
         const index = getMessageIndexById(messageId);
         if (index !== -1) return index;
-        console.warn(`消息ID ${messageId} 未找到，fallback到索引查找`);
+        logger.warn(`消息ID ${messageId} 未找到，fallback到索引查找`);
     }
 
     // Fallback 1: 使用 dataset.messageIndex（向后兼容）
@@ -606,60 +649,6 @@ function resolveMessageIndex(messageEl) {
     const nodes = Array.from(elements.messagesArea.querySelectorAll('.message'));
     const domIndex = nodes.indexOf(messageEl);
     return domIndex;
-}
-
-/**
- * 解析 OpenAI/Claude 格式的用户消息内容
- */
-function parseUserContent(content) {
-    let text = '';
-    const attachments = [];
-
-    if (Array.isArray(content)) {
-        content.forEach(part => {
-            if (part.type === 'text') {
-                text += (text ? '\n' : '') + (part.text || '');
-            } else if (part.type === 'image_url' && part.image_url?.url) {
-                // 图片（OpenAI 格式）
-                attachments.push({
-                    name: '已上传图片',
-                    type: 'image/*',
-                    category: 'image',
-                    data: part.image_url.url,
-                });
-            } else if (part.type === 'image' && part.source?.data) {
-                // 图片（Claude 格式）
-                const mimeType = part.source.media_type || 'image/*';
-                attachments.push({
-                    name: '已上传图片',
-                    type: mimeType,
-                    category: 'image',
-                    data: `data:${mimeType};base64,${part.source.data}`,
-                });
-            } else if (part.type === 'file' && part.file?.file_data) {
-                // PDF（OpenAI 格式）
-                attachments.push({
-                    name: part.file.filename || '已上传PDF',
-                    type: 'application/pdf',
-                    category: 'pdf',
-                    data: part.file.file_data,
-                });
-            } else if (part.type === 'document' && part.source?.data) {
-                // PDF（Claude 格式）
-                const mimeType = part.source.media_type || 'application/pdf';
-                attachments.push({
-                    name: '已上传PDF',
-                    type: mimeType,
-                    category: 'pdf',
-                    data: `data:${mimeType};base64,${part.source.data}`,
-                });
-            }
-        });
-    } else if (typeof content === 'string') {
-        text = content;
-    }
-
-    return { text, images: attachments };
 }
 
 // ========== 事件监听 ==========
@@ -679,9 +668,9 @@ eventBus.on('message:edit-requested', ({ messageEl }) => {
     // 根据消息角色选择编辑方式
     const isUser = messageEl.classList.contains('user');
     if (isUser) {
-        enterEditMode(messageEl);  // 用户消息：在输入框编辑
+        enterEditMode(messageEl); // 用户消息：在输入框编辑
     } else {
-        editMessageInPlace(messageEl);  // AI消息：原地编辑
+        editMessageInPlace(messageEl); // AI消息：原地编辑
     }
 });
 
@@ -691,8 +680,8 @@ eventBus.on('message:delete-requested', ({ messageEl }) => {
 });
 
 // 监听重试请求
-eventBus.on('message:retry-requested', ({ messageEl }) => {
-    handleRetry(messageEl);
+eventBus.on('message:retry-requested', () => {
+    handleRetry();
 });
 
 /**
@@ -711,41 +700,35 @@ function normalizeImage(img) {
     const inlineData = img.inlineData || img.inline_data;
     if (inlineData) {
         const mime = inlineData.mimeType || inlineData.mime_type;
-        return { mimeType: mime, data: inlineData.data, dataUrl: `data:${mime};base64,${inlineData.data}` };
+        return {
+            mimeType: mime,
+            data: inlineData.data,
+            dataUrl: `data:${mime};base64,${inlineData.data}`
+        };
     }
     // Claude 格式
     if (img.source?.data) {
         const mime = img.source.media_type;
-        return { mimeType: mime, data: img.source.data, dataUrl: `data:${mime};base64,${img.source.data}` };
+        return {
+            mimeType: mime,
+            data: img.source.data,
+            dataUrl: `data:${mime};base64,${img.source.data}`
+        };
     }
     return null;
 }
 
 /**
- * 将标准化图片数组转为三种格式的内容数组
- * 消除 updateMessageContentWithImages/updateMessageWithThinking 的重复代码
- */
-function buildFormatImages(normalizedImages) {
-    const openai = normalizedImages.map(n => ({ type: 'image_url', image_url: { url: n.dataUrl } }));
-    const gemini = normalizedImages
-        .filter(n => n.mimeType && n.data)
-        .map(n => ({ inlineData: { mimeType: n.mimeType, data: n.data } }));
-    const claude = normalizedImages
-        .filter(n => n.mimeType && n.data)
-        .map(n => ({ type: 'image', source: { type: 'base64', media_type: n.mimeType, data: n.data } }));
-    return { openai, gemini, claude };
-}
-
-/**
  * 返回编辑时需要删除的元数据字段名列表
+ * 清理旧格式残留字段（contentParts/allReplies/selectedReplyIndex），编辑后迁移为新格式
  * @param {Object} msg - 消息对象
  * @param {boolean} keepContentParts - 为 true 时保留 contentParts
  * @returns {string[]} 需要删除的字段名
  */
 function getEditCleanupKeys(msg, keepContentParts = false) {
     const keys = [];
-    if (!keepContentParts && msg.contentParts) keys.push('contentParts');
-    if (msg.allReplies) keys.push('allReplies');
+    if (!keepContentParts && msg.contentParts) keys.push('contentParts'); // 旧格式清理
+    if (msg.allReplies) keys.push('allReplies'); // 旧格式清理
     if (msg.selectedReplyIndex !== undefined) keys.push('selectedReplyIndex');
     if (msg.replies) keys.push('replies');
     return keys;
@@ -813,7 +796,7 @@ async function addNewImage(editableImages, renderCallback) {
                 type: 'success'
             });
         } catch (error) {
-            console.error('添加图片失败:', error);
+            logger.error('添加图片失败:', error);
             eventBus.emit('ui:notification', {
                 message: '添加图片失败',
                 type: 'error'
@@ -855,7 +838,7 @@ export function updateMessageWithThinking(index, newText, newThinking, images, _
 
     const msg = state.messages[index];
 
-    // 构建 contentParts
+    // 构建新格式 parts
     const updates = {};
 
     // 编辑思维链后需要清除签名
@@ -863,15 +846,20 @@ export function updateMessageWithThinking(index, newText, newThinking, images, _
 
     // 新格式 parts
     if (msg.parts && Array.isArray(msg.parts)) {
-        const preservedParts = msg.parts.filter(p =>
-            p.type === PartType.TOOL_CALL || p.type === PartType.FILE
+        const preservedParts = msg.parts.filter(
+            (p) => p.type === PartType.TOOL_CALL || p.type === PartType.FILE
         );
         const newParts = [];
         if (newThinking) newParts.push({ type: PartType.THINKING, text: newThinking });
         newParts.push({ type: PartType.TEXT, text: newText });
         if (hasImages) {
             for (const n of normalized) {
-                newParts.push({ type: PartType.MEDIA, media: MediaKind.IMAGE, url: n.dataUrl, mime: n.mimeType });
+                newParts.push({
+                    type: PartType.MEDIA,
+                    media: MediaKind.IMAGE,
+                    url: n.dataUrl,
+                    mime: n.mimeType
+                });
             }
         }
         newParts.push(...preservedParts);
@@ -883,7 +871,12 @@ export function updateMessageWithThinking(index, newText, newThinking, images, _
         newParts.push({ type: PartType.TEXT, text: newText });
         if (hasImages) {
             for (const n of normalized) {
-                newParts.push({ type: PartType.MEDIA, media: MediaKind.IMAGE, url: n.dataUrl, mime: n.mimeType });
+                newParts.push({
+                    type: PartType.MEDIA,
+                    media: MediaKind.IMAGE,
+                    url: n.dataUrl,
+                    mime: n.mimeType
+                });
             }
         }
         updates.parts = newParts;

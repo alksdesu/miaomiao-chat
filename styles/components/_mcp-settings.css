@@ -34,6 +34,20 @@
     box-shadow: var(--shadow-lg);
 }
 
+.json-paste-dialog-content {
+    display: flex;
+    flex-direction: column;
+    width: 90%;
+    max-width: 800px;
+    max-height: 90vh;
+    max-height: 90dvh;
+}
+
+.json-paste-dialog-content .modal-body {
+    flex: 1;
+    min-height: 0;
+}
+
 /* ========== 头部 ========== */
 .mcp-settings-header {
     display: flex;
@@ -214,8 +228,13 @@
 }
 
 @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.5; }
+    0%,
+    100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.5;
+    }
 }
 
 .mcp-tool-count {
@@ -248,7 +267,7 @@
 
 /* ========== 工具列表 ========== */
 .mcp-tools-list {
-    --mcp-tools-bg: rgba(14, 165, 233, 0.05);
+    --mcp-tools-bg: rgba(var(--palette-blue-rgb), 0.05);
     padding: 0.75rem;
     /* 添加滚动阴影指示器 */
     background:
@@ -258,7 +277,11 @@
         radial-gradient(farthest-side at 50% 100%, var(--scroll-shadow-color), transparent) 0 100%;
     background-repeat: no-repeat;
     background-color: var(--mcp-tools-bg);
-    background-size: 100% 32px, 100% 32px, 100% 12px, 100% 12px;
+    background-size:
+        100% 32px,
+        100% 32px,
+        100% 12px,
+        100% 12px;
     background-attachment: local, local, scroll, scroll;
     border: var(--border);
     border-radius: 8px;
@@ -398,7 +421,7 @@
 
 .form-control.error {
     border-color: var(--md-coral);
-    background: rgba(239, 68, 68, 0.05);
+    background: rgba(var(--palette-coral-rgb), 0.05);
 }
 
 .error-message {
@@ -436,7 +459,7 @@
     font-weight: bold;
     cursor: pointer;
     transition: all 0.15s var(--ease);
-    font-family: inherit;
+    font-family: var(--font-ui-accent);
     box-shadow: var(--shadow-sm);
 }
 
@@ -546,6 +569,7 @@
 @media (max-width: 768px) {
     .mcp-settings-content {
         width: 100vw;
+        height: 100vh;
         height: 100dvh;
         max-width: 100%;
         max-height: 100%;

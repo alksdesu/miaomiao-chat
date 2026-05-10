@@ -4,9 +4,9 @@
     :root {
         --border: 1px solid var(--md-charcoal);
         --border-thick: 2px solid var(--md-charcoal);
-        --shadow-sm: 0 1px 3px rgba(0,0,0,0.12);
-        --shadow-md: 0 2px 6px rgba(0,0,0,0.15);
-        --shadow-lg: 0 4px 12px rgba(0,0,0,0.2);
+        --shadow-sm: 0 1px 3px rgba(var(--shadow-color-rgb), 0.12);
+        --shadow-md: 0 2px 6px rgba(var(--shadow-color-rgb), 0.15);
+        --shadow-lg: 0 4px 12px rgba(var(--shadow-color-rgb), 0.2);
     }
 
     .chat-container {
@@ -35,7 +35,7 @@
 
     /* ---- Header 紧凑化 ---- */
     .header-content {
-        padding: calc(6px + env(safe-area-inset-top, 0px)) 10px 6px;
+        padding: calc(6px + var(--app-safe-top)) 10px 6px;
     }
 
     .header-content .icon-button {
@@ -53,7 +53,7 @@
     /* ---- 输入栏全面紧凑 ---- */
     .input-bar {
         padding: 4px 8px;
-        padding-bottom: calc(4px + env(safe-area-inset-bottom, 0px));
+        padding-bottom: calc(4px + var(--app-safe-bottom));
     }
 
     .input-bar-inner {
@@ -126,7 +126,7 @@
         flex-shrink: 0;
         padding: 4px 6px;
         min-width: 32px;
-        min-height: 28px;
+        min-height: 36px;
         font-size: var(--fs-xs);
         border-width: 1px;
         box-shadow: none;
@@ -182,10 +182,22 @@
         scroll-padding-top: 60px;
     }
 
+    .matched-messages-preview {
+        padding: 8px 10px;
+    }
+
+    .matched-message-item {
+        padding: 8px;
+    }
+
+    .matched-message-meta {
+        gap: 6px;
+    }
+
     .settings-overlay,
     .sidebar-overlay {
         cursor: pointer;
-        -webkit-tap-highlight-color: rgba(255, 255, 255, 0.1);
+        -webkit-tap-highlight-color: rgba(var(--color-bg-surface-rgb), 0.1);
     }
 
     .close-settings-btn,
@@ -268,6 +280,7 @@
     .quote-preview-message {
         font-size: var(--fs-md);
         -webkit-line-clamp: 3;
+        line-clamp: 3;
     }
 
     .quote-preview-close {
@@ -275,29 +288,29 @@
         height: 28px;
     }
 
-    /* ---- 模态框全屏（排除轻量对话框） ---- */
-    .modal-content {
+    /* ---- 全屏型弹层：必须显式标记 ---- */
+    /* 可与紧凑型类同时存在，移动端由这里统一覆盖为全屏。 */
+    .modal-content.modal-mobile-fullscreen {
+        display: flex;
+        flex-direction: column;
         width: 100vw;
+        height: 100vh;
         height: 100dvh;
         max-width: 100%;
         max-height: 100%;
         border-radius: 0;
     }
 
-    #confirm-dialog-modal .modal-content,
-    #input-dialog-modal .modal-content {
-        width: 90%;
-        max-width: 400px;
-        height: auto;
-        max-height: 80dvh;
-        border-radius: 12px;
+    .modal-content.modal-mobile-fullscreen .modal-body {
+        flex: 1;
+        min-height: 0;
     }
 
     /* ---- 通知 ---- */
     .notification {
-        left: 8px;
-        right: 8px;
-        top: 8px;
+        left: calc(8px + var(--app-safe-left));
+        right: calc(8px + var(--app-safe-right));
+        --notification-base-top: calc(8px + var(--app-safe-top));
         width: auto;
         font-size: var(--fs-sm);
         padding: 6px 30px 6px 10px;
@@ -316,7 +329,7 @@
     }
 
     .sidebar-header {
-        padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px;
+        padding: calc(10px + var(--app-safe-top)) 12px 10px;
         gap: 6px;
         border-bottom-width: 1px;
     }
@@ -396,7 +409,7 @@
     }
 
     .settings-header {
-        padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px;
+        padding: calc(10px + var(--app-safe-top)) 12px 10px;
         border-bottom-width: 1px;
     }
 
@@ -482,14 +495,14 @@
     }
 
     /* ========== 通用模态框缩小 ========== */
-    .modal-header {
-        padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px;
+    .modal-mobile-fullscreen .modal-header {
+        padding: calc(10px + var(--app-safe-top)) 12px 10px;
     }
 
     /* 覆盖组件文件中双 class 选择器的 padding */
     .code-editor-modal-content .modal-header,
     .edit-model-content .modal-header {
-        padding-top: calc(10px + env(safe-area-inset-top, 0px));
+        padding: calc(10px + var(--app-safe-top)) 12px 10px;
     }
 
     .modal-header h2,
@@ -501,8 +514,13 @@
         padding: 12px;
     }
 
-    .modal-footer {
-        padding: 10px 12px;
+    .modal-mobile-fullscreen .modal-footer {
+        padding: 10px 12px calc(10px + var(--app-safe-bottom));
+    }
+
+    .code-editor-modal-content .modal-footer,
+    .edit-model-content .modal-footer {
+        padding: 10px 12px calc(10px + var(--app-safe-bottom));
     }
 
     .modal-footer button {
@@ -510,14 +528,14 @@
         min-height: 36px;
     }
 
-    .icon-button[aria-label="关闭"] {
+    .icon-button[aria-label='关闭'] {
         width: 32px;
         height: 32px;
     }
 
     /* ========== MCP 设置缩小 ========== */
     .mcp-settings-header {
-        padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px;
+        padding: calc(10px + var(--app-safe-top)) 12px 10px;
     }
 
     .mcp-settings-header h2 {
@@ -585,7 +603,8 @@
     }
 
     /* ========== 设置面板内所有子组件通用缩小 ========== */
-    .settings-content input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="hidden"]),
+    .settings-content
+        input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='hidden']),
     .settings-content select,
     .settings-content textarea {
         font-size: var(--fs-lg);
@@ -794,9 +813,22 @@
         display: none;
     }
 
+    /* 全屏容器在移动端不再承担滚动。
+       否则会被 _tool-manager-enhancements.css 的 overflow-y:auto 与自定义滚动条接管，
+       在打开和页签切换的重排瞬间出现右侧黑色滚动条轨道，并挤压内容宽度。 */
+    #tool-manager-modal .tool-manager-content {
+        overflow: hidden;
+        scrollbar-width: none;
+    }
+
+    #tool-manager-modal .tool-manager-content::-webkit-scrollbar {
+        width: 0;
+        height: 0;
+    }
+
     .tool-manager-tabs {
         flex-shrink: 0;
-        padding: 0 4px;
+        padding: var(--app-safe-top) 4px 0;
     }
 
     .tool-manager-tabs .tab-btn {
@@ -804,23 +836,31 @@
         font-size: var(--fs-base);
     }
 
-    .tab-content.active {
+    /* 页签内容层只负责承载布局，不承担滚动，避免与下层面板形成嵌套滚动。 */
+    #tool-manager-modal .tab-content.active {
         flex: 1;
         display: flex;
         flex-direction: column;
         min-height: 0;
-        overflow-y: auto;
+        overflow: hidden;
     }
 
-    .tab-content.active[data-tab="tools"] {
+    #tool-manager-modal .tab-content.active[data-tab='tools'] {
         overflow: hidden;
     }
 
     /* 权限/历史面板紧凑化 */
     .permissions-panel,
     .history-panel {
+        flex: 1;
+        min-height: 0;
         padding: 10px;
         overflow-y: auto;
+        overflow-x: hidden;
+    }
+
+    .history-list {
+        max-height: none;
     }
 
     .permissions-header,
@@ -1007,8 +1047,8 @@
         grid-template-columns: repeat(4, 1fr);
     }
 
-    /* 代码块更大的最大高度 */
-    .message-content pre {
+    /* 代码块更大的最大高度（Mermaid 图表不应被这里裁切） */
+    .message-content pre:not(.mermaid-block) {
         max-height: 600px;
     }
 }
@@ -1020,8 +1060,6 @@
         grid-template-columns: repeat(5, 1fr);
     }
 }
-
-
 
 /* ========== 触摸设备优化 ========== */
 @media (hover: none) and (pointer: coarse) {
@@ -1037,8 +1075,7 @@
 
     /* 增强触摸反馈 */
     * {
-        -webkit-tap-highlight-color: rgba(14, 165, 233, 0.2);
-        tap-highlight-color: rgba(14, 165, 233, 0.2);
+        -webkit-tap-highlight-color: rgba(var(--palette-blue-rgb), 0.2);
     }
 
     /* 禁用 hover 变换效果，使用 active 代替 */
@@ -1058,7 +1095,11 @@
     }
 
     /* 增大触摸区域（排除已在768px中缩小的按钮） */
-    button:not(.header-content .icon-button):not(.quick-toggle-btn):not(.session-action-btn):not(.close-settings-btn):not(.close-sidebar-btn):not(.msg-action-btn):not(.scroll-to-bottom-btn):not(.notification-close):not(.search-clear-btn):not(.mobile-overflow-item) {
+    button:not(.header-content .icon-button):not(.quick-toggle-btn):not(.session-action-btn):not(
+            .close-settings-btn
+        ):not(.close-sidebar-btn):not(.msg-action-btn):not(.scroll-to-bottom-btn):not(
+            .notification-close
+        ):not(.search-clear-btn):not(.mobile-overflow-item) {
         min-height: 36px;
     }
 
@@ -1071,3 +1112,60 @@
     }
 }
 
+/* 安卓横屏短高度：显式全屏弹层继续走全屏路径 */
+@media (max-height: 600px) and (orientation: landscape) {
+    :root[data-platform='android'] .modal-content.modal-mobile-fullscreen {
+        display: flex;
+        flex-direction: column;
+        width: 100vw;
+        height: 100vh;
+        height: 100dvh;
+        max-width: 100%;
+        max-height: 100%;
+        border-radius: 0;
+    }
+
+    :root[data-platform='android'] .modal-content.modal-mobile-fullscreen .modal-body {
+        flex: 1;
+        min-height: 0;
+    }
+
+    :root[data-platform='android'] .modal-mobile-fullscreen .modal-header {
+        padding: calc(10px + var(--app-safe-top)) 12px 10px;
+    }
+
+    :root[data-platform='android'] .modal-mobile-fullscreen .modal-header h2,
+    :root[data-platform='android'] .modal-mobile-fullscreen .modal-header h3 {
+        font-size: var(--fs-lg);
+    }
+
+    :root[data-platform='android'] .modal-mobile-fullscreen .modal-close,
+    :root[data-platform='android'] .modal-mobile-fullscreen .icon-button[aria-label='关闭'] {
+        width: 32px;
+        height: 32px;
+    }
+
+    :root[data-platform='android'] .modal-mobile-fullscreen .modal-body {
+        padding: 12px;
+    }
+
+    :root[data-platform='android'] .modal-mobile-fullscreen .modal-footer {
+        padding: 10px 12px calc(10px + var(--app-safe-bottom));
+    }
+
+    :root[data-platform='android'] .modal-mobile-fullscreen .detail-header {
+        padding: calc(10px + var(--app-safe-top)) 12px 10px;
+    }
+
+    :root[data-platform='android'] .modal-mobile-fullscreen .detail-header h2 {
+        font-size: var(--fs-lg);
+    }
+
+    :root[data-platform='android'] .modal-mobile-fullscreen .detail-content {
+        padding: 12px;
+    }
+
+    :root[data-platform='android'] .modal-mobile-fullscreen .detail-footer {
+        padding: 10px 12px calc(10px + var(--app-safe-bottom));
+    }
+}

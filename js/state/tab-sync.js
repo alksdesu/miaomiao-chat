@@ -5,6 +5,7 @@
 
 import { state } from '../core/state.js';
 import { eventBus } from '../core/events.js';
+import { logger } from '../utils/logger.js';
 
 const CHANNEL_NAME = 'webchat-sync';
 let channel = null;
@@ -14,7 +15,9 @@ let tabId;
 try {
     tabId = sessionStorage.getItem('_tabId');
     if (!tabId) {
-        tabId = (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36));
+        tabId = crypto.randomUUID
+            ? crypto.randomUUID()
+            : Math.random().toString(36).slice(2) + Date.now().toString(36);
         sessionStorage.setItem('_tabId', tabId);
     }
 } catch {
@@ -27,13 +30,13 @@ try {
  */
 export function initTabSync() {
     if (typeof BroadcastChannel === 'undefined') {
-        console.log('[TabSync] BroadcastChannel 不可用，跳过跨标签页同步');
+        logger.debug('[TabSync] BroadcastChannel 不可用，跳过跨标签页同步');
         return;
     }
 
     channel = new BroadcastChannel(CHANNEL_NAME);
     channel.onmessage = handleMessage;
-    console.log(`[TabSync] 已初始化 (tabId: ${tabId.slice(0, 8)})`);
+    logger.debug(`[TabSync] 已初始化 (tabId: ${tabId.slice(0, 8)})`);
 }
 
 /**
@@ -52,7 +55,7 @@ function handleMessage({ data: msg }) {
 
     switch (msg.type) {
         case 'session-deleted': {
-            const idx = state.sessions.findIndex(s => s.id === msg.data.sessionId);
+            const idx = state.sessions.findIndex((s) => s.id === msg.data.sessionId);
             if (idx !== -1) {
                 state.sessions.splice(idx, 1);
                 eventBus.emit('sessions:updated', { sessions: state.sessions });
@@ -75,7 +78,7 @@ function handleMessage({ data: msg }) {
                 });
             }
             // 更新列表中的元数据
-            const session = state.sessions.find(s => s.id === msg.data.sessionId);
+            const session = state.sessions.find((s) => s.id === msg.data.sessionId);
             if (session && msg.data.updatedAt) {
                 session.updatedAt = msg.data.updatedAt;
                 if (msg.data.messageCount !== undefined) {

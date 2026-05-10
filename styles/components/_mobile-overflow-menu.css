@@ -12,7 +12,9 @@
     transform: scale(0.95);
     opacity: 0;
     pointer-events: none;
-    transition: transform 0.15s var(--ease), opacity 0.15s var(--ease);
+    transition:
+        transform 0.15s var(--ease),
+        opacity 0.15s var(--ease);
     overflow: hidden;
 }
 
@@ -32,7 +34,7 @@
     background: transparent;
     width: 100%;
     color: var(--color-text-primary);
-    font-family: var(--font-sans);
+    font-family: var(--font-ui-accent);
     font-size: var(--fs-lg);
     cursor: pointer;
     transition: background 0.15s;

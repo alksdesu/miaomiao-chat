@@ -7,7 +7,7 @@
 
 .tools-quick-selector {
     position: absolute;
-    bottom: calc(100% + 8px);  /* 在按钮上方 8px */
+    bottom: calc(100% + 8px); /* 在按钮上方 8px */
     left: 0;
     min-width: 280px;
     max-width: 320px;
@@ -126,7 +126,7 @@
     color: var(--md-muted);
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    font-family: 'Courier New', monospace;
+    font-family: var(--font-ui-accent);
 }
 
 .group-icon {
@@ -155,7 +155,7 @@
     transform: translate(3px, -3px);
 }
 
-.tool-checkbox-item input[type="checkbox"] {
+.tool-checkbox-item input[type='checkbox'] {
     position: absolute;
     opacity: 0;
     pointer-events: none;
@@ -173,24 +173,24 @@
     transition: all 0.15s var(--ease);
 }
 
-input[type="checkbox"]:checked + .checkbox-custom {
+input[type='checkbox']:checked + .checkbox-custom {
     background: var(--md-blue);
     border-color: var(--md-blue);
 }
 
-input[type="checkbox"]:checked + .checkbox-custom::after {
+input[type='checkbox']:checked + .checkbox-custom::after {
     content: '✓';
     position: absolute;
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    color: white;
+    color: var(--color-text-inverse);
     font-size: var(--fs-lg);
     font-weight: bold;
     line-height: 1;
 }
 
-input[type="checkbox"]:focus-visible + .checkbox-custom {
+input[type='checkbox']:focus-visible + .checkbox-custom {
     outline: 2px solid var(--md-blue);
     outline-offset: 2px;
 }
@@ -218,7 +218,7 @@ input[type="checkbox"]:focus-visible + .checkbox-custom {
     font-weight: 600;
     border-radius: 4px;
     background: var(--md-blue);
-    color: white;
+    color: var(--color-text-inverse);
     text-transform: uppercase;
     letter-spacing: 0.05em;
 }
@@ -263,7 +263,7 @@ input[type="checkbox"]:focus-visible + .checkbox-custom {
 
 .quick-action-btn.primary {
     background: var(--md-blue);
-    color: white;
+    color: var(--color-text-inverse);
     border-color: var(--md-blue);
 }
 
@@ -275,7 +275,7 @@ input[type="checkbox"]:focus-visible + .checkbox-custom {
 
 #toggle-tools.active {
     background: var(--md-blue);
-    color: white;
+    color: var(--color-text-inverse);
     border-color: var(--md-blue);
 }
 

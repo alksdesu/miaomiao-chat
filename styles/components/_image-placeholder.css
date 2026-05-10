@@ -33,8 +33,15 @@
 }
 
 @keyframes image-pulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.6; transform: scale(0.95); }
+    0%,
+    100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+    50% {
+        opacity: 0.6;
+        transform: scale(0.95);
+    }
 }
 
 .image-loading-info {
@@ -64,7 +71,8 @@
 
 .image-loading-progress .progress-bar {
     height: 100%;
-    background: linear-gradient(90deg,
+    background: linear-gradient(
+        90deg,
         var(--md-sky-blue) 0%,
         var(--md-teal) 50%,
         var(--md-lime) 100%
@@ -83,15 +91,19 @@
     background: linear-gradient(
         90deg,
         transparent 0%,
-        rgba(255, 255, 255, 0.3) 50%,
+        rgba(var(--color-bg-surface-rgb), 0.3) 50%,
         transparent 100%
     );
     animation: shimmer 1.5s infinite;
 }
 
 @keyframes shimmer {
-    0% { transform: translateX(-100%); }
-    100% { transform: translateX(100%); }
+    0% {
+        transform: translateX(-100%);
+    }
+    100% {
+        transform: translateX(100%);
+    }
 }
 
 .image-loading-size {
@@ -99,4 +111,3 @@
     font-size: var(--fs-base);
     color: var(--text-secondary);
 }
-

@@ -1,0 +1,37 @@
+# Node modules (contains large Electron binaries)
+node_modules/
+
+# Electron desktop app
+electron/
+dist/
+
+# Android app
+android/
+
+# Capacitor build output
+www/
+
+# Development files
+.git/
+.github/
+.vscode/
+
+# Documentation
+docs/
+README*.md
+
+# Config files (keep package.json for version info if needed)
+wrangler.jsonc
+capacitor.config.json
+tsconfig.json
+*.lock
+*.log
+
+# Scripts
+scripts/
+
+# Source assets (if any)
+resources/
+
+# Mermaid 运行时源码映射（运行时不需要）
+libs/mermaid/**/*.map

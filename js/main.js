@@ -9,21 +9,15 @@ if (typeof window.requestIdleCallback !== 'function') {
     window.cancelIdleCallback = (id) => clearTimeout(id);
 }
 
-// ========== 全局错误处理器（H1 修复）==========
+// ========== 全局错误处理器 ==========
 
 /**
  * 全局未捕获的 Promise rejection 处理器
  */
 window.addEventListener('unhandledrejection', (event) => {
-    console.error('🚨 未捕获的 Promise rejection:', event.reason);
-
-    // 阻止默认的错误抛出行为
+    console.error('未捕获的 Promise rejection:', event.reason);
     event.preventDefault();
-
-    // 尝试显示用户友好的错误消息
     const errorMessage = event.reason?.message || String(event.reason) || '未知错误';
-
-    // 如果有 UI 通知系统，显示错误
     if (window.eventBus) {
         window.eventBus.emit('ui:notification', {
             message: `操作失败: ${errorMessage}`,
@@ -36,53 +30,15 @@ window.addEventListener('unhandledrejection', (event) => {
  * 全局错误处理器（捕获同步错误）
  */
 window.addEventListener('error', (event) => {
-    console.error('🚨 全局错误:', {
+    console.error('全局错误:', {
         message: event.message,
         filename: event.filename,
         lineno: event.lineno,
         colno: event.colno,
         error: event.error
     });
-
-    // 阻止浏览器默认的错误提示
     event.preventDefault();
 });
-
-/**
- * 动态加载 Eruda 调试工具（仅 Android 平台）
- */
-async function loadEruda() {
-    return new Promise((resolve, reject) => {
-        const script = document.createElement('script');
-        script.src = 'libs/eruda/eruda.js';
-        script.onload = () => {
-            if (window.eruda) {
-                // 初始化 Eruda（自动显示悬浮按钮，但不展开控制台面板）
-                window.eruda.init({
-                    tool: ['console', 'elements', 'network', 'resources', 'info', 'snippets', 'sources'],
-                    useShadowDom: true,
-                    autoScale: true,
-                    defaults: {
-                        displaySize: 40,
-                        transparency: 0.9,
-                        theme: 'dark'
-                    }
-                });
-
-                console.log('🔧 Eruda 调试工具已启动（Android 专用）');
-                console.log('📱 Eruda 版本:', window.eruda.version);
-            } else {
-                console.error('❌ window.eruda 未定义');
-            }
-            resolve();
-        };
-        script.onerror = (error) => {
-            console.error('⚠️ Eruda 加载失败:', error);
-            resolve(); // 不阻塞应用启动
-        };
-        document.head.appendChild(script);
-    });
-}
 
 /**
  * 初始化 Electron 自定义标题栏
@@ -97,6 +53,11 @@ function initElectronTitlebar() {
 
     document.getElementById('titlebar-devtools')?.addEventListener('click', () => {
         window.electronAPI.toggleDevTools();
+    });
+    document.getElementById('titlebar-network')?.addEventListener('click', () => {
+        import('./network/panel.js').then(({ toggleNetworkPanel }) => {
+            toggleNetworkPanel();
+        });
     });
     document.getElementById('titlebar-minimize')?.addEventListener('click', () => {
         window.electronAPI.windowMinimize();
@@ -114,6 +75,7 @@ import './core/events.js';
 import { eventBus } from './core/events.js';
 import { state } from './core/state.js';
 import { elements, initElements } from './core/elements.js';
+import { setStorageMode, setMcpServers } from './core/state-mutations.js';
 
 // ========== Utils Layer ==========
 import './utils/helpers.js';
@@ -129,9 +91,17 @@ import { loadTheme, initTheming } from './ui/theming.js';
 import './ui/notifications.js';
 
 // ========== State Layer ==========
-import { initDB, loadPreference, isIndexedDBAvailable, isLocalStorageAvailable, migrateMCPServersFromLocalStorage, loadAllMCPServers, migrateSessionsToV4 } from './state/storage.js';
+import {
+    initDB,
+    loadPreference,
+    isIndexedDBAvailable,
+    isLocalStorageAvailable,
+    migrateMCPServersFromLocalStorage,
+    loadAllMCPServers,
+    migrateSessionsToV4
+} from './state/storage.js';
 import { loadConfig, saveCurrentConfigImmediate } from './state/config.js';
-import { loadSessions, switchToSession } from './state/sessions.js';
+import { loadSessions } from './state/sessions.js';
 import { initTabSync } from './state/tab-sync.js';
 // initExportImport → 延迟动态加载
 import { initQuickMessages } from './state/quick-messages.js';
@@ -188,6 +158,7 @@ import { initFormatSwitcher } from './ui/format-switcher.js';
 import { initQuickToggles, exposeToggleFunctions } from './ui/quick-toggles.js';
 import { initPasswordToggles, initRippleEffects } from './ui/enhancements.js';
 import { initMobileOverflowMenu } from './ui/mobile-overflow-menu.js';
+import { initAndroidBackHandler } from './ui/android-back-handler.js';
 
 // ========== UI Layer (Deferred — 非首屏，动态加载) ==========
 // settings, viewer, prefill, config-helpers, custom-headers,
@@ -196,27 +167,65 @@ import { initMobileOverflowMenu } from './ui/mobile-overflow-menu.js';
 // → 改为 init() 中延迟动态 import
 
 // ========== Performance & Memory ==========
-import { memoryManager } from './utils/memory-manager.js';
+import { initMemoryManager } from './utils/memory-manager.js';
+import { logger } from './utils/logger.js';
 
 /**
  * 初始化应用
  */
 async function init() {
-    console.log('🚀 Initializing Web Chat...');
-    console.log('📦 Module system: ES6 Modules');
-    console.log('🏗️  Architecture: 6-layer modular design');
+    // 尽早安装 fetch 代理，捕获所有网络请求
+    import('./network/interceptor.js').then(({ installFetchProxy }) => installFetchProxy());
 
-    // 初始化 Eruda 移动端调试工具（仅 Android 平台）
-    if (isAndroid()) {
-        await loadEruda();
+    // 安装 console 拦截器（尽早，捕获所有日志；工具注册在 initTools 中完成）
+    import('./devtools/console-interceptor.js')
+        .then(({ installConsoleInterceptor }) => installConsoleInterceptor())
+        .catch(() => {});
+
+    logger.debug('[init] 启动...');
+
+    const currentPlatform = isElectron() ? 'electron' : isAndroid() ? 'android' : 'web';
+    document.documentElement.dataset.platform = currentPlatform;
+
+    // Chii DevTools（Web/Android 端，Electron 用原生 DevTools）
+    if (!isElectron()) {
+        const chii = () => import('./devtools/chii.js');
+        eventBus.on('devtools:show', () => {
+            chii().then(({ showChii }) => showChii());
+        });
+        eventBus.on('devtools:toggle', () => {
+            chii().then(({ toggleChii }) => toggleChii());
+        });
+        document.getElementById('mobile-devtools-btn')?.addEventListener('click', () => {
+            chii().then(({ showChii }) => showChii());
+        });
     }
 
+    // Network 面板按钮（三平台通用）
+    document.getElementById('network-toggle')?.addEventListener('click', () => {
+        import('./network/panel.js').then(({ toggleNetworkPanel }) => {
+            toggleNetworkPanel();
+        });
+    });
+
+    // 抓包重放 → 打开构建器
+    eventBus.on('network:replay-request', async (record) => {
+        const { openNetworkPanel, switchTab } = await import('./network/panel.js');
+        openNetworkPanel();
+        switchTab('builder');
+        setTimeout(async () => {
+            const { importToBuilder } = await import('./network/builder-view.js');
+            importToBuilder(record);
+        }, 100);
+    });
+
     // 初始化 Electron 自定义标题栏（仅桌面端）
-    initElectronTitlebar();
+    if (currentPlatform === 'electron') {
+        initElectronTitlebar();
+    }
 
     try {
-        // 0. 检查存储可用性（处理跟踪保护）
-        console.log('🔍 Step 0/10: Checking storage availability...');
+        // 检查存储可用性（处理跟踪保护）
         const hasIndexedDB = isIndexedDBAvailable();
         const hasLocalStorage = isLocalStorageAvailable();
 
@@ -224,27 +233,27 @@ async function init() {
             // ❌ 两种存储都不可用（严格跟踪保护模式）
             throw new Error(
                 '存储功能被浏览器跟踪保护阻止\n\n' +
-                '请尝试以下操作：\n' +
-                '1. 关闭浏览器的严格跟踪保护（Safari: 设置 → 隐私 → 防止跨网站跟踪）\n' +
-                '2. 将本站点添加到跟踪保护白名单\n' +
-                '3. 使用其他浏览器（Chrome, Edge, Firefox）'
+                    '请尝试以下操作：\n' +
+                    '1. 关闭浏览器的严格跟踪保护（Safari: 设置 → 隐私 → 防止跨网站跟踪）\n' +
+                    '2. 将本站点添加到跟踪保护白名单\n' +
+                    '3. 使用其他浏览器（Chrome, Edge, Firefox）'
             );
         }
 
         if (!hasIndexedDB && hasLocalStorage) {
-            console.warn('⚠️ IndexedDB 被阻止，将使用 localStorage 降级模式');
-            state.storageMode = 'localStorage';
+            logger.warn('⚠️ IndexedDB 被阻止，将使用 localStorage 降级模式');
+            setStorageMode('localStorage');
         }
 
         // 1. 初始化 DOM 元素引用（必须最先执行）
-        console.log('📍 Step 1/10: Initializing DOM elements...');
+
         initElements();
 
         // 1. 配置 Marked.js（代码高亮）
         if (typeof marked !== 'undefined') {
             // 自定义链接渲染器：外部链接在新标签页打开
             const renderer = new marked.Renderer();
-            renderer.link = function({ href, title, text }) {
+            renderer.link = function ({ href, title, text }) {
                 const titleAttr = title ? ` title="${title}"` : '';
                 // 判断是否为外部链接（http/https 开头）
                 if (href && /^https?:\/\//i.test(href)) {
@@ -258,34 +267,33 @@ async function init() {
                 breaks: true,
                 gfm: true,
                 renderer: renderer,
-                highlight: function(code, lang) {
+                highlight: function (code, lang) {
                     if (typeof hljs !== 'undefined' && hljs.getLanguage(lang)) {
                         return hljs.highlight(code, { language: lang }).value;
                     }
                     return code;
                 }
             });
-            console.log('Marked.js configured with syntax highlighting');
         }
 
         // 2. 核心层（同步）
-        console.log('⚡ Step 1/9: Loading theme...');
+
         loadTheme();
 
         // 3. 存储层
-        console.log('💾 Step 2/9: Initializing IndexedDB...');
+
         let dbReady = false;
         try {
             const dbInstance = await initDB();
             if (dbInstance) {
                 dbReady = true;
             } else {
-                console.warn('IndexedDB 初始化返回空实例，启用 localStorage 降级模式');
-                state.storageMode = 'localStorage';
+                logger.warn('IndexedDB 初始化返回空实例，启用 localStorage 降级模式');
+                setStorageMode('localStorage');
             }
         } catch (error) {
-            console.error('IndexedDB 初始化失败，启用 localStorage 降级模式:', error);
-            state.storageMode = 'localStorage';
+            logger.error('IndexedDB 初始化失败，启用 localStorage 降级模式:', error);
+            setStorageMode('localStorage');
             eventBus.emit('ui:notification', {
                 message: 'IndexedDB 不可用，数据将保存到 localStorage',
                 type: 'warning',
@@ -297,9 +305,9 @@ async function init() {
         if (dbReady) {
             try {
                 const v4Count = await migrateSessionsToV4();
-                if (v4Count > 0) console.log(`[v4] 迁移完成: ${v4Count} 个会话`);
+                if (v4Count > 0) logger.debug(`[v4] 迁移完成: ${v4Count} 个会话`);
             } catch (e) {
-                console.error('[v4] 消息分离迁移失败:', e);
+                logger.error('[v4] 消息分离迁移失败:', e);
             }
         }
 
@@ -308,13 +316,13 @@ async function init() {
             try {
                 const migrationResult = await runMigrationIfNeeded();
                 if (migrationResult.migrated) {
-                    console.log(`[schema] 消息格式迁移完成: ${migrationResult.count} 个会话`);
+                    logger.debug(`[schema] 消息格式迁移完成: ${migrationResult.count} 个会话`);
                     if (migrationResult.errors.length > 0) {
-                        console.warn(`[schema] ${migrationResult.errors.length} 个会话有迁移错误`);
+                        logger.warn(`[schema] ${migrationResult.errors.length} 个会话有迁移错误`);
                     }
                 }
             } catch (e) {
-                console.error('[schema] 消息格式迁移失败:', e);
+                logger.error('[schema] 消息格式迁移失败:', e);
             }
         }
 
@@ -324,17 +332,16 @@ async function init() {
                 getMigrationStatus(),
                 // 乐观并行：多数情况迁移已完成，loadConfig 可以安全并行
                 (async () => {
-                    console.log('⚙️  Step 3/9: Loading configuration...');
                     await loadConfig();
                 })()
             ]);
 
             if (migrationStatus !== MIGRATION_STATES.COMPLETED) {
-                console.log(`迁移状态: ${migrationStatus}，执行迁移...`);
+                logger.debug(`迁移状态: ${migrationStatus}，执行迁移...`);
                 try {
                     acquireMigrationLock();
                 } catch (lockError) {
-                    console.warn('迁移锁获取失败:', lockError.message);
+                    logger.warn('迁移锁获取失败:', lockError.message);
                 }
                 if (localStorage.getItem('migration_lock')) {
                     try {
@@ -342,19 +349,19 @@ async function init() {
                         // 迁移完成后重新加载配置（覆盖乐观加载的结果）
                         await loadConfig();
                     } catch (migrationError) {
-                        console.error('迁移失败:', migrationError);
+                        logger.error('迁移失败:', migrationError);
                     } finally {
                         releaseMigrationLock();
                     }
                 }
             }
         } else {
-            console.log('⚙️  Step 3/9: Loading configuration...');
+            logger.debug('⚙️  Step 3/9: Loading configuration...');
             await loadConfig();
         }
 
         // 迁移旧配置到提供商系统 (如果需要)
-        console.log('🔄 Step 4/9: Migrating to provider system...');
+
         migrateFromLegacyConfig();
 
         // Electron: 通过 IPC 将初始化设置发送给主进程（替代 executeJavaScript）
@@ -363,34 +370,35 @@ async function init() {
                 const settingsJson = await loadPreference('appSettings');
                 const appSettings = settingsJson ? JSON.parse(settingsJson) : {};
                 await window.electronAPI.sendInitSettings(appSettings);
-                console.log('[Main] 已通过 IPC 发送初始化设置');
+                logger.debug('[Main] 已通过 IPC 发送初始化设置');
             } catch (err) {
-                console.error('[Main] 发送初始化设置失败:', err);
+                logger.error('[Main] 发送初始化设置失败:', err);
             }
         }
 
         // 并行加载会话、快捷消息、MCP 配置（三者互不依赖，都只依赖 IndexedDB）
-        console.log('📚 Step 5/9: Loading sessions, quick messages, MCP config (parallel)...');
 
         const loadMCPConfig = async () => {
             if (state.storageMode !== 'localStorage') {
                 try {
                     const migratedCount = await migrateMCPServersFromLocalStorage();
                     if (migratedCount > 0) {
-                        console.log(`[Main] 迁移 ${migratedCount} 个 MCP 服务器`);
+                        logger.debug(`[Main] 迁移 ${migratedCount} 个 MCP 服务器`);
                     }
-                    state.mcpServers = await loadAllMCPServers();
-                    console.log(`[Main] 加载 ${state.mcpServers.length} 个 MCP 服务器`);
+                    setMcpServers(await loadAllMCPServers());
+                    logger.debug(`[Main] 加载 ${state.mcpServers.length} 个 MCP 服务器`);
                 } catch (error) {
-                    console.error('[Main] 加载 MCP 配置失败:', error);
+                    logger.error('[Main] 加载 MCP 配置失败:', error);
                     try {
                         const saved = localStorage.getItem('mcpServers');
                         if (saved) {
-                            state.mcpServers = JSON.parse(saved);
-                            console.log(`[Main] 从 localStorage 加载 ${state.mcpServers.length} 个 MCP 服务器`);
+                            setMcpServers(JSON.parse(saved));
+                            logger.debug(
+                                `[Main] 从 localStorage 加载 ${state.mcpServers.length} 个 MCP 服务器`
+                            );
                         }
                     } catch (fallbackError) {
-                        console.error('[Main] 从 localStorage 加载失败:', fallbackError);
+                        logger.error('[Main] 从 localStorage 加载失败:', fallbackError);
                     }
                 }
             } else {
@@ -398,35 +406,36 @@ async function init() {
                     const saved = localStorage.getItem('mcpServers');
                     if (saved) {
                         state.mcpServers = JSON.parse(saved);
-                        console.log(`[Main] 从 localStorage 加载 ${state.mcpServers.length} 个 MCP 服务器`);
+                        logger.debug(
+                            `[Main] 从 localStorage 加载 ${state.mcpServers.length} 个 MCP 服务器`
+                        );
                     }
                 } catch (error) {
-                    console.error('[Main] 从 localStorage 加载 MCP 配置失败:', error);
+                    logger.error('[Main] 从 localStorage 加载 MCP 配置失败:', error);
                 }
             }
         };
 
-        await Promise.all([
-            loadSessions(),
-            initQuickMessages(),
-            loadMCPConfig()
-        ]);
+        await Promise.all([loadSessions(), initQuickMessages(), loadMCPConfig()]);
 
         initTabSync();
+        initMemoryManager();
 
         // 会话消息已渲染，移除骨架屏
         const skeleton = document.getElementById('app-skeleton');
         if (skeleton) skeleton.remove();
 
-        // 4. API 层
-        console.log('🌐 Step 6/9: Initializing API handler...');
+        // API 层
         initAPIHandler();
         initReplySelector();
 
-        // 5. UI 层（同步，绑定事件）
-        // ⭐ Step 7.5/9: 初始化工具系统
-        console.log('🔧 Step 7.5/9: Initializing tools system...');
-        initTools();
+        // 工具系统
+        await initTools();
+
+        // 恢复当前会话的 AI Monitor 状态（必须在 initTools 注册完工具之后）
+        import('./devtools/init.js')
+            .then(({ restoreMonitorState }) => restoreMonitorState())
+            .catch(() => {});
 
         // 监听工具执行状态变化，保存结果到消息历史
         eventBus.on('tool:status:changed', ({ toolId, status, result }) => {
@@ -437,9 +446,7 @@ async function init() {
             }
         });
 
-        console.log('🖱️  Step 8/9: Initializing UI handlers...');
-
-        // 首屏关键 UI（同步，用户立即需要交互）
+        // 首屏关键 UI
         initTheming();
         initKeyboard();
         initPasswordToggles();
@@ -454,92 +461,112 @@ async function init() {
         initScrollControl();
         initMobileOverflowMenu();
 
+        // 安卓返回属于基础交互能力，需要早于延迟模块注册；
+        // 当前实现建立在"相关弹层只能在所属模块初始化后由用户正常打开"的前提上，
+        // 因此这里按界面层查询与现有关闭入口分发即可，不需要静态接入所有延迟模块。
+        await initAndroidBackHandler();
+
         // 需要 await 的调整尺寸操作
-        await Promise.all([
-            initInputResize(),
-            initPanelResize()
-        ]);
+        await Promise.all([initInputResize(), initPanelResize()]);
 
         // 非首屏 UI（延迟动态加载，不阻塞首次交互）
-        requestIdleCallback(async () => {
-            try {
-            const [
-                { initSettings },
-                { initImageViewer },
-                { initEndpointInputListeners, initThinkingControls, initConfigManagement, initOtherConfigInputs },
-                { initPrefillControls, initSystemPrefillControls, initGeminiSystemParts },
-                { initCustomHeaders },
-                { initQuickMessagesUI },
-                { initSessionSearch },
-                { initMCPSettings },
-                { initToolManager },
-                { initToolsQuickSelector },
-                { initUpdateModal },
-                { initExportImport },
-                { initProvidersUI }
-            ] = await Promise.all([
-                import('./ui/settings.js'),
-                import('./ui/viewer.js'),
-                import('./ui/config-helpers.js'),
-                import('./ui/prefill.js'),
-                import('./ui/enhancements.js'),
-                import('./ui/quick-messages.js'),
-                import('./ui/session-search.js'),
-                import('./ui/mcp-settings.js'),
-                import('./ui/tool-manager.js'),
-                import('./ui/tools-quick-selector.js'),
-                import('./update/update-modal.js'),
-                import('./state/export-import.js'),
-                import('./providers/ui.js')
-            ]);
+        requestIdleCallback(
+            async () => {
+                try {
+                    const [
+                        { initSettings },
+                        { initImageViewer },
+                        {
+                            initEndpointInputListeners,
+                            initThinkingControls,
+                            initConfigManagement,
+                            initOtherConfigInputs
+                        },
+                        { initGeminiSystemParts },
+                        { initPrefillModal },
+                        { initCustomHeaders },
+                        { initQuickMessagesUI },
+                        { initSessionSearch },
+                        { initMCPSettings },
+                        { initToolManager },
+                        { initToolsQuickSelector },
+                        { initUpdateModal },
+                        { initExportImport },
+                        { initProvidersUI }
+                    ] = await Promise.all([
+                        import('./ui/settings.js'),
+                        import('./ui/viewer.js'),
+                        import('./ui/config-helpers.js'),
+                        import('./ui/prefill.js'),
+                        import('./ui/prefill-modal.js'),
+                        import('./ui/enhancements.js'),
+                        import('./ui/quick-messages.js'),
+                        import('./ui/session-search.js'),
+                        import('./ui/mcp-settings.js'),
+                        import('./ui/tool-manager.js'),
+                        import('./ui/tools-quick-selector.js'),
+                        import('./update/update-modal.js'),
+                        import('./state/export-import.js'),
+                        import('./providers/ui.js')
+                    ]);
 
-            initSettings();
-            initImageViewer();
-            initEndpointInputListeners();
-            initThinkingControls();
-            initConfigManagement();
-            initOtherConfigInputs();
-            initPrefillControls();
-            initSystemPrefillControls();
-            initGeminiSystemParts();
-            initCustomHeaders();
-            initQuickMessagesUI();
-            initSessionSearch();
-            initProvidersUI();
-            initMCPSettings();
-            initToolManager();
-            initToolsQuickSelector();
-            initUpdateModal();
-            initExportImport();
+                    initSettings();
+                    initImageViewer();
+                    initEndpointInputListeners();
+                    initThinkingControls();
+                    initConfigManagement();
+                    initOtherConfigInputs();
+                    initGeminiSystemParts();
+                    initPrefillModal();
+                    initCustomHeaders();
+                    initQuickMessagesUI();
+                    initSessionSearch();
+                    initProvidersUI();
+                    initMCPSettings();
+                    initToolManager();
+                    initToolsQuickSelector();
+                    initUpdateModal();
+                    initExportImport();
 
-            // MCP 增强
-            import('./ui/tool-manager-mcp-enhancements.js').then(({ initToolManagerMCPEnhancements }) => {
-                initToolManagerMCPEnhancements();
-            });
-            import('./ui/tools-quick-selector-enhancements.js').then(({ initQuickSelectorEnhancements }) => {
-                initQuickSelectorEnhancements();
-            });
+                    // MCP 增强
+                    import('./ui/tool-manager-mcp-enhancements.js').then(
+                        ({ initToolManagerMCPEnhancements }) => {
+                            initToolManagerMCPEnhancements();
+                        }
+                    );
+                    import('./ui/tools-quick-selector-enhancements.js').then(
+                        ({ initQuickSelectorEnhancements }) => {
+                            initQuickSelectorEnhancements();
+                        }
+                    );
 
-            // OpenClaw 模块（审批、屏幕截图、定时任务）
-            import('./ui/openclaw-approval.js').then(({ initOpenClawApproval }) => {
-                initOpenClawApproval();
-            });
-            import('./ui/openclaw-screen.js').then(({ initOpenClawScreen }) => {
-                initOpenClawScreen();
-            });
-            import('./ui/openclaw-cron.js').then(({ initOpenClawCron }) => {
-                initOpenClawCron();
-            });
+                    // 主题编辑器
+                    import('./ui/theme-editor.js').then(({ initThemeEditor }) => {
+                        initThemeEditor();
+                    });
 
-            // APK 更新（仅 Android）
-            if (isAndroid()) {
-                const { initAPKUpdater } = await import('./update/apk-updater.js');
-                initAPKUpdater();
-            }
-            } catch (error) {
-                console.error('延迟加载 UI 模块失败:', error);
-            }
-        }, { timeout: 1000 });
+                    // OpenClaw 模块（审批、屏幕截图、定时任务）
+                    import('./ui/openclaw-approval.js').then(({ initOpenClawApproval }) => {
+                        initOpenClawApproval();
+                    });
+                    import('./ui/openclaw-screen.js').then(({ initOpenClawScreen }) => {
+                        initOpenClawScreen();
+                    });
+                    import('./ui/openclaw-cron.js').then(({ initOpenClawCron }) => {
+                        initOpenClawCron();
+                    });
+
+                    // APK 更新（仅 Android）
+                    if (isAndroid()) {
+                        const { initAPKUpdater } = await import('./update/apk-updater.js');
+                        initAPKUpdater();
+                    }
+                } catch (error) {
+                    logger.error('延迟加载 UI 模块失败:', error);
+                }
+            },
+            { timeout: 1000 }
+        );
 
         // 会话恢复已由 loadSessions() 处理（Line 183）
         // loadSessions() 中已包含：
@@ -547,9 +574,7 @@ async function init() {
         //   - switchToSession(currentId) 或 switchToSession(sessions[0].id)
         // 无需在此重复恢复
 
-        // 6. 恢复侧边栏状态
-        console.log('📂 Step 9/9: Restoring sidebar state...');
-        // 从 IndexedDB 恢复侧边栏状态
+        // 恢复侧边栏状态
         try {
             let savedSidebarState = null;
             if (state.storageMode !== 'localStorage') {
@@ -561,7 +586,11 @@ async function init() {
             }
 
             const shouldOpenSidebar = savedSidebarState === true || savedSidebarState === 'true';
-            if (shouldOpenSidebar && elements.sidebar && !elements.sidebar.classList.contains('open')) {
+            if (
+                shouldOpenSidebar &&
+                elements.sidebar &&
+                !elements.sidebar.classList.contains('open')
+            ) {
                 setTimeout(() => {
                     import('./ui/sidebar.js').then(({ toggleSidebar }) => {
                         toggleSidebar(true); // skipSave = true, 避免循环
@@ -569,11 +598,15 @@ async function init() {
                 }, 100);
             }
         } catch (error) {
-            console.error('恢复侧边栏状态失败:', error);
+            logger.error('恢复侧边栏状态失败:', error);
             // 降级处理
             const savedSidebarState = localStorage.getItem('sidebarOpen');
             const shouldOpenSidebar = savedSidebarState === true || savedSidebarState === 'true';
-            if (shouldOpenSidebar && elements.sidebar && !elements.sidebar.classList.contains('open')) {
+            if (
+                shouldOpenSidebar &&
+                elements.sidebar &&
+                !elements.sidebar.classList.contains('open')
+            ) {
                 setTimeout(() => {
                     import('./ui/sidebar.js').then(({ toggleSidebar }) => {
                         toggleSidebar(true);
@@ -582,13 +615,9 @@ async function init() {
             }
         }
 
-        console.log('Web Chat initialized successfully!');
-        console.log(`📊 Modules loaded: ${Object.keys(import.meta).length}`);
-        console.log(`💬 Sessions: ${state.sessions.length}`);
-        console.log(`🎨 Theme: ${document.documentElement.classList.contains('dark-theme') ? 'dark' : 'light'}`);
-        console.log(`🔌 API Format: ${state.apiFormat}`);
+        logger.debug('[init] 完成');
 
-        // 7. 延迟执行非关键任务
+        // 延迟执行非关键任务
         // 请求持久化存储（不影响功能，延迟执行）
         if (dbReady) {
             import('./state/storage.js').then(({ requestPersistentStorage }) => {
@@ -619,23 +648,29 @@ async function init() {
                 saveCurrentConfigImmediate();
             }
         });
-
     } catch (error) {
-        console.error('❌ Initialization failed:', error);
-        console.error('Stack trace:', error.stack);
+        logger.error('初始化失败:', error);
+        logger.error('Stack trace:', error.stack);
         throw error;
     }
 }
 
 // 启动应用
-init().catch(error => {
-    console.error('Fatal error during initialization:', error);
+init().catch((error) => {
+    logger.error('Fatal error during initialization:', error);
+    // 转义 error 内容，防止 XSS
+    const div = document.createElement('div');
+    div.textContent = error.message || '';
+    const safeMsg = div.innerHTML;
+    div.textContent = error.stack || '无堆栈信息';
+    const safeStack = div.innerHTML;
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     document.body.innerHTML = `
-        <div style="padding: 20px; color: red; font-family: monospace;">
-            <h1>[!] Initialization Error</h1>
-            <p><strong>Message:</strong> ${error.message}</p>
-            <pre>${error.stack}</pre>
-            <p>Please check the console for more details.</p>
+        <div style="padding: 20px; color: #b42318; line-height: 1.6; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', '微软雅黑', sans-serif;">
+            <h1 style="margin: 0 0 12px; font-size: 28px;">初始化失败</h1>
+            <p style="margin: 0 0 12px;"><strong>错误信息：</strong>${safeMsg}</p>
+            <pre style="margin: 0 0 16px; padding: 12px 16px; overflow: auto; border-radius: 8px; background: rgba(180, 35, 24, 0.08); border: 1px solid rgba(180, 35, 24, 0.2); color: #7a0916; font-family: 'Space Mono', 'JetBrains Mono', 'Cascadia Code', 'SF Mono', 'Consolas', monospace;">${safeStack}</pre>
+            <p style="margin: 0;">请打开控制台查看更多详情。</p>
         </div>
     `;
 });

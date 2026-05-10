@@ -16,10 +16,10 @@ import { sendOpenClawRequest } from './openclaw.js';
 export function getSendFunction(format) {
     const senders = {
         openai: sendOpenAIRequest,
-        'openai-responses': sendOpenAIRequest,  // Responses API 使用相同的函数
+        'openai-responses': sendOpenAIRequest, // Responses API 使用相同的函数
         gemini: sendGeminiRequest,
         claude: sendClaudeRequest,
-        openclaw: sendOpenClawRequest,
+        openclaw: sendOpenClawRequest
     };
 
     const sender = senders[format];

@@ -9,8 +9,8 @@
  */
 export class ThinkTagParser {
     constructor() {
-        this.buffer = '';           // 累积缓冲区
-        this.thinkingContent = '';  // 提取的思考内容
+        this.buffer = ''; // 累积缓冲区
+        this.thinkingContent = ''; // 运行时变量，非旧格式字段
         this.isInsideThink = false; // 是否在 <think> 标签内
     }
 
@@ -148,7 +148,7 @@ export function parseThinkTags(text) {
     }
 
     let displayText = '';
-    let thinkingContent = '';
+    let thinkingContent = ''; // 运行时变量，非旧格式字段
     let remaining = text;
 
     // 循环处理所有 <think>...</think> 标签

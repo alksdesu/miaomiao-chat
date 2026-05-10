@@ -19,7 +19,7 @@
     max-height: 80vh;
     display: flex;
     flex-direction: column;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    box-shadow: 0 8px 32px rgba(var(--shadow-color-rgb), 0.4);
 }
 
 .openclaw-cron-header {
@@ -177,8 +177,12 @@
         border-radius: 0;
     }
 
+    .openclaw-cron-header {
+        padding: calc(16px + var(--app-safe-top)) 20px 16px;
+    }
+
     .openclaw-cron-footer {
-        padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+        padding-bottom: calc(12px + var(--app-safe-bottom));
     }
 
     .openclaw-cron-input,

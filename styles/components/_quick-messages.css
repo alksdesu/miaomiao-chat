@@ -10,12 +10,20 @@
     flex-direction: column;
 }
 
+.quick-messages-modal-content .detail-content {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+}
+
 /* ========== 消息列表 ========== */
 .quick-messages-list {
     --quick-messages-bg: var(--color-bg-primary);
+    flex: 1;
+    min-height: 0;
     padding: 16px;
     overflow-y: auto;
-    max-height: 500px;
     /* 添加滚动阴影指示器 */
     background:
         linear-gradient(var(--quick-messages-bg) 30%, transparent),
@@ -24,7 +32,11 @@
         radial-gradient(farthest-side at 50% 100%, var(--scroll-shadow-color), transparent) 0 100%;
     background-repeat: no-repeat;
     background-color: var(--quick-messages-bg);
-    background-size: 100% 32px, 100% 32px, 100% 12px, 100% 12px;
+    background-size:
+        100% 32px,
+        100% 32px,
+        100% 12px,
+        100% 12px;
     background-attachment: local, local, scroll, scroll;
     border-radius: 8px;
 }
@@ -117,7 +129,7 @@
 .qm-item-preview {
     font-size: var(--fs-base);
     color: var(--md-muted);
-    font-family: var(--font-mono);
+    font-family: var(--font-sans);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -156,7 +168,7 @@
 }
 
 .qm-action-btn:hover svg {
-    stroke: white;
+    stroke: var(--color-text-inverse);
 }
 
 .qm-action-btn.delete:hover {
@@ -164,8 +176,12 @@
 }
 
 /* ========== 编辑模态框（第二层） ========== */
-#edit-quick-message-modal .modal-content {
-    width: 500px;
+#edit-quick-message-modal {
+    --modal-layer-z-index: var(--z-modal-settings-nested);
+}
+
+.quick-message-editor-content {
+    --modal-compact-max-width: 500px;
 }
 
 #edit-quick-message-modal .form-group {
@@ -180,7 +196,7 @@
     margin-bottom: 8px;
 }
 
-#edit-quick-message-modal input[type="text"],
+#edit-quick-message-modal input[type='text'],
 #edit-quick-message-modal textarea,
 #edit-quick-message-modal select {
     width: 100%;
@@ -204,26 +220,12 @@
 
 #edit-quick-message-modal textarea {
     resize: vertical;
-    font-family: var(--font-mono);
+    font-family: var(--font-sans);
     min-height: 120px;
 }
 
 /* ========== 响应式 ========== */
 @media (max-width: 768px) {
-    .quick-messages-modal-content {
-        width: 100vw;
-        height: 100vh;
-        max-width: 100%;
-        max-height: 100%;
-        border-radius: 0;
-    }
-
-    #edit-quick-message-modal .modal-content {
-        width: 100vw;
-        height: 100vh;
-        border-radius: 0;
-    }
-
     .qm-item-actions {
         opacity: 1; /* 移动端始终显示 */
     }

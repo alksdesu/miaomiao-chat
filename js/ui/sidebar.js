@@ -5,21 +5,37 @@
 
 import { state, elements } from '../core/state.js';
 import { eventBus } from '../core/events.js';
-import { switchToSession, deleteSession, renameSession, createNewSession } from '../state/sessions.js';
+import {
+    switchToSession,
+    deleteSession,
+    renameSession,
+    createNewSession
+} from '../state/sessions.js';
 import { escapeHtml } from '../utils/helpers.js';
-import { getCurrentQuery, highlightMatch } from './session-search.js';
+import { getSessionSearchState, highlightMatch } from './session-search.js';
 import { sessionToMarkdown } from '../state/export-import.js';
 import { getIcon } from '../utils/icons.js';
 import { showNotification } from './notifications.js';
+import { locateMessageByReference } from './message-location.js';
 // 新增：IndexedDB 偏好设置 API
-import { savePreference, loadPreference, loadSessionMessages } from '../state/storage.js';
+import { savePreference, loadSessionMessages } from '../state/storage.js';
 // 新增：自定义对话框（替代 Electron 中不支持的 prompt/confirm）
 import { showInputDialog, showConfirmDialog } from '../utils/dialogs.js';
+import { logger } from '../utils/logger.js';
+import {
+    loadFolders,
+    createFolder,
+    renameFolder as renameFolderAction,
+    deleteFolder as deleteFolderAction,
+    toggleFolderCollapse
+} from '../state/folders.js';
+import { initSidebarDragAndDrop } from './sidebar-dnd.js';
+import { initFolderContextMenu } from './sidebar-folder-menu.js';
 
 // 模块状态
 let _initialized = false;
 let _subscriptions = [];
-let _searchResults = null; // 搜索结果（包含匹配消息信息）
+let _lastSearchActive = false;
 
 /**
  * 获取用于导出的完整会话数据
@@ -39,7 +55,7 @@ async function getSessionDataForExport(sessionMeta) {
     if (sessionMeta.id === state.currentSessionId) {
         return {
             ...sessionMeta,
-            messages: state.messages || [],
+            messages: state.messages || []
         };
     }
 
@@ -52,7 +68,7 @@ async function getSessionDataForExport(sessionMeta) {
     // 兼容未迁移的 v3 数据
     return {
         ...sessionMeta,
-        messages: sessionMeta._pendingMessages || [],
+        messages: sessionMeta._pendingMessages || []
     };
 }
 
@@ -63,7 +79,8 @@ async function getSessionDataForExport(sessionMeta) {
 function trapFocus(element) {
     if (element._focusTrapHandler) return; // 已经设置过
 
-    const focusableSelector = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+    const focusableSelector =
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
     const handler = (e) => {
         if (e.key !== 'Tab') return;
@@ -147,7 +164,7 @@ export async function toggleSidebar(skipSave = false) {
                 localStorage.setItem('sidebarOpen', isOpening ? 'true' : 'false');
             }
         } catch (error) {
-            console.error('保存侧边栏状态失败:', error);
+            logger.error('保存侧边栏状态失败:', error);
             localStorage.setItem('sidebarOpen', isOpening ? 'true' : 'false');
         }
     }
@@ -169,22 +186,223 @@ export function updateBackgroundTasksIndicator() {
 }
 
 /**
+ * 构建单个 session-item 元素
+ */
+function buildSessionElement(session, matchedMessages, currentQuery, isActive, hasBackgroundTask) {
+    const sessionEl = document.createElement('div');
+    sessionEl.className = `session-item${isActive ? ' active' : ''}`;
+    sessionEl.dataset.sessionId = session.id;
+    sessionEl.draggable = true;
+    sessionEl.setAttribute('tabindex', '0');
+    sessionEl.setAttribute('role', 'button');
+    sessionEl.setAttribute('aria-label', `会话: ${session.name}`);
+
+    const sessionNameHTML = currentQuery
+        ? highlightMatch(session.name, currentQuery)
+        : escapeHtml(session.name);
+
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
+    sessionEl.innerHTML = `
+        <div class="session-info">
+            <span class="session-name" title="${escapeHtml(session.name)}">${sessionNameHTML}</span>
+            ${hasBackgroundTask ? '<span class="session-generating">生成中...</span>' : ''}
+        </div>
+        <div class="session-actions">
+            <button class="session-action-btn export-session-btn export" title="复制为 Markdown" aria-label="复制此会话为 Markdown">
+                ${getIcon('copy', { size: 14 })}
+            </button>
+            <button class="session-action-btn rename-session-btn" title="重命名" aria-label="重命名会话">
+                ${getIcon('edit', { size: 14 })}
+            </button>
+            <button class="session-action-btn delete-session-btn delete" title="删除" aria-label="删除会话">
+                ${getIcon('trash', { size: 14 })}
+            </button>
+        </div>
+    `;
+
+    sessionEl.addEventListener('click', (e) => {
+        const messagePreviewItem = e.target.closest('.matched-message-item');
+        if (messagePreviewItem) {
+            const fallbackIndex = Number.parseInt(
+                messagePreviewItem.dataset.messageIndex || '',
+                10
+            );
+            const messageId = messagePreviewItem.dataset.messageId || '';
+            switchToSessionAndScrollToMessage(session.id, {
+                messageId,
+                fallbackIndex
+            });
+        } else {
+            switchToSession(session.id);
+        }
+    });
+
+    bindSessionEvents(sessionEl, session.id);
+
+    sessionEl.addEventListener('keydown', (e) => {
+        if (e.target !== sessionEl) return;
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            switchToSession(session.id);
+        }
+    });
+
+    updateMatchedMessagesPreview(sessionEl, matchedMessages, currentQuery, session.name);
+    return sessionEl;
+}
+
+/**
+ * 构建文件夹 DOM
+ */
+function buildFolderGroup(folder, folderSessions, currentQuery) {
+    const groupEl = document.createElement('div');
+    groupEl.className = `folder-group${folder.collapsed ? ' collapsed' : ''}`;
+    groupEl.dataset.folderId = folder.id;
+
+    const headerEl = document.createElement('div');
+    headerEl.className = 'folder-header';
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
+    headerEl.innerHTML = `
+        <span class="folder-toggle">▶</span>
+        <span class="folder-name">${escapeHtml(folder.name)}</span>
+        <span class="folder-count">(${folderSessions.length})</span>
+        <div class="folder-actions">
+            <button class="folder-action-btn rename-folder-btn" title="重命名">
+                ${getIcon('edit', { size: 14 })}
+            </button>
+            <button class="folder-action-btn delete-folder-btn" title="删除">
+                ${getIcon('trash', { size: 14 })}
+            </button>
+        </div>
+    `;
+
+    headerEl.addEventListener('click', (e) => {
+        if (e.target.closest('.folder-action-btn')) return;
+        toggleFolderCollapse(folder.id);
+    });
+
+    headerEl.querySelector('.rename-folder-btn').addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const newName = await showInputDialog('请输入新的文件夹名称:', folder.name, '重命名文件夹');
+        if (newName && newName.trim()) {
+            renameFolderAction(folder.id, newName.trim());
+        }
+    });
+
+    headerEl.querySelector('.delete-folder-btn').addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const confirmed = await showConfirmDialog(
+            `确定要删除文件夹 "${folder.name}" 吗？其中的会话将移至未分组。`,
+            '确认删除'
+        );
+        if (confirmed) {
+            deleteFolderAction(folder.id);
+        }
+    });
+
+    groupEl.appendChild(headerEl);
+
+    const contentEl = document.createElement('div');
+    contentEl.className = 'folder-content';
+
+    folderSessions.forEach(({ session, matchedMessages }) => {
+        const isActive = session.id === state.currentSessionId;
+        const hasBackgroundTask = state.backgroundTasks.has(session.id);
+        contentEl.appendChild(
+            buildSessionElement(session, matchedMessages, currentQuery, isActive, hasBackgroundTask)
+        );
+    });
+
+    groupEl.appendChild(contentEl);
+    return groupEl;
+}
+
+/**
+ * 绑定 session-item 事件
+ */
+function bindSessionEvents(element, sessionId) {
+    if (element._eventsBound) return;
+
+    const getLatestSessionMeta = (sid) => state.sessions.find((item) => item.id === sid) || null;
+
+    const renameBtn = element.querySelector('.rename-session-btn');
+    if (renameBtn) {
+        renameBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const latestSession = getLatestSessionMeta(sessionId);
+            if (!latestSession) return;
+            const newName = await showInputDialog(
+                '请输入新的会话名称:',
+                latestSession.name,
+                '重命名会话'
+            );
+            if (newName && newName.trim()) {
+                renameSession(sessionId, newName);
+            }
+        });
+    }
+
+    const deleteBtn = element.querySelector('.delete-session-btn');
+    if (deleteBtn) {
+        deleteBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const latestSession = getLatestSessionMeta(sessionId);
+            const sessionName = latestSession?.name || '未命名会话';
+            const confirmed = await showConfirmDialog(
+                `确定要删除会话 "${sessionName}" 吗？`,
+                '确认删除'
+            );
+            if (confirmed) {
+                try {
+                    await deleteSession(sessionId);
+                } catch (err) {
+                    logger.error('删除会话失败:', err);
+                    eventBus.emit('ui:notification', {
+                        message: '删除会话失败',
+                        type: 'error'
+                    });
+                }
+            }
+        });
+    }
+
+    const exportBtn = element.querySelector('.export-session-btn');
+    if (exportBtn) {
+        exportBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            try {
+                const latestSession = getLatestSessionMeta(sessionId);
+                if (!latestSession) throw new Error('会话不存在');
+                const exportSession = await getSessionDataForExport(latestSession);
+                const markdown = sessionToMarkdown(exportSession);
+                if (!markdown.trim()) throw new Error('会话内容为空，无法复制');
+                await navigator.clipboard.writeText(markdown);
+                showNotification('会话已作为 Markdown 复制到剪切板', 'success');
+            } catch (err) {
+                logger.error('导出失败:', err);
+                showNotification('导出失败: ' + err.message, 'error');
+            }
+        });
+    }
+
+    element._eventsBound = true;
+}
+
+/**
  * 更新会话列表 UI
  */
 export function updateSessionList() {
     if (!elements.sessionList) return;
 
-    // 使用搜索结果或默认显示所有会话
-    const currentQuery = getCurrentQuery();
-    let sessionsData = _searchResults;
+    const searchState = getSessionSearchState();
+    const currentQuery = searchState.query;
+    const sessionsData = searchState.isActive
+        ? searchState.results || []
+        : state.sessions.map((session) => ({ session, matchedMessages: [] }));
+    _lastSearchActive = searchState.isActive;
 
-    if (!sessionsData) {
-        // 没有搜索时，将所有会话转换为相同格式
-        sessionsData = state.sessions.map(s => ({ session: s, matchedMessages: [] }));
-    }
-
-    // 如果没有会话，显示空状态
     if (sessionsData.length === 0 && state.sessions.length === 0) {
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
         elements.sessionList.innerHTML = `
             <div class="session-list-empty">
                 <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -200,8 +418,8 @@ export function updateSessionList() {
         return;
     }
 
-    // 如果搜索后没有结果，显示空搜索结果
-    if (sessionsData.length === 0 && currentQuery) {
+    if (searchState.isActive && sessionsData.length === 0) {
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
         elements.sessionList.innerHTML = `
             <div class="session-list-empty">
                 <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -217,199 +435,95 @@ export function updateSessionList() {
         return;
     }
 
-    // 获取现有 DOM 元素的 session ID 映射
-    const existingElements = new Map();
-    elements.sessionList.querySelectorAll('.session-item').forEach(el => {
-        existingElements.set(el.dataset.sessionId, el);
-    });
+    const fragment = document.createDocumentFragment();
 
-    // 清除空状态（如果有）
-    const emptyState = elements.sessionList.querySelector('.session-list-empty');
-    if (emptyState) emptyState.remove();
+    if (searchState.isActive) {
+        sessionsData.forEach(({ session, matchedMessages }) => {
+            const isActive = session.id === state.currentSessionId;
+            const hasBackgroundTask = state.backgroundTasks.has(session.id);
+            fragment.appendChild(
+                buildSessionElement(
+                    session,
+                    matchedMessages,
+                    currentQuery,
+                    isActive,
+                    hasBackgroundTask
+                )
+            );
+        });
+    } else {
+        const folders = [...state.folders].sort((a, b) => a.order - b.order);
 
-    // 构建新的会话 ID 集合
-    const sessionIds = new Set(sessionsData.map(d => d.session.id));
-
-    // 删除不再存在的会话元素
-    existingElements.forEach((el, id) => {
-        if (!sessionIds.has(id)) {
-            el.remove();
-        }
-    });
-
-    sessionsData.forEach(({ session, matchedMessages }, idx) => {
-        let sessionEl = existingElements.get(session.id);
-        const hasBackgroundTask = state.backgroundTasks.has(session.id);
-        const isActive = session.id === state.currentSessionId;
-
-        // 绑定会话元素事件的辅助函数
-        const bindSessionEvents = (element, sessionData) => {
-            // 检查是否已经绑定过事件（防止重复绑定）
-            if (element._eventsBound) {
-                return;
+        for (const folder of folders) {
+            const folderSessions = sessionsData.filter(
+                ({ session }) => session.folderId === folder.id
+            );
+            if (folderSessions.length === 0 && folders.length > 0) {
+                fragment.appendChild(buildFolderGroup(folder, [], currentQuery));
+                continue;
             }
-
-            // 重命名按钮
-            const renameBtn = element.querySelector('.rename-session-btn');
-            if (renameBtn) {
-                renameBtn.addEventListener('click', async (e) => {
-                    e.stopPropagation();
-                    const newName = await showInputDialog(
-                        '请输入新的会话名称:',
-                        sessionData.name,
-                        '重命名会话'
-                    );
-                    if (newName && newName.trim()) {
-                        renameSession(sessionData.id, newName);
-                    }
-                });
-            }
-
-            // 删除按钮
-            const deleteBtn = element.querySelector('.delete-session-btn');
-            if (deleteBtn) {
-                deleteBtn.addEventListener('click', async (e) => {
-                    e.stopPropagation();
-                    const confirmed = await showConfirmDialog(
-                        `确定要删除会话 "${sessionData.name}" 吗？`,
-                        '确认删除'
-                    );
-                    if (confirmed) {
-                        try {
-                            await deleteSession(sessionData.id);
-                        } catch (err) {
-                            console.error('删除会话失败:', err);
-                            eventBus.emit('ui:notification', { message: '删除会话失败', type: 'error' });
-                        }
-                    }
-                });
-            }
-
-            // 导出按钮
-            const exportBtn = element.querySelector('.export-session-btn');
-            if (exportBtn) {
-                exportBtn.addEventListener('click', async (e) => {
-                    e.stopPropagation();
-                    try {
-                        const exportSession = await getSessionDataForExport(sessionData);
-                        const markdown = sessionToMarkdown(exportSession);
-                        if (!markdown.trim()) {
-                            throw new Error('会话内容为空，无法复制');
-                        }
-                        await navigator.clipboard.writeText(markdown);
-                        showNotification('会话已作为 Markdown 复制到剪切板', 'success');
-                    } catch (err) {
-                        console.error('导出失败:', err);
-                        showNotification('导出失败: ' + err.message, 'error');
-                    }
-                });
-            }
-
-            // 标记为已绑定，避免重复绑定
-            element._eventsBound = true;
-        };
-
-        if (sessionEl) {
-            // 更新现有元素
-            sessionEl.className = `session-item${isActive ? ' active' : ''}`;
-            const nameEl = sessionEl.querySelector('.session-name');
-            if (nameEl) {
-                // 高亮匹配文本
-                if (currentQuery) {
-                    nameEl.innerHTML = highlightMatch(session.name, currentQuery);
-                } else {
-                    nameEl.textContent = session.name;
-                }
-                nameEl.title = session.name;
-            }
-
-            const generatingEl = sessionEl.querySelector('.session-generating');
-            if (hasBackgroundTask && !generatingEl) {
-                const infoEl = sessionEl.querySelector('.session-info');
-                if (infoEl) {
-                    infoEl.insertAdjacentHTML('beforeend', '<span class="session-generating">生成中...</span>');
-                }
-            } else if (!hasBackgroundTask && generatingEl) {
-                generatingEl.remove();
-            }
-
-            // 更新匹配消息预览
-            updateMatchedMessagesPreview(sessionEl, matchedMessages, currentQuery);
-
-            // 注意：不需要重新绑定事件，已存在元素已经绑定过了
-        } else {
-            // 创建新元素
-            sessionEl = document.createElement('div');
-            sessionEl.className = `session-item${isActive ? ' active' : ''}`;
-            sessionEl.dataset.sessionId = session.id;
-            sessionEl.setAttribute('tabindex', '0');
-            sessionEl.setAttribute('role', 'button');
-            sessionEl.setAttribute('aria-label', `会话: ${session.name}`);
-
-            // 会话名称（高亮匹配）
-            const sessionNameHTML = currentQuery
-                ? highlightMatch(session.name, currentQuery)
-                : escapeHtml(session.name);
-
-            sessionEl.innerHTML = `
-                <div class="session-info">
-                    <span class="session-name" title="${escapeHtml(session.name)}">${sessionNameHTML}</span>
-                    ${hasBackgroundTask ? '<span class="session-generating">生成中...</span>' : ''}
-                </div>
-                <div class="session-actions">
-                    <button class="session-action-btn export-session-btn export" title="复制为 Markdown" aria-label="复制此会话为 Markdown">
-                        ${getIcon('copy', { size: 14 })}
-                    </button>
-                    <button class="session-action-btn rename-session-btn" title="重命名" aria-label="重命名会话">
-                        ${getIcon('edit', { size: 14 })}
-                    </button>
-                    <button class="session-action-btn delete-session-btn delete" title="删除" aria-label="删除会话">
-                        ${getIcon('trash', { size: 14 })}
-                    </button>
-                </div>
-            `;
-
-            // 点击事件（支持消息定位）
-            sessionEl.addEventListener('click', (e) => {
-                // 如果点击的是消息预览项，跳转到该消息
-                const messagePreviewItem = e.target.closest('.matched-message-item');
-                if (messagePreviewItem) {
-                    const messageIndex = parseInt(messagePreviewItem.dataset.messageIndex);
-                    switchToSessionAndScrollToMessage(session.id, messageIndex);
-                } else {
-                    // 否则正常切换会话
-                    switchToSession(session.id);
-                }
-            });
-
-            // 使用统一的事件绑定函数
-            bindSessionEvents(sessionEl, session);
-
-            // 键盘事件
-            sessionEl.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    switchToSession(session.id);
-                }
-            });
-
-            // 插入到正确位置
-            if (idx === 0) {
-                elements.sessionList.insertBefore(sessionEl, elements.sessionList.firstChild);
-            } else {
-                const prevSession = state.sessions[idx - 1];
-                const prevEl = elements.sessionList.querySelector(`[data-session-id="${prevSession.id}"]`);
-                if (prevEl) {
-                    prevEl.after(sessionEl);
-                } else {
-                    elements.sessionList.appendChild(sessionEl);
-                }
+            if (folderSessions.length > 0) {
+                fragment.appendChild(buildFolderGroup(folder, folderSessions, currentQuery));
             }
         }
 
-        // 添加匹配消息预览（新元素）
-        updateMatchedMessagesPreview(sessionEl, matchedMessages, currentQuery);
-    });
+        const ungrouped = sessionsData.filter(({ session }) => !session.folderId);
+        ungrouped.forEach(({ session, matchedMessages }) => {
+            const isActive = session.id === state.currentSessionId;
+            const hasBackgroundTask = state.backgroundTasks.has(session.id);
+            fragment.appendChild(
+                buildSessionElement(
+                    session,
+                    matchedMessages,
+                    currentQuery,
+                    isActive,
+                    hasBackgroundTask
+                )
+            );
+        });
+    }
+
+    elements.sessionList.replaceChildren(fragment);
+}
+
+/**
+ * 获取搜索预览的角色元信息
+ * @param {string} role - 消息角色
+ * @returns {{ label: string, className: string }} 角色展示信息
+ */
+function getMatchedMessageRoleMeta(role) {
+    switch (role) {
+        case 'user':
+            return { label: '用户', className: 'role-user' };
+        case 'assistant':
+            return { label: 'AI', className: 'role-assistant' };
+        case 'system':
+            return { label: '系统', className: 'role-other' };
+        case 'tool':
+            return { label: '工具', className: 'role-other' };
+        default:
+            return { label: role || '未知', className: 'role-other' };
+    }
+}
+
+/**
+ * 构建搜索预览项的可达性描述
+ * @param {string} sessionName - 会话名称
+ * @param {string} roleLabel - 角色文案
+ * @param {string} previewText - 预览文本
+ * @returns {string} 可达性标签
+ */
+function buildMatchedMessageAriaLabel(sessionName, roleLabel, previewText) {
+    const compactPreview = (previewText || '')
+        .replace(/\.\.\./g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    if (!compactPreview) {
+        return `定位到会话“${sessionName}”中的${roleLabel}消息`;
+    }
+
+    return `定位到会话“${sessionName}”中的${roleLabel}消息：${compactPreview}`;
 }
 
 /**
@@ -417,36 +531,50 @@ export function updateSessionList() {
  * @param {HTMLElement} sessionEl - 会话元素
  * @param {Array} matchedMessages - 匹配的消息列表
  * @param {string} query - 搜索关键词
+ * @param {string} sessionName - 会话名称
  */
-function updateMatchedMessagesPreview(sessionEl, matchedMessages, query) {
-    // 移除旧的预览
+function updateMatchedMessagesPreview(sessionEl, matchedMessages, query, sessionName) {
     const oldPreview = sessionEl.querySelector('.matched-messages-preview');
     if (oldPreview) {
         oldPreview.remove();
     }
 
-    // 如果没有匹配消息或没有搜索，不显示预览
     if (!matchedMessages || matchedMessages.length === 0 || !query) {
         return;
     }
 
-    // 创建预览容器
     const previewContainer = document.createElement('div');
     previewContainer.className = 'matched-messages-preview';
 
-    matchedMessages.forEach(msg => {
-        const previewItem = document.createElement('div');
+    matchedMessages.forEach((msg) => {
+        const roleMeta = getMatchedMessageRoleMeta(msg.role);
+        const previewItem = document.createElement('button');
+        previewItem.type = 'button';
         previewItem.className = 'matched-message-item';
-        previewItem.dataset.messageIndex = msg.index;
+        previewItem.dataset.messageIndex = String(msg.index);
+        if (msg.messageId) {
+            previewItem.dataset.messageId = msg.messageId;
+        }
+        previewItem.setAttribute(
+            'aria-label',
+            buildMatchedMessageAriaLabel(sessionName, roleMeta.label, msg.preview)
+        );
 
-        // 角色标签
-        const roleLabel = msg.role === 'user' ? '用户' : (msg.role === 'assistant' ? 'AI' : msg.role);
-        const roleClass = msg.role === 'user' ? 'role-user' : 'role-assistant';
+        const metaRow = document.createElement('div');
+        metaRow.className = 'matched-message-meta';
 
-        previewItem.innerHTML = `
-            <span class="message-role ${roleClass}">${roleLabel}</span>
-            <span class="message-preview-text">${highlightMatch(msg.preview, query)}</span>
-        `;
+        const roleTag = document.createElement('span');
+        roleTag.className = `message-role ${roleMeta.className}`;
+        roleTag.textContent = roleMeta.label;
+
+        const previewText = document.createElement('span');
+        previewText.className = 'message-preview-text';
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
+        previewText.innerHTML = highlightMatch(msg.preview, query);
+
+        metaRow.appendChild(roleTag);
+        previewItem.appendChild(metaRow);
+        previewItem.appendChild(previewText);
 
         previewContainer.appendChild(previewItem);
     });
@@ -457,54 +585,48 @@ function updateMatchedMessagesPreview(sessionEl, matchedMessages, query) {
 /**
  * 切换会话并滚动到指定消息
  * @param {string} sessionId - 会话ID
- * @param {number} messageIndex - 消息索引
+ * @param {{ messageId?: string, fallbackIndex?: number }} messageRef - 消息引用
  */
-async function switchToSessionAndScrollToMessage(sessionId, messageIndex) {
+async function switchToSessionAndScrollToMessage(sessionId, messageRef = {}) {
+    const fallbackIndex = Number.isInteger(messageRef.fallbackIndex)
+        ? messageRef.fallbackIndex
+        : -1;
+    const messageId = messageRef.messageId || '';
+
+    if (!messageId && fallbackIndex < 0) {
+        showNotification('未找到可定位的搜索结果', 'warning');
+        return;
+    }
+
     await switchToSession(sessionId);
 
-    // 双重 rAF 确保 DOM 渲染完成后滚动
-    requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-            scrollToMessage(messageIndex);
-        });
-    });
-}
+    const located = await locateMessageByReference(
+        {
+            messageId,
+            fallbackIndex
+        },
+        {
+            behavior: 'smooth'
+        }
+    );
 
-/**
- * 滚动到指定消息并高亮
- * @param {number} messageIndex - 消息索引
- */
-function scrollToMessage(messageIndex) {
-    const messagesArea = elements.messagesArea;
-    if (!messagesArea) return;
-
-    // 查找对应的消息元素
-    const messageElements = messagesArea.querySelectorAll('.message');
-    const targetMessage = messageElements[messageIndex];
-
-    if (targetMessage) {
-        // 滚动到该消息
-        targetMessage.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
-        // 添加高亮效果
-        targetMessage.classList.add('search-highlighted');
-
-        // 3秒后移除高亮
-        setTimeout(() => {
-            targetMessage.classList.remove('search-highlighted');
-        }, 3000);
+    if (!located) {
+        showNotification('目标消息不存在或尚未渲染完成', 'warning');
     }
 }
 
 /**
  * 初始化侧边栏
  */
-export function initSidebar() {
+export async function initSidebar() {
     // 防止重复初始化
     if (_initialized) {
-        console.warn('Sidebar already initialized');
+        logger.warn('Sidebar already initialized');
         return;
     }
+
+    // 加载文件夹数据
+    await loadFolders();
 
     // 初始化 overlay
     const sidebarOverlay = document.querySelector('.sidebar-overlay');
@@ -523,10 +645,14 @@ export function initSidebar() {
         sidebarOverlay.style.transition = 'opacity 0.2s ease-out, visibility 0.2s ease-out';
 
         // 点击 overlay 关闭侧边栏
-        sidebarOverlay.addEventListener('click', function(e) {
-            e.stopPropagation();
-            toggleSidebar();
-        }, true);
+        sidebarOverlay.addEventListener(
+            'click',
+            function (e) {
+                e.stopPropagation();
+                toggleSidebar();
+            },
+            true
+        );
     }
 
     // 绑定侧边栏切换按钮
@@ -550,6 +676,17 @@ export function initSidebar() {
         });
     }
 
+    // 绑定新建文件夹按钮
+    const newFolderBtn = document.getElementById('new-folder-btn');
+    if (newFolderBtn) {
+        newFolderBtn.addEventListener('click', async () => {
+            const name = await showInputDialog('请输入文件夹名称:', '', '新建文件夹');
+            if (name && name.trim()) {
+                await createFolder(name.trim());
+            }
+        });
+    }
+
     // 绑定关闭侧边栏按钮
     if (elements.closeSidebar) {
         elements.closeSidebar.addEventListener('click', () => toggleSidebar());
@@ -568,7 +705,9 @@ export function initSidebar() {
 
     _subscriptions.push(
         eventBus.on('sessions:updated', () => {
-            updateSessionList();
+            if (!getSessionSearchState().isActive) {
+                updateSessionList();
+            }
         })
     );
 
@@ -579,14 +718,25 @@ export function initSidebar() {
     );
 
     _subscriptions.push(
-        eventBus.on('sessions:search-filter', ({ searchResults, query }) => {
-            _searchResults = searchResults;
+        eventBus.on('sessions:search-state-changed', () => {
+            const searchState = getSessionSearchState();
+            if (searchState.isActive || _lastSearchActive !== searchState.isActive) {
+                updateSessionList();
+            }
+        })
+    );
+
+    _subscriptions.push(
+        eventBus.on('folders:changed', () => {
             updateSessionList();
         })
     );
 
+    initSidebarDragAndDrop();
+    initFolderContextMenu();
+
     _initialized = true;
-    console.log('Sidebar initialized');
+    logger.debug('Sidebar initialized');
 
     // 修复竞态条件：手动触发一次会话列表更新
     // 因为 loadSessions() 可能在 initSidebar() 之前就触发了 sessions:loaded 事件
@@ -600,13 +750,13 @@ export function initSidebar() {
             try {
                 await deleteSession(sessionId);
             } catch (err) {
-                console.error('删除会话失败:', err);
+                logger.error('删除会话失败:', err);
                 eventBus.emit('ui:notification', { message: '删除会话失败', type: 'error' });
             }
         }
     };
     window.renameSession = async (sessionId) => {
-        const session = state.sessions.find(s => s.id === sessionId);
+        const session = state.sessions.find((s) => s.id === sessionId);
         if (session) {
             const newName = await showInputDialog(
                 '请输入新的会话名称:',
@@ -630,7 +780,7 @@ export function cleanupSidebar() {
     }
 
     // 取消所有事件订阅
-    _subscriptions.forEach(unsubscribe => {
+    _subscriptions.forEach((unsubscribe) => {
         if (typeof unsubscribe === 'function') {
             unsubscribe();
         }
@@ -638,5 +788,6 @@ export function cleanupSidebar() {
     _subscriptions = [];
 
     _initialized = false;
-    console.log('🧹 Sidebar cleaned up');
+    _lastSearchActive = false;
+    logger.debug('🧹 Sidebar cleaned up');
 }

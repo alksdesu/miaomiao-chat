@@ -1,3 +1,5 @@
+import { logger } from '../utils/logger.js';
+
 /**
  * DOM 元素引用缓存
  * 使用 Proxy 模式确保元素在 DOM 准备好之后才被访问
@@ -13,7 +15,7 @@ let _initialized = false;
  */
 function initializeElements() {
     if (_initialized) {
-        console.warn('Elements already initialized');
+        logger.warn('Elements already initialized');
         return _elements;
     }
 
@@ -25,6 +27,7 @@ function initializeElements() {
         cancelRequestButton: 'cancel-request-button',
         clearButton: 'clear-chat',
         themeToggle: 'theme-toggle',
+        themeEditorToggle: 'theme-editor-toggle',
         modelSelect: 'model-select',
         apiEndpoint: 'api-endpoint',
         apiKey: 'api-key',
@@ -117,7 +120,7 @@ function initializeElements() {
 
         // 会话搜索
         sessionSearchInput: 'session-search-input',
-        sessionSearchClear: 'session-search-clear',
+        sessionSearchClear: 'session-search-clear'
     };
 
     _elements = {};
@@ -132,7 +135,7 @@ function initializeElements() {
     // 验证关键元素
     validateCriticalElements();
 
-    console.log('DOM 元素初始化完成');
+    logger.debug('DOM 元素初始化完成');
     return _elements;
 }
 
@@ -157,7 +160,7 @@ function validateCriticalElements() {
     }
 
     if (missing.length > 0) {
-        console.error('❌ 关键元素缺失:', missing);
+        logger.error('❌ 关键元素缺失:', missing);
         throw new Error(`关键 DOM 元素未找到: ${missing.join(', ')}`);
     }
 }
@@ -166,47 +169,50 @@ function validateCriticalElements() {
  * 导出 Proxy 包装的 elements 对象
  * 确保元素在访问前已初始化
  */
-export const elements = new Proxy({}, {
-    get(target, prop) {
-        // 如果未初始化，抛出错误
-        if (!_initialized) {
-            throw new Error(
-                `DOM 元素尚未初始化！请确保在 DOMContentLoaded 后调用 initElements()。` +
-                `尝试访问的元素: ${String(prop)}`
-            );
+export const elements = new Proxy(
+    {},
+    {
+        get(target, prop) {
+            // 如果未初始化，抛出错误
+            if (!_initialized) {
+                throw new Error(
+                    `DOM 元素尚未初始化！请确保在 DOMContentLoaded 后调用 initElements()。` +
+                        `尝试访问的元素: ${String(prop)}`
+                );
+            }
+
+            // 返回元素引用
+            return _elements[prop];
+        },
+
+        set(_target, prop, _value) {
+            // 防止外部修改
+            logger.warn(`不允许修改 elements.${String(prop)}`);
+            return false;
+        },
+
+        has(target, prop) {
+            return _initialized && prop in _elements;
+        },
+
+        ownKeys(_target) {
+            if (!_initialized) return [];
+            return Object.keys(_elements);
+        },
+
+        getOwnPropertyDescriptor(target, prop) {
+            if (!_initialized) return undefined;
+            if (prop in _elements) {
+                return {
+                    enumerable: true,
+                    configurable: false,
+                    value: _elements[prop]
+                };
+            }
+            return undefined;
         }
-
-        // 返回元素引用
-        return _elements[prop];
-    },
-
-    set(target, prop, value) {
-        // 防止外部修改
-        console.warn(`不允许修改 elements.${String(prop)}`);
-        return false;
-    },
-
-    has(target, prop) {
-        return _initialized && prop in _elements;
-    },
-
-    ownKeys(target) {
-        if (!_initialized) return [];
-        return Object.keys(_elements);
-    },
-
-    getOwnPropertyDescriptor(target, prop) {
-        if (!_initialized) return undefined;
-        if (prop in _elements) {
-            return {
-                enumerable: true,
-                configurable: false,
-                value: _elements[prop]
-            };
-        }
-        return undefined;
     }
-});
+);
 
 /**
  * 公开的初始化函数

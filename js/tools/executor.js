@@ -2,12 +2,6 @@
  * 工具执行引擎
  * 负责工具的实际执行、超时控制、错误处理
  *
- * 发布事件:
- * - tool:execute:start { toolId, toolName, args }
- * - tool:execute:progress { toolId, percent, message }
- * - tool:execute:success { toolId, result, duration }
- * - tool:execute:error { toolId, error, duration }
- *
  * 📚 高级执行 API（可用但未使用）：
  * - executeToolsBatch() - 批量并行执行工具
  * - safeExecuteTool() - 安全执行（不抛出异常）
@@ -21,11 +15,11 @@
  * - 长时间运行的工具（使用 executeCancelable）
  */
 
-import { eventBus } from '../core/events.js';
 import { getTool } from './manager.js';
 import { safeValidate, formatValidationErrors } from './validator.js';
 import { checkRateLimit } from './rate-limiter.js';
 import { isElectron } from '../utils/platform.js';
+import { logger } from '../utils/logger.js';
 
 // ========== 配置 ==========
 
@@ -74,8 +68,8 @@ async function executeComputerTool(args) {
         const availableParams = Object.keys(args).join(', ');
         throw new Error(
             `Missing required parameter 'action' for computer tool. ` +
-            `Received parameters: ${availableParams || 'none'}. ` +
-            `Expected format: { action: 'screenshot' | 'bash' | 'mouse_move' | 'type' | ..., ... }`
+                `Received parameters: ${availableParams || 'none'}. ` +
+                `Expected format: { action: 'screenshot' | 'bash' | 'mouse_move' | 'type' | ..., ... }`
         );
     }
 
@@ -109,7 +103,7 @@ async function executeComputerTool(args) {
             // 连续点击
             for (let i = 0; i < times; i++) {
                 await window.electronAPI.computerUse_clickMouse('left');
-                if (i < times - 1) await new Promise(r => setTimeout(r, 50));
+                if (i < times - 1) await new Promise((r) => setTimeout(r, 50));
             }
             return { success: true };
         }
@@ -124,25 +118,30 @@ async function executeComputerTool(args) {
             const [x, y] = args.coordinate || [0, 0];
             await window.electronAPI.computerUse_moveMouse(x, y);
             // 简单实现：目前Electron API可能不支持单独的down/up
-            console.warn('[Executor] left_mouse_down 操作：当前简化为移动鼠标');
+            logger.warn('[Executor] left_mouse_down 操作：当前简化为移动鼠标');
             return { success: true };
         }
 
         case 'left_mouse_up':
-            console.warn('[Executor] left_mouse_up 操作：当前简化实现');
+            logger.warn('[Executor] left_mouse_up 操作：当前简化实现');
             return { success: true };
 
         case 'scroll': {
             const direction = args.scroll_direction || 'down';
             const amount = args.scroll_amount || 1;
             // 简单实现：使用keyboard模拟滚动
-            const key = direction === 'down' || direction === 'up'
-                ? (direction === 'down' ? 'Page_Down' : 'Page_Up')
-                : (direction === 'right' ? 'Right' : 'Left');
+            const key =
+                direction === 'down' || direction === 'up'
+                    ? direction === 'down'
+                        ? 'Page_Down'
+                        : 'Page_Up'
+                    : direction === 'right'
+                      ? 'Right'
+                      : 'Left';
 
             for (let i = 0; i < amount; i++) {
                 await window.electronAPI.computerUse_pressKey(key, []);
-                await new Promise(r => setTimeout(r, 100));
+                await new Promise((r) => setTimeout(r, 100));
             }
             return { success: true };
         }
@@ -151,25 +150,22 @@ async function executeComputerTool(args) {
             return await window.electronAPI.computerUse_typeText(args.text);
 
         case 'key':
-            return await window.electronAPI.computerUse_pressKey(
-                args.key,
-                args.modifiers || []
-            );
+            return await window.electronAPI.computerUse_pressKey(args.key, args.modifiers || []);
 
         case 'hold_key':
             // 简单实现：暂不支持真正的hold
-            console.warn('[Executor] hold_key 操作：当前简化为按键');
+            logger.warn('[Executor] hold_key 操作：当前简化为按键');
             return await window.electronAPI.computerUse_pressKey(args.key, []);
 
         case 'wait': {
             const duration = args.duration || 1;
-            await new Promise(r => setTimeout(r, duration * 1000));
+            await new Promise((r) => setTimeout(r, duration * 1000));
             return { success: true };
         }
 
         case 'zoom': {
             // Opus 4.5专用：缩放功能
-            console.warn('[Executor] zoom 操作：当前不支持，需要特殊实现');
+            logger.warn('[Executor] zoom 操作：当前不支持，需要特殊实现');
             throw new Error('Zoom操作需要特殊的图像处理支持，当前版本暂不支持');
         }
 
@@ -180,8 +176,8 @@ async function executeComputerTool(args) {
         default:
             throw new Error(
                 `Unknown computer action: "${action}". ` +
-                `Valid actions: screenshot, mouse_move, left_click, right_click, middle_click, ` +
-                `double_click, triple_click, type, key, cursor_position, bash, str_replace_editor, etc.`
+                    `Valid actions: screenshot, mouse_move, left_click, right_click, middle_click, ` +
+                    `double_click, triple_click, type, key, cursor_position, bash, str_replace_editor, etc.`
             );
     }
 }
@@ -195,11 +191,13 @@ async function executeBashTool(args) {
     const { restart } = args;
 
     if (!command) {
-        throw new Error('Missing bash command parameter. Expected one of: command, text, or bash_command');
+        throw new Error(
+            'Missing bash command parameter. Expected one of: command, text, or bash_command'
+        );
     }
 
     if (restart) {
-        console.warn('[Executor] Bash restart 参数被忽略');
+        logger.warn('[Executor] Bash restart 参数被忽略');
     }
 
     const result = await window.electronAPI.computerUse_executeBash(command);
@@ -231,7 +229,9 @@ async function executeTextEditorTool(args) {
             if (occurrences === 0) {
                 throw new Error('old_str not found in file');
             } else if (occurrences > 1) {
-                throw new Error(`old_str found ${occurrences} times, must be unique. Use more context to make it unique.`);
+                throw new Error(
+                    `old_str found ${occurrences} times, must be unique. Use more context to make it unique.`
+                );
             }
 
             // 执行替换
@@ -287,21 +287,25 @@ export async function executeTool(toolId, args, options = {}) {
 
     // 只有在 Claude 原生模式下才将这些工具名当作原生工具处理
     if (nativeTools.includes(toolId) && isClaudeNativeMode) {
-        console.log(`[Executor] 🚀 执行 Claude 原生工具: ${toolId}`);
-        console.log(`[Executor] 参数:`, args);
+        logger.debug(`[Executor] 🚀 执行 Claude 原生工具: ${toolId}`);
+        logger.debug(`[Executor] 参数:`, args);
 
         const result = await executeNativeTool(toolId, args);
         const duration = Date.now() - startTime;
 
-        console.log(`[Executor] 工具执行成功: ${toolId} (耗时 ${duration}ms)`);
-        console.log(`[Executor] 结果:`, result);
+        logger.debug(`[Executor] 工具执行成功: ${toolId} (耗时 ${duration}ms)`);
+        logger.debug(`[Executor] 结果:`, result);
 
         return result;
     }
 
     // XML 模式下的提示
-    if (nativeTools.includes(toolId) && state.apiFormat === 'claude' && state.xmlToolCallingEnabled) {
-        console.log(`[Executor] 💬 XML 模式：使用自定义工具 "${toolId}"（非 Claude 原生工具）`);
+    if (
+        nativeTools.includes(toolId) &&
+        state.apiFormat === 'claude' &&
+        state.xmlToolCallingEnabled
+    ) {
+        logger.debug(`[Executor] 💬 XML 模式：使用自定义工具 "${toolId}"（非 Claude 原生工具）`);
     }
 
     // 获取工具定义
@@ -314,7 +318,7 @@ export async function executeTool(toolId, args, options = {}) {
             const mcpToolId = `${serverId}__${toolName}`;
             const mcpTool = getTool(mcpToolId);
             if (mcpTool) {
-                console.log(`[Executor] 🔄 转换MCP工具ID: ${toolId} -> ${mcpToolId}`);
+                logger.debug(`[Executor] 🔄 转换MCP工具ID: ${toolId} -> ${mcpToolId}`);
                 return await executeTool(mcpToolId, args, options);
             }
         }
@@ -323,15 +327,8 @@ export async function executeTool(toolId, args, options = {}) {
 
     const toolName = tool.name || toolId;
 
-    console.log(`[Executor] 🚀 开始执行工具: ${toolName}`);
-    console.log(`[Executor] 参数:`, args);
-
-    // 发布开始事件
-    eventBus.emit('tool:execute:start', {
-        toolId,
-        toolName,
-        args
-    });
+    logger.debug(`[Executor] 🚀 开始执行工具: ${toolName}`);
+    logger.debug(`[Executor] 参数:`, args);
 
     try {
         // 1. 权限检查
@@ -340,8 +337,8 @@ export async function executeTool(toolId, args, options = {}) {
             const permission = checkToolPermission(toolId, toolName);
 
             if (!permission.allowed) {
-                console.error(`[Executor] ❌ 权限拒绝: ${toolName}`);
-                console.error(permission.message || '无权限执行此工具');
+                logger.error(`[Executor] ❌ 权限拒绝: ${toolName}`);
+                logger.error(permission.message || '无权限执行此工具');
 
                 throw new Error(permission.message || `无权限执行工具: ${toolName}`);
             }
@@ -352,11 +349,11 @@ export async function executeTool(toolId, args, options = {}) {
             }
             // 模块导入失败（语法错误、文件缺失）- 这是严重错误
             if (err instanceof SyntaxError || err.message.includes('Cannot find module')) {
-                console.error('[Executor] ❌ 权限模块加载失败（严重错误）:', err);
+                logger.error('[Executor] ❌ 权限模块加载失败（严重错误）:', err);
                 throw new Error(`权限系统故障，无法执行工具: ${err.message}`);
             }
             // 其他未知错误，记录警告但允许继续（降级模式）
-            console.warn('[Executor] ⚠️ 权限检查失败，降级为默认允许模式:', err.message);
+            logger.warn('[Executor] ⚠️ 权限检查失败，降级为默认允许模式:', err.message);
         }
 
         // 2. 速率限制检查
@@ -364,8 +361,8 @@ export async function executeTool(toolId, args, options = {}) {
             try {
                 checkRateLimit(toolId, tool.rateLimit);
             } catch (err) {
-                console.error(`[Executor] ❌ 速率限制: ${toolName}`);
-                console.error(err.message);
+                logger.error(`[Executor] ❌ 速率限制: ${toolName}`);
+                logger.error(err.message);
                 throw err; // 抛出速率限制错误
             }
         }
@@ -374,8 +371,8 @@ export async function executeTool(toolId, args, options = {}) {
         const validation = safeValidate(args, tool.inputSchema);
         if (!validation.valid) {
             const errorMsg = formatValidationErrors(validation.errors);
-            console.error(`[Executor] ❌ 参数验证失败: ${toolName}`);
-            console.error(errorMsg);
+            logger.error(`[Executor] ❌ 参数验证失败: ${toolName}`);
+            logger.error(errorMsg);
 
             throw new Error(errorMsg);
         }
@@ -388,15 +385,8 @@ export async function executeTool(toolId, args, options = {}) {
 
         const duration = Date.now() - startTime;
 
-        console.log(`[Executor] 工具执行成功: ${toolName} (耗时 ${duration}ms)`);
-        console.log(`[Executor] 结果:`, result);
-
-        // 发布成功事件
-        eventBus.emit('tool:execute:success', {
-            toolId,
-            result,
-            duration
-        });
+        logger.debug(`[Executor] 工具执行成功: ${toolName} (耗时 ${duration}ms)`);
+        logger.debug(`[Executor] 结果:`, result);
 
         // 记录到历史
         try {
@@ -412,26 +402,18 @@ export async function executeTool(toolId, args, options = {}) {
         } catch (err) {
             // 历史记录失败不影响工具执行，但语法错误应明确记录
             if (err instanceof SyntaxError) {
-                console.error('[Executor] ❌ 历史模块存在语法错误:', err);
+                logger.error('[Executor] ❌ 历史模块存在语法错误:', err);
             } else {
-                console.warn('[Executor] ⚠️ 记录历史失败:', err.message);
+                logger.warn('[Executor] ⚠️ 记录历史失败:', err.message);
             }
         }
 
         return result;
-
     } catch (error) {
         const duration = Date.now() - startTime;
 
-        console.error(`[Executor] ❌ 工具执行失败: ${toolName} (耗时 ${duration}ms)`);
-        console.error(error);
-
-        // 发布失败事件
-        eventBus.emit('tool:execute:error', {
-            toolId,
-            error: error.message,
-            duration
-        });
+        logger.error(`[Executor] ❌ 工具执行失败: ${toolName} (耗时 ${duration}ms)`);
+        logger.error(error);
 
         // 记录到历史
         try {
@@ -448,9 +430,9 @@ export async function executeTool(toolId, args, options = {}) {
         } catch (err) {
             // 历史记录失败不影响错误抛出，但语法错误应明确记录
             if (err instanceof SyntaxError) {
-                console.error('[Executor] ❌ 历史模块存在语法错误:', err);
+                logger.error('[Executor] ❌ 历史模块存在语法错误:', err);
             } else {
-                console.warn('[Executor] ⚠️ 记录历史失败:', err.message);
+                logger.warn('[Executor] ⚠️ 记录历史失败:', err.message);
             }
         }
 
@@ -502,18 +484,18 @@ async function executeWithTimeout(tool, args, timeout) {
  * @returns {Promise<Array>} 结果列表
  */
 export async function executeToolsBatch(toolCalls, options = {}) {
-    console.log(`[Executor] 🔄 并行执行 ${toolCalls.length} 个工具`);
+    logger.debug(`[Executor] 🔄 并行执行 ${toolCalls.length} 个工具`);
 
     const promises = toolCalls.map(({ toolId, args }) =>
         executeTool(toolId, args, options)
-            .then(result => ({ success: true, toolId, result }))
-            .catch(error => ({ success: false, toolId, error: error.message }))
+            .then((result) => ({ success: true, toolId, result }))
+            .catch((error) => ({ success: false, toolId, error: error.message }))
     );
 
     const results = await Promise.all(promises);
 
-    const successCount = results.filter(r => r.success).length;
-    console.log(`[Executor] 批量执行完成: ${successCount}/${toolCalls.length} 成功`);
+    const successCount = results.filter((r) => r.success).length;
+    logger.debug(`[Executor] 批量执行完成: ${successCount}/${toolCalls.length} 成功`);
 
     return results;
 }
@@ -551,20 +533,19 @@ export async function executeToolWithRetry(toolId, args, options = {}) {
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            console.log(`[Executor] 尝试 ${attempt}/${maxRetries}: ${toolId}`);
+            logger.debug(`[Executor] 尝试 ${attempt}/${maxRetries}: ${toolId}`);
             return await executeTool(toolId, args, options);
-
         } catch (error) {
             lastError = error;
 
             if (attempt < maxRetries) {
-                console.warn(`[Executor] ⚠️ 第 ${attempt} 次尝试失败，${retryDelay}ms 后重试...`);
+                logger.warn(`[Executor] ⚠️ 第 ${attempt} 次尝试失败，${retryDelay}ms 后重试...`);
                 await delay(retryDelay * attempt); // 指数退避
             }
         }
     }
 
-    console.error(`[Executor] ❌ 工具执行失败（已重试 ${maxRetries} 次）: ${toolId}`);
+    logger.error(`[Executor] ❌ 工具执行失败（已重试 ${maxRetries} 次）: ${toolId}`);
     throw lastError;
 }
 
@@ -574,7 +555,7 @@ export async function executeToolWithRetry(toolId, args, options = {}) {
  * @returns {Promise<void>}
  */
 function delay(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // ========== 工具取消 ==========
@@ -615,7 +596,6 @@ export async function executeCancelable(executionId, toolId, args, options = {})
         }
 
         return result;
-
     } finally {
         runningTools.delete(executionId);
     }
@@ -631,7 +611,7 @@ export function cancelToolExecution(executionId) {
 
     if (controller) {
         controller.cancel();
-        console.log(`[Executor] 🛑 已取消工具执行: ${executionId}`);
+        logger.debug(`[Executor] 🛑 已取消工具执行: ${executionId}`);
         return true;
     }
 

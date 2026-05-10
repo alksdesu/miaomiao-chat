@@ -27,8 +27,9 @@
  */
 
 import { state } from '../core/state.js';
-import { eventBus } from '../core/events.js';
+import { setToolPermissions } from '../core/state-mutations.js';
 import { debouncedSaveSession } from '../state/sessions.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * 检查工具是否有执行权限
@@ -81,13 +82,7 @@ export function addToWhitelist(toolIdentifier) {
         state.toolPermissions.whitelist.push(toolIdentifier);
         savePermissions();
 
-        console.log(`[Permissions] 已添加到白名单: ${toolIdentifier}`);
-
-        eventBus.emit('tool:permissions:whitelist-updated', {
-            action: 'add',
-            tool: toolIdentifier,
-            whitelist: [...state.toolPermissions.whitelist]
-        });
+        logger.debug(`[Permissions] 已添加到白名单: ${toolIdentifier}`);
     }
 }
 
@@ -101,13 +96,7 @@ export function removeFromWhitelist(toolIdentifier) {
         state.toolPermissions.whitelist.splice(index, 1);
         savePermissions();
 
-        console.log(`[Permissions] 已从白名单移除: ${toolIdentifier}`);
-
-        eventBus.emit('tool:permissions:whitelist-updated', {
-            action: 'remove',
-            tool: toolIdentifier,
-            whitelist: [...state.toolPermissions.whitelist]
-        });
+        logger.debug(`[Permissions] 已从白名单移除: ${toolIdentifier}`);
     }
 }
 
@@ -120,13 +109,7 @@ export function addToBlacklist(toolIdentifier) {
         state.toolPermissions.blacklist.push(toolIdentifier);
         savePermissions();
 
-        console.log(`[Permissions] 已添加到黑名单: ${toolIdentifier}`);
-
-        eventBus.emit('tool:permissions:blacklist-updated', {
-            action: 'add',
-            tool: toolIdentifier,
-            blacklist: [...state.toolPermissions.blacklist]
-        });
+        logger.debug(`[Permissions] 已添加到黑名单: ${toolIdentifier}`);
     }
 }
 
@@ -140,13 +123,7 @@ export function removeFromBlacklist(toolIdentifier) {
         state.toolPermissions.blacklist.splice(index, 1);
         savePermissions();
 
-        console.log(`[Permissions] 已从黑名单移除: ${toolIdentifier}`);
-
-        eventBus.emit('tool:permissions:blacklist-updated', {
-            action: 'remove',
-            tool: toolIdentifier,
-            blacklist: [...state.toolPermissions.blacklist]
-        });
+        logger.debug(`[Permissions] 已从黑名单移除: ${toolIdentifier}`);
     }
 }
 
@@ -162,9 +139,7 @@ export function setPermissionMode(mode) {
     state.toolPermissions.mode = mode;
     savePermissions();
 
-    console.log(`[Permissions] 权限模式已设为: ${mode}`);
-
-    eventBus.emit('tool:permissions:mode-changed', { mode });
+    logger.debug(`[Permissions] 权限模式已设为: ${mode}`);
 }
 
 /**
@@ -175,9 +150,7 @@ export function setPermissionsEnabled(enabled) {
     state.toolPermissions.enabled = enabled;
     savePermissions();
 
-    console.log(`[Permissions] 权限系统已${enabled ? '启用' : '禁用'}`);
-
-    eventBus.emit('tool:permissions:enabled-changed', { enabled });
+    logger.debug(`[Permissions] 权限系统已${enabled ? '启用' : '禁用'}`);
 }
 
 /**
@@ -188,9 +161,7 @@ export function setRequireConfirmation(required) {
     state.toolPermissions.requireConfirmation = required;
     savePermissions();
 
-    console.log(`[Permissions] 用户确认已${required ? '启用' : '禁用'}`);
-
-    eventBus.emit('tool:permissions:confirmation-changed', { required });
+    logger.debug(`[Permissions] 用户确认已${required ? '启用' : '禁用'}`);
 }
 
 /**
@@ -209,19 +180,17 @@ export function getPermissions() {
  * 重置权限配置
  */
 export function resetPermissions() {
-    state.toolPermissions = {
+    setToolPermissions({
         enabled: false,
         mode: 'whitelist',
         whitelist: [],
         blacklist: [],
         requireConfirmation: false
-    };
+    });
 
     savePermissions();
 
-    console.log('[Permissions] 权限配置已重置');
-
-    eventBus.emit('tool:permissions:reset');
+    logger.debug('[Permissions] 权限配置已重置');
 }
 
 /**
@@ -246,19 +215,16 @@ export function importPermissions(data) {
         }
 
         // 合并到当前配置
-        state.toolPermissions = {
+        setToolPermissions({
             ...state.toolPermissions,
             ...imported
-        };
+        });
 
         savePermissions();
 
-        console.log('[Permissions] 权限配置已导入');
-
-        eventBus.emit('tool:permissions:imported');
-
+        logger.debug('[Permissions] 权限配置已导入');
     } catch (error) {
-        console.error('[Permissions] 导入失败:', error);
+        logger.error('[Permissions] 导入失败:', error);
         throw new Error(`导入权限配置失败: ${error.message}`);
     }
 }
@@ -293,12 +259,9 @@ export function setWhitelist(tools, replace = false) {
 
     savePermissions();
 
-    console.log(`[Permissions] 白名单已${replace ? '替换' : '更新'}: ${state.toolPermissions.whitelist.length} 个工具`);
-
-    eventBus.emit('tool:permissions:whitelist-updated', {
-        action: replace ? 'replace' : 'append',
-        whitelist: [...state.toolPermissions.whitelist]
-    });
+    logger.debug(
+        `[Permissions] 白名单已${replace ? '替换' : '更新'}: ${state.toolPermissions.whitelist.length} 个工具`
+    );
 }
 
 /**
@@ -317,12 +280,9 @@ export function setBlacklist(tools, replace = false) {
 
     savePermissions();
 
-    console.log(`[Permissions] 黑名单已${replace ? '替换' : '更新'}: ${state.toolPermissions.blacklist.length} 个工具`);
-
-    eventBus.emit('tool:permissions:blacklist-updated', {
-        action: replace ? 'replace' : 'append',
-        blacklist: [...state.toolPermissions.blacklist]
-    });
+    logger.debug(
+        `[Permissions] 黑名单已${replace ? '替换' : '更新'}: ${state.toolPermissions.blacklist.length} 个工具`
+    );
 }
 
 /**
@@ -332,4 +292,4 @@ function savePermissions() {
     debouncedSaveSession();
 }
 
-console.log('[Permissions] 🔒 工具权限管理模块已加载');
+logger.debug('[Permissions] 🔒 工具权限管理模块已加载');

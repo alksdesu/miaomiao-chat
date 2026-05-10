@@ -6,6 +6,7 @@
 import { eventBus } from '../core/events.js';
 import { openclawClient } from '../api/openclaw.js';
 import { escapeHtml } from '../utils/helpers.js';
+import { logger } from '../utils/logger.js';
 
 let cronJobs = [];
 
@@ -72,6 +73,7 @@ async function refreshCronList() {
     if (!listEl) return;
 
     if (!openclawClient.connected) {
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
         listEl.innerHTML = '<div class="openclaw-cron-empty">未连接到 OpenClaw</div>';
         return;
     }
@@ -80,6 +82,7 @@ async function refreshCronList() {
         cronJobs = await openclawClient.send('cron.list');
         renderCronList(listEl);
     } catch (e) {
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
         listEl.innerHTML = `<div class="openclaw-cron-empty">加载失败: ${escapeHtml(e.message)}</div>`;
     }
 }
@@ -89,13 +92,16 @@ async function refreshCronList() {
  */
 function renderCronList(listEl) {
     if (!Array.isArray(cronJobs) || cronJobs.length === 0) {
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
         listEl.innerHTML = '<div class="openclaw-cron-empty">暂无定时任务</div>';
         return;
     }
 
-    listEl.innerHTML = cronJobs.map(job => {
-        const enabled = job.enabled !== false;
-        return `
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
+    listEl.innerHTML = cronJobs
+        .map((job) => {
+            const enabled = job.enabled !== false;
+            return `
         <div class="openclaw-cron-item" data-cron-id="${escapeHtml(job.id)}">
             <div class="openclaw-cron-item-header">
                 <span class="openclaw-cron-item-message">${escapeHtml(job.message || job.description || '-')}</span>
@@ -111,7 +117,8 @@ function renderCronList(listEl) {
                 <button data-action="delete" class="delete">删除</button>
             </div>
         </div>`;
-    }).join('');
+        })
+        .join('');
 }
 
 /**
@@ -136,7 +143,7 @@ async function addCronJob() {
         if (messageInput) messageInput.value = '';
         await refreshCronList();
     } catch (e) {
-        console.error('[OpenClaw Cron] 创建失败:', e);
+        logger.error('[OpenClaw Cron] 创建失败:', e);
     }
 }
 
@@ -148,7 +155,7 @@ async function toggleCronJob(id, currentlyEnabled) {
         await openclawClient.send('cron.update', { id, enabled: !currentlyEnabled });
         await refreshCronList();
     } catch (e) {
-        console.error('[OpenClaw Cron] 切换失败:', e);
+        logger.error('[OpenClaw Cron] 切换失败:', e);
     }
 }
 
@@ -160,7 +167,7 @@ async function deleteCronJob(id) {
         await openclawClient.send('cron.delete', { id });
         await refreshCronList();
     } catch (e) {
-        console.error('[OpenClaw Cron] 删除失败:', e);
+        logger.error('[OpenClaw Cron] 删除失败:', e);
     }
 }
 
@@ -188,7 +195,7 @@ function cronToHuman(expr) {
         '0 9 * * 1-5': '工作日 09:00',
         '0 0 * * *': '每天 00:00',
         '0 12 * * *': '每天 12:00',
-        '0 18 * * *': '每天 18:00',
+        '0 18 * * *': '每天 18:00'
     };
     return map[expr] || expr;
 }

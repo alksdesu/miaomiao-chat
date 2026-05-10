@@ -3,6 +3,7 @@
  * 根据不同 API 格式构建请求参数
  */
 
+import { logger } from '../utils/logger.js';
 import { state } from '../core/state.js';
 
 /**
@@ -24,8 +25,10 @@ export function buildModelParams(format) {
             if (params.top_p !== null) result.top_p = params.top_p;
             if (format !== 'openclaw') {
                 // penalty 参数仅 OpenAI 原生格式使用
-                if (params.frequency_penalty !== null) result.frequency_penalty = params.frequency_penalty;
-                if (params.presence_penalty !== null) result.presence_penalty = params.presence_penalty;
+                if (params.frequency_penalty !== null)
+                    result.frequency_penalty = params.frequency_penalty;
+                if (params.presence_penalty !== null)
+                    result.presence_penalty = params.presence_penalty;
             }
             break;
 
@@ -34,7 +37,8 @@ export function buildModelParams(format) {
             result.temperature = params.temperature !== null ? params.temperature : 1;
             result.topK = params.topK !== null ? params.topK : 40;
             result.topP = params.topP !== null ? params.topP : 0.95;
-            result.maxOutputTokens = params.maxOutputTokens !== null ? params.maxOutputTokens : 8192;
+            result.maxOutputTokens =
+                params.maxOutputTokens !== null ? params.maxOutputTokens : 8192;
             break;
 
         case 'claude':
@@ -43,8 +47,12 @@ export function buildModelParams(format) {
             if (params.temperature !== null) result.temperature = params.temperature;
             if (params.top_p !== null) result.top_p = params.top_p;
             // Extended Thinking 要求 temperature 必须为 1
-            if (state.thinkingEnabled && result.temperature !== undefined && result.temperature !== 1) {
-                console.log('[Params] Claude thinking 模式强制 temperature=1');
+            if (
+                state.thinkingEnabled &&
+                result.temperature !== undefined &&
+                result.temperature !== 1
+            ) {
+                logger.debug('[Params] Claude thinking 模式强制 temperature=1');
                 result.temperature = 1;
             }
             if (params.top_k !== null) result.top_k = params.top_k;
@@ -75,7 +83,13 @@ function buildResponsesAPIThinking() {
     let effort = state.thinkingStrength;
     if (effort === 'custom') {
         effort = 'high';
-    } else if (effort !== 'minimal' && effort !== 'low' && effort !== 'medium' && effort !== 'high' && effort !== 'xhigh') {
+    } else if (
+        effort !== 'minimal' &&
+        effort !== 'low' &&
+        effort !== 'medium' &&
+        effort !== 'high' &&
+        effort !== 'xhigh'
+    ) {
         // 其他格式误用了 OpenAI 特有的值，默认转换为 high
         effort = 'high';
     }
@@ -83,7 +97,7 @@ function buildResponsesAPIThinking() {
     return {
         reasoning: {
             effort,
-            summary: 'auto'  // 获取推理摘要
+            summary: 'auto' // 获取推理摘要
         }
     };
 }
@@ -117,9 +131,10 @@ export function buildThinkingConfig(format, model = '') {
         else if (normalizedStrength === 'xhigh') normalizedStrength = 'high';
     }
 
-    const budget = normalizedStrength === 'custom'
-        ? state.thinkingBudget
-        : (budgetMaps[format]?.[normalizedStrength] || 16384);
+    const budget =
+        normalizedStrength === 'custom'
+            ? state.thinkingBudget
+            : budgetMaps[format]?.[normalizedStrength] || 16384;
 
     switch (format) {
         case 'openai': {
@@ -128,7 +143,13 @@ export function buildThinkingConfig(format, model = '') {
             let effort = state.thinkingStrength;
             if (effort === 'custom') {
                 effort = 'high';
-            } else if (effort !== 'minimal' && effort !== 'low' && effort !== 'medium' && effort !== 'high' && effort !== 'xhigh') {
+            } else if (
+                effort !== 'minimal' &&
+                effort !== 'low' &&
+                effort !== 'medium' &&
+                effort !== 'high' &&
+                effort !== 'xhigh'
+            ) {
                 // 其他格式误用了 OpenAI 特有的值，默认转换为 high
                 effort = 'high';
             }
@@ -158,11 +179,17 @@ export function buildThinkingConfig(format, model = '') {
             // 检查是否启用思考链
             if (!state.thinkingEnabled) return null;
 
-            // Claude 4.6 Adaptive Thinking 模式
+            // Adaptive Thinking 模式
             if (state.claudeAdaptiveThinking) {
-                const effort = state.claudeEffortLevel || 'high';
+                const VALID_CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+                const raw = state.claudeEffortLevel;
+                const effort = VALID_CLAUDE_EFFORTS.includes(raw) ? raw : 'high';
+                const thinking = { type: 'adaptive' };
+                if (state.claudeShowThinking) {
+                    thinking.display = 'summarized';
+                }
                 return {
-                    thinking: { type: 'adaptive' },
+                    thinking,
                     output_config: { effort }
                 };
             }
@@ -198,7 +225,7 @@ export function buildVerbosityConfig() {
  */
 export function getCustomHeadersObject() {
     const headers = {};
-    state.customHeaders.forEach(h => {
+    state.customHeaders.forEach((h) => {
         if (h.key && h.value) {
             headers[h.key] = h.value;
         }

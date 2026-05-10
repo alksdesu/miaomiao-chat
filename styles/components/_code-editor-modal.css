@@ -37,7 +37,7 @@
     gap: 4px;
     padding: 0 20px;
     border-bottom: 2px solid var(--md-border);
-    background: rgba(0, 0, 0, 0.03);
+    background: rgba(var(--shadow-color-rgb), 0.03);
 }
 
 .code-editor-tabs .tab-btn {
@@ -63,7 +63,7 @@
 }
 
 .code-editor-tabs .tab-btn:hover {
-    background: rgba(74, 144, 226, 0.1);
+    background: rgba(var(--accent-blue-rgb), 0.1);
     color: var(--color-text-primary);
 }
 
@@ -223,7 +223,7 @@
 }
 
 .panel-title {
-    font-family: var(--font-mono);
+    font-family: var(--font-ui-accent);
     font-size: var(--fs-base);
     font-weight: 600;
     color: var(--color-text-inverse);
@@ -232,9 +232,9 @@
 
 .language-selector {
     padding: 4px 8px;
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    border: 1px solid rgba(var(--color-bg-surface-rgb), 0.2);
     border-radius: 3px;
-    background: rgba(0, 0, 0, 0.2);
+    background: rgba(var(--shadow-color-rgb), 0.2);
     color: var(--color-text-inverse);
     font-family: var(--font-mono);
     font-size: var(--fs-sm);
@@ -247,7 +247,7 @@
 
 .refresh-preview-btn {
     padding: 4px 8px;
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    border: 1px solid rgba(var(--color-bg-surface-rgb), 0.2);
     border-radius: 3px;
     background: transparent;
     color: var(--color-text-inverse);
@@ -273,8 +273,8 @@
 
 .code-line-numbers {
     padding: 12px 8px;
-    background: rgba(0, 0, 0, 0.2);
-    border-right: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(var(--shadow-color-rgb), 0.2);
+    border-right: 1px solid rgba(var(--color-bg-surface-rgb), 0.1);
     text-align: right;
     user-select: none;
     font-family: var(--font-mono);
@@ -368,20 +368,20 @@
 .code-editor-textarea::-webkit-scrollbar-track,
 .code-preview-content::-webkit-scrollbar-track,
 .code-editor-body::-webkit-scrollbar-track {
-    background: rgba(0, 0, 0, 0.2);
+    background: rgba(var(--shadow-color-rgb), 0.2);
 }
 
 .code-editor-textarea::-webkit-scrollbar-thumb,
 .code-preview-content::-webkit-scrollbar-thumb,
 .code-editor-body::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.3);
+    background: rgba(var(--color-bg-surface-rgb), 0.3);
     border-radius: 4px;
 }
 
 .code-editor-textarea::-webkit-scrollbar-thumb:hover,
 .code-preview-content::-webkit-scrollbar-thumb:hover,
 .code-editor-body::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.5);
+    background: rgba(var(--color-bg-surface-rgb), 0.5);
 }
 
 /* ========== 实时预览标签页 ========== */
@@ -404,7 +404,7 @@
 }
 
 .preview-label {
-    font-family: var(--font-mono);
+    font-family: var(--font-ui-accent);
     font-size: var(--fs-base);
     font-weight: 600;
     color: var(--color-text-inverse);
@@ -413,7 +413,7 @@
 
 .refresh-live-preview-btn {
     padding: 6px 12px;
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    border: 1px solid rgba(var(--color-bg-surface-rgb), 0.2);
     border-radius: 3px;
     background: transparent;
     color: var(--color-text-inverse);
@@ -453,11 +453,11 @@
     justify-content: space-between;
     padding: 8px 12px;
     background: var(--overlay-light);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    border-bottom: 1px solid rgba(var(--color-bg-surface-rgb), 0.1);
 }
 
 .preview-console-header span {
-    font-family: var(--font-mono);
+    font-family: var(--font-ui-accent);
     font-size: var(--fs-sm);
     font-weight: 600;
     color: var(--color-text-inverse);
@@ -466,7 +466,7 @@
 
 .clear-console-btn {
     padding: 2px 8px;
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    border: 1px solid rgba(var(--color-bg-surface-rgb), 0.2);
     border-radius: 3px;
     background: transparent;
     color: var(--color-text-inverse);
@@ -493,6 +493,7 @@
 .preview-console-content:empty::before {
     content: '控制台输出将显示在此处...';
     color: var(--md-muted);
+    font-family: var(--font-sans);
     font-style: italic;
 }
 
@@ -558,7 +559,7 @@
 
 .fullscreen-preview-btn {
     padding: 6px 12px;
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    border: 1px solid rgba(var(--color-bg-surface-rgb), 0.2);
     border-radius: 3px;
     background: transparent;
     color: var(--color-text-inverse);

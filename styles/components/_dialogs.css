@@ -3,23 +3,10 @@
  * 替代 Electron 中不支持的 prompt 和 confirm
  */
 
-/* 对话框遮罩层 */
+/* 对话框根节点：显式声明层级来源，避免依赖样式导入顺序 */
 :where(#input-dialog-modal).modal,
 :where(#confirm-dialog-modal).modal {
-    display: none;
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    z-index: var(--z-modal-dialog);
-    align-items: center;
-    justify-content: center;
-}
-
-:where(#input-dialog-modal).modal[style*="display: flex"],
-:where(#confirm-dialog-modal).modal[style*="display: flex"] {
-    display: flex;
+    --modal-layer-z-index: var(--z-modal-dialog);
 }
 
 :where(#input-dialog-modal) .modal-overlay,
@@ -43,8 +30,8 @@
     background: var(--color-bg-surface);
     border: 3px solid var(--color-border-primary);
     box-shadow:
-        0 8px 16px rgba(0, 0, 0, 0.3),
-        inset 0 -2px 0 rgba(0, 0, 0, 0.1);
+        0 8px 16px rgba(var(--shadow-color-rgb), 0.3),
+        inset 0 -2px 0 rgba(var(--shadow-color-rgb), 0.1);
     max-width: 450px;
     width: 90%;
     max-height: 90vh;
@@ -76,11 +63,11 @@
 
 :where(#input-dialog-modal) .modal-header h2,
 :where(#confirm-dialog-modal) .modal-header h2 {
-    font-family: var(--font-mono);
+    font-family: var(--font-ui-accent);
     font-size: var(--fs-base);
     color: var(--color-text-inverse);
     margin: 0;
-    text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.3);
+    text-shadow: 2px 2px 0 rgba(var(--shadow-color-rgb), 0.3);
 }
 
 :where(#input-dialog-modal) .modal-header .icon-button,
@@ -88,8 +75,8 @@
     width: 44px;
     height: 44px;
     padding: 0;
-    background: rgba(0, 0, 0, 0.2);
-    border: 2px solid rgba(255, 255, 255, 0.3);
+    background: rgba(var(--shadow-color-rgb), 0.2);
+    border: 2px solid rgba(var(--color-bg-surface-rgb), 0.3);
     color: var(--color-text-inverse);
     font-size: var(--fs-3xl);
     line-height: 1;
@@ -100,7 +87,7 @@
 :where(#input-dialog-modal) .modal-header .icon-button:hover,
 :where(#confirm-dialog-modal) .modal-header .icon-button:hover {
     background: var(--overlay-light);
-    border-color: rgba(255, 255, 255, 0.5);
+    border-color: rgba(var(--color-bg-surface-rgb), 0.5);
     transform: scale(1.1);
 }
 
@@ -112,7 +99,7 @@
 
 :where(#input-dialog-modal) .modal-body p,
 :where(#confirm-dialog-modal) .modal-body p {
-    font-family: 'Courier New', monospace;
+    font-family: var(--font-sans);
     font-size: var(--fs-lg);
     color: var(--color-text-primary);
     line-height: 1.6;
@@ -123,21 +110,21 @@
 #input-dialog-input {
     width: 100%;
     padding: 10px 12px;
-    font-family: 'Courier New', monospace;
+    font-family: var(--font-sans);
     font-size: var(--fs-lg);
     color: var(--color-text-primary);
     background: var(--color-bg-input);
     border: 2px solid var(--color-border-primary);
-    box-shadow: inset 2px 2px 0 rgba(0, 0, 0, 0.1);
+    box-shadow: inset 2px 2px 0 rgba(var(--shadow-color-rgb), 0.1);
     transition: all 0.2s;
 }
 
 #input-dialog-input:focus {
     outline: none;
-    border-color: var(--md-blue, #4A90E2);
+    border-color: var(--md-blue, #4a90e2);
     box-shadow:
-        inset 2px 2px 0 rgba(0, 0, 0, 0.1),
-        0 0 0 3px rgba(74, 144, 226, 0.2);
+        inset 2px 2px 0 rgba(var(--shadow-color-rgb), 0.1),
+        0 0 0 3px rgba(var(--accent-blue-rgb), 0.2);
 }
 
 /* 对话框底部按钮 */
@@ -146,8 +133,8 @@
     display: flex;
     gap: 12px;
     padding: 16px 20px;
-    background: rgba(0, 0, 0, 0.03);
-    border-top: 2px solid rgba(0, 0, 0, 0.1);
+    background: rgba(var(--shadow-color-rgb), 0.03);
+    border-top: 2px solid rgba(var(--shadow-color-rgb), 0.1);
 }
 
 :where(#input-dialog-modal) .btn-primary,
@@ -158,7 +145,7 @@
     min-width: 44px;
     min-height: 44px;
     padding: 10px 16px;
-    font-family: var(--font-mono);
+    font-family: var(--font-ui-accent);
     font-size: var(--fs-xs);
     border: 2px solid var(--color-border-primary);
     cursor: pointer;
@@ -172,25 +159,25 @@
     background: var(--md-blue);
     color: var(--color-text-inverse);
     box-shadow:
-        0 4px 0 #2C5F9E,
-        0 6px 8px rgba(0, 0, 0, 0.2);
+        0 4px 0 var(--btn-primary-shadow),
+        0 6px 8px rgba(var(--shadow-color-rgb), 0.2);
 }
 
 :where(#input-dialog-modal) .btn-primary:hover,
 :where(#confirm-dialog-modal) .btn-primary:hover {
-    background: #5BA0F2;
+    background: var(--btn-primary-hover);
     transform: translateY(-2px);
     box-shadow:
-        0 6px 0 #2C5F9E,
-        0 8px 12px rgba(0, 0, 0, 0.3);
+        0 6px 0 var(--btn-primary-shadow),
+        0 8px 12px rgba(var(--shadow-color-rgb), 0.3);
 }
 
 :where(#input-dialog-modal) .btn-primary:active,
 :where(#confirm-dialog-modal) .btn-primary:active {
     transform: translateY(2px);
     box-shadow:
-        0 2px 0 #2C5F9E,
-        0 3px 4px rgba(0, 0, 0, 0.2);
+        0 2px 0 var(--btn-primary-shadow),
+        0 3px 4px rgba(var(--shadow-color-rgb), 0.2);
 }
 
 :where(#input-dialog-modal) .btn-secondary,
@@ -198,8 +185,8 @@
     background: var(--color-bg-surface);
     color: var(--color-text-primary);
     box-shadow:
-        0 4px 0 #A0A0A0,
-        0 6px 8px rgba(0, 0, 0, 0.15);
+        0 4px 0 var(--btn-secondary-shadow),
+        0 6px 8px rgba(var(--shadow-color-rgb), 0.15);
 }
 
 :where(#input-dialog-modal) .btn-secondary:hover,
@@ -207,16 +194,16 @@
     background: var(--color-bg-primary);
     transform: translateY(-2px);
     box-shadow:
-        0 6px 0 #A0A0A0,
-        0 8px 12px rgba(0, 0, 0, 0.25);
+        0 6px 0 var(--btn-secondary-shadow),
+        0 8px 12px rgba(var(--shadow-color-rgb), 0.25);
 }
 
 :where(#input-dialog-modal) .btn-secondary:active,
 :where(#confirm-dialog-modal) .btn-secondary:active {
     transform: translateY(2px);
     box-shadow:
-        0 2px 0 #A0A0A0,
-        0 3px 4px rgba(0, 0, 0, 0.15);
+        0 2px 0 var(--btn-secondary-shadow),
+        0 3px 4px rgba(var(--shadow-color-rgb), 0.15);
 }
 
 /* 移动端适配 */

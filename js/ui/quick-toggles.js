@@ -7,7 +7,16 @@ import { state } from '../core/state.js';
 import { eventBus } from '../core/events.js';
 import { saveCurrentConfig } from '../state/config.js';
 import { handleAttachFile } from './input.js';
+import { showNotification } from './notifications.js';
 import { isElectron } from '../utils/platform.js';
+import {
+    setStreamEnabled,
+    setThinkingEnabled,
+    setWebSearchEnabled,
+    setCodeExecutionEnabled,
+    setComputerUseEnabled
+} from '../core/state-mutations.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * 同步快捷开关状态
@@ -16,8 +25,13 @@ export function syncQuickToggles() {
     document.getElementById('toggle-stream')?.classList.toggle('active', state.streamEnabled);
     document.getElementById('toggle-thinking')?.classList.toggle('active', state.thinkingEnabled);
     document.getElementById('toggle-websearch')?.classList.toggle('active', state.webSearchEnabled);
-    document.getElementById('toggle-code-exec')?.classList.toggle('active', state.codeExecutionEnabled);
-    document.getElementById('toggle-computer-use')?.classList.toggle('active', state.computerUseEnabled);
+    document
+        .getElementById('toggle-code-exec')
+        ?.classList.toggle('active', state.codeExecutionEnabled);
+    document
+        .getElementById('toggle-computer-use')
+        ?.classList.toggle('active', state.computerUseEnabled);
+    document.getElementById('toggle-ai-monitor')?.classList.toggle('active', state.monitorEnabled);
 }
 
 /**
@@ -29,7 +43,7 @@ export function initQuickToggles() {
     if (toggleStream) {
         toggleStream.classList.toggle('active', state.streamEnabled);
         toggleStream.addEventListener('click', () => {
-            state.streamEnabled = !state.streamEnabled;
+            setStreamEnabled(!state.streamEnabled);
             toggleStream.classList.toggle('active', state.streamEnabled);
             // 同步设置面板开关
             const panelSwitch = document.getElementById('stream-enabled');
@@ -43,23 +57,27 @@ export function initQuickToggles() {
     if (toggleThinking) {
         toggleThinking.classList.toggle('active', state.thinkingEnabled);
         toggleThinking.addEventListener('click', () => {
-            state.thinkingEnabled = !state.thinkingEnabled;
+            setThinkingEnabled(!state.thinkingEnabled);
             toggleThinking.classList.toggle('active', state.thinkingEnabled);
             // 同步设置面板开关
             const panelSwitch = document.getElementById('thinking-enabled');
             if (panelSwitch) panelSwitch.checked = state.thinkingEnabled;
             // 显示/隐藏强度选择
             const strengthGroup = document.getElementById('thinking-strength-group');
-            if (strengthGroup) strengthGroup.style.display = state.thinkingEnabled ? 'flex' : 'none';
+            if (strengthGroup)
+                strengthGroup.style.display = state.thinkingEnabled ? 'flex' : 'none';
             // 同步 thinkingHint 显隐
             const thinkingHint = document.getElementById('thinking-hint');
             if (thinkingHint) thinkingHint.style.display = state.thinkingEnabled ? 'block' : 'none';
             // 同步 Claude Adaptive 行显隐
             const claudeAdaptiveRow = document.getElementById('claude-adaptive-row');
-            if (claudeAdaptiveRow) claudeAdaptiveRow.style.display = state.thinkingEnabled ? 'flex' : 'none';
+            if (claudeAdaptiveRow)
+                claudeAdaptiveRow.style.display = state.thinkingEnabled ? 'flex' : 'none';
             // 同步自定义 budget 输入框显隐
             const budgetInput = document.getElementById('thinking-budget-group');
-            if (budgetInput) budgetInput.style.display = (state.thinkingEnabled && state.thinkingStrength === 'custom') ? 'flex' : 'none';
+            if (budgetInput)
+                budgetInput.style.display =
+                    state.thinkingEnabled && state.thinkingStrength === 'custom' ? 'flex' : 'none';
             saveCurrentConfig();
         });
     }
@@ -69,7 +87,7 @@ export function initQuickToggles() {
     if (toggleWebsearch) {
         toggleWebsearch.classList.toggle('active', state.webSearchEnabled);
         toggleWebsearch.addEventListener('click', () => {
-            state.webSearchEnabled = !state.webSearchEnabled;
+            setWebSearchEnabled(!state.webSearchEnabled);
             toggleWebsearch.classList.toggle('active', state.webSearchEnabled);
             // 同步设置面板开关
             const panelSwitch = document.getElementById('web-search-enabled');
@@ -92,7 +110,7 @@ export function initQuickToggles() {
 
         // 点击事件
         toggleCodeExec.addEventListener('click', async () => {
-            state.codeExecutionEnabled = !state.codeExecutionEnabled;
+            setCodeExecutionEnabled(!state.codeExecutionEnabled);
             toggleCodeExec.classList.toggle('active', state.codeExecutionEnabled);
 
             // 同步设置面板开关
@@ -119,7 +137,7 @@ export function initQuickToggles() {
 
         // 点击事件
         toggleComputerUse.addEventListener('click', async () => {
-            state.computerUseEnabled = !state.computerUseEnabled;
+            setComputerUseEnabled(!state.computerUseEnabled);
             toggleComputerUse.classList.toggle('active', state.computerUseEnabled);
 
             // 同步设置面板开关
@@ -130,12 +148,32 @@ export function initQuickToggles() {
             try {
                 const { setToolEnabled } = await import('../tools/manager.js');
                 setToolEnabled('computer', state.computerUseEnabled);
-                console.log(`[Quick Toggle] Computer Use 工具已${state.computerUseEnabled ? '启用' : '禁用'}`);
+                logger.debug(
+                    `[Quick Toggle] Computer Use 工具已${state.computerUseEnabled ? '启用' : '禁用'}`
+                );
             } catch (error) {
-                console.error('[Quick Toggle] 同步 Computer Use 状态失败:', error);
+                logger.error('[Quick Toggle] 同步 Computer Use 状态失败:', error);
+                showNotification('Computer Use 状态同步失败', 'error');
             }
 
             saveCurrentConfig();
+        });
+    }
+
+    // ========== AI Monitor 快捷按钮 ==========
+    const toggleMonitor = document.getElementById('toggle-ai-monitor');
+    if (toggleMonitor) {
+        toggleMonitor.classList.toggle('active', state.monitorEnabled);
+        toggleMonitor.addEventListener('click', async () => {
+            const newVal = !state.monitorEnabled;
+            const { setMonitorEnabled } = await import('../devtools/monitor-state.js');
+            await setMonitorEnabled(newVal);
+            toggleMonitor.classList.toggle('active', state.monitorEnabled);
+            state.sessionDirty = true;
+            showNotification(
+                state.monitorEnabled ? 'AI Monitor 已启用' : 'AI Monitor 已关闭',
+                state.monitorEnabled ? 'success' : 'info'
+            );
         });
     }
 
@@ -167,7 +205,7 @@ export function initQuickToggles() {
     eventBus.on('config:format-change-requested', updateOpenClawUI);
     updateOpenClawUI();
 
-    console.log('Quick toggles initialized');
+    logger.debug('Quick toggles initialized');
 }
 
 /**
@@ -175,17 +213,22 @@ export function initQuickToggles() {
  */
 export function exposeToggleFunctions() {
     // 思维链折叠/展开
-    window.toggleThinking = function(header) {
+    window.toggleThinking = function (header) {
         const block = header.parentElement;
         const isCollapsed = block.classList.toggle('collapsed');
         header.setAttribute('aria-expanded', !isCollapsed);
     };
 
     // 思维链键盘事件
-    window.handleThinkingKeydown = function(event, header) {
+    window.handleThinkingKeydown = function (event, header) {
         if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault();
             window.toggleThinking(header);
         }
     };
 }
+
+// 监听配置同步事件
+eventBus.on('config:sync-quick-toggles', () => {
+    syncQuickToggles();
+});

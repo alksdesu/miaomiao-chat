@@ -12,11 +12,16 @@ import { processVariables } from './variables.js';
  * @returns {Array} 开场对话消息数组
  */
 export function getOpeningMessages(format = state.apiFormat) {
-    if (!state.prefillEnabled || !state.systemPrefillMessages || !state.systemPrefillMessages.length) return [];
+    if (
+        !state.prefillEnabled ||
+        !state.systemPrefillMessages ||
+        !state.systemPrefillMessages.length
+    )
+        return [];
 
     return state.systemPrefillMessages
-        .filter(m => m.role !== 'system' && m.content && m.content.trim())  // 过滤 system 和空内容
-        .map(m => {
+        .filter((m) => m.role !== 'system' && m.content && m.content.trim()) // 过滤 system 和空内容
+        .map((m) => {
             const content = processVariables(m.content);
 
             if (format === 'gemini') {
@@ -43,8 +48,8 @@ export function getPrefillMessages(format = state.apiFormat) {
     if (!state.prefillEnabled || !state.prefillMessages.length) return [];
 
     return state.prefillMessages
-        .filter(m => m.role !== 'system' && m.content && m.content.trim())  // 过滤 system 和空内容
-        .map(m => {
+        .filter((m) => m.role !== 'system' && m.content && m.content.trim()) // 过滤 system 和空内容
+        .map((m) => {
             const content = processVariables(m.content);
 
             if (format === 'gemini') {

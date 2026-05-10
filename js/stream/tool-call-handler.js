@@ -3,11 +3,23 @@
  * 处理 OpenAI 流式响应中的工具调用
  */
 
+import { logger } from '../utils/logger.js';
 import { eventBus } from '../core/events.js';
 import { executeTool } from '../tools/executor.js';
 import { createToolCallUI, updateToolCallStatus } from '../ui/tool-display.js';
 import { state } from '../core/state.js';
+import { setIsToolCallPending } from '../core/state-mutations.js';
 import { requestStateMachine } from '../core/request-state-machine.js';
+
+// 工具执行取消控制器
+let currentAbortController = null;
+
+/**
+ * 取消正在进行的工具执行
+ */
+export function abortToolExecution() {
+    currentAbortController?.abort();
+}
 
 /**
  * 处理工具返回的多媒体内容
@@ -52,7 +64,8 @@ async function enrichToolResultWithFiles(result, toolName) {
     const persistVideoUrlIfNeeded = async (videoUrl, mimeType = '') => {
         if (!videoUrl || typeof videoUrl !== 'string') return videoUrl;
         if (!videoUrl.startsWith('data:video/')) return videoUrl;
-        if (!(typeof window !== 'undefined' && window.electron?.ipcRenderer?.invoke)) return videoUrl;
+        if (!(typeof window !== 'undefined' && window.electron?.ipcRenderer?.invoke))
+            return videoUrl;
 
         try {
             const storeResult = await window.electron.ipcRenderer.invoke('mcp:store-video', {
@@ -63,7 +76,7 @@ async function enrichToolResultWithFiles(result, toolName) {
                 return storeResult.fileUrl;
             }
         } catch (error) {
-            console.warn('[ToolCallHandler] 视频持久化失败，回退 Data URL:', error);
+            logger.warn('[ToolCallHandler] 视频持久化失败，回退 Data URL:', error);
         }
 
         return videoUrl;
@@ -77,14 +90,14 @@ async function enrichToolResultWithFiles(result, toolName) {
         const texts = [];
         let hasContent = false;
 
-        console.log(`[ToolCallHandler] 检测到 MCP content 数组格式，开始转换`);
+        logger.debug(`[ToolCallHandler] 检测到 MCP content 数组格式，开始转换`);
 
         for (const item of normalizedPayload.content) {
             // 处理文本内容
             if (item.type === 'text' && item.text) {
                 texts.push(item.text);
                 hasContent = true;
-                console.log(`[ToolCallHandler] 发现文本内容: ${item.text.substring(0, 50)}...`);
+                logger.debug(`[ToolCallHandler] 发现文本内容: ${item.text.substring(0, 50)}...`);
             }
             // 处理图片内容
             else if (item.type === 'image' && item.data) {
@@ -94,7 +107,7 @@ async function enrichToolResultWithFiles(result, toolName) {
                     url: `data:${mimeType};base64,${item.data}`
                 });
                 hasContent = true;
-                console.log(`[ToolCallHandler] 🖼️ 发现图片内容，MIME类型: ${mimeType}`);
+                logger.debug(`[ToolCallHandler] 🖼️ 发现图片内容，MIME类型: ${mimeType}`);
             } else if (item.type === 'image' && item.url) {
                 images.push({
                     type: 'image_url',
@@ -113,7 +126,7 @@ async function enrichToolResultWithFiles(result, toolName) {
                     mimeType
                 });
                 hasContent = true;
-                console.log(`[ToolCallHandler] 🎬 发现视频内容，MIME类型: ${mimeType}`);
+                logger.debug(`[ToolCallHandler] 🎬 发现视频内容，MIME类型: ${mimeType}`);
             } else if (item.type === 'video' && item.url) {
                 const mimeType = item.mimeType || item.media_type || item.mime_type || '';
                 const persistedVideoUrl = await persistVideoUrlIfNeeded(item.url, mimeType);
@@ -150,7 +163,7 @@ async function enrichToolResultWithFiles(result, toolName) {
                 converted.videos = videos;
             }
 
-            console.log(`[ToolCallHandler] MCP 格式转换完成:`, {
+            logger.debug(`[ToolCallHandler] MCP 格式转换完成:`, {
                 hasText: !!converted.text,
                 hasImage: !!converted.image,
                 imagesCount: images.length,
@@ -174,7 +187,7 @@ async function enrichToolResultWithFiles(result, toolName) {
                 for (const item of content.content) {
                     // 检测文件输出
                     if (item.type === 'file' && item.file_id) {
-                        console.log(`[ToolCallHandler] 🖼️ 检测到 Code Execution 文件输出:`, item);
+                        logger.debug(`[ToolCallHandler] 🖼️ 检测到 Code Execution 文件输出:`, item);
 
                         try {
                             // 下载文件
@@ -185,10 +198,13 @@ async function enrichToolResultWithFiles(result, toolName) {
                                     url: `data:${item.file_type || 'image/png'};base64,${fileData}`,
                                     file_id: item.file_id
                                 });
-                                console.log(`[ToolCallHandler] 文件下载成功: ${item.file_id}`);
+                                logger.debug(`[ToolCallHandler] 文件下载成功: ${item.file_id}`);
                             }
                         } catch (error) {
-                            console.error(`[ToolCallHandler] ❌ 下载文件失败: ${item.file_id}`, error);
+                            logger.error(
+                                `[ToolCallHandler] ❌ 下载文件失败: ${item.file_id}`,
+                                error
+                            );
                         }
                     }
                 }
@@ -197,7 +213,7 @@ async function enrichToolResultWithFiles(result, toolName) {
                 if (images.length > 0) {
                     return {
                         ...result,
-                        images: images  // 添加图片数组
+                        images: images // 添加图片数组
                     };
                 }
             }
@@ -227,7 +243,8 @@ async function downloadClaudeFile(fileId) {
             headers: {
                 'x-api-key': apiKey,
                 'anthropic-version': '2023-06-01',
-                'anthropic-beta': 'files-api-2025-04-14'
+                'anthropic-beta': 'files-api-2025-04-14',
+                'anthropic-dangerous-direct-browser-access': 'true'
             }
         });
 
@@ -245,7 +262,7 @@ async function downloadClaudeFile(fileId) {
 
         return base64;
     } catch (error) {
-        console.error(`[downloadClaudeFile] 下载失败:`, error);
+        logger.error(`[downloadClaudeFile] 下载失败:`, error);
         throw error;
     }
 }
@@ -311,12 +328,16 @@ class ToolCallAccumulator {
                 let args;
                 try {
                     // 空字符串或 null 时降级为空对象
-                    args = (call.arguments != null && call.arguments !== '')
-                        ? JSON.parse(call.arguments)
-                        : {};
+                    args =
+                        call.arguments != null && call.arguments !== ''
+                            ? JSON.parse(call.arguments)
+                            : {};
                 } catch (error) {
-                    console.error(`[ToolCallHandler] 工具调用 ${index} 参数解析失败:`, call.arguments);
-                    console.error(error);
+                    logger.error(
+                        `[ToolCallHandler] 工具调用 ${index} 参数解析失败:`,
+                        call.arguments
+                    );
+                    logger.error(error);
                     // 解析失败降级为空对象，不跳过工具调用
                     args = {};
                 }
@@ -347,32 +368,27 @@ class ToolCallAccumulator {
  * @returns {Promise<Array>} 工具结果列表
  */
 export async function executeToolCalls(toolCalls) {
-    console.log(`[ToolCallHandler] 🔧 并行执行 ${toolCalls.length} 个工具调用`);
+    logger.debug(`[ToolCallHandler] 🔧 并行执行 ${toolCalls.length} 个工具调用`);
 
     // 🔄 创建撤销快照（在执行工具前）
     try {
         const { snapshotBeforeToolCall } = await import('../tools/undo.js');
-        snapshotBeforeToolCall(toolCalls.map(tc => ({
-            id: tc.id,
-            name: tc.name,
-            arguments: tc.arguments
-        })));
+        snapshotBeforeToolCall(
+            toolCalls.map((tc) => ({
+                id: tc.id,
+                name: tc.name,
+                arguments: tc.arguments
+            }))
+        );
     } catch (err) {
-        console.warn('[ToolCallHandler] 创建撤销快照失败:', err);
+        logger.warn('[ToolCallHandler] 创建撤销快照失败:', err);
     }
 
     // 第一步：为所有工具创建 UI 并发布检测事件
     for (const toolCall of toolCalls) {
         const { id, name, arguments: args } = toolCall;
 
-        console.log(`[ToolCallHandler] 准备执行工具: ${name}`, args);
-
-        // 发布检测事件
-        eventBus.emit('stream:tool-call-detected', {
-            toolId: id,
-            toolName: name,
-            args
-        });
+        logger.debug(`[ToolCallHandler] 准备执行工具: ${name}`, args);
 
         // 创建工具调用 UI
         await createToolCallUI({
@@ -391,18 +407,18 @@ export async function executeToolCalls(toolCalls) {
             // 使用工具名称查找执行，id 仅用于跟踪和结果回传
             const result = await executeTool(name, args);
 
-            console.log(`[ToolCallHandler] 工具执行成功: ${name}`, result);
+            logger.debug(`[ToolCallHandler] 工具执行成功: ${name}`, result);
 
             // 检测并处理多媒体内容（图片、视频等）
             const enrichedResult = await enrichToolResultWithFiles(result, name);
 
             // 更新 UI 为成功状态（使用 enriched 结果以正确渲染图片）
             try {
-                console.log(`[ToolCallHandler] 准备更新工具UI状态为completed: ${id}`);
+                logger.debug(`[ToolCallHandler] 准备更新工具UI状态为completed: ${id}`);
                 updateToolCallStatus(id, 'completed', { result: enrichedResult });
-                console.log(`[ToolCallHandler] 工具UI状态更新完成`);
+                logger.debug(`[ToolCallHandler] 工具UI状态更新完成`);
             } catch (uiError) {
-                console.error(`[ToolCallHandler] ❌ 更新工具UI失败:`, uiError);
+                logger.error(`[ToolCallHandler] ❌ 更新工具UI失败:`, uiError);
             }
 
             // 立即转换 ID 为当前格式,防止切换模型时不匹配
@@ -417,10 +433,9 @@ export async function executeToolCalls(toolCalls) {
                 result: enrichedResult,
                 isError: false
             };
-
         } catch (error) {
-            console.error(`[ToolCallHandler] ❌ 工具执行失败: ${name}`, error);
-            console.error(`[ToolCallHandler] 错误详情:`, {
+            logger.error(`[ToolCallHandler] ❌ 工具执行失败: ${name}`, error);
+            logger.error(`[ToolCallHandler] 错误详情:`, {
                 message: error.message,
                 args: JSON.stringify(args, null, 2)
             });
@@ -441,16 +456,23 @@ export async function executeToolCalls(toolCalls) {
             // 改进错误消息，明确告知不要重试
             let errorMessage;
             if (error.message.includes('Missing required parameter')) {
-                errorMessage = `Tool "${name}" call failed due to missing required parameter. ` +
+                errorMessage =
+                    `Tool "${name}" call failed due to missing required parameter. ` +
                     `This is a parameter schema issue, not a temporary error. ` +
                     `Do NOT retry this tool call. Please respond to the user explaining the issue. ` +
                     `Error details: ${error.message}`;
-            } else if (error.message.includes('不存在') || error.message.includes('not found') || error.message.includes('not available')) {
-                errorMessage = `Tool "${name}" is not available or not registered. ` +
+            } else if (
+                error.message.includes('不存在') ||
+                error.message.includes('not found') ||
+                error.message.includes('not available')
+            ) {
+                errorMessage =
+                    `Tool "${name}" is not available or not registered. ` +
                     `This tool cannot be used. Do NOT retry this tool. ` +
                     `Please respond to the user WITHOUT using this tool.`;
             } else {
-                errorMessage = `Tool "${name}" execution failed: ${error.message}. ` +
+                errorMessage =
+                    `Tool "${name}" execution failed: ${error.message}. ` +
                     `This error cannot be fixed by retrying with the same parameters. ` +
                     `Do NOT retry this tool call. Please respond to the user based on this error.`;
             }
@@ -472,13 +494,7 @@ export async function executeToolCalls(toolCalls) {
     // 第三步：等待所有工具执行完成
     const results = await Promise.all(executionPromises);
 
-    // 发布工具结果已发送事件
-    eventBus.emit('stream:tool-result-sent', {
-        toolCount: toolCalls.length,
-        results
-    });
-
-    console.log(`[ToolCallHandler] 🎉 所有工具执行完成: ${results.length}/${toolCalls.length}`);
+    logger.debug(`[ToolCallHandler] 🎉 所有工具执行完成: ${results.length}/${toolCalls.length}`);
 
     return results;
 }
@@ -490,17 +506,27 @@ export async function executeToolCalls(toolCalls) {
  * @returns {Promise<void>}
  */
 export async function handleToolCallStream(toolCalls, apiConfig) {
-    console.log('[ToolCallHandler] 🚀 开始工具调用流程');
+    logger.debug('[ToolCallHandler] 🚀 开始工具调用流程');
 
     // 保存当前消息元素引用（在 finally 块清空之前）
     const assistantMessageEl = state.currentAssistantMessage?.closest('.message');
     if (assistantMessageEl) {
-        console.log('[ToolCallHandler] 保存消息元素引用用于 continuation');
+        logger.debug('[ToolCallHandler] 保存消息元素引用用于 continuation');
     }
 
     try {
         // 1. 执行所有工具调用
+        currentAbortController = new AbortController();
         const toolResults = await executeToolCalls(toolCalls);
+
+        // 执行完成后检查是否被取消
+        if (currentAbortController.signal.aborted) {
+            logger.info('[ToolCallHandler] 工具执行已取消，跳过结果发送');
+            setIsToolCallPending(false);
+            requestStateMachine.forceReset();
+            eventBus.emit('ui:reset-input-buttons');
+            return;
+        }
 
         // 2. 根据 API 格式选择正确的消息构建器
         // 使用提供商的原始 apiFormat，而不是存储格式 state.apiFormat
@@ -508,51 +534,40 @@ export async function handleToolCallStream(toolCalls, apiConfig) {
         const { getCurrentProvider } = await import('../providers/manager.js');
         const provider = getCurrentProvider();
         const requestFormat = provider?.apiFormat || state.apiFormat || 'openai';
-        let buildToolResultMessages;
 
-        console.log('[ToolCallHandler] 格式选择:', {
+        logger.debug('[ToolCallHandler] 格式选择:', {
             providerFormat: provider?.apiFormat,
             stateFormat: state.apiFormat,
             using: requestFormat
         });
 
-        switch (requestFormat) {
-            case 'gemini': {
-                const geminiModule = await import('../api/gemini.js');
-                buildToolResultMessages = geminiModule.buildToolResultMessages;
-                console.log('[ToolCallHandler] 使用 Gemini 格式构建工具结果消息');
-                break;
-            }
-
-            case 'claude': {
-                const claudeModule = await import('../api/claude.js');
-                buildToolResultMessages = claudeModule.buildToolResultMessages;
-                console.log('[ToolCallHandler] 使用 Claude 格式构建工具结果消息');
-                break;
-            }
-
-            case 'openai':
-            case 'openai-responses':
-            default: {
-                const openaiModule = await import('../api/openai.js');
-                buildToolResultMessages = openaiModule.buildToolResultMessages;
-                console.log('[ToolCallHandler] 使用 OpenAI 格式构建工具结果消息');
-                break;
-            }
-        }
-
         // 3. 构建新的消息数组（包含工具结果）
-        const newMessages = buildToolResultMessages(toolCalls, toolResults);
+        const { buildToolResultMessages } = await import('../tools/tool-result-builder.js');
+        const newMessages = buildToolResultMessages(requestFormat, toolCalls, toolResults);
 
         // 4. 发送新请求（包含工具结果）
         const { resendWithToolResults } = await import('../api/handler.js');
         await resendWithToolResults(newMessages, apiConfig, assistantMessageEl);
-
     } catch (error) {
-        console.error('[ToolCallHandler] 工具调用流程失败:', error);
+        logger.error('[ToolCallHandler] 工具调用流程失败:', error);
+
+        // 将未完成的 tool_call parts 标记为 error，防止下次重发产生孤立 tool_use
+        const messages = state.messages || [];
+        for (let i = messages.length - 1; i >= 0; i--) {
+            const msg = messages[i];
+            if (msg.role === 'assistant' && msg.parts) {
+                for (const part of msg.parts) {
+                    if (part.type === 'tool_call' && part.state !== 'done') {
+                        part.state = 'error';
+                        part.result = { content: error.message, is_error: true };
+                    }
+                }
+                break;
+            }
+        }
 
         // 清理工具调用标志，防止状态泄漏
-        state.isToolCallPending = false;
+        setIsToolCallPending(false);
 
         // 重置请求状态机，防止永久卡在 TOOL_CALLING 状态
         requestStateMachine.forceReset();
@@ -564,6 +579,8 @@ export async function handleToolCallStream(toolCalls, apiConfig) {
 
         // 强制重置按钮状态
         eventBus.emit('ui:reset-input-buttons');
+    } finally {
+        currentAbortController = null;
     }
 }
 

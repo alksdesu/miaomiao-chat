@@ -3,6 +3,7 @@
  * 支持 Google AI Studio 和 Vertex AI
  */
 
+import { logger } from '../utils/logger.js';
 import { state, elements } from '../core/state.js';
 import { buildModelParams, buildThinkingConfig, getCustomHeadersObject } from './params.js';
 import { getPrefillMessages, getOpeningMessages } from '../utils/prefill.js';
@@ -11,7 +12,6 @@ import { compressImage } from '../utils/images.js';
 import { filterMessagesByCapabilities } from '../utils/message-filter.js';
 import { getCurrentModelCapabilities, getCurrentProvider } from '../providers/manager.js';
 import { toGeminiContents } from '../messages/api-adapters.js';
-import { escapeXML } from '../tools/xml-formatter.js';
 
 /**
  * 处理 contents 用于发送请求：压缩历史图片
@@ -75,12 +75,13 @@ async function processContentsForRequest(contents) {
  */
 function buildGeminiContentsWithSignatures(contents) {
     // 每条消息保留自己的签名，不做全局传播
-    return contents.map(content => {
+    return contents.map((content) => {
         // 检查消息级别的签名
         const msgSignature = content.thoughtSignature || null;
 
         // 检查 part 级别的签名
-        const partSignature = content.parts?.find(p => p.thoughtSignature)?.thoughtSignature || null;
+        const partSignature =
+            content.parts?.find((p) => p.thoughtSignature)?.thoughtSignature || null;
 
         // 该消息对应的签名（消息级别优先）
         const signature = msgSignature || partSignature;
@@ -89,7 +90,7 @@ function buildGeminiContentsWithSignatures(contents) {
             // 有签名：应用到该消息的所有 parts
             return {
                 role: content.role,
-                parts: content.parts.map(part => ({
+                parts: content.parts.map((part) => ({
                     ...part,
                     thoughtSignature: signature
                 }))
@@ -125,19 +126,24 @@ export async function sendGeminiRequest(baseEndpoint, apiKey, model, signal = nu
         // 原生 Gemini 提供商：清理路径并构建 Gemini 标准格式
         let cleanedEndpoint = baseEndpoint.replace(/\/$/, '');
         cleanedEndpoint = cleanedEndpoint
-            .replace(/\/v1\/chat\/completions$/, '')  // 移除 OpenAI 路径
+            .replace(/\/v1\/chat\/completions$/, '') // 移除 OpenAI 路径
             .replace(/\/chat\/completions$/, '')
-            .replace(/\/v1\/messages$/, '')  // 移除 Claude 路径
+            .replace(/\/v1\/messages$/, '') // 移除 Claude 路径
             .replace(/\/messages$/, '')
-            .replace(/\/v1\/responses$/, '')  // 移除 OpenAI Responses 路径
+            .replace(/\/v1\/responses$/, '') // 移除 OpenAI Responses 路径
             .replace(/\/responses$/, '');
         endpoint = `${cleanedEndpoint}/v1beta/models/${model}:${action}`;
-        console.log('🔧 [Gemini] 原生 Gemini 提供商，构建标准端点:', endpoint);
+        logger.debug('🔧 [Gemini] 原生 Gemini 提供商，构建标准端点:', endpoint);
     } else {
         // 统一代理（OpenAI/Claude/OpenAI-Responses 提供商切换格式）：
         // 保持原始端点不变，代理会根据请求体自动识别 Gemini 格式
         endpoint = baseEndpoint.replace(/\/$/, '');
-        console.log('🔧 [Gemini] 统一代理模式（原始格式: ' + (provider?.apiFormat || 'unknown') + '），保持原始端点:', endpoint);
+        logger.debug(
+            '🔧 [Gemini] 统一代理模式（原始格式: ' +
+                (provider?.apiFormat || 'unknown') +
+                '），保持原始端点:',
+            endpoint
+        );
     }
 
     // 构建 generationConfig（使用自定义参数或默认值）
@@ -149,7 +155,7 @@ export async function sendGeminiRequest(baseEndpoint, apiKey, model, signal = nu
         // 添加图片生成配置
         generationConfig.responseModalities = ['TEXT', 'IMAGE'];
         generationConfig.imageConfig = {
-            imageSize: imageSize, // "2K" 或 "4K"
+            imageSize: imageSize // "2K" 或 "4K"
         };
     }
 
@@ -173,7 +179,7 @@ export async function sendGeminiRequest(baseEndpoint, apiKey, model, signal = nu
             { category: 'HARM_CATEGORY_IMAGE_DANGEROUS_CONTENT', threshold: 'OFF' },
             { category: 'HARM_CATEGORY_IMAGE_HARASSMENT', threshold: 'OFF' },
             { category: 'HARM_CATEGORY_IMAGE_SEXUALLY_EXPLICIT', threshold: 'OFF' },
-            { category: 'HARM_CATEGORY_JAILBREAK', threshold: 'OFF' },
+            { category: 'HARM_CATEGORY_JAILBREAK', threshold: 'OFF' }
         ];
     } else {
         // AI Studio 格式（5 个类别，threshold: "BLOCK_NONE"）
@@ -182,17 +188,17 @@ export async function sendGeminiRequest(baseEndpoint, apiKey, model, signal = nu
             { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
             { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
             { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-            { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'BLOCK_NONE' },
+            { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'BLOCK_NONE' }
         ];
     }
 
     // 处理 contents：新格式 → Gemini API 格式
-    let filtered = state.messages.filter(m => !m.isError && !m.error);
+    let filtered = state.messages.filter((m) => !m.isError && !m.error);
 
     const capabilities = getCurrentModelCapabilities();
     if (capabilities) {
         filtered = filterMessagesByCapabilities(filtered, capabilities);
-        console.log('📋 [Gemini] 消息已根据模型能力过滤:', {
+        logger.debug('📋 [Gemini] 消息已根据模型能力过滤:', {
             capabilities,
             filteredCount: filtered.length
         });
@@ -206,7 +212,7 @@ export async function sendGeminiRequest(baseEndpoint, apiKey, model, signal = nu
         throw new Error('所有消息都被过滤，无法发送请求。请至少输入一条有效消息。');
     }
 
-    console.log('🔄 [Gemini] 新格式 → Gemini 转换完成:', geminiContents.length, '条消息');
+    logger.debug('🔄 [Gemini] 新格式 → Gemini 转换完成:', geminiContents.length, '条消息');
 
     // 压缩历史图片以减小请求体积
     const processedContents = await processContentsForRequest(geminiContents);
@@ -233,15 +239,19 @@ export async function sendGeminiRequest(baseEndpoint, apiKey, model, signal = nu
     const requestBody = {
         contents: contentsWithSignatures,
         generationConfig: generationConfig,
-        safetySettings: safetySettings,
+        safetySettings: safetySettings
     };
 
     // 添加 System Instruction (独立于预填充开关)
     const systemParts = [];
 
     // 1. 优先使用 geminiSystemParts（多段系统提示）- 仅在开关启用时
-    if (state.geminiSystemPartsEnabled && state.geminiSystemParts && state.geminiSystemParts.length > 0) {
-        state.geminiSystemParts.forEach(part => {
+    if (
+        state.geminiSystemPartsEnabled &&
+        state.geminiSystemParts &&
+        state.geminiSystemParts.length > 0
+    ) {
+        state.geminiSystemParts.forEach((part) => {
             if (part.text && part.text.trim()) {
                 systemParts.push({ text: processVariables(part.text) });
             }
@@ -251,6 +261,15 @@ export async function sendGeminiRequest(baseEndpoint, apiKey, model, signal = nu
     // 2. 如果没有自定义 parts，但有 systemPrompt，使用单个 part
     if (systemParts.length === 0 && state.systemPrompt) {
         systemParts.push({ text: processVariables(state.systemPrompt) });
+    }
+
+    // AI DevTools Monitor 上下文注入
+    if (state.monitorEnabled) {
+        const { buildDevToolsContext } = await import('../devtools/context-builder.js');
+        const devtoolsCtx = buildDevToolsContext();
+        if (devtoolsCtx) {
+            systemParts.push({ text: devtoolsCtx });
+        }
     }
 
     // 3. 添加到请求体
@@ -264,13 +283,13 @@ export async function sendGeminiRequest(baseEndpoint, apiKey, model, signal = nu
     // 1. Code Execution 工具（新增）
     if (state.codeExecutionEnabled) {
         tools.push({ codeExecution: {} });
-        console.log('[Gemini] 📊 Code Execution 工具已启用');
+        logger.debug('[Gemini] 📊 Code Execution 工具已启用');
     }
 
     // 2. Google Search 工具（保持不变）
     if (state.webSearchEnabled) {
         tools.push({ googleSearch: {} });
-        tools.push({ urlContext: {} });  // 可选：允许读取 URL 内容
+        tools.push({ urlContext: {} }); // 可选：允许读取 URL 内容
     }
 
     // 添加工具系统中的工具 (Function Declaration 格式)
@@ -284,31 +303,32 @@ export async function sendGeminiRequest(baseEndpoint, apiKey, model, signal = nu
             });
         }
     } catch (error) {
-        console.warn('[Gemini] 工具系统未加载:', error);
+        logger.warn('[Gemini] 工具系统未加载:', error);
     }
 
     if (tools.length > 0) {
         if (state.xmlToolCallingEnabled) {
             // XML 模式：只注入 XML 到 systemInstruction，不使用原生 tools 字段
-            const { injectToolsToGemini, getXMLInjectionStats } = await import('../tools/tool-injection.js');
+            const { injectToolsToGemini, getXMLInjectionStats } =
+                await import('../tools/tool-injection.js');
             injectToolsToGemini(requestBody, tools);
 
             // 性能监控
             const stats = getXMLInjectionStats(tools);
-            console.log('[Gemini] 📊 XML 模式启用，注入统计:', stats);
+            logger.debug('[Gemini] 📊 XML 模式启用，注入统计:', stats);
         } else {
             // 原生模式：使用标准 tools 字段
             requestBody.tools = tools;
-            console.log('[Gemini] 📊 原生 tools 模式，工具数量:', tools.length);
+            logger.debug('[Gemini] 📊 原生 tools 模式，工具数量:', tools.length);
         }
     }
 
-    console.log('Sending Gemini request:', JSON.stringify(requestBody, null, 2));
+    logger.debug('Sending Gemini request:', JSON.stringify(requestBody, null, 2));
 
     // 构建请求头
     const headers = {
         'Content-Type': 'application/json',
-        ...getCustomHeadersObject(), // 合并自定义请求头
+        ...getCustomHeadersObject() // 合并自定义请求头
     };
 
     // 根据配置决定 API key 传递方式
@@ -322,76 +342,16 @@ export async function sendGeminiRequest(baseEndpoint, apiKey, model, signal = nu
         }
     } else {
         // 方式2: 通过 URL 参数传递（标准 Gemini API）
-        queryParams = state.streamEnabled
-            ? `key=${apiKey}&alt=sse`
-            : `key=${apiKey}`;
+        queryParams = state.streamEnabled ? `key=${apiKey}&alt=sse` : `key=${apiKey}`;
     }
 
     const options = {
         method: 'POST',
         headers: headers,
-        body: JSON.stringify(requestBody),
+        body: JSON.stringify(requestBody)
     };
     if (signal) options.signal = signal;
 
     const fullUrl = queryParams ? `${endpoint}?${queryParams}` : endpoint;
     return await fetch(fullUrl, options);
-}
-
-/**
- * 构建 Gemini 工具结果消息（Gemini 原生格式）
- * @param {Array} toolCalls - 工具调用列表 [{id, name, arguments}]
- * @param {Array} toolResults - 格式无关的结果 [{id, name, result, isError}]
- * @returns {Array} Gemini 格式的 contents 数组
- */
-export function buildToolResultMessages(toolCalls, toolResults) {
-    // XML 模式
-    if (state.xmlToolCallingEnabled) {
-        let toolCallXML = '';
-        for (const tc of toolCalls) {
-            toolCallXML += `<tool_use>\n  <name>${escapeXML(tc.name)}</name>\n  <arguments>${escapeXML(JSON.stringify(tc.arguments))}</arguments>\n</tool_use>\n`;
-        }
-        let toolResultXML = '';
-        for (const r of toolResults) {
-            toolResultXML += `<tool_use_result>\n  <name>${escapeXML(r.name)}</name>\n  <result>${escapeXML(JSON.stringify(r.result))}</result>\n</tool_use_result>\n`;
-        }
-        return [
-            { role: 'assistant', content: toolCallXML.trim() },
-            { role: 'user', content: toolResultXML.trim() }
-        ];
-    }
-
-    // Gemini 原生格式
-    // 1. model 的 functionCall parts
-    const callParts = toolCalls.map(tc => {
-        const callPart = {
-            functionCall: {
-                name: tc.name,
-                args: tc.arguments || {}
-            }
-        };
-        if (tc.thoughtSignature) callPart.thoughtSignature = tc.thoughtSignature;
-        return callPart;
-    });
-
-    // 2. user 的 functionResponse parts
-    const responseParts = toolResults.map(r => {
-        let responseObj;
-        try {
-            responseObj = typeof r.result === 'string' ? JSON.parse(r.result) : r.result;
-        } catch {
-            responseObj = r.result;
-        }
-        return {
-            functionResponse: {
-                name: r.name,
-                response: { result: responseObj }
-            }
-        };
-    });
-
-    return [
-        { role: 'model', parts: callParts },
-        { role: 'user', parts: responseParts }
-    ];
 }

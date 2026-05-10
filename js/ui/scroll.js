@@ -5,6 +5,7 @@
 
 import { elements } from '../core/elements.js';
 import { eventBus } from '../core/events.js';
+import { logger } from '../utils/logger.js';
 
 let scrollTimeout = null;
 
@@ -65,5 +66,5 @@ export function initScrollControl() {
     // 将函数暴露到全局作用域供 HTML onclick 使用
     window.scrollToBottom = scrollToBottom;
 
-    console.log('Scroll control initialized');
+    logger.debug('Scroll control initialized');
 }

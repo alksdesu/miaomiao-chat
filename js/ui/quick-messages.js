@@ -15,18 +15,22 @@ import {
 import { escapeHtml } from '../utils/helpers.js';
 import { showNotification } from './notifications.js';
 import { showConfirmDialog } from '../utils/dialogs.js';
+import { bindTopmostEscape, setupModalFocus } from '../utils/modal-stack.js';
+import { logger } from '../utils/logger.js';
 
 // 模块状态
 let currentEditingId = null;
-let mainModalFocusTrap = null;
-let editModalFocusTrap = null;
+let removeMainModalFocus = null;
+let removeEditModalFocus = null;
+let removeMainModalEscape = null;
+let removeEditModalEscape = null;
 
 /**
  * 初始化快捷消息 UI
  */
 export function initQuickMessagesUI() {
     bindEvents();
-    console.log('Quick Messages UI initialized');
+    logger.debug('Quick Messages UI initialized');
 }
 
 /**
@@ -38,7 +42,9 @@ function bindEvents() {
 
     // 关闭主模态框
     elements.closeQuickMessagesModal?.addEventListener('click', closeQuickMessagesModal);
-    elements.quickMessagesModal?.querySelector('.modal-overlay')?.addEventListener('click', closeQuickMessagesModal);
+    elements.quickMessagesModal
+        ?.querySelector('.modal-overlay')
+        ?.addEventListener('click', closeQuickMessagesModal);
 
     // 新建按钮
     elements.addQuickMessageBtn?.addEventListener('click', () => openEditModal());
@@ -64,7 +70,9 @@ function bindEvents() {
 
     // 关闭编辑模态框
     elements.closeEditQmModal?.addEventListener('click', closeEditModal);
-    elements.editQuickMessageModal?.querySelector('.modal-overlay')?.addEventListener('click', closeEditModal);
+    elements.editQuickMessageModal
+        ?.querySelector('.modal-overlay')
+        ?.addEventListener('click', closeEditModal);
 
     // Enter 快捷键保存（在输入框按 Ctrl+Enter）
     elements.qmContentInput?.addEventListener('keydown', (e) => {
@@ -80,75 +88,23 @@ function bindEvents() {
 }
 
 /**
- * 创建焦点陷阱（Focus Trap）
- * 符合 WCAG 2.4.3 Focus Order (Level A)
- * @param {HTMLElement} container - 模态框容器
- * @returns {Function} 移除焦点陷阱的函数
- */
-function createFocusTrap(container) {
-    if (!container) return () => {};
-
-    const focusableSelector = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-
-    function handleTab(e) {
-        if (e.key !== 'Tab') return;
-
-        const focusableElements = container.querySelectorAll(focusableSelector);
-        const firstElement = focusableElements[0];
-        const lastElement = focusableElements[focusableElements.length - 1];
-
-        if (e.shiftKey) {
-            // Shift+Tab: 如果在第一个元素，跳到最后一个
-            if (document.activeElement === firstElement) {
-                e.preventDefault();
-                lastElement?.focus();
-            }
-        } else {
-            // Tab: 如果在最后一个元素，跳到第一个
-            if (document.activeElement === lastElement) {
-                e.preventDefault();
-                firstElement?.focus();
-            }
-        }
-    }
-
-    container.addEventListener('keydown', handleTab);
-
-    // 返回清理函数
-    return () => {
-        container.removeEventListener('keydown', handleTab);
-    };
-}
-
-/**
  * 打开快捷消息模态框
  */
 function openQuickMessagesModal() {
-    elements.quickMessagesModal?.classList.add('active');
+    const modal = elements.quickMessagesModal;
+    if (!modal) return;
+
+    modal.classList.add('active');
     renderQuickMessagesList();
 
-    // 添加焦点陷阱（WCAG 2.4.3）
-    if (mainModalFocusTrap) {
-        mainModalFocusTrap(); // 清理旧的
-    }
-    mainModalFocusTrap = createFocusTrap(elements.quickMessagesModal);
+    removeMainModalFocus?.();
+    removeMainModalFocus = setupModalFocus(modal, {
+        labelledBy: 'quick-messages-modal-title'
+    });
 
-    // 添加 ESC 键关闭（WCAG 2.1.1）
-    const handleEsc = (e) => {
-        if (e.key === 'Escape') {
-            closeQuickMessagesModal();
-        }
-    };
-    document.addEventListener('keydown', handleEsc);
-
-    // 保存清理函数
-    elements.quickMessagesModal._escHandler = handleEsc;
-
-    // 聚焦第一个可聚焦元素
-    setTimeout(() => {
-        const firstFocusable = elements.quickMessagesModal?.querySelector('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
-        firstFocusable?.focus();
-    }, 100);
+    // 顶层弹层优先消费 Escape，避免继续传到底层弹层
+    removeMainModalEscape?.();
+    removeMainModalEscape = bindTopmostEscape(modal, closeQuickMessagesModal);
 }
 
 /**
@@ -157,17 +113,14 @@ function openQuickMessagesModal() {
 function closeQuickMessagesModal() {
     elements.quickMessagesModal?.classList.remove('active');
 
-    // 清理焦点陷阱
-    if (mainModalFocusTrap) {
-        mainModalFocusTrap();
-        mainModalFocusTrap = null;
+    // 清理焦点约束
+    if (removeMainModalFocus) {
+        removeMainModalFocus();
+        removeMainModalFocus = null;
     }
 
-    // 清理 ESC 键监听器
-    if (elements.quickMessagesModal?._escHandler) {
-        document.removeEventListener('keydown', elements.quickMessagesModal._escHandler);
-        elements.quickMessagesModal._escHandler = null;
-    }
+    removeMainModalEscape?.();
+    removeMainModalEscape = null;
 }
 
 /**
@@ -177,6 +130,7 @@ export function renderQuickMessagesList() {
     if (!elements.quickMessagesList) return;
 
     if (state.quickMessages.length === 0) {
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
         elements.quickMessagesList.innerHTML = `
             <div class="empty-quick-messages">
                 <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -208,19 +162,19 @@ export function renderQuickMessagesList() {
 
         for (const msg of messages) {
             html += `
-                <div class="quick-message-item" data-id="${msg.id}" tabindex="0" role="button" aria-label="发送快捷消息: ${escapeHtml(msg.name)}">
+                <div class="quick-message-item" data-id="${escapeHtml(msg.id)}" tabindex="0" role="button" aria-label="发送快捷消息: ${escapeHtml(msg.name)}">
                     <div class="qm-item-content">
                         <div class="qm-item-name">${escapeHtml(msg.name)}</div>
                         <div class="qm-item-preview">${escapeHtml(msg.content.slice(0, 50))}${msg.content.length > 50 ? '...' : ''}</div>
                     </div>
                     <div class="qm-item-actions">
-                        <button class="qm-action-btn edit" data-id="${msg.id}" title="编辑" aria-label="编辑 ${escapeHtml(msg.name)}">
+                        <button class="qm-action-btn edit" data-id="${escapeHtml(msg.id)}" title="编辑" aria-label="编辑 ${escapeHtml(msg.name)}">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
                                 <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
                             </svg>
                         </button>
-                        <button class="qm-action-btn delete" data-id="${msg.id}" title="删除" aria-label="删除 ${escapeHtml(msg.name)}">
+                        <button class="qm-action-btn delete" data-id="${escapeHtml(msg.id)}" title="删除" aria-label="删除 ${escapeHtml(msg.name)}">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
                             </svg>
@@ -233,6 +187,7 @@ export function renderQuickMessagesList() {
         html += `</div>`;
     }
 
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     elements.quickMessagesList.innerHTML = html;
 }
 
@@ -242,10 +197,7 @@ export function renderQuickMessagesList() {
  * @param {string} name - 消息名称
  */
 async function handleDeleteQuickMessage(id, name) {
-    const confirmed = await showConfirmDialog(
-        `确定要删除快捷消息 "${name}" 吗？`,
-        '确认删除'
-    );
+    const confirmed = await showConfirmDialog(`确定要删除快捷消息 "${name}" 吗？`, '确认删除');
     if (confirmed) {
         deleteQuickMessage(id);
     }
@@ -272,7 +224,7 @@ function handleListClick(e) {
     if (deleteBtn) {
         e.stopPropagation();
         const id = deleteBtn.dataset.id;
-        const message = state.quickMessages.find(m => m.id === id);
+        const message = state.quickMessages.find((m) => m.id === id);
         if (message) {
             handleDeleteQuickMessage(id, message.name);
         }
@@ -296,7 +248,7 @@ function openEditModal(id = null) {
 
     if (id) {
         // 编辑模式
-        const message = state.quickMessages.find(m => m.id === id);
+        const message = state.quickMessages.find((m) => m.id === id);
         if (!message) return;
 
         document.getElementById('edit-qm-modal-title').textContent = '编辑快捷消息';
@@ -311,29 +263,20 @@ function openEditModal(id = null) {
         elements.qmCategoryInput.value = '常用';
     }
 
-    elements.editQuickMessageModal?.classList.add('active');
+    const modal = elements.editQuickMessageModal;
+    if (!modal) return;
 
-    // 添加焦点陷阱（WCAG 2.4.3）
-    if (editModalFocusTrap) {
-        editModalFocusTrap(); // 清理旧的
-    }
-    editModalFocusTrap = createFocusTrap(elements.editQuickMessageModal);
+    modal.classList.add('active');
 
-    // 添加 ESC 键关闭（WCAG 2.1.1）
-    const handleEsc = (e) => {
-        if (e.key === 'Escape') {
-            closeEditModal();
-        }
-    };
-    document.addEventListener('keydown', handleEsc);
+    removeEditModalFocus?.();
+    removeEditModalFocus = setupModalFocus(modal, {
+        labelledBy: 'edit-qm-modal-title',
+        initialFocus: '#qm-name-input'
+    });
 
-    // 保存清理函数
-    elements.editQuickMessageModal._escHandler = handleEsc;
-
-    // 聚焦名称输入框
-    setTimeout(() => {
-        elements.qmNameInput?.focus();
-    }, 100);
+    // 顶层弹层优先消费 Escape，避免一次按键关闭到底层主弹层
+    removeEditModalEscape?.();
+    removeEditModalEscape = bindTopmostEscape(modal, closeEditModal);
 }
 
 /**
@@ -343,17 +286,14 @@ function closeEditModal() {
     elements.editQuickMessageModal?.classList.remove('active');
     currentEditingId = null;
 
-    // 清理焦点陷阱
-    if (editModalFocusTrap) {
-        editModalFocusTrap();
-        editModalFocusTrap = null;
+    // 清理焦点约束
+    if (removeEditModalFocus) {
+        removeEditModalFocus();
+        removeEditModalFocus = null;
     }
 
-    // 清理 ESC 键监听器
-    if (elements.editQuickMessageModal?._escHandler) {
-        document.removeEventListener('keydown', elements.editQuickMessageModal._escHandler);
-        elements.editQuickMessageModal._escHandler = null;
-    }
+    removeEditModalEscape?.();
+    removeEditModalEscape = null;
 }
 
 /**

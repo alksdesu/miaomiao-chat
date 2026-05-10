@@ -3,42 +3,160 @@
  * 依赖全局的 marked.js 库
  */
 
+import { logger } from './logger.js';
 import { escapeHtml, extractBase64Images, restoreBase64Images } from './helpers.js';
 import { MAX_MARKDOWN_LENGTH } from './constants.js';
 
 // 性能优化：DOMPurify 配置常量（避免每次创建对象）
 const DOMPURIFY_CONFIG = {
     ALLOWED_TAGS: [
-        'p', 'br', 'strong', 'em', 'code', 'pre', 'a',
-        'ul', 'ol', 'li', 'blockquote', 'h1', 'h2', 'h3',
-        'h4', 'h5', 'h6', 'table', 'thead', 'tbody', 'tr',
-        'th', 'td', 'img', 'hr', 'del', 'span', 'div',
-        'sup', 'sub', 'mark', 'small', 'b', 'i', 'u', 's',
+        'p',
+        'br',
+        'strong',
+        'em',
+        'code',
+        'pre',
+        'a',
+        'ul',
+        'ol',
+        'li',
+        'blockquote',
+        'h1',
+        'h2',
+        'h3',
+        'h4',
+        'h5',
+        'h6',
+        'table',
+        'thead',
+        'tbody',
+        'tr',
+        'th',
+        'td',
+        'img',
+        'hr',
+        'del',
+        'span',
+        'div',
+        'sup',
+        'sub',
+        'mark',
+        'small',
+        'kbd',
+        'b',
+        'i',
+        'u',
+        's',
         // KaTeX MathML 支持（数学公式渲染）
-        'math', 'semantics', 'mrow', 'mi', 'mn', 'mo', 'mfrac', 'msup', 'msub',
-        'munder', 'mover', 'munderover', 'msqrt', 'mroot', 'mtext', 'mspace',
-        'mtable', 'mtr', 'mtd', 'annotation', 'annotation-xml',
+        'math',
+        'semantics',
+        'mrow',
+        'mi',
+        'mn',
+        'mo',
+        'mfrac',
+        'msup',
+        'msub',
+        'munder',
+        'mover',
+        'munderover',
+        'msqrt',
+        'mroot',
+        'mtext',
+        'mspace',
+        'mtable',
+        'mtr',
+        'mtd',
+        'annotation',
+        'annotation-xml',
         // SVG 支持（图标、图形渲染）
-        'svg', 'path', 'circle', 'rect', 'line', 'polyline', 'polygon',
-        'ellipse', 'g', 'defs', 'use', 'symbol', 'marker', 'clipPath',
-        'linearGradient', 'radialGradient', 'stop', 'text', 'tspan'
+        'svg',
+        'path',
+        'circle',
+        'rect',
+        'line',
+        'polyline',
+        'polygon',
+        'ellipse',
+        'g',
+        'defs',
+        'use',
+        'symbol',
+        'marker',
+        'clipPath',
+        'linearGradient',
+        'radialGradient',
+        'stop',
+        'text',
+        'tspan'
     ],
     ALLOWED_ATTR: [
-        'href', 'src', 'alt', 'title', 'class', 'style',
-        'id', 'data-*', 'aria-*', 'role', 'target', 'rel',
+        'href',
+        'src',
+        'alt',
+        'title',
+        'class',
+        'style',
+        'id',
+        'data-*',
+        'aria-*',
+        'role',
+        'target',
+        'rel',
         // KaTeX 需要的 MathML 属性
-        'xmlns', 'encoding', 'mathvariant', 'mathsize', 'mathcolor',
-        'mathbackground', 'displaystyle', 'scriptlevel',
+        'xmlns',
+        'encoding',
+        'mathvariant',
+        'mathsize',
+        'mathcolor',
+        'mathbackground',
+        'displaystyle',
+        'scriptlevel',
         // SVG 需要的属性
-        'viewBox', 'width', 'height', 'fill', 'stroke', 'stroke-width',
-        'stroke-linecap', 'stroke-linejoin', 'stroke-dasharray',
-        'd', 'cx', 'cy', 'r', 'rx', 'ry', 'x', 'y', 'x1', 'y1', 'x2', 'y2',
-        'points', 'transform', 'opacity', 'fill-opacity', 'stroke-opacity',
-        'gradientUnits', 'gradientTransform', 'offset', 'stop-color'
+        'viewBox',
+        'width',
+        'height',
+        'fill',
+        'stroke',
+        'stroke-width',
+        'stroke-linecap',
+        'stroke-linejoin',
+        'stroke-dasharray',
+        'd',
+        'cx',
+        'cy',
+        'r',
+        'rx',
+        'ry',
+        'x',
+        'y',
+        'x1',
+        'y1',
+        'x2',
+        'y2',
+        'points',
+        'transform',
+        'opacity',
+        'fill-opacity',
+        'stroke-opacity',
+        'gradientUnits',
+        'gradientTransform',
+        'offset',
+        'stop-color'
     ],
-    ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|data):|[^a-z]|[a-z+.-]+(?:[^a-z+.-:]|$))/i,
+    ALLOWED_URI_REGEXP:
+        /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|data):|[^a-z]|[a-z+.-]+(?:[^a-z+.-:]|$))/i,
     FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'style', 'form', 'input', 'button'],
-    FORBID_ATTR: ['onerror', 'onclick', 'onload', 'onmouseover', 'onfocus', 'onblur', 'oninput', 'onchange'],
+    FORBID_ATTR: [
+        'onerror',
+        'onclick',
+        'onload',
+        'onmouseover',
+        'onfocus',
+        'onblur',
+        'oninput',
+        'onchange'
+    ],
     ALLOW_DATA_ATTR: true,
     ALLOW_ARIA_ATTR: true
 };
@@ -96,7 +214,7 @@ function generateCacheKey(text) {
     // djb2 哈希
     let hash = 5381;
     for (let i = 0; i < text.length; i++) {
-        hash = ((hash << 5) + hash) + text.charCodeAt(i);
+        hash = (hash << 5) + hash + text.charCodeAt(i);
         hash = hash & hash; // 转32位整数
     }
     return `h_${text.length}_${hash}`;
@@ -132,7 +250,7 @@ export function safeMarkedParse(text) {
 
         // 如果内容过大，分块处理
         if (cleanText.length > MAX_MARKDOWN_LENGTH) {
-            console.warn(`内容过大 (${cleanText.length} 字符)，分块解析 Markdown`);
+            logger.warn(`内容过大 (${cleanText.length} 字符)，分块解析 Markdown`);
             const chunks = [];
             let remaining = cleanText;
 
@@ -151,7 +269,7 @@ export function safeMarkedParse(text) {
                     // 优化：先解析，再统一净化（避免重复 sanitize）
                     const chunkHtml = marked.parse(chunk);
                     chunks.push(chunkHtml);
-                } catch (e) {
+                } catch (_error) {
                     // 单块解析失败，使用纯文本
                     chunks.push(`<pre>${escapeHtml(chunk)}</pre>`);
                 }
@@ -168,7 +286,7 @@ export function safeMarkedParse(text) {
             html = DOMPurify.sanitize(html, DOMPURIFY_CONFIG);
         } else {
             // DOMPurify 不可用时降级为纯文本，防止未净化的 HTML 导致 XSS
-            console.warn('DOMPurify 未加载，降级为纯文本输出');
+            logger.warn('DOMPurify 未加载，降级为纯文本输出');
             return escapeHtml(text);
         }
 
@@ -193,7 +311,7 @@ export function safeMarkedParse(text) {
 
         return html;
     } catch (e) {
-        console.error('Markdown 解析失败:', e);
+        logger.error('Markdown 解析失败:', e);
         // 降级为纯文本显示
         return `<pre>${escapeHtml(text)}</pre>`;
     }
@@ -204,7 +322,7 @@ export function safeMarkedParse(text) {
  */
 export function clearMarkdownCache() {
     markdownCache.clear();
-    console.log('Markdown 缓存已清除');
+    logger.debug('Markdown 缓存已清除');
 }
 
 /**
@@ -233,24 +351,27 @@ function extractLatexFormulas(text) {
 
     // 2. 提取行内公式 $...$
     // 确保 $ 前面不是 \ 或 $，用捕获组替代 lookbehind 以兼容旧版 Safari/WebView
-    result = result.replace(/(?:^|([^\\$]))(\$(?:[^$\n\\]|\\.)+\$)(?=[^$]|$)/gm, (match, prefix, formulaWithDollar) => {
-        const formula = formulaWithDollar.slice(1, -1);
+    result = result.replace(
+        /(?:^|([^\\$]))(\$(?:[^$\n\\]|\\.)+\$)(?=[^$]|$)/gm,
+        (match, prefix, formulaWithDollar) => {
+            const formula = formulaWithDollar.slice(1, -1);
 
-        // 过滤货币符号：以数字开头的很可能是 $100 之类
-        if (/^\d/.test(formula.trim())) {
-            return match;
+            // 过滤货币符号：以数字开头的很可能是 $100 之类
+            if (/^\d/.test(formula.trim())) {
+                return match;
+            }
+
+            // 必须包含数学相关字符（字母、反斜杠、花括号、上下标等）
+            if (!/[a-zA-Z\\{}^_=+\-*/<>]/.test(formula)) {
+                return match;
+            }
+
+            const index = formulas.length;
+            formulas.push({ formula: formula.trim(), display: false });
+
+            return `${prefix || ''}<span class="latex-placeholder" data-index="${index}"></span>`;
         }
-
-        // 必须包含数学相关字符（字母、反斜杠、花括号、上下标等）
-        if (!/[a-zA-Z\\{}^_=+\-*/<>]/.test(formula)) {
-            return match;
-        }
-
-        const index = formulas.length;
-        formulas.push({ formula: formula.trim(), display: false });
-
-        return `${prefix || ''}<span class="latex-placeholder" data-index="${index}"></span>`;
-    });
+    );
 
     return { text: result, formulas };
 }
@@ -264,12 +385,15 @@ function extractLatexFormulas(text) {
  */
 function restoreLatexFormulas(html, formulas) {
     if (typeof katex === 'undefined') {
-        console.warn('KaTeX 未加载，无法渲染数学公式');
+        logger.warn('KaTeX 未加载，无法渲染数学公式');
         // 降级：还原原始公式文本
         formulas.forEach((item, index) => {
             const original = item.display ? `$$${item.formula}$$` : `$${item.formula}$`;
             const placeholder = `<span class="latex-placeholder" data-index="${index}"></span>`;
-            html = html.replace(placeholder, `<code class="latex-fallback">${escapeHtml(original)}</code>`);
+            html = html.replace(
+                placeholder,
+                `<code class="latex-fallback">${escapeHtml(original)}</code>`
+            );
         });
         return html;
     }
@@ -292,7 +416,7 @@ function restoreLatexFormulas(html, formulas) {
             const placeholder = `<span class="latex-placeholder" data-index="${index}"></span>`;
             html = html.replace(placeholder, wrapper);
         } catch (e) {
-            console.error('LaTeX 渲染失败:', e, '公式:', item.formula);
+            logger.error('LaTeX 渲染失败:', e, '公式:', item.formula);
             // 降级：显示原始公式
             const original = item.display ? `$$${item.formula}$$` : `$${item.formula}$`;
             const placeholder = `<span class="latex-placeholder" data-index="${index}"></span>`;

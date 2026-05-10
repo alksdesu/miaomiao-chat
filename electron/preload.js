@@ -1,5 +1,51 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+// 存储 callback → channel → wrappedCallback 的映射，用于正确移除监听器
+const listenerMap = new Map();
+
+const rendererChannelBridges = new Map();
+
+function ensureRendererChannelBridge(channel) {
+    if (rendererChannelBridges.has(channel)) {
+        return rendererChannelBridges.get(channel);
+    }
+
+    const callbacks = new Set();
+    const listener = (event, payload) => {
+        Array.from(callbacks).forEach((callback) => {
+            try {
+                callback(payload);
+            } catch (error) {
+                console.error(`[Preload] 通道 ${channel} 的回调执行失败:`, error);
+            }
+        });
+    };
+
+    ipcRenderer.on(channel, listener);
+
+    const bridge = {
+        callbacks,
+        listener
+    };
+
+    rendererChannelBridges.set(channel, bridge);
+    return bridge;
+}
+
+function subscribeRendererChannel(channel, callback) {
+    if (typeof callback !== 'function') {
+        console.error(`[Preload] 通道 ${channel} 的订阅回调必须是函数`);
+        return () => {};
+    }
+
+    const bridge = ensureRendererChannelBridge(channel);
+    bridge.callbacks.add(callback);
+
+    return () => {
+        bridge.callbacks.delete(callback);
+    };
+}
+
 /**
  * 预加载脚本
  * 通过 contextBridge 安全地暴露 API 给渲染进程
@@ -42,7 +88,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
      * @param {Function} callback - 回调函数，接收更新信息
      */
     onUpdateAvailable: (callback) => {
-        ipcRenderer.on('update-available', (event, info) => callback(info));
+        return subscribeRendererChannel('update-available', callback);
     },
 
     /**
@@ -64,7 +110,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
      * @param {Function} callback - 回调函数，接收进度数据
      */
     onUpdateProgress: (callback) => {
-        ipcRenderer.on('update-progress', (event, progress) => callback(progress));
+        return subscribeRendererChannel('update-progress', callback);
     },
 
     /**
@@ -72,7 +118,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
      * @param {Function} callback - 回调函数，接收更新信息
      */
     onUpdateDownloaded: (callback) => {
-        ipcRenderer.on('update-downloaded', (event, info) => callback(info));
+        return subscribeRendererChannel('update-downloaded', callback);
     },
 
     /**
@@ -87,7 +133,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
      * @param {Function} callback - 回调函数，接收通知数据
      */
     onNotification: (callback) => {
-        ipcRenderer.on('notification', (event, data) => callback(data));
+        return subscribeRendererChannel('notification', callback);
     },
 
     /**
@@ -96,6 +142,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
      */
     getVersion: () => {
         return ipcRenderer.invoke('get-app-version');
+    },
+    getChiiPort: () => {
+        return ipcRenderer.invoke('get-chii-port');
     },
 
     /**
@@ -314,11 +363,11 @@ contextBridge.exposeInMainWorld('electron', {
         invoke: (channel, data) => {
             // ✅ 使用前缀匹配白名单（更灵活，支持 MCP 和 Computer Use）
             const allowedPrefixes = [
-                'mcp:',           // MCP 相关通道
-                'computer-use:'   // Computer Use 相关通道
+                'mcp:', // MCP 相关通道
+                'computer-use:' // Computer Use 相关通道
             ];
 
-            const isAllowed = allowedPrefixes.some(prefix => channel.startsWith(prefix));
+            const isAllowed = allowedPrefixes.some((prefix) => channel.startsWith(prefix));
 
             if (isAllowed) {
                 return ipcRenderer.invoke(channel, data);
@@ -336,14 +385,17 @@ contextBridge.exposeInMainWorld('electron', {
         on: (channel, callback) => {
             // ✅ 使用前缀匹配白名单
             const allowedPrefixes = [
-                'mcp:',           // MCP 事件
-                'computer-use:'   // Computer Use 事件
+                'mcp:', // MCP 事件
+                'computer-use:' // Computer Use 事件
             ];
 
-            const isAllowed = allowedPrefixes.some(prefix => channel.startsWith(prefix));
+            const isAllowed = allowedPrefixes.some((prefix) => channel.startsWith(prefix));
 
             if (isAllowed) {
-                ipcRenderer.on(channel, (event, ...args) => callback(...args));
+                const wrapped = (event, ...args) => callback(...args);
+                if (!listenerMap.has(callback)) listenerMap.set(callback, new Map());
+                listenerMap.get(callback).set(channel, wrapped);
+                ipcRenderer.on(channel, wrapped);
             } else {
                 console.error(`[IPC Security] 拒绝监听不允许的通道: ${channel}`);
             }
@@ -355,7 +407,16 @@ contextBridge.exposeInMainWorld('electron', {
          * @param {Function} callback - 回调函数
          */
         removeListener: (channel, callback) => {
-            ipcRenderer.removeListener(channel, callback);
+            const allowedPrefixes = ['mcp:', 'computer-use:'];
+            const isAllowed = allowedPrefixes.some((prefix) => channel.startsWith(prefix));
+            if (isAllowed) {
+                const wrapped = listenerMap.get(callback)?.get(channel);
+                if (wrapped) {
+                    ipcRenderer.removeListener(channel, wrapped);
+                    listenerMap.get(callback).delete(channel);
+                    if (listenerMap.get(callback).size === 0) listenerMap.delete(callback);
+                }
+            }
         }
     }
 });

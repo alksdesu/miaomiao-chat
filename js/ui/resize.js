@@ -7,6 +7,7 @@ import { elements } from '../core/elements.js';
 import { state } from '../core/state.js';
 // 新增：IndexedDB 偏好设置 API
 import { savePreference, loadPreference } from '../state/storage.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * 初始化输入框高度调整
@@ -34,7 +35,7 @@ export async function initInputResize() {
             textarea.style.height = savedHeight + 'px';
         }
     } catch (error) {
-        console.error('恢复输入框高度失败:', error);
+        logger.error('恢复输入框高度失败:', error);
         const savedHeight = localStorage.getItem('inputTextareaHeight');
         if (savedHeight) {
             textarea.style.height = savedHeight + 'px';
@@ -78,19 +79,27 @@ export async function initInputResize() {
     });
 
     // 触摸支持
-    handle.addEventListener('touchstart', (e) => {
-        isResizing = true;
-        startY = e.touches[0].clientY;
-        startHeight = textarea.offsetHeight;
-        e.preventDefault();
-    }, { passive: false });
+    handle.addEventListener(
+        'touchstart',
+        (e) => {
+            isResizing = true;
+            startY = e.touches[0].clientY;
+            startHeight = textarea.offsetHeight;
+            e.preventDefault();
+        },
+        { passive: false }
+    );
 
-    document.addEventListener('touchmove', (e) => {
-        if (!isResizing) return;
-        const deltaY = startY - e.touches[0].clientY;
-        const newHeight = Math.min(500, Math.max(24, startHeight + deltaY));
-        textarea.style.height = newHeight + 'px';
-    }, { passive: true });
+    document.addEventListener(
+        'touchmove',
+        (e) => {
+            if (!isResizing) return;
+            const deltaY = startY - e.touches[0].clientY;
+            const newHeight = Math.min(500, Math.max(24, startHeight + deltaY));
+            textarea.style.height = newHeight + 'px';
+        },
+        { passive: true }
+    );
 
     document.addEventListener('touchend', async () => {
         if (isResizing) {
@@ -153,16 +162,16 @@ export async function initPanelResize() {
             if (!savedWidth) {
                 savedWidth = localStorage.getItem(storageKey);
             }
-            if (savedWidth) {
+            if (savedWidth && window.innerWidth > 480) {
                 const width = parseInt(savedWidth);
                 if (width >= minWidth && width <= maxWidth) {
                     panel.style.width = width + 'px';
                 }
             }
         } catch (error) {
-            console.error(`恢复面板宽度失败 (${storageKey}):`, error);
+            logger.error(`恢复面板宽度失败 (${storageKey}):`, error);
             const savedWidth = localStorage.getItem(storageKey);
-            if (savedWidth) {
+            if (savedWidth && window.innerWidth > 480) {
                 const width = parseInt(savedWidth);
                 if (width >= minWidth && width <= maxWidth) {
                     panel.style.width = width + 'px';
@@ -183,9 +192,7 @@ export async function initPanelResize() {
         document.addEventListener('mousemove', (e) => {
             if (!isResizing) return;
             // 计算 deltaX：右侧面板向左拖增加宽度，左侧面板向右拖增加宽度
-            const deltaX = side === 'right'
-                ? startX - e.clientX
-                : e.clientX - startX;
+            const deltaX = side === 'right' ? startX - e.clientX : e.clientX - startX;
             const newWidth = Math.min(maxWidth, Math.max(minWidth, startWidth + deltaX));
             panel.style.width = newWidth + 'px';
         });
@@ -211,22 +218,31 @@ export async function initPanelResize() {
         });
 
         // 触摸支持
-        handle.addEventListener('touchstart', (e) => {
-            isResizing = true;
-            startX = e.touches[0].clientX;
-            startWidth = panel.offsetWidth;
-            handle.classList.add('resizing');
-            e.preventDefault();
-        }, { passive: false });
+        handle.addEventListener(
+            'touchstart',
+            (e) => {
+                isResizing = true;
+                startX = e.touches[0].clientX;
+                startWidth = panel.offsetWidth;
+                handle.classList.add('resizing');
+                e.preventDefault();
+            },
+            { passive: false }
+        );
 
-        document.addEventListener('touchmove', (e) => {
-            if (!isResizing) return;
-            const deltaX = side === 'right'
-                ? startX - e.touches[0].clientX
-                : e.touches[0].clientX - startX;
-            const newWidth = Math.min(maxWidth, Math.max(minWidth, startWidth + deltaX));
-            panel.style.width = newWidth + 'px';
-        }, { passive: true });
+        document.addEventListener(
+            'touchmove',
+            (e) => {
+                if (!isResizing) return;
+                const deltaX =
+                    side === 'right'
+                        ? startX - e.touches[0].clientX
+                        : e.touches[0].clientX - startX;
+                const newWidth = Math.min(maxWidth, Math.max(minWidth, startWidth + deltaX));
+                panel.style.width = newWidth + 'px';
+            },
+            { passive: true }
+        );
 
         document.addEventListener('touchend', async () => {
             if (isResizing) {
@@ -285,5 +301,5 @@ export async function initPanelResize() {
         });
     }
 
-    console.log('Panel resize initialized');
+    logger.debug('Panel resize initialized');
 }

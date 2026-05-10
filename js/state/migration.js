@@ -5,10 +5,15 @@
 
 import { eventBus } from '../core/events.js';
 import {
-    saveConfig, loadConfig, saveSavedConfigs, loadSavedConfigs,
-    savePreference, loadPreference,
-    saveQuickMessage, loadAllQuickMessages
+    saveConfig,
+    loadConfig,
+    saveSavedConfigs,
+    savePreference,
+    loadPreference,
+    saveQuickMessage,
+    loadAllQuickMessages
 } from './storage.js';
+import { logger } from '../utils/logger.js';
 
 // ========== 迁移状态管理 ==========
 
@@ -31,7 +36,7 @@ export async function getMigrationStatus() {
         const status = await loadPreference('migration_status');
         return status || MIGRATION_STATES.NOT_STARTED;
     } catch (error) {
-        console.error('获取迁移状态失败:', error);
+        logger.error('获取迁移状态失败:', error);
         return MIGRATION_STATES.NOT_STARTED;
     }
 }
@@ -68,7 +73,7 @@ export function acquireMigrationLock() {
     }
 
     localStorage.setItem(MIGRATION_LOCK_KEY, now.toString());
-    console.log('已获取迁移锁');
+    logger.debug('已获取迁移锁');
 }
 
 /**
@@ -76,7 +81,7 @@ export function acquireMigrationLock() {
  */
 export function releaseMigrationLock() {
     localStorage.removeItem(MIGRATION_LOCK_KEY);
-    console.log('已释放迁移锁');
+    logger.debug('已释放迁移锁');
 }
 
 // ========== 迁移日志 ==========
@@ -97,7 +102,7 @@ export function logMigrationStep(step, status, details = {}) {
         timestamp: Date.now()
     };
     migrationLog.push(logEntry);
-    console.log(`[迁移] ${step}: ${status}`, details);
+    logger.debug(`[迁移] ${step}: ${status}`, details);
 }
 
 /**
@@ -133,7 +138,7 @@ export async function backupLocalStorage() {
         'settingsPanelWidth'
     ];
 
-    keysToBackup.forEach(key => {
+    keysToBackup.forEach((key) => {
         const value = localStorage.getItem(key);
         if (value !== null) {
             backup.data[key] = value;
@@ -143,7 +148,7 @@ export async function backupLocalStorage() {
     // 保存备份到 IndexedDB
     await savePreference('localStorage_backup', backup);
 
-    console.log('localStorage 备份完成:', Object.keys(backup.data));
+    logger.debug('localStorage 备份完成:', Object.keys(backup.data));
     return backup;
 }
 
@@ -164,7 +169,7 @@ async function migrateConfig() {
             await saveConfig(config);
             logMigrationStep('迁移配置', '当前配置已迁移', { keys: Object.keys(config).length });
         } catch (error) {
-            console.error('迁移当前配置失败:', error);
+            logger.error('迁移当前配置失败:', error);
             throw error;
         }
     }
@@ -177,7 +182,7 @@ async function migrateConfig() {
             await saveSavedConfigs(configs);
             logMigrationStep('迁移配置', '配置列表已迁移', { count: configs.length });
         } catch (error) {
-            console.error('迁移配置列表失败:', error);
+            logger.error('迁移配置列表失败:', error);
             throw error;
         }
     }
@@ -210,7 +215,7 @@ async function migratePreferences() {
                 await savePreference(key, transformedValue);
                 migratedCount++;
             } catch (error) {
-                console.error(`迁移偏好设置 ${key} 失败:`, error);
+                logger.error(`迁移偏好设置 ${key} 失败:`, error);
             }
         }
     }
@@ -234,7 +239,7 @@ async function migrateQuickMessages() {
             }
             logMigrationStep('迁移快捷消息', '完成', { count: messages.length });
         } catch (error) {
-            console.error('迁移快捷消息失败:', error);
+            logger.error('迁移快捷消息失败:', error);
             throw error;
         }
     } else {
@@ -294,12 +299,12 @@ export async function verifyMigration() {
     }
 
     if (errors.length > 0) {
-        console.error('❌ 迁移验证失败:', errors);
+        logger.error('❌ 迁移验证失败:', errors);
         logMigrationStep('验证迁移', '失败', { errors });
         return false;
     }
 
-    console.log('迁移验证成功');
+    logger.debug('迁移验证成功');
     logMigrationStep('验证迁移', '成功', {});
     return true;
 }
@@ -325,9 +330,9 @@ async function cleanupLocalStorage() {
         // - 'theme', 'sidebarOpen', 'inputTextareaHeight', etc.
     ];
 
-    keysToRemove.forEach(key => {
+    keysToRemove.forEach((key) => {
         localStorage.removeItem(key);
-        console.log(`已清理: ${key}`);
+        logger.debug(`已清理: ${key}`);
     });
 
     logMigrationStep('清理 localStorage', '完成', { removed: keysToRemove.length });
@@ -340,35 +345,34 @@ async function cleanupLocalStorage() {
  * @returns {Promise<void>}
  */
 export async function rollbackMigration() {
-    console.log('🔄 开始回滚迁移...');
+    logger.debug('🔄 开始回滚迁移...');
 
     try {
         // 从 IndexedDB 读取备份
         const backup = await loadPreference('localStorage_backup');
 
         if (!backup || !backup.data) {
-            console.warn('未找到备份数据，无法回滚');
+            logger.warn('未找到备份数据，无法回滚');
             return;
         }
 
         // 恢复到 localStorage
         Object.entries(backup.data).forEach(([key, value]) => {
             localStorage.setItem(key, value);
-            console.log(`已恢复: ${key}`);
+            logger.debug(`已恢复: ${key}`);
         });
 
         // 清除迁移状态
         await savePreference('migration_status', MIGRATION_STATES.NOT_STARTED);
 
-        console.log('回滚成功');
+        logger.debug('回滚成功');
 
         eventBus.emit('ui:notification', {
             message: '已回滚到迁移前状态',
             type: 'info'
         });
-
     } catch (error) {
-        console.error('❌ 回滚失败:', error);
+        logger.error('❌ 回滚失败:', error);
 
         eventBus.emit('ui:notification', {
             message: '回滚失败: ' + error.message,
@@ -384,12 +388,7 @@ export async function rollbackMigration() {
  * @returns {Promise<boolean>} 迁移是否成功
  */
 export async function executeMigration() {
-    console.log('🔄 开始数据迁移到 IndexedDB...');
-
-    // 通知 UI 迁移开始
-    eventBus.emit('ui:migration-started', {
-        message: '正在迁移数据到 IndexedDB，请稍候...'
-    });
+    logger.debug('🔄 开始数据迁移到 IndexedDB...');
 
     const startTime = Date.now();
 
@@ -398,12 +397,12 @@ export async function executeMigration() {
         const currentStatus = await getMigrationStatus();
 
         if (currentStatus === MIGRATION_STATES.IN_PROGRESS) {
-            console.warn('检测到未完成的迁移，执行回滚');
+            logger.warn('检测到未完成的迁移，执行回滚');
             await rollbackMigration();
         }
 
         if (currentStatus === MIGRATION_STATES.COMPLETED) {
-            console.log('迁移已完成，跳过');
+            logger.debug('迁移已完成，跳过');
             return true;
         }
 
@@ -441,28 +440,15 @@ export async function executeMigration() {
         await savePreference('migration_log', migrationLog);
 
         const duration = Date.now() - startTime;
-        console.log(`数据迁移完成，耗时: ${duration}ms`);
-
-        // 通知 UI 迁移完成
-        eventBus.emit('ui:migration-completed', {
-            message: '数据迁移完成',
-            duration
-        });
+        logger.debug(`数据迁移完成，耗时: ${duration}ms`);
 
         return true;
-
     } catch (error) {
-        console.error('❌ 迁移失败:', error);
+        logger.error('❌ 迁移失败:', error);
 
         // 标记失败状态
         await setMigrationStatus(MIGRATION_STATES.FAILED);
         logMigrationStep('迁移失败', 'error', { error: error.message });
-
-        // 通知 UI 迁移失败
-        eventBus.emit('ui:migration-failed', {
-            message: '数据迁移失败: ' + error.message,
-            error
-        });
 
         eventBus.emit('ui:notification', {
             message: '数据迁移失败，已回退到 localStorage',
@@ -474,7 +460,7 @@ export async function executeMigration() {
         try {
             await rollbackMigration();
         } catch (rollbackError) {
-            console.error('回滚失败:', rollbackError);
+            logger.error('回滚失败:', rollbackError);
         }
 
         return false;

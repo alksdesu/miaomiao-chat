@@ -3,10 +3,12 @@
  * 处理 OpenClaw WebSocket 事件，驱动流式渲染
  */
 
+import { logger } from '../utils/logger.js';
 import { eventBus } from '../core/events.js';
 import { state } from '../core/state.js';
+import { setIsToolCallPending } from '../core/state-mutations.js';
 import { updateStreamingMessage, renderFinalTextWithThinking } from './helpers.js';
-import { recordFirstToken, recordTokens, finalizeStreamStats, recalculateStreamTokenCount, getCurrentStreamStatsData, appendStreamStats } from './stats.js';
+import { StreamStats, appendStreamStats } from './stats.js';
 import { saveAssistantMessage } from '../messages/sync.js';
 import { setCurrentMessageIndex } from '../messages/dom-sync.js';
 import { openclawClient } from '../api/openclaw.js';
@@ -19,10 +21,11 @@ import { handleToolCallStream } from './tool-call-handler.js';
  */
 export async function handleOpenClawStream(sessionId) {
     let textContent = '';
-    let thinkingContent = '';
+    let thinkingContent = ''; // 运行时变量，非旧格式字段
     const thinkTagParser = new ThinkTagParser();
     const collectedToolCalls = [];
     let hasToolCalls = false;
+    const stats = new StreamStats();
 
     // 事件监听器引用，用于清理
     const listeners = [];
@@ -48,14 +51,14 @@ export async function handleOpenClawStream(sessionId) {
 
             if (deltaType === 'thinking' || deltaType === 'reasoning') {
                 thinkingContent += delta || '';
-                recordTokens(delta || '');
+                stats.recordTokens(delta || '');
                 updateStreamingMessage(textContent, thinkingContent);
             } else {
                 const text = delta || payload.text || payload.content || '';
                 if (!text) return;
 
-                recordFirstToken();
-                recordTokens(text);
+                stats.recordFirstToken();
+                stats.recordTokens(text);
 
                 const { displayText, thinkingDelta } = thinkTagParser.processDelta(text);
                 if (thinkingDelta) thinkingContent += thinkingDelta;
@@ -75,10 +78,15 @@ export async function handleOpenClawStream(sessionId) {
                     const tc = payload.data || {};
                     let args;
                     try {
-                        args = typeof tc.arguments === 'string' ? JSON.parse(tc.arguments) :
-                               typeof tc.function?.arguments === 'string' ? JSON.parse(tc.function.arguments) :
-                               tc.arguments || tc.function?.arguments || {};
-                    } catch { args = {}; }
+                        args =
+                            typeof tc.arguments === 'string'
+                                ? JSON.parse(tc.arguments)
+                                : typeof tc.function?.arguments === 'string'
+                                  ? JSON.parse(tc.function.arguments)
+                                  : tc.arguments || tc.function?.arguments || {};
+                    } catch {
+                        args = {};
+                    }
                     collectedToolCalls.push({
                         id: tc.id || `oc_tc_${Date.now()}`,
                         name: tc.name || tc.function?.name,
@@ -87,13 +95,12 @@ export async function handleOpenClawStream(sessionId) {
                     break;
                 }
                 case 'tool_result':
-                    eventBus.emit('openclaw:tool-result', payload.data || {});
                     break;
                 case 'screen_capture':
                     eventBus.emit('openclaw:screen-capture', payload.data);
                     break;
                 default:
-                    console.log('[OpenClaw Parser] 未知 agent 事件:', payload.type);
+                    logger.debug('[OpenClaw Parser] 未知 agent 事件:', payload.type);
             }
         });
 
@@ -117,7 +124,7 @@ export async function handleOpenClawStream(sessionId) {
                         textContent: textContent || '(调用工具)',
                         thinkingContent,
                         toolCalls: collectedToolCalls,
-                        streamStats: getCurrentStreamStatsData(),
+                        streamStats: stats.getPartialData(),
                         sessionId
                     });
                     setCurrentMessageIndex(messageIndex);
@@ -135,7 +142,7 @@ export async function handleOpenClawStream(sessionId) {
             }
 
             // 无工具调用，正常完成
-            finalizeOpenClawStream(textContent, thinkingContent, sessionId);
+            finalizeOpenClawStream(textContent, thinkingContent, sessionId, stats);
             openclawClient.completeRun({ done: true });
             resolve();
         });
@@ -145,10 +152,10 @@ export async function handleOpenClawStream(sessionId) {
             removeAllListeners();
 
             const errorMsg = payload?.message || '未知错误';
-            console.error('[OpenClaw Parser] 错误:', errorMsg);
+            logger.error('[OpenClaw Parser] 错误:', errorMsg);
 
             if (textContent || thinkingContent) {
-                finalizeOpenClawStream(textContent, thinkingContent, sessionId);
+                finalizeOpenClawStream(textContent, thinkingContent, sessionId, stats);
             }
 
             if (sessionId === state.currentSessionId) {
@@ -167,29 +174,30 @@ export async function handleOpenClawStream(sessionId) {
 /**
  * 完成 OpenClaw 流处理
  */
-function finalizeOpenClawStream(textContent, thinkingContent, sessionId) {
+function finalizeOpenClawStream(textContent, thinkingContent, sessionId, stats) {
     const isBackground = sessionId && sessionId !== state.currentSessionId;
 
     if (state.isToolCallPending) {
-        state.isToolCallPending = false;
+        setIsToolCallPending(false);
     }
 
-    finalizeStreamStats();
+    stats.finalize();
 
     if (!isBackground && (textContent || thinkingContent)) {
         renderFinalTextWithThinking(textContent, thinkingContent);
     }
 
-    recalculateStreamTokenCount({ textContent, thinkingContent, contentParts: [] });
+    stats.recalculateTokenCount({ textContent, thinkingContent, contentParts: [] });
 
     if (!isBackground) {
+        stats.syncToGlobal();
         appendStreamStats();
     }
 
     const messageIndex = saveAssistantMessage({
         textContent,
         thinkingContent,
-        streamStats: getCurrentStreamStatsData(),
+        streamStats: stats.getData(),
         sessionId
     });
 

@@ -8,13 +8,28 @@
  */
 export const textFormatterTool = {
     name: 'text_formatter',
-    description: '文本格式化工具。支持操作: uppercase（大写）, lowercase（小写）, capitalize（首字母大写）, trim（去除空格）, replace（替换）, substring（截取）, reverse（反转）, encode（编码）, count（统计）。',
+    description:
+        '文本格式化工具。支持操作: uppercase（大写）, lowercase（小写）, capitalize（首字母大写）, trim（去除空格）, replace（替换）, substring（截取）, reverse（反转）, encode（编码）, count（统计）。',
     parameters: {
         type: 'object',
         properties: {
             operation: {
                 type: 'string',
-                enum: ['uppercase', 'lowercase', 'capitalize', 'title_case', 'trim', 'replace', 'substring', 'reverse', 'encode', 'decode', 'count', 'split', 'join'],
+                enum: [
+                    'uppercase',
+                    'lowercase',
+                    'capitalize',
+                    'title_case',
+                    'trim',
+                    'replace',
+                    'substring',
+                    'reverse',
+                    'encode',
+                    'decode',
+                    'count',
+                    'split',
+                    'join'
+                ],
                 description: '操作类型'
             },
             text: {
@@ -64,7 +79,7 @@ export const textFormatterTool = {
 export async function textFormatterHandler(args) {
     const { operation, text, find, replace_with, start, end, encoding, separator, parts } = args;
 
-    console.log(`[TextFormatter] 执行操作: ${operation}`, { textLength: text?.length });
+    logger.debug(`[TextFormatter] 执行操作: ${operation}`, { textLength: text?.length });
 
     try {
         let result;
@@ -189,9 +204,8 @@ export async function textFormatterHandler(args) {
             },
             metadata
         };
-
     } catch (error) {
-        console.error(`[TextFormatter] 错误:`, error);
+        logger.error(`[TextFormatter] 错误:`, error);
         throw new Error(`文本格式化失败: ${error.message}`);
     }
 }
@@ -202,7 +216,7 @@ export async function textFormatterHandler(args) {
  * @returns {string}
  */
 function toTitleCase(text) {
-    return text.toLowerCase().replace(/\b\w/g, char => char.toUpperCase());
+    return text.toLowerCase().replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 /**
@@ -262,7 +276,7 @@ function decodeText(text, encoding) {
  */
 function getTextStatistics(text) {
     const lines = text.split('\n');
-    const words = text.split(/\s+/).filter(word => word.length > 0);
+    const words = text.split(/\s+/).filter((word) => word.length > 0);
     const chars = text.length;
     const charsNoSpaces = text.replace(/\s/g, '').length;
 
@@ -272,7 +286,7 @@ function getTextStatistics(text) {
         words: words.length,
         lines: lines.length,
         sentences: (text.match(/[.!?]+/g) || []).length,
-        paragraphs: text.split(/\n\s*\n/).filter(p => p.trim().length > 0).length,
+        paragraphs: text.split(/\n\s*\n/).filter((p) => p.trim().length > 0).length,
         avg_word_length: words.length > 0 ? (charsNoSpaces / words.length).toFixed(2) : 0
     };
 }
@@ -286,10 +300,16 @@ function escapeRegex(string) {
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-console.log('[TextFormatter Tool] 📝 文本格式化工具已加载');
+logger.debug('[TextFormatter Tool] 📝 文本格式化工具已加载');
 
 // ========== 标准化工具对象 ==========
 
 import { buildToolFromLegacy } from '../build-tool.js';
+import { logger } from '../../utils/logger.js';
 
-export const textFormatter = buildToolFromLegacy('text_formatter', textFormatterTool, textFormatterHandler, { isReadOnly: () => true });
+export const textFormatter = buildToolFromLegacy(
+    'text_formatter',
+    textFormatterTool,
+    textFormatterHandler,
+    { isReadOnly: () => true }
+);

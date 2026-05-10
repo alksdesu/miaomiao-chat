@@ -5,47 +5,28 @@
 
 import { state, elements } from '../core/state.js';
 import { eventBus } from '../core/events.js';
-import { updateMessageAt } from '../core/state-mutations.js';
+import { updateMessageAt, setSelectedReplyIndex } from '../core/state-mutations.js';
 import { debouncedSaveSession } from '../state/sessions.js';
 import { safeMarkedParse } from '../utils/markdown.js';
-import { PartType, MediaKind, textPart, thinkingPart, mediaPart, isSchemaFormatParts, getTextContent } from './schema.js';
+import { escapeHtml } from '../utils/helpers.js';
+import {
+    PartType,
+    MediaKind,
+    textPart,
+    thinkingPart,
+    mediaPart,
+    isSchemaFormatParts,
+    getTextContent,
+    getThinkingContent
+} from './schema.js';
 import { renderThinkingBlock, enhanceCodeBlocks, renderContentParts } from './renderer.js';
 import { renderHumanizedError } from '../utils/errors.js';
-import { getMediaExtension, isVideoMimeType, isVideoUrl } from '../utils/media.js';
-
-function renderDownloadIcon() {
-    return `
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>
-        </svg>
-    `;
-}
-
-function encodeInlineUrl(url) {
-    return encodeURIComponent(url || '');
-}
-
-function renderImageBlock(url) {
-    const encodedUrl = encodeInlineUrl(url);
-    const ext = getMediaExtension(url, '', 'png');
-    return `<div class="image-wrapper">
-        <img src="${url}" alt="Generated image" title="点击查看大图" onclick="openImageViewer(decodeURIComponent('${encodedUrl}'))" style="cursor:pointer;">
-        <button type="button" class="download-image-btn" onclick="event.stopPropagation();downloadImage(decodeURIComponent('${encodedUrl}'), 'image-${Date.now()}.${ext}')" title="下载原图">
-            ${renderDownloadIcon()}
-        </button>
-    </div>`;
-}
-
-function renderVideoBlock(url, mimeType = '') {
-    const encodedUrl = encodeInlineUrl(url);
-    const ext = getMediaExtension(url, mimeType, 'mp4');
-    return `<div class="image-wrapper video-wrapper">
-        <video src="${url}" controls playsinline muted preload="metadata" title="AI 生成视频"></video>
-        <button type="button" class="download-image-btn" onclick="event.stopPropagation();downloadMedia(decodeURIComponent('${encodedUrl}'), 'video-${Date.now()}.${ext}')" title="下载视频">
-            ${renderDownloadIcon()}
-        </button>
-    </div>`;
-}
+import { isVideoMimeType } from '../utils/media.js';
+import {
+    renderImageCard as renderImageBlock,
+    renderVideoCard as renderVideoBlock
+} from '../ui/media-cards.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * 选择回复（支持两种调用方式：直接索引或带消息索引）
@@ -60,19 +41,21 @@ export function selectReply(replyIndex, messageIndex = null) {
     if (messageIndex !== null) {
         const msg = state.messages[messageIndex];
         if (!msg) return;
-        replies = msg.replies?.all || msg.allReplies;
+        replies = msg.replies?.all;
         if (!replies) return;
-        messageEl = elements.messagesArea.querySelector(`.message[data-message-index="${messageIndex}"]`);
+        messageEl = elements.messagesArea.querySelector(
+            `.message[data-message-index="${messageIndex}"]`
+        );
 
         // Bug 2 防御性日志（而非复杂的 DOM 恢复）
         if (!messageEl) {
-            console.error(`[Bug 2] 消息索引 ${messageIndex} 的 DOM 元素未找到`);
-            console.error('[Bug 2] 这表明 dataset.messageIndex 未正确设置');
+            logger.error(`[Bug 2] 消息索引 ${messageIndex} 的 DOM 元素未找到`);
+            logger.error('[Bug 2] 这表明 dataset.messageIndex 未正确设置');
 
             // 使用 currentAssistantMessage 作为后备（流式输出时）
             if (state.currentAssistantMessage) {
                 messageEl = state.currentAssistantMessage.closest('.message');
-                console.warn('[Bug 2] 使用 state.currentAssistantMessage 作为后备');
+                logger.warn('[Bug 2] 使用 state.currentAssistantMessage 作为后备');
             } else {
                 return; // 无法恢复，直接返回
             }
@@ -92,23 +75,16 @@ export function selectReply(replyIndex, messageIndex = null) {
 
     // 更新消息历史中的选中索引 - 通过安全函数同步
     if (messageIndex !== null) {
-        // 新格式优先：从 parts 提取文本
-        let textContent = '';
-        if (reply.parts && reply.parts.length > 0 && reply.parts[0]?.type) {
-            textContent = getTextContent(reply);
-        }
-        // 旧格式回退
-        if (!textContent) {
-            textContent = reply.content || '';
-        }
+        // 用 schema.js 工具函数提取文本（内部已处理新/旧格式回退）
+        const textContent = getTextContent(reply);
 
         applyReplyToMessage(messageIndex, reply, textContent, {
-            replyIndex,
+            replyIndex
         });
 
         debouncedSaveSession();
     } else {
-        state.selectedReplyIndex = replyIndex;
+        setSelectedReplyIndex(replyIndex);
         updateMessageHistoryWithSelectedReply();
     }
 
@@ -144,28 +120,33 @@ export function selectReply(replyIndex, messageIndex = null) {
                     for (const part of reply.parts) {
                         if (part.type === PartType.THINKING) {
                             html += renderThinkingBlock(part.text);
-                        } else if (part.type === PartType.TEXT && part.text && part.text !== '(调用工具)') {
+                        } else if (
+                            part.type === PartType.TEXT &&
+                            part.text &&
+                            part.text !== '(调用工具)'
+                        ) {
                             html += safeMarkedParse(part.text);
                         } else if (part.type === PartType.MEDIA && part.url) {
                             if (part.media === MediaKind.VIDEO) {
                                 html += renderVideoBlock(part.url, part.mime);
                             } else if (part.media === MediaKind.AUDIO) {
-                                html += `<div class="audio-wrapper"><audio src="${part.url}" controls preload="metadata"></audio></div>`;
+                                html += `<div class="audio-wrapper"><audio src="${escapeHtml(part.url)}" controls preload="metadata"></audio></div>`;
                             } else {
                                 html += renderImageBlock(part.url);
                             }
                         }
                     }
                 }
-                // 旧格式回退链
+                // 旧格式回退链（旧格式兜底，未迁移数据需要）
                 else {
-                    // 思维链
-                    if (reply.thinkingContent) {
-                        html += renderThinkingBlock(reply.thinkingContent);
+                    // 思维链（已用 schema.js 工具函数）
+                    const replyThinking = getThinkingContent(reply);
+                    if (replyThinking) {
+                        html += renderThinkingBlock(replyThinking);
                     }
-                    // contentParts
+                    // contentParts（旧格式含媒体数据）
                     if (reply.contentParts && reply.contentParts.length > 0) {
-                        html += renderContentParts(reply.contentParts);
+                        html += renderContentParts(reply.contentParts); // 旧格式兜底
                     }
                     // Gemini 原始格式
                     else if (state.apiFormat === 'gemini' && reply.parts) {
@@ -188,30 +169,16 @@ export function selectReply(replyIndex, messageIndex = null) {
                             html += renderSearchGrounding(reply.groundingMetadata);
                         }
                     }
-                    // content 字符串/数组
-                    else if (reply.content) {
-                        if (Array.isArray(reply.content)) {
-                            for (const part of reply.content) {
-                                if (part.type === 'text') {
-                                    html += safeMarkedParse(part.text);
-                                } else if (part.type === 'video_url') {
-                                    const url = part.video_url?.url || part.url;
-                                    html += renderVideoBlock(url, part.mime_type || part.mimeType || part.video_url?.mime_type || part.video_url?.mimeType);
-                                } else if (part.type === 'image_url' && part.image_url?.url) {
-                                    const url = part.image_url.url;
-                                    if (isVideoUrl(url)) {
-                                        html += renderVideoBlock(url);
-                                    } else {
-                                        html += renderImageBlock(url);
-                                    }
-                                }
-                            }
-                        } else {
-                            html += safeMarkedParse(reply.content);
+                    // 文本回退（用 schema.js 工具函数，覆盖 content 字符串/数组）
+                    else {
+                        const replyText = getTextContent(reply);
+                        if (replyText) {
+                            html += safeMarkedParse(replyText);
                         }
                     }
                 }
             }
+            // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
             contentDiv.innerHTML = html;
 
             // 不再需要手动绑定图片事件（已使用内联 onclick）
@@ -236,24 +203,35 @@ function applyReplyToMessage(index, reply, textContent, extraOpenai = {}) {
     let parts;
     if (isSchemaFormatParts(reply.parts)) {
         // 新格式：直接使用 reply.parts（去掉 tool_call/file，后面从 existingMsg 补回）
-        parts = reply.parts.filter(p => p.type !== PartType.TOOL_CALL && p.type !== PartType.FILE);
+        parts = reply.parts.filter(
+            (p) => p.type !== PartType.TOOL_CALL && p.type !== PartType.FILE
+        );
     } else {
         // 旧格式回退：从旧字段重建 parts
         parts = [];
-        if (reply.thinkingContent) {
-            parts.push(thinkingPart(reply.thinkingContent, reply.thinkingSignature || reply.thoughtSignature || null));
+        const replyThinking = getThinkingContent(reply);
+        if (replyThinking) {
+            parts.push(
+                thinkingPart(
+                    replyThinking,
+                    reply.thinkingSignature || reply.thoughtSignature || null
+                )
+            );
         }
         if (textContent) {
             parts.push(textPart(textContent));
         }
+        // 旧格式 contentParts 中的媒体 → 新格式 mediaPart（旧格式兜底，未迁移数据需要）
         if (reply.contentParts && reply.contentParts.length > 0) {
             for (const cp of reply.contentParts) {
+                // 旧格式兜底，未迁移数据需要
                 if (cp.type === 'image' || cp.type === 'image_url') {
                     const url = cp.url || cp.image_url?.url;
                     if (url) parts.push(mediaPart(MediaKind.IMAGE, url));
                 } else if (cp.type === 'video' || cp.type === 'video_url') {
                     const url = cp.url || cp.video_url?.url;
-                    if (url) parts.push(mediaPart(MediaKind.VIDEO, url, cp.mime_type || cp.mimeType));
+                    if (url)
+                        parts.push(mediaPart(MediaKind.VIDEO, url, cp.mime_type || cp.mimeType));
                 }
             }
         }
@@ -271,7 +249,7 @@ function applyReplyToMessage(index, reply, textContent, extraOpenai = {}) {
 
     const updates = {
         parts,
-        ...extraOpenai,
+        ...extraOpenai
     };
 
     // 同步 reply 的 meta 到顶层（模型名、统计、provider-specific 数据）
@@ -298,14 +276,8 @@ function updateMessageHistoryWithSelectedReply() {
     if (state.currentReplies.length === 0) return;
 
     const reply = state.currentReplies[state.selectedReplyIndex];
-    // 新格式优先
-    let textContent = '';
-    if (reply.parts && reply.parts.length > 0 && reply.parts[0]?.type) {
-        textContent = reply.parts.filter(p => p.type === PartType.TEXT).map(p => p.text).join('');
-    }
-    if (!textContent) {
-        textContent = reply.content || '';
-    }
+    // 用 schema.js 工具函数提取文本（内部已处理新/旧格式回退）
+    const textContent = getTextContent(reply);
     const lastIndex = state.messages.length - 1;
 
     if (lastIndex < 0) return;
@@ -313,7 +285,7 @@ function updateMessageHistoryWithSelectedReply() {
 
     const shared = {
         replies: { all: state.currentReplies, selected: state.selectedReplyIndex },
-        replyIndex: state.selectedReplyIndex,
+        replyIndex: state.selectedReplyIndex
     };
 
     applyReplyToMessage(lastIndex, reply, textContent, shared);
@@ -329,12 +301,14 @@ function renderSearchGrounding(groundingMetadata) {
 
     const chunks = groundingMetadata.groundingChunks || [];
     const sources = chunks
-        .filter(chunk => chunk.web)
-        .map(chunk => `
-            <a href="${chunk.web.uri}" target="_blank" rel="noopener" class="search-source">
+        .filter((chunk) => chunk.web)
+        .map(
+            (chunk) => `
+            <a href="${escapeHtml(chunk.web.uri)}" target="_blank" rel="noopener" class="search-source">
                 ${escapeHtml(chunk.web.title || new URL(chunk.web.uri).hostname)}
             </a>
-        `);
+        `
+        );
 
     if (sources.length === 0) return '';
 
@@ -347,15 +321,6 @@ function renderSearchGrounding(groundingMetadata) {
 }
 
 /**
- * 转义 HTML
- */
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-/**
  * 初始化回复选择器事件监听
  */
 export function initReplySelector() {
@@ -364,5 +329,5 @@ export function initReplySelector() {
         selectReply(index, messageIndex);
     });
 
-    console.log('Reply selector initialized');
+    logger.debug('Reply selector initialized');
 }

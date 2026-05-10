@@ -6,6 +6,7 @@
 import { eventBus } from '../core/events.js';
 import { downloadImage } from '../utils/images.js';
 import { downloadMedia } from '../utils/media.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * 焦点陷阱 - 限制焦点在指定元素内
@@ -14,7 +15,8 @@ import { downloadMedia } from '../utils/media.js';
 function trapFocus(element) {
     if (element._focusTrapHandler) return; // 已经设置过
 
-    const focusableSelector = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+    const focusableSelector =
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
     const handler = (e) => {
         if (e.key !== 'Tab') return;
@@ -130,5 +132,5 @@ export function initImageViewer() {
     window.downloadImage = downloadImage;
     window.downloadMedia = downloadMedia;
 
-    console.log('Image viewer initialized');
+    logger.debug('Image viewer initialized');
 }

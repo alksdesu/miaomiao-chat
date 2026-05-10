@@ -1,22 +1,27 @@
 {
   "name": "miaomiao-chat",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Web Chat Application with Electron",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder",
-    "dist:win": "electron-builder --win",
+    "dist:win": "electron-builder --win --x64",
     "dist:mac": "electron-builder --mac",
     "dist:linux": "electron-builder --linux",
     "cap:prepare": "node scripts/prepare-capacitor.js",
     "cap:sync": "npm run cap:prepare && npx cap sync android",
+    "cap:sync:ios": "npm run cap:prepare && npx cap sync ios",
     "cap:build": "npm run cap:sync && cd android && gradlew assembleRelease",
     "cap:open": "npx cap open android",
+    "cap:open:ios": "npx cap open ios",
     "lint": "eslint js/**/*.js electron/**/*.js --max-warnings=50",
     "lint:fix": "eslint js/**/*.js electron/**/*.js --fix",
     "format": "prettier --write \"js/**/*.{js,css}\" \"styles/**/*.css\" \"*.html\"",
-    "format:check": "prettier --check \"js/**/*.{js,css}\" \"styles/**/*.css\" \"*.html\""
+    "format:check": "prettier --check \"js/**/*.{js,css}\" \"styles/**/*.css\" \"*.html\"",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "prepare": "husky"
   },
   "keywords": [
     "electron",
@@ -24,22 +29,29 @@
     "ai"
   ],
   "author": {
-    "name": "Alks0",
-    "email": "2636777314@qq.com"
+    "name": "alksdesu",
+    "email": "26915144+alksdesu@users.noreply.github.com"
   },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Alks0/miaomiao-chat.git"
+    "url": "https://github.com/alksdesu/miaomiao-chat.git"
   },
   "devDependencies": {
     "@capacitor/assets": "^3.0.5",
-    "electron": "^28.0.0",
+    "@vitest/coverage-v8": "^4.1.4",
+    "electron": "^28.3.3",
     "electron-builder": "^24.9.1",
     "eslint": "^9.39.2",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.4",
-    "prettier": "^3.7.4"
+    "husky": "^9.1.7",
+    "jsdom": "^29.0.2",
+    "lint-staged": "^16.4.0",
+    "madge": "^8.0.0",
+    "prettier": "^3.7.4",
+    "source-map": "^0.7.6",
+    "vitest": "^4.1.4"
   },
   "dependencies": {
     "@capacitor/android": "^8.0.0",
@@ -47,10 +59,20 @@
     "@capacitor/cli": "^8.0.0",
     "@capacitor/core": "^8.0.0",
     "@capacitor/filesystem": "^8.0.0",
+    "@capacitor/ios": "^8.3.1",
     "@nut-tree-fork/nut-js": "^4.2.6",
     "electron-log": "^5.0.1",
     "electron-updater": "^6.1.7",
     "mathjs": "^15.1.0"
+  },
+  "lint-staged": {
+    "*.js": [
+      "eslint --max-warnings=50",
+      "prettier --write"
+    ],
+    "*.css": [
+      "prettier --write"
+    ]
   },
   "build": {
     "appId": "com.miaomiao.chat",
@@ -122,6 +144,7 @@
     "asar": true,
     "asarUnpack": [
       "electron/**/*",
+      "libs/chii/**/*",
       "node_modules/@nut-tree-fork/**/*",
       "node_modules/electron-log/**/*"
     ],
@@ -143,7 +166,7 @@
     },
     "publish": {
       "provider": "github",
-      "owner": "Alks0",
+      "owner": "alksdesu",
       "repo": "miaomiao-chat"
     }
   }

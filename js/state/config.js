@@ -5,11 +5,20 @@
 
 import { state, elements } from '../core/state.js';
 import { eventBus } from '../core/events.js';
-// 新增：IndexedDB 存储 API
-import { saveConfig as saveConfigToDB, loadConfig as loadConfigFromDB, saveSavedConfigs as saveSavedConfigsToDB, loadSavedConfigs as loadSavedConfigsFromDB } from './storage.js';
+import { logger } from '../utils/logger.js';
+// IndexedDB 存储 API
+import {
+    saveConfig as saveConfigToDB,
+    loadConfig as loadConfigFromDB,
+    saveSavedConfigs as saveSavedConfigsToDB,
+    loadSavedConfigs as loadSavedConfigsFromDB
+} from './storage.js';
+// UI 同步模块
+import { syncUIWithState } from './config-ui-sync.js';
+export { syncUIWithState };
 
 // ⭐ 配置版本管理
-const CONFIG_VERSION = 2;  // v1 = 旧格式（provider.models为字符串数组），v2 = 新格式（对象数组）
+const CONFIG_VERSION = 2; // v1 = 旧格式（provider.models为字符串数组），v2 = 新格式（对象数组）
 
 // 防抖保存配置定时器
 let saveConfigTimeout = null;
@@ -25,17 +34,17 @@ export async function saveCurrentConfigImmediate() {
     try {
         localStorage.setItem('geminiChatConfig', JSON.stringify(config));
     } catch (e) {
-        console.error('[saveCurrentConfigImmediate] localStorage 保存失败:', e);
+        logger.error('[saveCurrentConfigImmediate] localStorage 保存失败:', e);
     }
 
     // 然后异步保存到 IndexedDB
     try {
         if (state.storageMode !== 'localStorage') {
             await saveConfigToDB(config);
-            console.log('[saveCurrentConfigImmediate] 配置已保存到 IndexedDB');
+            logger.debug('[saveCurrentConfigImmediate] 配置已保存到 IndexedDB');
         }
     } catch (error) {
-        console.error('[saveCurrentConfigImmediate] IndexedDB 保存失败:', error);
+        logger.error('[saveCurrentConfigImmediate] IndexedDB 保存失败:', error);
         // localStorage 已在上面保存，无需再次保存
     }
 }
@@ -51,7 +60,7 @@ export function saveCurrentConfig() {
     try {
         localStorage.setItem('geminiChatConfig', JSON.stringify(config));
     } catch (e) {
-        console.warn('[saveCurrentConfig] localStorage 保存失败:', e);
+        logger.warn('[saveCurrentConfig] localStorage 保存失败:', e);
     }
 
     // 清除之前的定时器
@@ -64,10 +73,10 @@ export function saveCurrentConfig() {
         try {
             if (state.storageMode !== 'localStorage') {
                 await saveConfigToDB(config);
-                console.log('配置已保存到 IndexedDB');
+                logger.debug('配置已保存到 IndexedDB');
             }
         } catch (error) {
-            console.error('IndexedDB 保存失败:', error);
+            logger.error('IndexedDB 保存失败:', error);
         }
     }, 500);
 }
@@ -91,7 +100,7 @@ export function buildConfigObject() {
         // 但在配置导出时会被 export-import.js 的 filterRuntimeState() 过滤掉
         selectedModel: state.selectedModel ?? elements?.modelSelect?.value ?? '',
         apiFormat: state?.apiFormat ?? 'openai',
-        imageSize: state?.imageSize ?? '2K',  // 使用 ?? 保留空字符串
+        imageSize: state?.imageSize ?? '2K', // 使用 ?? 保留空字符串
         pdfMode: state?.pdfMode ?? 'standard', // PDF 处理模式
         replyCount: state?.replyCount ?? 1,
 
@@ -103,6 +112,7 @@ export function buildConfigObject() {
         thinkingNoneMode: state.thinkingNoneMode || false,
         claudeAdaptiveThinking: state.claudeAdaptiveThinking || false,
         claudeEffortLevel: state.claudeEffortLevel || 'high',
+        claudeShowThinking: state.claudeShowThinking ?? true,
         webSearchEnabled: state.webSearchEnabled,
         geminiApiKeyInHeader: state.geminiApiKeyInHeader,
 
@@ -144,6 +154,10 @@ export function buildConfigObject() {
         savedGeminiPartsPresets: JSON.parse(JSON.stringify(state.savedGeminiPartsPresets)),
         currentGeminiPartsPresetName: state.currentGeminiPartsPresetName,
 
+        // 统一预设系统
+        prefillPresets: JSON.parse(JSON.stringify(state.prefillPresets)),
+        activePrefillPresetId: state.activePrefillPresetId,
+
         // 提供商管理（深拷贝）
         providers: JSON.parse(JSON.stringify(state.providers || [])),
         currentProviderId: state.currentProviderId || null,
@@ -157,7 +171,7 @@ export function buildConfigObject() {
 
         // 快捷消息（深拷贝）
         quickMessages: JSON.parse(JSON.stringify(state.quickMessages || [])),
-        quickMessagesCategories: [...(state.quickMessagesCategories || ['常用', '问候', '告别'])],
+        quickMessagesCategories: [...(state.quickMessagesCategories || ['常用', '问候', '告别'])]
     };
 }
 
@@ -168,9 +182,9 @@ export function buildConfigObject() {
  */
 export function getDefaultCapabilities(apiFormat) {
     const defaults = {
-        openai: { imageInput: true, imageOutput: false },   // OpenAI 支持 Vision，但不生成图片
-        gemini: { imageInput: true, imageOutput: true },    // Gemini 完全支持多模态
-        claude: { imageInput: true, imageOutput: false }    // Claude 支持 Vision，但不生成图片
+        openai: { imageInput: true, imageOutput: false }, // OpenAI 支持 Vision，但不生成图片
+        gemini: { imageInput: true, imageOutput: true }, // Gemini 完全支持多模态
+        claude: { imageInput: true, imageOutput: false } // Claude 支持 Vision，但不生成图片
     };
     return defaults[apiFormat] || { imageInput: false, imageOutput: false };
 }
@@ -184,12 +198,14 @@ function upgradeProviderModels(provider) {
     if (!provider.models || provider.models.length === 0) {
         // 如果没有 models，尝试从 customModel 迁移（旧系统）
         if (provider.customModel) {
-            provider.models = [{
-                id: provider.customModel,
-                name: provider.customModel,
-                capabilities: getDefaultCapabilities(provider.apiFormat)
-            }];
-            console.log(`  从 customModel 迁移: ${provider.customModel}`);
+            provider.models = [
+                {
+                    id: provider.customModel,
+                    name: provider.customModel,
+                    capabilities: getDefaultCapabilities(provider.apiFormat)
+                }
+            ];
+            logger.debug(`  从 customModel 迁移: ${provider.customModel}`);
         } else {
             provider.models = [];
         }
@@ -198,16 +214,18 @@ function upgradeProviderModels(provider) {
 
     // 检查第一个元素的类型
     if (typeof provider.models[0] === 'object' && provider.models[0].id) {
-        console.log(`  Provider "${provider.name}" 已是新格式，跳过`);
-        return provider;  // 已经是对象数组
+        logger.debug(`  Provider "${provider.name}" 已是新格式，跳过`);
+        return provider; // 已经是对象数组
     }
 
     // 自动升级：字符串数组 → 对象数组
-    console.log(`  ⬆️ 升级 Provider "${provider.name}" 的 models (${provider.models.length} 个模型)`);
+    logger.debug(
+        `  ⬆️ 升级 Provider "${provider.name}" 的 models (${provider.models.length} 个模型)`
+    );
 
-    provider.models = provider.models.map(modelId => ({
+    provider.models = provider.models.map((modelId) => ({
         id: modelId,
-        name: modelId,  // 默认使用 ID 作为名称
+        name: modelId, // 默认使用 ID 作为名称
         capabilities: getDefaultCapabilities(provider.apiFormat)
     }));
 
@@ -220,11 +238,11 @@ function upgradeProviderModels(provider) {
  * @returns {Object} v2 配置对象
  */
 function upgradeFromV1ToV2(config) {
-    console.log('执行 v1 → v2 升级: provider.models 字符串数组 → 对象数组');
+    logger.debug('执行 v1 → v2 升级: provider.models 字符串数组 → 对象数组');
 
     // 升级所有提供商的 models 字段
     if (config.providers && Array.isArray(config.providers)) {
-        config.providers = config.providers.map(provider => {
+        config.providers = config.providers.map((provider) => {
             return upgradeProviderModels(provider);
         });
     }
@@ -241,11 +259,11 @@ function upgradeFromV1ToV2(config) {
  * @returns {Object} 升级后的配置对象
  */
 function upgradeConfig(config, fromVersion, toVersion) {
-    let currentConfig = JSON.parse(JSON.stringify(config));  // 深拷贝
+    let currentConfig = JSON.parse(JSON.stringify(config)); // 深拷贝
 
     // 增量升级：v1 → v2 → v3 ...
     for (let v = fromVersion; v < toVersion; v++) {
-        console.log(`升级步骤: v${v} → v${v + 1}`);
+        logger.debug(`升级步骤: v${v} → v${v + 1}`);
 
         switch (v) {
             case 1:
@@ -278,7 +296,10 @@ export async function loadConfig() {
         // 同时读取 IndexedDB 和 localStorage
         if (state.storageMode !== 'localStorage') {
             idbConfig = await loadConfigFromDB();
-            console.log('[loadConfig] IndexedDB:', idbConfig ? `有数据 (updatedAt: ${idbConfig.updatedAt})` : '无数据');
+            logger.debug(
+                '[loadConfig] IndexedDB:',
+                idbConfig ? `有数据 (updatedAt: ${idbConfig.updatedAt})` : '无数据'
+            );
         }
 
         // 读取 localStorage
@@ -286,10 +307,13 @@ export async function loadConfig() {
             const localStorageData = localStorage.getItem('geminiChatConfig');
             if (localStorageData) {
                 lsConfig = JSON.parse(localStorageData);
-                console.log('[loadConfig] localStorage:', lsConfig ? `有数据 (updatedAt: ${lsConfig.updatedAt})` : '无数据');
+                logger.debug(
+                    '[loadConfig] localStorage:',
+                    lsConfig ? `有数据 (updatedAt: ${lsConfig.updatedAt})` : '无数据'
+                );
             }
         } catch (e) {
-            console.warn('[loadConfig] localStorage 解析失败:', e);
+            logger.warn('[loadConfig] localStorage 解析失败:', e);
         }
 
         // 比较两个来源，使用更新的那个
@@ -297,10 +321,12 @@ export async function loadConfig() {
             const idbTime = idbConfig.updatedAt || 0;
             const lsTime = lsConfig.updatedAt || 0;
             if (lsTime > idbTime) {
-                console.log('[loadConfig] ⚠️ localStorage 更新，使用 localStorage 数据');
+                logger.info('[loadConfig] localStorage 更新，使用 localStorage 数据');
                 savedConfig = lsConfig;
                 // 同步到 IndexedDB
-                saveConfigToDB(lsConfig).catch(e => console.warn('[loadConfig] 同步到 IndexedDB 失败:', e));
+                saveConfigToDB(lsConfig).catch((e) =>
+                    logger.warn('[loadConfig] 同步到 IndexedDB 失败:', e)
+                );
             } else {
                 savedConfig = idbConfig;
             }
@@ -309,33 +335,40 @@ export async function loadConfig() {
         }
 
         if (!savedConfig) {
-            console.log('[loadConfig] 没有保存的配置，使用默认值');
+            logger.debug('[loadConfig] 没有保存的配置，使用默认值');
             return null;
         }
 
-        console.log('[loadConfig] 解析配置成功, apiFormat:', savedConfig.apiFormat);
+        logger.info('[loadConfig] 解析配置成功, apiFormat:', savedConfig.apiFormat);
 
         // 应用配置到 state
         applyConfigToState(savedConfig);
 
         // 验证 currentProviderId 是否有效
         if (state.currentProviderId) {
-            const provider = state.providers.find(p => p.id === state.currentProviderId);
+            const provider = state.providers.find((p) => p.id === state.currentProviderId);
             if (!provider || !provider.enabled) {
-                console.warn(`[loadConfig] currentProviderId 无效，已清除: ${state.currentProviderId}`);
+                logger.warn(
+                    `[loadConfig] currentProviderId 无效，已清除: ${state.currentProviderId}`
+                );
                 state.currentProviderId = null;
             } else {
-                console.log(`[loadConfig] currentProviderId 有效: ${provider.name} (${provider.id})`);
+                logger.debug(
+                    `[loadConfig] currentProviderId 有效: ${provider.name} (${provider.id})`
+                );
 
                 // 同步 provider 的 geminiApiKeyInHeader 到 state（用于 API 请求）
-                if (provider.apiFormat === 'gemini' && provider.geminiApiKeyInHeader !== undefined) {
+                if (
+                    provider.apiFormat === 'gemini' &&
+                    provider.geminiApiKeyInHeader !== undefined
+                ) {
                     state.geminiApiKeyInHeader = provider.geminiApiKeyInHeader;
-                    console.log(`🔄 同步 geminiApiKeyInHeader: ${state.geminiApiKeyInHeader}`);
+                    logger.debug(`同步 geminiApiKeyInHeader: ${state.geminiApiKeyInHeader}`);
                 }
             }
         }
 
-        console.log('配置已加载:', savedConfig);
+        logger.debug('配置已加载:', savedConfig);
 
         // 同步 UI 状态
         syncUIWithState();
@@ -345,7 +378,7 @@ export async function loadConfig() {
 
         return savedConfig;
     } catch (e) {
-        console.error('[loadConfig] 加载配置失败:', e);
+        logger.error('[loadConfig] 加载配置失败:', e);
         return null;
     }
 }
@@ -356,39 +389,41 @@ export async function loadConfig() {
  */
 export function applyConfigToState(config) {
     // ⭐ 配置版本检测和自动升级
-    const configVersion = config.configVersion || 1;  // 默认为 v1（旧格式）
+    const configVersion = config.configVersion || 1; // 默认为 v1（旧格式）
 
-    console.log(`📋 配置版本: v${configVersion}，当前版本: v${CONFIG_VERSION}`);
+    logger.debug(`配置版本: v${configVersion}，当前版本: v${CONFIG_VERSION}`);
 
     // 需要升级
     if (configVersion < CONFIG_VERSION) {
-        console.log(`⬆️ 开始配置升级: v${configVersion} → v${CONFIG_VERSION}`);
+        logger.info(`开始配置升级: v${configVersion} → v${CONFIG_VERSION}`);
 
         // 备份旧配置（防止升级失败）
         try {
             localStorage.setItem('config_backup_v' + configVersion, JSON.stringify(config));
-            console.log('旧配置已备份到 config_backup_v' + configVersion);
+            logger.debug('旧配置已备份到 config_backup_v' + configVersion);
         } catch (e) {
-            console.error('❌ 配置备份失败:', e);
+            logger.error('配置备份失败:', e);
         }
 
         // 执行升级
         try {
             config = upgradeConfig(config, configVersion, CONFIG_VERSION);
-            console.log('配置升级成功');
+            logger.info('配置升级成功');
         } catch (error) {
-            console.error('❌ 配置升级失败:', error);
+            logger.error('配置升级失败:', error);
             // 尝试从备份恢复
             const backup = localStorage.getItem('config_backup_v' + configVersion);
             if (backup) {
                 config = JSON.parse(backup);
-                console.log('⚠️ 已回滚到备份配置');
+                logger.warn('已回滚到备份配置');
             }
         }
     } else if (configVersion === CONFIG_VERSION) {
-        console.log('配置版本已是最新，无需升级');
+        logger.debug('配置版本已是最新，无需升级');
     } else {
-        console.warn(`⚠️ 配置版本 v${configVersion} 高于当前支持的版本 v${CONFIG_VERSION}，可能存在兼容性问题`);
+        logger.warn(
+            `配置版本 v${configVersion} 高于当前支持的版本 v${CONFIG_VERSION}，可能存在兼容性问题`
+        );
     }
 
     // 旧配置兼容 (保持向后兼容)
@@ -430,6 +465,7 @@ export function applyConfigToState(config) {
     state.thinkingNoneMode = config.thinkingNoneMode ?? false;
     state.claudeAdaptiveThinking = config.claudeAdaptiveThinking ?? false;
     state.claudeEffortLevel = config.claudeEffortLevel ?? 'high';
+    state.claudeShowThinking = config.claudeShowThinking ?? true;
     state.webSearchEnabled = config.webSearchEnabled ?? false;
     state.geminiApiKeyInHeader = config.geminiApiKeyInHeader ?? false;
 
@@ -447,9 +483,12 @@ export function applyConfigToState(config) {
 
     // 模型参数 (深度合并)
     if (config.modelParams) {
-        ['openai', 'gemini', 'claude'].forEach(format => {
+        ['openai', 'gemini', 'claude'].forEach((format) => {
             if (config.modelParams[format]) {
-                state.modelParams[format] = { ...state.modelParams[format], ...config.modelParams[format] };
+                state.modelParams[format] = {
+                    ...state.modelParams[format],
+                    ...config.modelParams[format]
+                };
             }
         });
     }
@@ -477,6 +516,42 @@ export function applyConfigToState(config) {
     state.savedGeminiPartsPresets = config.savedGeminiPartsPresets ?? [];
     state.currentGeminiPartsPresetName = config.currentGeminiPartsPresetName ?? '';
 
+    // 统一预设系统
+    if (config.prefillPresets) {
+        state.prefillPresets = config.prefillPresets;
+        state.activePrefillPresetId = config.activePrefillPresetId ?? null;
+    } else if (config.savedPrefillPresets && config.savedPrefillPresets.length > 0) {
+        state.prefillPresets = (config.savedPrefillPresets || []).map((p, i) => {
+            const sysPrefill = (config.savedSystemPrefillPresets || []).find(
+                (sp) => sp.name === p.name
+            );
+            const geminiParts = (config.savedGeminiPartsPresets || []).find(
+                (gp) => gp.name === p.name
+            );
+            return {
+                id: `migrated_${Date.now()}_${i}`,
+                name: p.name,
+                prefillEnabled: true,
+                systemPrompt: p.systemPrompt || '',
+                prefillMessages: p.prefillMessages || [],
+                charName: p.charName || 'Assistant',
+                userName: p.userName || 'User',
+                systemPrefillMessages: sysPrefill ? sysPrefill.systemPrefillMessages : [],
+                geminiSystemPartsEnabled: false,
+                geminiSystemParts: geminiParts ? geminiParts.geminiSystemParts : [],
+                createdAt: Date.now()
+            };
+        });
+        state.activePrefillPresetId = null;
+        // 迁移完成，清理旧数据防止重复迁移
+        state.savedPrefillPresets = [];
+        state.savedSystemPrefillPresets = [];
+        state.savedGeminiPartsPresets = [];
+    } else {
+        state.prefillPresets = [];
+        state.activePrefillPresetId = null;
+    }
+
     // 提供商管理
     state.providers = config.providers ?? [];
     state.currentProviderId = config.currentProviderId ?? null;
@@ -486,7 +561,10 @@ export function applyConfigToState(config) {
     state.codeExecutionEnabled = config.codeExecutionEnabled ?? false;
     state.computerUseEnabled = config.computerUseEnabled ?? false;
     if (config.computerUsePermissions) {
-        state.computerUsePermissions = { ...state.computerUsePermissions, ...config.computerUsePermissions };
+        state.computerUsePermissions = {
+            ...state.computerUsePermissions,
+            ...config.computerUsePermissions
+        };
     }
     if (config.bashConfig) {
         state.bashConfig = { ...state.bashConfig, ...config.bashConfig };
@@ -503,7 +581,7 @@ export function applyConfigToState(config) {
     }
 
     // 自动迁移旧格式providers（没有 models 字段）
-    state.providers.forEach(provider => {
+    state.providers.forEach((provider) => {
         if (!provider.models) {
             provider.models = [];
             // 如果有 customModel，迁移到 models[]
@@ -556,7 +634,7 @@ export function applyConfigToState(config) {
         });
 
         // 更新配置面板显示：只显示当前格式对应的配置面板
-        document.querySelectorAll('.api-config').forEach(panel => {
+        document.querySelectorAll('.api-config').forEach((panel) => {
             panel.style.display = 'none';
         });
         const configPanel = document.getElementById(`${config.apiFormat}-config`);
@@ -564,7 +642,7 @@ export function applyConfigToState(config) {
             configPanel.style.display = 'block';
         }
 
-        console.log(`API格式已恢复为: ${config.apiFormat}`);
+        logger.debug(`API格式已恢复为: ${config.apiFormat}`);
     }
 }
 
@@ -578,7 +656,7 @@ export async function loadSavedConfigs() {
             const configs = await loadSavedConfigsFromDB();
             if (configs) {
                 state.savedConfigs = configs;
-                console.log('[loadSavedConfigs] 从 IndexedDB 加载配置列表:', configs.length);
+                logger.debug('[loadSavedConfigs] 从 IndexedDB 加载配置列表:', configs.length);
                 return;
             }
         }
@@ -587,12 +665,12 @@ export async function loadSavedConfigs() {
         const saved = localStorage.getItem('geminiChatConfigs');
         if (saved) {
             state.savedConfigs = JSON.parse(saved);
-            console.log('[loadSavedConfigs] 从 localStorage 加载配置列表（降级模式）');
+            logger.debug('[loadSavedConfigs] 从 localStorage 加载配置列表（降级模式）');
         } else {
             state.savedConfigs = [];
         }
     } catch (e) {
-        console.error('[loadSavedConfigs] 加载失败:', e);
+        logger.error('[loadSavedConfigs] 加载失败:', e);
         state.savedConfigs = [];
     }
 }
@@ -605,14 +683,14 @@ export async function saveSavedConfigs() {
         // 优先保存到 IndexedDB
         if (state.storageMode !== 'localStorage') {
             await saveSavedConfigsToDB(state.savedConfigs);
-            console.log('[saveSavedConfigs] 配置列表已保存到 IndexedDB');
+            logger.debug('[saveSavedConfigs] 配置列表已保存到 IndexedDB');
         } else {
             // 降级：保存到 localStorage
             localStorage.setItem('geminiChatConfigs', JSON.stringify(state.savedConfigs));
-            console.log('[saveSavedConfigs] 配置列表已保存到 localStorage（降级模式）');
+            logger.debug('[saveSavedConfigs] 配置列表已保存到 localStorage（降级模式）');
         }
     } catch (error) {
-        console.error('[saveSavedConfigs] IndexedDB 保存失败，降级到 localStorage:', error);
+        logger.error('[saveSavedConfigs] IndexedDB 保存失败，降级到 localStorage:', error);
         // 降级处理
         localStorage.setItem('geminiChatConfigs', JSON.stringify(state.savedConfigs));
     }
@@ -661,221 +739,4 @@ export function downloadJSON(data, filename) {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
-}
-
-/**
- * 同步模型参数到UI输入框
- */
-function syncModelParamsToUI() {
-    // OpenAI 参数
-    const openaiParams = {
-        'openai-temperature': 'temperature',
-        'openai-max-tokens': 'max_tokens',
-        'openai-top-p': 'top_p',
-        'openai-frequency-penalty': 'frequency_penalty',
-        'openai-presence-penalty': 'presence_penalty'
-    };
-
-    // Gemini 参数
-    const geminiParams = {
-        'gemini-temperature': 'temperature',
-        'gemini-max-output-tokens': 'maxOutputTokens',
-        'gemini-top-p': 'topP',
-        'gemini-top-k': 'topK'
-    };
-
-    // Claude 参数
-    const claudeParams = {
-        'claude-temperature': 'temperature',
-        'claude-max-tokens': 'max_tokens',
-        'claude-top-p': 'top_p',
-        'claude-top-k': 'top_k'
-    };
-
-    syncParamsToInputs('openai', openaiParams);
-    syncParamsToInputs('gemini', geminiParams);
-    syncParamsToInputs('claude', claudeParams);
-}
-
-function syncParamsToInputs(format, paramsMap) {
-    Object.entries(paramsMap).forEach(([inputId, paramKey]) => {
-        const input = document.getElementById(inputId);
-        if (input) {
-            const value = state.modelParams[format][paramKey];
-            input.value = (value !== null && value !== undefined) ? value : '';
-        }
-    });
-}
-
-/**
- * 将 state 同步到 UI 元素
- */
-export function syncUIWithState() {
-    // 流式开关
-    const streamEnabled = document.getElementById('stream-enabled');
-    if (streamEnabled) {
-        streamEnabled.checked = state.streamEnabled;
-    }
-
-    // PDF 处理模式
-    const pdfModeSelect = document.getElementById('pdf-mode-select');
-    if (pdfModeSelect) {
-        pdfModeSelect.value = state.pdfMode || 'standard';
-    }
-
-    // 思维链开关
-    const thinkingEnabled = document.getElementById('thinking-enabled');
-    const thinkingStrengthGroup = document.getElementById('thinking-strength-group');
-    const thinkingHint = document.getElementById('thinking-hint');
-    const budgetGroup = document.getElementById('thinking-budget-group');
-    const budgetInput = document.getElementById('thinking-budget');
-    if (thinkingEnabled) {
-        thinkingEnabled.checked = state.thinkingEnabled;
-        if (thinkingStrengthGroup) {
-            thinkingStrengthGroup.style.display = state.thinkingEnabled ? 'flex' : 'none';
-        }
-        if (thinkingHint) {
-            thinkingHint.style.display = state.thinkingEnabled ? 'block' : 'none';
-        }
-        // 更新自定义 budget 输入框显示状态和值
-        if (budgetGroup) {
-            const showBudget = state.thinkingEnabled && state.thinkingStrength === 'custom';
-            budgetGroup.style.display = showBudget ? 'flex' : 'none';
-        }
-        if (budgetInput) {
-            budgetInput.value = state.thinkingBudget;
-        }
-    }
-
-    // 思维链强度按钮（排除 Claude effort 按钮）
-    const strengthBtns = document.querySelectorAll('.strength-btn:not(.claude-effort-btn)');
-    strengthBtns.forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.strength === state.thinkingStrength);
-    });
-
-    // Claude Adaptive Thinking
-    const claudeAdaptiveCheckbox = document.getElementById('claude-adaptive-thinking');
-    if (claudeAdaptiveCheckbox) claudeAdaptiveCheckbox.checked = state.claudeAdaptiveThinking;
-    const claudeAdaptiveRow = document.getElementById('claude-adaptive-row');
-    if (claudeAdaptiveRow) claudeAdaptiveRow.style.display = state.thinkingEnabled ? 'flex' : 'none';
-    const claudeEffortBtns = document.querySelectorAll('.claude-effort-btn');
-    claudeEffortBtns.forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.effort === state.claudeEffortLevel);
-    });
-
-    // Thinking None Mode
-    const thinkingNoneCheckbox = document.getElementById('thinking-none-mode');
-    if (thinkingNoneCheckbox) thinkingNoneCheckbox.checked = state.thinkingNoneMode;
-
-    // 输出详细度
-    const verbosityCheckbox = document.getElementById('verbosity-enabled');
-    if (verbosityCheckbox) verbosityCheckbox.checked = state.verbosityEnabled;
-    const verbositySelect = document.getElementById('output-verbosity');
-    if (verbositySelect) verbositySelect.value = state.outputVerbosity;
-
-    // Gemini System Parts
-    const geminiPartsCheckbox = document.getElementById('gemini-system-parts-enabled');
-    if (geminiPartsCheckbox) geminiPartsCheckbox.checked = state.geminiSystemPartsEnabled;
-
-    // 网络搜索开关
-    const webSearchEnabled = document.getElementById('web-search-enabled');
-    if (webSearchEnabled) {
-        webSearchEnabled.checked = state.webSearchEnabled;
-    }
-
-    // XML 工具调用兜底
-    const xmlToolCalling = document.getElementById('xml-tool-calling-enabled');
-    if (xmlToolCalling) {
-        xmlToolCalling.checked = state.xmlToolCallingEnabled;
-    }
-
-    // 三格式端点输入框和自定义模型
-    ['openai', 'gemini', 'claude'].forEach(format => {
-        const endpointInput = document.getElementById(`${format}-endpoint`);
-        const apikeyInput = document.getElementById(`${format}-apikey`);
-        const customModelInput = document.getElementById(`${format}-custom-model`);
-
-        // 使用 !== undefined 确保空字符串也能正确设置
-        if (endpointInput && state.endpoints[format] !== undefined) {
-            endpointInput.value = state.endpoints[format];
-        }
-        if (apikeyInput && state.apiKeys[format] !== undefined) {
-            apikeyInput.value = state.apiKeys[format];
-        }
-        if (customModelInput && state.customModels[format] !== undefined) {
-            customModelInput.value = state.customModels[format];
-        }
-    });
-
-    // 同步模型参数到 UI
-    syncModelParamsToUI();
-
-    // 自定义请求头
-    import('../ui/enhancements.js').then(({ renderCustomHeaders }) => {
-        if (renderCustomHeaders) renderCustomHeaders();
-    }).catch(() => {});
-
-    // 预填充 UI 同步
-    const prefillEnabled = document.getElementById('prefill-enabled');
-    if (prefillEnabled) {
-        prefillEnabled.checked = state.prefillEnabled;
-    }
-    document.getElementById('prefill-config')?.classList.toggle('disabled', !state.prefillEnabled);
-    const systemPromptInput = document.getElementById('system-prompt-input');
-    if (systemPromptInput) {
-        systemPromptInput.value = state.systemPrompt;
-    }
-    const charNameInput = document.getElementById('char-name');
-    if (charNameInput) {
-        charNameInput.value = state.charName;
-    }
-    const userNameInput = document.getElementById('user-name');
-    if (userNameInput) {
-        userNameInput.value = state.userName;
-    }
-
-    // 预填充相关UI - 渲染列表和预设选择器
-    import('../ui/prefill.js').then(({ renderPrefillMessagesList, updatePrefillPresetSelect }) => {
-        if (renderPrefillMessagesList) renderPrefillMessagesList();
-        if (updatePrefillPresetSelect) updatePrefillPresetSelect();
-    }).catch(() => {});
-
-    // 快捷开关同步
-    import('../ui/quick-toggles.js').then(({ syncQuickToggles }) => {
-        if (syncQuickToggles) syncQuickToggles();
-    }).catch(() => {});
-
-    // 图片尺寸选择
-    if (elements.imageSizeSelect && state.imageSize) {
-        elements.imageSizeSelect.value = state.imageSize;
-    }
-
-    // Gemini API key 传递方式
-    if (elements.geminiApiKeyInHeaderToggle) {
-        elements.geminiApiKeyInHeaderToggle.checked = state.geminiApiKeyInHeader || false;
-    }
-
-    // 多回复数量
-    if (elements.replyCountSelect && state.replyCount) {
-        elements.replyCountSelect.value = state.replyCount;
-    }
-
-    // API 格式标签高亮
-    document.querySelectorAll('.format-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.format === state.apiFormat);
-    });
-
-    // 图片压缩模式
-    const fastImageCompression = document.getElementById('fast-image-compression');
-    if (fastImageCompression) fastImageCompression.checked = state.fastImageCompression || false;
-
-    // Code Execution
-    const codeExecutionEnabled = document.getElementById('code-execution-enabled');
-    if (codeExecutionEnabled) codeExecutionEnabled.checked = state.codeExecutionEnabled || false;
-
-    // Computer Use
-    const computerUseEnabled = document.getElementById('computer-use-enabled');
-    if (computerUseEnabled) computerUseEnabled.checked = state.computerUseEnabled || false;
-
-    console.log('UI synced with state');
 }

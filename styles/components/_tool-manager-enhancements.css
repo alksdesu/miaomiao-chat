@@ -12,7 +12,7 @@
 }
 
 /* 确保 Tab 内容可以正确滚动 */
-.tab-content.active[data-tab="tools"] {
+.tab-content.active[data-tab='tools'] {
     display: flex;
     flex-direction: column;
     height: 100%;
@@ -85,7 +85,7 @@
 .mcp-batch-btn {
     padding: 0.25rem 0.75rem;
     font-size: 0.75rem;
-    font-family: var(--font-mono);
+    font-family: var(--font-ui-accent);
     background: var(--md-bg);
     color: var(--md-text);
     border: var(--border);
@@ -348,7 +348,7 @@
 }
 
 .permission-type.type-mcp {
-    background: rgba(20, 184, 166, 0.12);
+    background: rgba(var(--palette-teal-rgb), 0.12);
     color: var(--md-teal);
 }
 

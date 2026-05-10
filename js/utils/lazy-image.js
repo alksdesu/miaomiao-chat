@@ -3,6 +3,7 @@
  * 优化大量图片加载性能，特别是4K图片场景
  */
 
+import { logger } from './logger.js';
 import { eventBus } from '../core/events.js';
 
 /**
@@ -22,19 +23,23 @@ export class LazyImageManager {
     }
 
     init() {
-        // 创建交叉观察器
-        this.observer = new IntersectionObserver((entries) => {
-            entries.forEach(entry => {
-                if (entry.isIntersecting) {
-                    this.loadImage(entry.target);
+        if (typeof IntersectionObserver !== 'undefined') {
+            this.observer = new IntersectionObserver(
+                (entries) => {
+                    entries.forEach((entry) => {
+                        if (entry.isIntersecting) {
+                            this.loadImage(entry.target);
+                        }
+                    });
+                },
+                {
+                    // 提前加载视口外的图片，改善滚动体验
+                    rootMargin: '200px',
+                    // 只有图片10%可见时才开始加载
+                    threshold: 0.1
                 }
-            });
-        }, {
-            // 提前加载视口外的图片，改善滚动体验
-            rootMargin: '200px',
-            // 只有图片10%可见时才开始加载
-            threshold: 0.1
-        });
+            );
+        }
 
         // 监听会话切换事件，清理旧图片
         eventBus.on('session:before-switch', () => {
@@ -47,7 +52,8 @@ export class LazyImageManager {
      * @param {HTMLImageElement} img - 图片元素
      */
     observe(img) {
-        if (this.loadedImages.has(img)) return;
+        if (!img || this.loadedImages.has(img)) return;
+        if (!this.observer) return;
 
         this.imageStats.total++;
         this.observer.observe(img);
@@ -60,6 +66,7 @@ export class LazyImageManager {
         if (wrapper && !wrapper.querySelector('.image-loader')) {
             const loader = document.createElement('div');
             loader.className = 'image-loader';
+            // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
             loader.innerHTML = '<div class="spinner"></div>';
             wrapper.appendChild(loader);
         }
@@ -100,7 +107,7 @@ export class LazyImageManager {
 
                 this.loadedImages.add(img);
                 this.loadingImages.delete(img);
-                this.observer.unobserve(img);
+                this.observer?.unobserve(img);
 
                 this.imageStats.loaded++;
                 this.logStats();
@@ -113,7 +120,8 @@ export class LazyImageManager {
             img.classList.add('error');
 
             // 显示错误占位图
-            img.src = 'data:image/svg+xml,%3Csvg width="400" height="300" xmlns="http://www.w3.org/2000/svg"%3E%3Crect width="100%25" height="100%25" fill="%23fee" stroke="%23c00" stroke-width="2"/%3E%3Ctext x="50%25" y="50%25" text-anchor="middle" dominant-baseline="middle" fill="%23c00"%3E图片加载失败%3C/text%3E%3C/svg%3E';
+            img.src =
+                'data:image/svg+xml,%3Csvg width="400" height="300" xmlns="http://www.w3.org/2000/svg"%3E%3Crect width="100%25" height="100%25" fill="%23fee" stroke="%23c00" stroke-width="2"/%3E%3Ctext x="50%25" y="50%25" text-anchor="middle" dominant-baseline="middle" fill="%23c00"%3E图片加载失败%3C/text%3E%3C/svg%3E';
 
             // 移除加载指示器
             const loader = img.parentElement?.querySelector('.image-loader');
@@ -122,10 +130,11 @@ export class LazyImageManager {
             }
 
             this.loadingImages.delete(img);
+            this.observer?.unobserve(img);
             this.imageStats.failed++;
             this.logStats();
 
-            console.error('[LazyImage] 图片加载失败:', src);
+            logger.error('[LazyImage] 图片加载失败:', src);
         };
 
         // 开始加载
@@ -136,28 +145,29 @@ export class LazyImageManager {
      * 清理所有观察
      */
     cleanup() {
-        this.observer.disconnect();
+        this.observer?.disconnect();
         this.loadingImages.clear();
         this.imageStats = { total: 0, loaded: 0, failed: 0 };
-        console.log('[LazyImage] 清理完成');
+        logger.debug('[LazyImage] 清理完成');
     }
 
     /**
      * 卸载所有图片（释放内存）
      */
     unloadAll() {
-        document.querySelectorAll('img.lazy-image.loaded').forEach(img => {
+        document.querySelectorAll('img.lazy-image.loaded').forEach((img) => {
             // 保存原始src
             img.dataset.src = img.src;
             // 恢复占位图
-            img.src = 'data:image/svg+xml,%3Csvg width="400" height="300" xmlns="http://www.w3.org/2000/svg"%3E%3Crect width="100%25" height="100%25" fill="%23f0f0f0"/%3E%3C/svg%3E';
+            img.src =
+                'data:image/svg+xml,%3Csvg width="400" height="300" xmlns="http://www.w3.org/2000/svg"%3E%3Crect width="100%25" height="100%25" fill="%23f0f0f0"/%3E%3C/svg%3E';
             img.classList.remove('loaded');
             // 重新观察
             this.observe(img);
         });
 
         this.loadedImages = new WeakSet();
-        console.log('[LazyImage] 卸载所有图片以释放内存');
+        logger.debug('[LazyImage] 卸载所有图片以释放内存');
     }
 
     /**
@@ -166,7 +176,9 @@ export class LazyImageManager {
     logStats() {
         const { total, loaded, failed } = this.imageStats;
         const percentage = total > 0 ? Math.round((loaded / total) * 100) : 0;
-        console.log(`[LazyImage] 统计 - 总数: ${total}, 已加载: ${loaded} (${percentage}%), 失败: ${failed}`);
+        logger.debug(
+            `[LazyImage] 统计 - 总数: ${total}, 已加载: ${loaded} (${percentage}%), 失败: ${failed}`
+        );
     }
 
     /**
@@ -175,8 +187,10 @@ export class LazyImageManager {
      * @param {number} endIndex - 结束索引
      */
     preloadRange(startIndex, endIndex) {
-        const images = document.querySelectorAll(`[data-message-index] img.lazy-image:not(.loaded)`);
-        images.forEach(img => {
+        const images = document.querySelectorAll(
+            `[data-message-index] img.lazy-image:not(.loaded)`
+        );
+        images.forEach((img) => {
             const messageEl = img.closest('[data-message-index]');
             if (messageEl) {
                 const index = parseInt(messageEl.dataset.messageIndex);

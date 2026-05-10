@@ -14,16 +14,16 @@
 .image-progress-text {
     grid-row-start: 1;
     grid-column-start: 1;
-    justify-self: center;  /* 水平居中 */
-    align-self: center;    /* 垂直居中 */
+    justify-self: center; /* 水平居中 */
+    align-self: center; /* 垂直居中 */
 }
 
 .image-progress {
     /* 使用 CSS Grid 叠加定位到底部 */
     grid-row-start: 1;
     grid-column-start: 1;
-    justify-self: start;   /* 水平靠左 */
-    align-self: end;       /* 垂直靠下 */
+    justify-self: start; /* 水平靠左 */
+    align-self: end; /* 垂直靠下 */
     height: 4px;
     background: var(--md-blue);
     transition: width 0.2s;
@@ -33,7 +33,7 @@
 
 .image-progress-text {
     color: var(--color-text-inverse);
-    font-family: var(--font-mono);
+    font-family: var(--font-ui-accent);
     font-size: var(--fs-base);
     z-index: var(--z-above-base);
 }
@@ -84,7 +84,7 @@
     border: var(--border);
     background: var(--color-bg-surface);
     color: var(--color-text-primary);
-    font-family: var(--font-mono);
+    font-family: var(--font-ui-accent);
     font-size: var(--fs-base);
     font-weight: 500;
     cursor: pointer;
@@ -113,12 +113,14 @@
 .settings-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(56, 56, 56, 0.6);
+    background: rgba(var(--color-text-primary-rgb), 0.6);
     z-index: var(--z-panel-backdrop);
     opacity: 0;
     visibility: hidden;
     pointer-events: none; /* 默认不可点击 */
-    transition: opacity 0.2s ease-out, visibility 0.2s ease-out;
+    transition:
+        opacity 0.2s ease-out,
+        visibility 0.2s ease-out;
     border: none;
     padding: 0;
     cursor: pointer;
@@ -129,4 +131,3 @@
     visibility: visible;
     pointer-events: auto; /* 打开时可点击 */
 }
-

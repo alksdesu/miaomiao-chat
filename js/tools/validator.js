@@ -1,3 +1,4 @@
+import { logger } from '../utils/logger.js';
 /**
  * 工具参数验证模块
  * 基于 JSON Schema 验证工具输入参数
@@ -240,13 +241,15 @@ export function safeValidate(args, schema) {
     try {
         return validateToolArgs(args, schema);
     } catch (error) {
-        console.error('[Validator] 验证过程出错:', error);
+        logger.error('[Validator] 验证过程出错:', error);
         return {
             valid: false,
-            errors: [{
-                path: '',
-                message: `验证器内部错误: ${error.message}`
-            }]
+            errors: [
+                {
+                    path: '',
+                    message: `验证器内部错误: ${error.message}`
+                }
+            ]
         };
     }
 }
@@ -261,7 +264,7 @@ export function formatValidationErrors(errors) {
         return '参数验证通过';
     }
 
-    const lines = errors.map(err => {
+    const lines = errors.map((err) => {
         const pathStr = err.path ? `字段 "${err.path}": ` : '';
         return `  • ${pathStr}${err.message}`;
     });

@@ -18,7 +18,7 @@ export function initMobileOverflowMenu() {
     });
 
     // 菜单项点击 → 触发对应原始按钮
-    menu.querySelectorAll('.mobile-overflow-item').forEach(item => {
+    menu.querySelectorAll('.mobile-overflow-item').forEach((item) => {
         item.addEventListener('click', () => {
             const targetId = item.dataset.target;
             if (targetId) {

@@ -8,7 +8,8 @@
  */
 export const unitConverterTool = {
     name: 'unit_converter',
-    description: '单位转换工具。支持类别: length（长度）, weight（重量）, temperature（温度）, area（面积）, volume（体积）, speed（速度）, time（时间）。',
+    description:
+        '单位转换工具。支持类别: length（长度）, weight（重量）, temperature（温度）, area（面积）, volume（体积）, speed（速度）, time（时间）。',
     parameters: {
         type: 'object',
         properties: {
@@ -121,7 +122,7 @@ const CONVERSION_FACTORS = {
 export async function unitConverterHandler(args) {
     const { category, value, from, to } = args;
 
-    console.log(`[UnitConverter] 转换: ${value} ${from} -> ${to} (${category})`);
+    logger.debug(`[UnitConverter] 转换: ${value} ${from} -> ${to} (${category})`);
 
     try {
         // 验证类别
@@ -151,9 +152,8 @@ export async function unitConverterHandler(args) {
         const result = (value * fromFactor) / toFactor;
 
         return formatResult(category, value, from, to, result);
-
     } catch (error) {
-        console.error(`[UnitConverter] 错误:`, error);
+        logger.error(`[UnitConverter] 错误:`, error);
         throw new Error(`单位转换失败: ${error.message}`);
     }
 }
@@ -173,7 +173,7 @@ function convertTemperature(value, from, to) {
             celsius = value;
             break;
         case 'fahrenheit':
-            celsius = (value - 32) * 5 / 9;
+            celsius = ((value - 32) * 5) / 9;
             break;
         case 'kelvin':
             celsius = value - 273.15;
@@ -187,7 +187,7 @@ function convertTemperature(value, from, to) {
         case 'celsius':
             return celsius;
         case 'fahrenheit':
-            return celsius * 9 / 5 + 32;
+            return (celsius * 9) / 5 + 32;
         case 'kelvin':
             return celsius + 273.15;
         default:
@@ -257,11 +257,17 @@ export function getSupportedCategories() {
     return Object.keys(CONVERSION_FACTORS);
 }
 
-console.log('[UnitConverter Tool] 📏 单位转换工具已加载');
-console.log('[UnitConverter Tool] 支持的类别:', getSupportedCategories().join(', '));
+logger.debug('[UnitConverter Tool] 📏 单位转换工具已加载');
+logger.debug('[UnitConverter Tool] 支持的类别:', getSupportedCategories().join(', '));
 
 // ========== 标准化工具对象 ==========
 
 import { buildToolFromLegacy } from '../build-tool.js';
+import { logger } from '../../utils/logger.js';
 
-export const unitConverter = buildToolFromLegacy('unit_converter', unitConverterTool, unitConverterHandler, { isReadOnly: () => true });
+export const unitConverter = buildToolFromLegacy(
+    'unit_converter',
+    unitConverterTool,
+    unitConverterHandler,
+    { isReadOnly: () => true }
+);

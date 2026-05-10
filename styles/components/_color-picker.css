@@ -1,0 +1,136 @@
+/* 色盘组件 */
+.color-picker {
+    position: fixed;
+    z-index: var(--z-color-picker);
+    width: 232px;
+    padding: var(--sp-4);
+    background: var(--color-bg-elevated);
+    border: var(--border);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-md);
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+}
+
+.color-picker canvas {
+    display: block;
+    width: 200px;
+    cursor: crosshair;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-border-secondary);
+}
+
+.color-picker .cp-sv {
+    height: 200px;
+}
+
+.color-picker .cp-hue,
+.color-picker .cp-alpha {
+    height: 16px;
+}
+
+.cp-inputs {
+    display: flex;
+    gap: var(--sp-2);
+    align-items: center;
+}
+
+.cp-input-group {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    font-size: var(--fs-xs);
+    font-family: var(--font-mono);
+    color: var(--color-text-secondary);
+}
+
+.cp-input-group span {
+    min-width: 10px;
+    text-align: center;
+}
+
+.cp-input-group input {
+    width: 100%;
+    min-width: 0;
+    padding: 2px 3px;
+    border: 1px solid var(--color-border-secondary);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-input);
+    color: var(--color-text-primary);
+    font-size: var(--fs-xs);
+    font-family: var(--font-mono);
+    text-align: center;
+}
+
+.cp-input-group input:focus {
+    outline: none;
+    border-color: var(--color-focus);
+}
+
+/* hex 输入稍宽 */
+.cp-input-group:first-child {
+    flex: 1.4;
+}
+
+.cp-input-group:first-child input {
+    text-align: left;
+    padding-left: 1px;
+}
+
+/* R/G/B/A 等宽 */
+.cp-input-group:not(:first-child) {
+    flex: 1;
+}
+
+/* 隐藏 number 输入的上下箭头 */
+.cp-input-group input[type='number'] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+}
+
+.cp-input-group input[type='number']::-webkit-outer-spin-button,
+.cp-input-group input[type='number']::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+/* 色板行 */
+.cp-swatches {
+    display: flex;
+    gap: var(--sp-1);
+    flex-wrap: wrap;
+    min-height: 20px;
+}
+
+.cp-swatch {
+    width: 20px;
+    height: 20px;
+    border: 1px solid var(--color-border-secondary);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    padding: 0;
+    transition: transform var(--duration-fast) var(--ease);
+}
+
+.cp-swatch:hover {
+    transform: scale(1.2);
+    border-color: var(--color-border-primary);
+}
+
+/* 移动端适配 */
+@media (max-width: 768px) {
+    .color-picker {
+        width: calc(100vw - 32px);
+        left: 16px;
+    }
+
+    .color-picker canvas {
+        width: 100%;
+    }
+
+    .cp-sv {
+        height: auto;
+        aspect-ratio: 1;
+    }
+}

@@ -13,13 +13,13 @@
 /* Vision 能力（图片理解） */
 .capability-badge.vision {
     background: var(--md-blue);
-    color: white;
+    color: var(--color-text-inverse);
 }
 
 /* Image 能力（图片生成） */
 .capability-badge.image {
     background: var(--md-coral);
-    color: white;
+    color: var(--color-text-inverse);
 }
 
 /* 模型卡片中的徽章（更小） */

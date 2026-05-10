@@ -2,17 +2,17 @@
 /**
  * 工具调用撤销系统
  * 允许用户撤销最近的工具调用，恢复到调用前的消息状态
- *
- * 发布事件:
- * - tool:undo:created { undoId, snapshot }
- * - tool:undo:executed { undoId, success }
- * - tool:undo:cleared
  */
 
 import { state } from '../core/state.js';
 import { eventBus } from '../core/events.js';
 import { renderSessionMessages } from '../messages/restore.js';
-import { replaceAllMessages } from '../core/state-mutations.js';
+import {
+    replaceAllMessages,
+    setCurrentAssistantMessage,
+    setSessionDirty
+} from '../core/state-mutations.js';
+import { logger } from '../utils/logger.js';
 
 // ========== 状态管理 ==========
 
@@ -60,16 +60,7 @@ export function createSnapshot(metadata = {}) {
 
     canUndo = true;
 
-    console.log('[Undo] 📸 创建快照:', snapshot.id, metadata);
-
-    eventBus.emit('tool:undo:created', {
-        undoId: snapshot.id,
-        snapshot: {
-            id: snapshot.id,
-            timestamp: snapshot.timestamp,
-            messageCount: snapshot.metadata.messageCount
-        }
-    });
+    logger.debug('[Undo] 创建快照:', snapshot.id, metadata);
 
     return snapshot;
 }
@@ -80,22 +71,20 @@ export function createSnapshot(metadata = {}) {
  */
 export function undo() {
     if (!canUndo || undoStack.length === 0) {
-        console.warn('[Undo] ⚠️ 没有可撤销的操作');
+        logger.warn('[Undo] ⚠️ 没有可撤销的操作');
         return null;
     }
 
     const snapshot = undoStack.shift();
 
-    console.log('[Undo] ⏪ 执行撤销:', snapshot.id);
+    logger.debug('[Undo] ⏪ 执行撤销:', snapshot.id);
 
     try {
         // 通过安全函数恢复消息状态（深拷贝防止快照被污染）
-        replaceAllMessages(
-            structuredClone(snapshot.messages)
-        );
+        replaceAllMessages(structuredClone(snapshot.messages));
         // 清空旧 DOM 引用（renderSessionMessages 会重建 DOM）
-        state.currentAssistantMessage = null;
-        state.sessionDirty = true; // 撤销后需要保存
+        setCurrentAssistantMessage(null);
+        setSessionDirty(true); // 撤销后需要保存
 
         // 重新渲染消息列表
         renderSessionMessages();
@@ -103,13 +92,7 @@ export function undo() {
         // 更新可撤销状态
         canUndo = undoStack.length > 0;
 
-        console.log('[Undo] 撤销成功，已恢复到:', snapshot.datetime);
-
-        eventBus.emit('tool:undo:executed', {
-            undoId: snapshot.id,
-            success: true,
-            restoredMessageCount: snapshot.messages.length
-        });
+        logger.debug('[Undo] 撤销成功，已恢复到:', snapshot.datetime);
 
         return {
             success: true,
@@ -119,18 +102,11 @@ export function undo() {
                 messageCount: snapshot.messages.length
             }
         };
-
     } catch (error) {
-        console.error('[Undo] ❌ 撤销失败:', error);
+        logger.error('[Undo] 撤销失败:', error);
 
         // 失败时，将快照放回栈顶
         undoStack.unshift(snapshot);
-
-        eventBus.emit('tool:undo:executed', {
-            undoId: snapshot.id,
-            success: false,
-            error: error.message
-        });
 
         return {
             success: false,
@@ -146,9 +122,7 @@ export function clearUndoStack() {
     undoStack.length = 0;
     canUndo = false;
 
-    console.log('[Undo] 🗑️ 撤销栈已清空');
-
-    eventBus.emit('tool:undo:cleared');
+    logger.debug('[Undo] 撤销栈已清空');
 }
 
 /**
@@ -160,7 +134,7 @@ export function getUndoStackInfo() {
         canUndo,
         stackSize: undoStack.length,
         maxStackSize: MAX_UNDO_STACK_SIZE,
-        snapshots: undoStack.map(s => ({
+        snapshots: undoStack.map((s) => ({
             id: s.id,
             timestamp: s.timestamp,
             datetime: s.datetime,
@@ -176,17 +150,17 @@ export function getUndoStackInfo() {
  * @returns {Object|null} 撤销结果
  */
 export function undoToSnapshot(snapshotId) {
-    const index = undoStack.findIndex(s => s.id === snapshotId);
+    const index = undoStack.findIndex((s) => s.id === snapshotId);
 
     if (index === -1) {
-        console.warn('[Undo] ⚠️ 快照不存在:', snapshotId);
+        logger.warn('[Undo] ⚠️ 快照不存在:', snapshotId);
         return null;
     }
 
     // 移除目标快照之前的所有快照
     const removed = undoStack.splice(0, index);
 
-    console.log(`[Undo] ⏪ 撤销到快照 ${snapshotId}，移除了 ${removed.length} 个后续快照`);
+    logger.debug(`[Undo] ⏪ 撤销到快照 ${snapshotId}，移除了 ${removed.length} 个后续快照`);
 
     // 执行撤销
     return undo();
@@ -216,10 +190,12 @@ function generateUndoId() {
  * @returns {Object} 快照对象
  */
 export function snapshotBeforeToolCall(toolCalls) {
-    const toolNames = toolCalls.map(tc => {
-        const funcCall = tc.function || tc;
-        return funcCall.name || 'unknown';
-    }).join(', ');
+    const toolNames = toolCalls
+        .map((tc) => {
+            const funcCall = tc.function || tc;
+            return funcCall.name || 'unknown';
+        })
+        .join(', ');
 
     return createSnapshot({
         type: 'tool_call',
@@ -235,10 +211,10 @@ export function snapshotBeforeToolCall(toolCalls) {
  */
 export function undoLastToolCall() {
     // 查找最近的工具调用快照
-    const toolCallSnapshot = undoStack.find(s => s.metadata.type === 'tool_call');
+    const toolCallSnapshot = undoStack.find((s) => s.metadata.type === 'tool_call');
 
     if (!toolCallSnapshot) {
-        console.warn('[Undo] ⚠️ 没有找到工具调用快照');
+        logger.warn('[Undo] ⚠️ 没有找到工具调用快照');
         return null;
     }
 
@@ -254,5 +230,4 @@ eventBus.on('session:before-switch', () => {
     }
 });
 
-console.log('[Undo] ⏪ 工具调用撤销系统已加载');
-
+logger.debug('[Undo] ⏪ 工具调用撤销系统已加载');

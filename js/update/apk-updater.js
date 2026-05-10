@@ -3,6 +3,7 @@
  * 处理 Android APK 的热更新功能
  */
 
+import { logger } from '../utils/logger.js';
 import { loadPreference } from '../state/storage.js';
 import { showNotification } from '../ui/notifications.js';
 
@@ -13,14 +14,11 @@ const getFilesystem = () => window.Capacitor?.Plugins?.Filesystem;
 // Java 端用 @CapacitorPlugin 注册的插件会自动暴露在 Plugins 中
 const getAndroidInstaller = () => window.Capacitor?.Plugins?.AndroidInstaller;
 
-// GitHub 仓库配置
-const GITHUB_OWNER = 'Alks0';
-const GITHUB_REPO = 'miaomiao-chat';
-const GITHUB_API_BASE = 'https://api.github.com';
-const UPDATE_CHECK_URL = `${GITHUB_API_BASE}/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
+// 直接访问 GitHub Release API 拉取更新信息（公开仓库）
+const UPDATE_CHECK_URL = 'https://api.github.com/repos/alksdesu/miaomiao-chat/releases/latest';
 
 // 当前应用版本（运行时从 Capacitor 获取）
-const CURRENT_VERSION = '1.2.0'; // 默认值
+const CURRENT_VERSION = '1.1.18'; // 默认值
 
 /**
  * 获取当前应用版本号
@@ -34,7 +32,7 @@ async function getCurrentVersion() {
             return info.version;
         }
     } catch (error) {
-        console.warn('[APK Updater] 获取版本号失败,使用默认值:', error);
+        logger.warn('[APK Updater] 获取版本号失败,使用默认值:', error);
     }
     return CURRENT_VERSION; // 降级到默认值
 }
@@ -45,12 +43,12 @@ async function getCurrentVersion() {
  */
 export async function checkForUpdates() {
     try {
-        console.log('[APK Updater] 检查更新...');
+        logger.debug('[APK Updater] 检查更新...');
 
         const response = await fetch(UPDATE_CHECK_URL);
 
         if (!response.ok) {
-            console.error('[APK Updater] GitHub API 错误:', response.status);
+            logger.error('[APK Updater] GitHub API 错误:', response.status);
             return null;
         }
 
@@ -59,16 +57,16 @@ export async function checkForUpdates() {
 
         // 获取当前版本号
         const currentVersion = await getCurrentVersion();
-        console.log('[APK Updater] 当前版本:', currentVersion);
-        console.log('[APK Updater] 最新版本:', latestVersion);
+        logger.debug('[APK Updater] 当前版本:', currentVersion);
+        logger.debug('[APK Updater] 最新版本:', latestVersion);
 
         // 比较版本号
         if (compareVersions(latestVersion, currentVersion) > 0) {
             // 查找 APK 文件
-            const apkAsset = data.assets.find(asset => asset.name.endsWith('.apk'));
+            const apkAsset = data.assets.find((asset) => asset.name.endsWith('.apk'));
 
             if (!apkAsset) {
-                console.warn('[APK Updater] 未找到 APK 文件');
+                logger.warn('[APK Updater] 未找到 APK 文件');
                 return null;
             }
 
@@ -76,15 +74,15 @@ export async function checkForUpdates() {
                 version: latestVersion,
                 releaseNotes: data.body || '查看 GitHub 了解更新内容',
                 downloadUrl: apkAsset.browser_download_url,
-                fileName: apkAsset.name,  // 直接使用 asset 名称
+                fileName: apkAsset.name, // 直接使用 asset 名称
                 fileSize: apkAsset.size
             };
         }
 
-        console.log('[APK Updater] 已是最新版本');
+        logger.debug('[APK Updater] 已是最新版本');
         return null;
     } catch (error) {
-        console.error('[APK Updater] 检查更新失败:', error);
+        logger.error('[APK Updater] 检查更新失败:', error);
         return null;
     }
 }
@@ -114,12 +112,11 @@ function compareVersions(v1, v2) {
  * 下载并安装 APK
  * @param {string} downloadUrl - APK 下载地址
  * @param {string} fileName - APK 文件名（从 GitHub API 获取）
- * @param {boolean} silent - 是否静默模式
  * @param {Function} onProgress - 进度回调
  */
-export async function downloadAndInstallAPK(downloadUrl, fileName, silent = false, onProgress = null) {
+export async function downloadAndInstallAPK(downloadUrl, fileName, onProgress = null) {
     try {
-        console.log('[APK Updater] 开始下载 APK:', downloadUrl);
+        logger.debug('[APK Updater] 开始下载 APK:', downloadUrl);
 
         if (onProgress) {
             onProgress({ status: 'downloading', percent: 0 });
@@ -131,44 +128,40 @@ export async function downloadAndInstallAPK(downloadUrl, fileName, silent = fals
         }
 
         // 方案1：尝试使用 Capacitor HTTP 原生下载（绕过 CORS）
-        let blob;
         try {
             // Capacitor 4+ 的 HTTP API 在核心包中
             const { Http } = window.Capacitor.Plugins;
 
             if (Http && Http.downloadFile) {
-                console.log('[APK Updater] 使用 Capacitor HTTP 原生下载');
+                logger.debug('[APK Updater] 使用 Capacitor HTTP 原生下载');
 
-                const fileName = `webchat-update-${Date.now()}.apk`;
+                const fileName = `miaomiao-update-${Date.now()}.apk`;
                 const result = await Http.downloadFile({
                     url: downloadUrl,
                     filePath: fileName,
                     fileDirectory: 'CACHE'
                 });
 
-                console.log('[APK Updater] 原生下载完成:', result.path);
+                logger.debug('[APK Updater] 原生下载完成:', result.path);
 
                 if (onProgress) {
                     onProgress({ status: 'downloaded', percent: 100 });
                 }
 
                 // 安装 APK
-                await installAPK(result.path, silent);
+                await installAPK(result.path);
                 return;
             }
         } catch (httpError) {
-            console.warn('[APK Updater] Capacitor HTTP 不可用，降级到代理下载:', httpError);
+            logger.warn('[APK Updater] Capacitor HTTP 不可用，降级到代理下载:', httpError);
         }
 
-        // 方案2：使用代理下载（绕过 CORS 限制）
-        // GitHub Releases 的直接下载会遇到 CORS 问题
-        // Worker 支持格式: /download/{filename}
-        // 使用传入的 fileName（从 GitHub API 获取的真实文件名）
-        const proxyUrl = `https://dawn-feather-d2e6.alks2636777.workers.dev/download/${fileName}`;
+        // 方案2：fetch 直连 GitHub Releases 下载 URL
+        // 在 Capacitor Android 中通常不会触发 CORS（fetch 由 WebView 发起，但 Android 上的 GitHub 直链一般可达）
+        // 如果 CORS 拦截，请优先确保方案1（Capacitor HTTP 原生下载）可用
+        logger.debug('[APK Updater] fetch 直连 GitHub:', downloadUrl);
 
-        console.log('[APK Updater] 使用代理下载 APK:', proxyUrl);
-
-        const response = await fetch(proxyUrl, {
+        const response = await fetch(downloadUrl, {
             method: 'GET'
         });
 
@@ -176,8 +169,8 @@ export async function downloadAndInstallAPK(downloadUrl, fileName, silent = fals
             throw new Error(`下载失败: HTTP ${response.status} ${response.statusText}`);
         }
 
-        blob = await response.blob();
-        console.log('[APK Updater] 下载完成，大小:', blob.size, 'bytes');
+        const blob = await response.blob();
+        logger.debug('[APK Updater] 下载完成，大小:', blob.size, 'bytes');
 
         // 转换为 Base64
         const reader = new FileReader();
@@ -186,23 +179,23 @@ export async function downloadAndInstallAPK(downloadUrl, fileName, silent = fals
             try {
                 const base64Data = reader.result.split(',')[1];
 
-                const fileName = `webchat-update-${Date.now()}.apk`;
+                const fileName = `miaomiao-update-${Date.now()}.apk`;
                 const fileResult = await Filesystem.writeFile({
                     path: fileName,
                     data: base64Data,
                     directory: 'CACHE'
                 });
 
-                console.log('[APK Updater] APK 已保存:', fileResult.uri);
+                logger.debug('[APK Updater] APK 已保存:', fileResult.uri);
 
                 if (onProgress) {
                     onProgress({ status: 'downloaded', percent: 100 });
                 }
 
                 // 安装 APK
-                await installAPK(fileResult.uri, silent);
+                await installAPK(fileResult.uri);
             } catch (error) {
-                console.error('[APK Updater] 保存 APK 失败:', error);
+                logger.error('[APK Updater] 保存 APK 失败:', error);
                 if (onProgress) {
                     onProgress({ status: 'error', error: error.message });
                 }
@@ -210,7 +203,7 @@ export async function downloadAndInstallAPK(downloadUrl, fileName, silent = fals
         };
 
         reader.onerror = (error) => {
-            console.error('[APK Updater] 读取文件失败:', error);
+            logger.error('[APK Updater] 读取文件失败:', error);
             if (onProgress) {
                 onProgress({ status: 'error', error: '文件读取失败' });
             }
@@ -218,7 +211,7 @@ export async function downloadAndInstallAPK(downloadUrl, fileName, silent = fals
 
         reader.readAsDataURL(blob);
     } catch (error) {
-        console.error('[APK Updater] 下载失败:', error);
+        logger.error('[APK Updater] 下载失败:', error);
 
         // 健壮的错误消息提取
         let errorDetail = '';
@@ -241,11 +234,10 @@ export async function downloadAndInstallAPK(downloadUrl, fileName, silent = fals
 /**
  * 安装 APK
  * @param {string} fileUri - APK 文件 URI
- * @param {boolean} silent - 是否静默模式
  */
-async function installAPK(fileUri, silent) {
+async function installAPK(fileUri) {
     try {
-        console.log('[APK Updater] 准备安装 APK:', fileUri);
+        logger.debug('[APK Updater] 准备安装 APK:', fileUri);
 
         // 使用全局 Capacitor 对象访问插件
         const installer = getAndroidInstaller();
@@ -256,7 +248,7 @@ async function installAPK(fileUri, silent) {
         // 检查安装权限
         const permissionResult = await installer.checkInstallPermission();
         if (!permissionResult.granted) {
-            console.warn('[APK Updater] 缺少安装权限，请求权限...');
+            logger.warn('[APK Updater] 缺少安装权限，请求权限...');
             await installer.requestInstallPermission();
 
             // ⚠️ 权限请求会跳转到系统设置，用户需要手动授权
@@ -267,9 +259,9 @@ async function installAPK(fileUri, silent) {
         // 安装 APK
         await installer.installAPK({ uri: fileUri });
 
-        console.log('[APK Updater] 安装请求已发送');
+        logger.debug('[APK Updater] 安装请求已发送');
     } catch (error) {
-        console.error('[APK Updater] 安装失败:', error);
+        logger.error('[APK Updater] 安装失败:', error);
         throw error;
     }
 }
@@ -281,11 +273,11 @@ async function installAPK(fileUri, silent) {
 export async function initAPKUpdater() {
     // 仅在 Android 平台运行
     if (!window.Capacitor || window.Capacitor.getPlatform() !== 'android') {
-        console.log('[APK Updater] 非 Android 平台，跳过');
+        logger.debug('[APK Updater] 非 Android 平台，跳过');
         return;
     }
 
-    console.log('[APK Updater] 初始化...');
+    logger.debug('[APK Updater] 初始化...');
 
     // 读取配置
     const settingsJson = await loadPreference('appSettings');
@@ -295,15 +287,15 @@ export async function initAPKUpdater() {
     const silentUpdate = appSettings.silentUpdate || false;
 
     if (checkOnStartup) {
-        console.log('[APK Updater] 启动时检查更新...');
+        logger.debug('[APK Updater] 启动时检查更新...');
 
         const updateInfo = await checkForUpdates();
 
         if (updateInfo) {
             if (silentUpdate) {
                 // 静默更新
-                console.log('[APK Updater] 静默更新模式，开始下载...');
-                await downloadAndInstallAPK(updateInfo.downloadUrl, updateInfo.fileName, true);
+                logger.debug('[APK Updater] 静默更新模式，开始下载...');
+                await downloadAndInstallAPK(updateInfo.downloadUrl, updateInfo.fileName);
             } else {
                 // 显示更新弹窗
                 showUpdateDialog(updateInfo);
@@ -327,7 +319,7 @@ async function showUpdateDialog(updateInfo) {
         releaseNotes: updateInfo.releaseNotes
     });
 
-    console.log('[APK Updater] 显示更新弹窗');
+    logger.debug('[APK Updater] 显示更新弹窗');
 }
 
 /**

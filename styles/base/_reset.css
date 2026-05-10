@@ -1,11 +1,14 @@
 /* ========== 基础重置 ========== */
-*, *::before, *::after {
+*,
+*::before,
+*::after {
     margin: 0;
     padding: 0;
     box-sizing: border-box;
 }
 
-html, body {
+html,
+body {
     height: 100%;
     font-family: var(--font-sans);
     background: var(--color-bg-primary);
@@ -14,8 +17,14 @@ html, body {
     -webkit-font-smoothing: antialiased;
 }
 
+input,
+button,
+select,
+textarea {
+    font-family: inherit;
+}
+
 body {
     display: flex;
     overflow: hidden;
 }
-

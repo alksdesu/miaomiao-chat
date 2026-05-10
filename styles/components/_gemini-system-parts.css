@@ -32,7 +32,7 @@
     font-size: var(--fs-xs);
     color: var(--md-muted);
     font-weight: 600;
-    font-family: var(--font-mono);
+    font-family: var(--font-ui-accent);
 }
 
 .delete-system-part {
@@ -48,7 +48,7 @@
 
 .delete-system-part:hover {
     background: var(--md-coral);
-    color: white;
+    color: var(--color-text-inverse);
     border-radius: 2px;
 }
 
@@ -63,7 +63,7 @@
     color: var(--md-text);
     resize: vertical;
     box-sizing: border-box;
-    font-family: var(--font-mono);
+    font-family: var(--font-sans);
 }
 
 .system-part-item textarea:focus {
@@ -79,5 +79,5 @@
 
 .system-parts-controls textarea {
     flex: 1;
+    font-family: var(--font-sans);
 }
-

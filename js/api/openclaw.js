@@ -3,12 +3,27 @@
  * 管理与 OpenClaw Gateway 的 WebSocket 连接和消息通信
  */
 
+import { logger } from '../utils/logger.js';
 import { state } from '../core/state.js';
 import { eventBus } from '../core/events.js';
 import { buildModelParams, buildThinkingConfig } from './params.js';
 import { getToolsForAPI } from '../tools/manager.js';
-import { getCurrentModel } from './handler.js';
 import { PartType } from '../messages/schema.js';
+
+// 延迟引用，避免 openclaw -> current -> manager -> openclaw 静态循环依赖
+let _getCurrentModel;
+
+/**
+ * 获取当前模型（懒加载 current.js）
+ * sendMessage 在用户交互时调用，此时所有模块已加载完毕
+ */
+async function resolveGetCurrentModel() {
+    if (!_getCurrentModel) {
+        const mod = await import('./current.js');
+        _getCurrentModel = mod.getCurrentModel;
+    }
+    return _getCurrentModel();
+}
 
 // 请求 ID 计数器
 let requestIdCounter = 0;
@@ -69,13 +84,13 @@ class OpenClawClient {
             this.reconnectAttempts = 0;
 
             eventBus.emit('openclaw:connected', { url });
-            console.log('[OpenClaw] 已连接到 Gateway:', url);
+            logger.debug('[OpenClaw] 已连接到 Gateway:', url);
 
             return { success: true };
         } catch (error) {
             this.connecting = false;
             this.connected = false;
-            console.error('[OpenClaw] 连接失败:', error.message);
+            logger.error('[OpenClaw] 连接失败:', error.message);
             return { success: false, error: error.message };
         }
     }
@@ -90,12 +105,16 @@ class OpenClawClient {
 
             const timeout = setTimeout(() => {
                 if (handshakeHandler) ws.removeEventListener('message', handshakeHandler);
-                try { ws.close(); } catch { /* ignore */ }
+                try {
+                    ws.close();
+                } catch {
+                    /* ignore */
+                }
                 reject(new Error('WebSocket 连接超时 (10000ms)'));
             }, 10000);
 
             ws.onopen = () => {
-                console.log('[OpenClaw] WebSocket 已打开，发送握手请求');
+                logger.debug('[OpenClaw] WebSocket 已打开，发送握手请求');
 
                 const connectMsg = {
                     type: 'method',
@@ -111,7 +130,10 @@ class OpenClawClient {
                 handshakeHandler = (event) => {
                     try {
                         const msg = JSON.parse(event.data);
-                        if (msg.type === 'hello-ok' || (msg.type === 'result' && msg.id === connectMsg.id)) {
+                        if (
+                            msg.type === 'hello-ok' ||
+                            (msg.type === 'result' && msg.id === connectMsg.id)
+                        ) {
                             ws.removeEventListener('message', handshakeHandler);
                             clearTimeout(timeout);
 
@@ -126,7 +148,11 @@ class OpenClawClient {
                         } else if (msg.type === 'error') {
                             ws.removeEventListener('message', handshakeHandler);
                             clearTimeout(timeout);
-                            try { ws.close(); } catch { /* ignore */ }
+                            try {
+                                ws.close();
+                            } catch {
+                                /* ignore */
+                            }
                             reject(new Error(msg.payload?.message || '握手失败'));
                         }
                     } catch {
@@ -141,7 +167,11 @@ class OpenClawClient {
             ws.onerror = () => {
                 if (handshakeHandler) ws.removeEventListener('message', handshakeHandler);
                 clearTimeout(timeout);
-                try { ws.close(); } catch { /* ignore */ }
+                try {
+                    ws.close();
+                } catch {
+                    /* ignore */
+                }
                 reject(new Error('WebSocket 连接错误'));
             };
         });
@@ -158,7 +188,7 @@ class OpenClawClient {
                 const msg = JSON.parse(event.data);
                 this._routeMessage(msg);
             } catch (e) {
-                console.error('[OpenClaw] 消息解析失败:', e);
+                logger.error('[OpenClaw] 消息解析失败:', e);
             }
         };
 
@@ -166,7 +196,7 @@ class OpenClawClient {
             this.connected = false;
             this._stopHeartbeat();
 
-            console.warn(`[OpenClaw] WebSocket 断开 (code: ${event.code})`);
+            logger.warn(`[OpenClaw] WebSocket 断开 (code: ${event.code})`);
             eventBus.emit('openclaw:disconnected', { code: event.code, reason: event.reason });
 
             // 如果有活跃的 run，reject 它
@@ -182,7 +212,7 @@ class OpenClawClient {
         };
 
         this.ws.onerror = () => {
-            console.error('[OpenClaw] WebSocket 错误');
+            logger.error('[OpenClaw] WebSocket 错误');
         };
     }
 
@@ -234,7 +264,7 @@ class OpenClawClient {
                 case 'tick':
                     break;
                 default:
-                    console.log('[OpenClaw] 未知事件:', eventName, msg.payload);
+                    logger.debug('[OpenClaw] 未知事件:', eventName, msg.payload);
             }
         }
     }
@@ -272,7 +302,8 @@ class OpenClawClient {
      * 发送聊天消息
      * @returns {Promise<void>} - 当 chat.done 收到时 resolve
      */
-    sendMessage(message, sessionKey, options = {}) {
+    async sendMessage(message, sessionKey, options = {}) {
+        const model = await resolveGetCurrentModel();
         return new Promise((resolve, reject) => {
             if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
                 reject(new Error('WebSocket 未连接'));
@@ -285,7 +316,6 @@ class OpenClawClient {
                 this._clearActiveRun();
             }
 
-            const model = getCurrentModel();
             const params = {
                 sessionKey: sessionKey || state.currentSessionId,
                 message,
@@ -331,7 +361,7 @@ class OpenClawClient {
         try {
             await this.send('chat.abort', { runId: runId || this.activeRunId });
         } catch (e) {
-            console.error('[OpenClaw] 中断失败:', e);
+            logger.error('[OpenClaw] 中断失败:', e);
         }
 
         if (this.activeRunResolve) {
@@ -393,21 +423,20 @@ class OpenClawClient {
     _attemptReconnect() {
         this.reconnectAttempts++;
         if (this.reconnectAttempts > this.maxReconnectAttempts) {
-            console.warn('[OpenClaw] 超过最大重连次数，停止重连');
-            eventBus.emit('openclaw:reconnect-failed', {
-                error: `超过最大重连次数 (${this.maxReconnectAttempts})`
-            });
+            logger.warn('[OpenClaw] 超过最大重连次数，停止重连');
             return;
         }
 
         const delay = Math.min(5000 * Math.pow(2, this.reconnectAttempts - 1), 60000);
-        console.log(`[OpenClaw] ${delay}ms 后尝试重连 (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+        logger.debug(
+            `[OpenClaw] ${delay}ms 后尝试重连 (${this.reconnectAttempts}/${this.maxReconnectAttempts})`
+        );
 
         setTimeout(async () => {
             if (!this.shouldReconnect || this.connected) return;
             const result = await this.connect(this.url, this.token);
             if (!result.success) {
-                console.error('[OpenClaw] 重连失败:', result.error);
+                logger.error('[OpenClaw] 重连失败:', result.error);
             }
         }, delay);
     }
@@ -423,7 +452,11 @@ class OpenClawClient {
         this.pendingRequests.clear();
 
         if (this.ws) {
-            try { this.ws.close(1000, 'Client disconnect'); } catch { /* ignore */ }
+            try {
+                this.ws.close(1000, 'Client disconnect');
+            } catch {
+                /* ignore */
+            }
             this.ws = null;
         }
 
@@ -466,13 +499,19 @@ export async function sendOpenClawRequest(endpoint, apiKey, model, signal = null
         if (m.role === 'user') {
             // 新格式：从 parts 提取文本
             if (m.parts && Array.isArray(m.parts)) {
-                messageText = m.parts.filter(p => p.type === PartType.TEXT).map(p => p.text).join('\n');
+                messageText = m.parts
+                    .filter((p) => p.type === PartType.TEXT)
+                    .map((p) => p.text)
+                    .join('\n');
             }
             // 旧格式兼容
             else if (typeof m.content === 'string') {
                 messageText = m.content;
             } else if (Array.isArray(m.content)) {
-                messageText = m.content.filter(p => p.type === 'text').map(p => p.text).join('\n');
+                messageText = m.content
+                    .filter((p) => p.type === 'text')
+                    .map((p) => p.text)
+                    .join('\n');
             }
             break;
         }
@@ -480,9 +519,13 @@ export async function sendOpenClawRequest(endpoint, apiKey, model, signal = null
 
     // 监听取消信号
     if (signal) {
-        signal.addEventListener('abort', () => {
-            openclawClient.abortRun();
-        }, { once: true });
+        signal.addEventListener(
+            'abort',
+            () => {
+                openclawClient.abortRun();
+            },
+            { once: true }
+        );
     }
 
     // 发送 WS 消息（side effect）

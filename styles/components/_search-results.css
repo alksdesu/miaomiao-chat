@@ -12,7 +12,7 @@
 .sources-label {
     font-size: var(--fs-base);
     color: var(--md-muted);
-    font-family: var(--font-mono);
+    font-family: var(--font-ui-accent);
 }
 
 .search-source {
@@ -34,4 +34,3 @@
     color: var(--color-text-inverse);
     border-color: var(--md-blue);
 }
-

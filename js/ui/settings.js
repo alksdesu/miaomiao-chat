@@ -8,16 +8,59 @@ import { elements } from '../core/elements.js';
 import { eventBus } from '../core/events.js';
 import { saveCurrentConfig } from '../state/config.js';
 import { savePreference, loadPreference } from '../state/storage.js';
+import { showNotification } from './notifications.js';
 import { isElectron, isAndroid } from '../utils/platform.js';
+import {
+    setFastImageCompression,
+    setPdfMode,
+    setCodeExecutionEnabled,
+    setComputerUseEnabled
+} from '../core/state-mutations.js';
+import { logger } from '../utils/logger.js';
+
+let settingsInitialized = false;
+let settingsCleanupCallbacks = [];
+let settingsSubscriptions = [];
+
+let updateSettingsInitialized = false;
+let updateSettingsInitPromise = null;
+let updateSettingsCleanupCallbacks = [];
+let updateSettingsSubscriptions = [];
+let cachedAppSettings = {};
+
+let mobileAccordionMediaQuery = null;
+let mobileAccordionChangeHandler = null;
+let mobileAccordionBound = false;
+let mobileAccordionApplied = false;
+
+function addManagedListener(cleanupList, target, eventName, handler, options) {
+    if (!target) {
+        return;
+    }
+
+    target.addEventListener(eventName, handler, options);
+    cleanupList.push(() => {
+        target.removeEventListener(eventName, handler, options);
+    });
+}
+
+function runCleanupList(cleanupList) {
+    cleanupList.forEach((cleanup) => {
+        if (typeof cleanup === 'function') {
+            cleanup();
+        }
+    });
+}
 
 /**
  * 焦点陷阱 - 限制焦点在指定元素内
  * @param {HTMLElement} element - 要限制焦点的元素
  */
 function trapFocus(element) {
-    if (element._focusTrapHandler) return; // 已经设置过
+    if (element._focusTrapHandler) return;
 
-    const focusableSelector = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+    const focusableSelector =
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
     const handler = (e) => {
         if (e.key !== 'Tab') return;
@@ -31,11 +74,9 @@ function trapFocus(element) {
                 lastFocusable.focus();
                 e.preventDefault();
             }
-        } else {
-            if (document.activeElement === lastFocusable) {
-                firstFocusable.focus();
-                e.preventDefault();
-            }
+        } else if (document.activeElement === lastFocusable) {
+            firstFocusable.focus();
+            e.preventDefault();
         }
     };
 
@@ -54,6 +95,25 @@ function removeFocusTrap(element) {
     }
 }
 
+function initializeSettingsOverlay() {
+    const settingsOverlay = document.querySelector('.settings-overlay');
+    if (!settingsOverlay) {
+        return;
+    }
+
+    settingsOverlay.style.position = 'fixed';
+    settingsOverlay.style.inset = '0';
+    settingsOverlay.style.background = 'rgba(56, 56, 56, 0.6)';
+    settingsOverlay.style.visibility = 'hidden';
+    settingsOverlay.style.opacity = '0';
+    settingsOverlay.style.pointerEvents = 'none';
+    settingsOverlay.style.zIndex = '100';
+    settingsOverlay.style.cursor = 'pointer';
+    settingsOverlay.style.border = 'none';
+    settingsOverlay.style.padding = '0';
+    settingsOverlay.style.transition = 'opacity 0.2s ease-out, visibility 0.2s ease-out';
+}
+
 /**
  * 切换设置面板
  */
@@ -63,14 +123,13 @@ export function toggleSettings() {
     const isOpening = !elements.settingsPanel.classList.contains('open');
     elements.settingsPanel.classList.toggle('open');
 
-    // 控制 overlay 显示（不依赖 CSS，直接用 JS）
     const overlay = document.querySelector('.settings-overlay');
     if (overlay) {
         if (isOpening) {
             overlay.style.visibility = 'visible';
             overlay.style.opacity = '1';
             overlay.style.pointerEvents = 'auto';
-            overlay.style.zIndex = '100';  // 在设置面板(101)之下
+            overlay.style.zIndex = '100';
         } else {
             overlay.style.visibility = 'hidden';
             overlay.style.opacity = '0';
@@ -79,179 +138,260 @@ export function toggleSettings() {
     }
 
     if (isOpening) {
-        // 打开时启用焦点陷阱
         trapFocus(elements.settingsPanel);
-        // 禁用主内容的交互
         document.querySelector('.app-container')?.setAttribute('inert', '');
     } else {
-        // 关闭时移除焦点陷阱
         removeFocusTrap(elements.settingsPanel);
-        // 恢复主内容交互
         document.querySelector('.app-container')?.removeAttribute('inert');
-        // 返回焦点到触发按钮
         elements.settingsToggle?.focus();
     }
 }
 
-/**
- * 初始化设置面板
- */
-export function initSettings() {
-    // 初始化 overlay 的初始状态
-    const settingsOverlay = document.querySelector('.settings-overlay');
-    if (settingsOverlay) {
-        // 强制设置初始样式，覆盖所有CSS
-        settingsOverlay.style.position = 'fixed';
-        settingsOverlay.style.inset = '0';
-        settingsOverlay.style.background = 'rgba(56, 56, 56, 0.6)';
-        settingsOverlay.style.visibility = 'hidden';
-        settingsOverlay.style.opacity = '0';
-        settingsOverlay.style.pointerEvents = 'none';
-        settingsOverlay.style.zIndex = '100';
-        settingsOverlay.style.cursor = 'pointer';
-        settingsOverlay.style.border = 'none';
-        settingsOverlay.style.padding = '0';
-        settingsOverlay.style.transition = 'opacity 0.2s ease-out, visibility 0.2s ease-out';
+function handleSettingsOverlayClick(event) {
+    event.stopPropagation();
+    toggleSettings();
+}
 
-        // 使用事件捕获确保一定能接收到点击
-        settingsOverlay.addEventListener('click', function(e) {
-            console.log('🔵 Settings overlay clicked');
-            e.stopPropagation();  // 阻止事件继续传播
-            toggleSettings();
-        }, true);  // true = 捕获阶段
-    }
-
-    // 绑定设置按钮
-    if (elements.settingsToggle) {
-        elements.settingsToggle.addEventListener('click', toggleSettings);
-    }
-
-    // 绑定关闭设置面板按钮
-    if (elements.closeSettings) {
-        elements.closeSettings.addEventListener('click', toggleSettings);
-    }
-
-    // 监听配置变更事件
-    eventBus.on('config:loaded', () => {
-        console.log('Config loaded in settings panel');
-    });
-
-    // 绑定配置输入框的自动保存
-    elements.apiEndpoint?.addEventListener('input', saveCurrentConfig);
-    elements.apiKey?.addEventListener('input', saveCurrentConfig);
-    elements.modelSelect?.addEventListener('change', saveCurrentConfig);
-
-    // 高速图片压缩开关
+function syncGeneralSettingsUI() {
     const fastImageCompressionSwitch = document.getElementById('fast-image-compression');
     if (fastImageCompressionSwitch) {
         fastImageCompressionSwitch.checked = state.fastImageCompression || false;
-        fastImageCompressionSwitch.addEventListener('change', (e) => {
-            state.fastImageCompression = e.target.checked;
-            saveCurrentConfig();
-            console.log('[Settings] ⚡ 高速图片压缩模式已', e.target.checked ? '启用' : '禁用');
-        });
     }
 
-    // PDF 处理模式选择器
     const pdfModeSelect = document.getElementById('pdf-mode-select');
     if (pdfModeSelect) {
         pdfModeSelect.value = state.pdfMode || 'standard';
-        pdfModeSelect.addEventListener('change', (e) => {
-            state.pdfMode = e.target.value;
-            saveCurrentConfig();
-            console.log(`[Settings] PDF 处理模式: ${e.target.value}`);
-        });
     }
 
-
-    // 初始化更新设置（仅 Electron/APK）
-    initUpdateSettings();
-
-    // ========== Code Execution 设置同步 ==========
     const codeExecSwitch = document.getElementById('code-execution-enabled');
     if (codeExecSwitch) {
         codeExecSwitch.checked = state.codeExecutionEnabled || false;
-        codeExecSwitch.addEventListener('change', (e) => {
-            state.codeExecutionEnabled = e.target.checked;
-            // 同步快捷按钮
-            const quickBtn = document.getElementById('toggle-code-exec');
-            if (quickBtn) quickBtn.classList.toggle('active', e.target.checked);
-            saveCurrentConfig();
-            console.log('[Settings] 📊 Code Execution 已', e.target.checked ? '启用' : '禁用');
-        });
     }
+    document
+        .getElementById('toggle-code-exec')
+        ?.classList.toggle('active', state.codeExecutionEnabled || false);
 
-    // ========== Computer Use 设置同步（仅 Electron 环境）==========
     const computerUseGroup = document.getElementById('computer-use-settings-group');
-    if (isElectron() && computerUseGroup) {
-        computerUseGroup.style.display = ''; // 显示设置组
-
-        // 主开关
-        const computerUseSwitch = document.getElementById('computer-use-enabled');
-        if (computerUseSwitch) {
-            computerUseSwitch.checked = state.computerUseEnabled || false;
-            computerUseSwitch.addEventListener('change', (e) => {
-                state.computerUseEnabled = e.target.checked;
-                // 同步快捷按钮
-                const quickBtn = document.getElementById('toggle-computer-use');
-                if (quickBtn) quickBtn.classList.toggle('active', e.target.checked);
-                saveCurrentConfig();
-                console.log('[Settings] 💻 Computer Use 已', e.target.checked ? '启用' : '禁用');
-            });
-        }
-
-        // 权限开关（只保留 bash 和文本编辑器）
-        const permissionIds = ['bash', 'text-editor'];
-        const permissionKeys = ['bash', 'textEditor'];
-
-        permissionIds.forEach((id, index) => {
-            const checkbox = document.getElementById(`allow-${id}`);
-            const key = permissionKeys[index];
-            if (checkbox) {
-                checkbox.checked = state.computerUsePermissions[key] !== false;
-                checkbox.addEventListener('change', (e) => {
-                    state.computerUsePermissions[key] = e.target.checked;
-                    saveCurrentConfig();
-                    console.log(`[Settings] 💻 ${key} 权限已`, e.target.checked ? '启用' : '禁用');
-                });
-            }
-        });
-
-        // Bash 工作目录
-        const bashWorkingDir = document.getElementById('bash-working-dir');
-        if (bashWorkingDir) {
-            bashWorkingDir.value = state.bashConfig.workingDirectory || '';
-            bashWorkingDir.addEventListener('input', (e) => {
-                state.bashConfig.workingDirectory = e.target.value;
-                saveCurrentConfig();
-            });
-        }
-
-        // Bash 超时时间
-        const bashTimeout = document.getElementById('bash-timeout');
-        if (bashTimeout) {
-            bashTimeout.value = state.bashConfig.timeout || 30;
-            bashTimeout.addEventListener('input', (e) => {
-                state.bashConfig.timeout = parseInt(e.target.value) || 30;
-                saveCurrentConfig();
-            });
-        }
-
-        // Bash 需要确认
-        const bashConfirm = document.getElementById('bash-require-confirmation');
-        if (bashConfirm) {
-            bashConfirm.checked = state.bashConfig.requireConfirmation || false;
-            bashConfirm.addEventListener('change', (e) => {
-                state.bashConfig.requireConfirmation = e.target.checked;
-                saveCurrentConfig();
-            });
-        }
+    if (computerUseGroup) {
+        computerUseGroup.style.display = isElectron() ? '' : 'none';
     }
 
-    // 移动端手风琴折叠
-    initMobileSettingsAccordion();
+    const devtoolsGroup = document.getElementById('devtools-settings-group');
+    if (devtoolsGroup) {
+        devtoolsGroup.style.display = isElectron() ? 'none' : '';
+    }
 
-    console.log('Settings panel initialized');
+    const computerUseSwitch = document.getElementById('computer-use-enabled');
+    if (computerUseSwitch) {
+        computerUseSwitch.checked = state.computerUseEnabled || false;
+    }
+    document
+        .getElementById('toggle-computer-use')
+        ?.classList.toggle('active', state.computerUseEnabled || false);
+
+    const permissionIds = ['bash', 'text-editor'];
+    const permissionKeys = ['bash', 'textEditor'];
+    permissionIds.forEach((id, index) => {
+        const checkbox = document.getElementById(`allow-${id}`);
+        if (checkbox) {
+            const key = permissionKeys[index];
+            checkbox.checked = state.computerUsePermissions?.[key] !== false;
+        }
+    });
+
+    const bashConfig = state.bashConfig || {};
+
+    const bashWorkingDir = document.getElementById('bash-working-dir');
+    if (bashWorkingDir) {
+        bashWorkingDir.value = bashConfig.workingDirectory || '';
+    }
+
+    const bashTimeout = document.getElementById('bash-timeout');
+    if (bashTimeout) {
+        bashTimeout.value = bashConfig.timeout || 30;
+    }
+
+    const bashConfirm = document.getElementById('bash-require-confirmation');
+    if (bashConfirm) {
+        bashConfirm.checked = bashConfig.requireConfirmation || false;
+    }
+}
+
+function bindGeneralSettingsEvents() {
+    addManagedListener(
+        settingsCleanupCallbacks,
+        document.querySelector('.settings-overlay'),
+        'click',
+        handleSettingsOverlayClick,
+        true
+    );
+    addManagedListener(settingsCleanupCallbacks, elements.settingsToggle, 'click', toggleSettings);
+    addManagedListener(settingsCleanupCallbacks, elements.closeSettings, 'click', toggleSettings);
+
+    const configLoadedUnsubscribe = eventBus.on('config:loaded', () => {
+        syncGeneralSettingsUI();
+    });
+    settingsSubscriptions.push(configLoadedUnsubscribe);
+
+    addManagedListener(settingsCleanupCallbacks, elements.apiEndpoint, 'input', saveCurrentConfig);
+    addManagedListener(settingsCleanupCallbacks, elements.apiKey, 'input', saveCurrentConfig);
+    addManagedListener(settingsCleanupCallbacks, elements.modelSelect, 'change', saveCurrentConfig);
+
+    const fastImageCompressionSwitch = document.getElementById('fast-image-compression');
+    addManagedListener(settingsCleanupCallbacks, fastImageCompressionSwitch, 'change', (event) => {
+        setFastImageCompression(event.target.checked);
+        saveCurrentConfig();
+        logger.debug('[Settings] ⚡ 高速图片压缩模式已', event.target.checked ? '启用' : '禁用');
+    });
+
+    const pdfModeSelect = document.getElementById('pdf-mode-select');
+    addManagedListener(settingsCleanupCallbacks, pdfModeSelect, 'change', (event) => {
+        setPdfMode(event.target.value);
+        saveCurrentConfig();
+        logger.debug(`[Settings] PDF 处理模式: ${event.target.value}`);
+    });
+
+    const codeExecSwitch = document.getElementById('code-execution-enabled');
+    addManagedListener(settingsCleanupCallbacks, codeExecSwitch, 'change', (event) => {
+        setCodeExecutionEnabled(event.target.checked);
+        document
+            .getElementById('toggle-code-exec')
+            ?.classList.toggle('active', event.target.checked);
+        saveCurrentConfig();
+        logger.debug('[Settings] 📊 Code Execution 已', event.target.checked ? '启用' : '禁用');
+    });
+
+    const computerUseSwitch = document.getElementById('computer-use-enabled');
+    addManagedListener(settingsCleanupCallbacks, computerUseSwitch, 'change', (event) => {
+        setComputerUseEnabled(event.target.checked);
+        document
+            .getElementById('toggle-computer-use')
+            ?.classList.toggle('active', event.target.checked);
+        saveCurrentConfig();
+        logger.debug('[Settings] 💻 Computer Use 已', event.target.checked ? '启用' : '禁用');
+    });
+
+    const permissionIds = ['bash', 'text-editor'];
+    const permissionKeys = ['bash', 'textEditor'];
+    permissionIds.forEach((id, index) => {
+        const checkbox = document.getElementById(`allow-${id}`);
+        const key = permissionKeys[index];
+        addManagedListener(settingsCleanupCallbacks, checkbox, 'change', (event) => {
+            state.computerUsePermissions[key] = event.target.checked;
+            saveCurrentConfig();
+            logger.debug(`[Settings] 💻 ${key} 权限已`, event.target.checked ? '启用' : '禁用');
+        });
+    });
+
+    const bashWorkingDir = document.getElementById('bash-working-dir');
+    addManagedListener(settingsCleanupCallbacks, bashWorkingDir, 'input', (event) => {
+        state.bashConfig.workingDirectory = event.target.value;
+        saveCurrentConfig();
+    });
+
+    const bashTimeout = document.getElementById('bash-timeout');
+    addManagedListener(settingsCleanupCallbacks, bashTimeout, 'input', (event) => {
+        state.bashConfig.timeout = parseInt(event.target.value, 10) || 30;
+        saveCurrentConfig();
+    });
+
+    const bashConfirm = document.getElementById('bash-require-confirmation');
+    addManagedListener(settingsCleanupCallbacks, bashConfirm, 'change', (event) => {
+        state.bashConfig.requireConfirmation = event.target.checked;
+        saveCurrentConfig();
+    });
+
+    const devtoolsToggle = document.getElementById('devtools-toggle');
+    addManagedListener(settingsCleanupCallbacks, devtoolsToggle, 'change', (event) => {
+        if (event.target.checked) {
+            eventBus.emit('devtools:show');
+        } else {
+            eventBus.emit('devtools:toggle');
+        }
+    });
+}
+
+function setupMobileSettingsAccordion() {
+    if (mobileAccordionApplied) {
+        return;
+    }
+
+    mobileAccordionApplied = true;
+
+    const groups = document.querySelectorAll('.settings-content > .settings-group');
+    groups.forEach((group, index) => {
+        if (group.querySelector('details')) {
+            return;
+        }
+
+        const label = group.querySelector('.settings-label');
+        if (!label) {
+            return;
+        }
+
+        const body = document.createElement('div');
+        body.className = 'settings-group-body';
+
+        const children = Array.from(group.children).filter((child) => child !== label);
+        children.forEach((child) => body.appendChild(child));
+        group.appendChild(body);
+
+        group.classList.add('accordion');
+        if (index === 0) {
+            group.classList.add('expanded');
+            requestAnimationFrame(() => {
+                body.style.maxHeight = `${body.scrollHeight}px`;
+            });
+        } else {
+            body.classList.add('collapsed');
+        }
+
+        const clickHandler = () => {
+            const isExpanded = group.classList.contains('expanded');
+            if (isExpanded) {
+                group.classList.remove('expanded');
+                body.classList.add('collapsed');
+                body.style.maxHeight = '0px';
+                return;
+            }
+
+            group.classList.add('expanded');
+            body.classList.remove('collapsed');
+            body.style.maxHeight = `${body.scrollHeight}px`;
+        };
+
+        label.addEventListener('click', clickHandler);
+        label._settingsAccordionClickHandler = clickHandler;
+    });
+}
+
+function teardownMobileSettingsAccordion() {
+    if (!mobileAccordionApplied) {
+        return;
+    }
+
+    mobileAccordionApplied = false;
+
+    const groups = document.querySelectorAll('.settings-content > .settings-group.accordion');
+    groups.forEach((group) => {
+        group.classList.remove('accordion', 'expanded');
+
+        const label = group.querySelector('.settings-label');
+        if (label?._settingsAccordionClickHandler) {
+            label.removeEventListener('click', label._settingsAccordionClickHandler);
+            delete label._settingsAccordionClickHandler;
+        }
+
+        const body = group.querySelector('.settings-group-body');
+        if (!body) {
+            return;
+        }
+
+        while (body.firstChild) {
+            group.appendChild(body.firstChild);
+        }
+        body.remove();
+    });
 }
 
 /**
@@ -259,98 +399,120 @@ export function initSettings() {
  * 768px 以下将设置组转为可折叠的手风琴
  */
 function initMobileSettingsAccordion() {
-    const mq = window.matchMedia('(max-width: 768px)');
-    let initialized = false;
+    if (!mobileAccordionMediaQuery) {
+        mobileAccordionMediaQuery = window.matchMedia('(max-width: 768px)');
+    }
 
-    function setup() {
-        if (initialized) return;
-        initialized = true;
-
-        const groups = document.querySelectorAll('.settings-content > .settings-group');
-        groups.forEach((group, index) => {
-            // 跳过已经有 <details> 的组
-            if (group.querySelector('details')) return;
-
-            const label = group.querySelector('.settings-label');
-            if (!label) return;
-
-            // 将 label 之后的内容包裹到 body 容器
-            const body = document.createElement('div');
-            body.className = 'settings-group-body';
-
-            const children = Array.from(group.children).filter(c => c !== label);
-            children.forEach(c => body.appendChild(c));
-            group.appendChild(body);
-
-            group.classList.add('accordion');
-
-            // 第一个设置组（模型选择）默认展开
-            if (index === 0) {
-                group.classList.add('expanded');
+    if (!mobileAccordionBound) {
+        mobileAccordionChangeHandler = (event) => {
+            if (event.matches) {
+                setupMobileSettingsAccordion();
             } else {
-                body.classList.add('collapsed');
+                teardownMobileSettingsAccordion();
             }
+        };
 
-            label.addEventListener('click', () => {
-                const isExpanded = group.classList.contains('expanded');
-                if (isExpanded) {
-                    group.classList.remove('expanded');
-                    body.classList.add('collapsed');
-                } else {
-                    group.classList.add('expanded');
-                    body.classList.remove('collapsed');
-                    // 设置 max-height 为内容实际高度
-                    body.style.maxHeight = body.scrollHeight + 'px';
-                }
-            });
-
-            // 展开时设置 max-height
-            if (index === 0) {
-                requestAnimationFrame(() => {
-                    body.style.maxHeight = body.scrollHeight + 'px';
-                });
+        mobileAccordionMediaQuery.addEventListener('change', mobileAccordionChangeHandler);
+        settingsCleanupCallbacks.push(() => {
+            if (mobileAccordionMediaQuery && mobileAccordionChangeHandler) {
+                mobileAccordionMediaQuery.removeEventListener(
+                    'change',
+                    mobileAccordionChangeHandler
+                );
             }
         });
+        mobileAccordionBound = true;
     }
 
-    function teardown() {
-        if (!initialized) return;
-        initialized = false;
+    if (mobileAccordionMediaQuery.matches) {
+        setupMobileSettingsAccordion();
+    } else {
+        teardownMobileSettingsAccordion();
+    }
+}
 
-        const groups = document.querySelectorAll('.settings-content > .settings-group.accordion');
-        groups.forEach(group => {
-            group.classList.remove('accordion', 'expanded');
-            const body = group.querySelector('.settings-group-body');
-            if (body) {
-                // 将 body 内的元素移回 group
-                while (body.firstChild) {
-                    group.appendChild(body.firstChild);
-                }
-                body.remove();
-            }
-        });
+function parseAppSettings(rawValue) {
+    if (!rawValue) {
+        return {};
     }
 
-    function handleChange(e) {
-        if (e.matches) {
-            setup();
-        } else {
-            teardown();
+    if (typeof rawValue === 'string') {
+        return JSON.parse(rawValue);
+    }
+
+    if (typeof rawValue === 'object') {
+        return { ...rawValue };
+    }
+
+    return {};
+}
+
+async function loadStoredAppSettings() {
+    try {
+        const settingsValue = await loadPreference('appSettings');
+        cachedAppSettings = parseAppSettings(settingsValue);
+    } catch (error) {
+        cachedAppSettings = {};
+        logger.error('[Settings] 读取更新设置失败:', error);
+    }
+
+    return cachedAppSettings;
+}
+
+async function persistAppSettings() {
+    await savePreference('appSettings', JSON.stringify(cachedAppSettings));
+
+    if (isElectron() && window.electronAPI?.saveSettings) {
+        window.electronAPI.saveSettings(cachedAppSettings);
+    }
+}
+
+async function resolveCurrentVersionText() {
+    if (window.electronAPI?.getVersion) {
+        try {
+            return await window.electronAPI.getVersion();
+        } catch (error) {
+            logger.warn('[Settings] 获取 Electron 版本号失败:', error);
+            return '1.1.1';
         }
     }
 
-    mq.addEventListener('change', handleChange);
-    if (mq.matches) setup();
+    if (window.Capacitor?.Plugins?.App) {
+        try {
+            const { App } = window.Capacitor.Plugins;
+            const info = await App.getInfo();
+            return info.version;
+        } catch (error) {
+            logger.warn('[Settings] 获取 Capacitor 版本号失败:', error);
+            return '未知';
+        }
+    }
+
+    return '未知';
 }
 
-/**
- * 初始化更新设置
- */
-async function initUpdateSettings() {
-    const updateSettingsSection = document.getElementById('update-settings');
-    if (!updateSettingsSection) return;
+function getUpdateSettingsElements() {
+    return {
+        updateSettingsSection: document.getElementById('update-settings'),
+        checkUpdateStartupToggle: document.getElementById('check-update-startup'),
+        defaultSilentUpdateToggle: document.getElementById('default-silent-update'),
+        manualCheckUpdateBtn: document.getElementById('manual-check-update-btn'),
+        currentVersionNumber: document.getElementById('current-version-number')
+    };
+}
 
-    // 仅在 Electron 或 Capacitor 环境显示
+async function syncUpdateSettingsUI() {
+    const {
+        updateSettingsSection,
+        checkUpdateStartupToggle,
+        defaultSilentUpdateToggle,
+        currentVersionNumber
+    } = getUpdateSettingsElements();
+
+    if (!updateSettingsSection) {
+        return;
+    }
+
     if (!isElectron() && !isAndroid()) {
         updateSettingsSection.style.display = 'none';
         return;
@@ -358,151 +520,199 @@ async function initUpdateSettings() {
 
     updateSettingsSection.style.display = 'block';
 
-    // 获取 UI 元素
-    const checkUpdateStartupToggle = document.getElementById('check-update-startup');
-    const defaultSilentUpdateToggle = document.getElementById('default-silent-update');
-    const manualCheckUpdateBtn = document.getElementById('manual-check-update-btn');
-    const currentVersionNumber = document.getElementById('current-version-number');
+    const [appSettings, versionText] = await Promise.all([
+        loadStoredAppSettings(),
+        resolveCurrentVersionText()
+    ]);
 
-    // 显示当前版本号
-    if (window.electronAPI && window.electronAPI.getVersion) {
-        // Electron 环境
-        try {
-            const version = await window.electronAPI.getVersion();
-            if (currentVersionNumber) {
-                currentVersionNumber.textContent = version;
-            }
-        } catch (error) {
-            console.warn('[Settings] 获取 Electron 版本号失败:', error);
-            if (currentVersionNumber) {
-                currentVersionNumber.textContent = '1.1.1';
-            }
-        }
-    } else if (window.Capacitor) {
-        // Capacitor/APK 平台 - 使用 App 插件获取版本号
-        try {
-            if (window.Capacitor.Plugins && window.Capacitor.Plugins.App) {
-                const { App } = window.Capacitor.Plugins;
-                const info = await App.getInfo();
-                if (currentVersionNumber) {
-                    currentVersionNumber.textContent = info.version;
-                }
-            } else {
-                console.warn('[Settings] Capacitor App 插件未加载');
-                if (currentVersionNumber) {
-                    currentVersionNumber.textContent = '未知';
-                }
-            }
-        } catch (error) {
-            console.warn('[Settings] 获取 Capacitor 版本号失败:', error);
-            if (currentVersionNumber) {
-                currentVersionNumber.textContent = '未知';
-            }
-        }
-    } else {
-        // Web 浏览器环境 - 显示未知
-        if (currentVersionNumber) {
-            currentVersionNumber.textContent = '未知';
-        }
-    }
-
-    // 从 IndexedDB 读取配置
-    let appSettings = {};
-    try {
-        const settingsJson = await loadPreference('appSettings');
-        if (settingsJson) {
-            appSettings = JSON.parse(settingsJson);
-        }
-    } catch (err) {
-        console.error('[Settings] 读取更新设置失败:', err);
-    }
-
-    // 初始化 UI 状态
     if (checkUpdateStartupToggle) {
-        checkUpdateStartupToggle.checked = appSettings.checkUpdateOnStartup !== false; // 默认 true
+        checkUpdateStartupToggle.checked = appSettings.checkUpdateOnStartup !== false;
     }
 
     if (defaultSilentUpdateToggle) {
         defaultSilentUpdateToggle.checked = appSettings.silentUpdate || false;
     }
 
-    // 绑定"启动时检查更新"开关
-    if (checkUpdateStartupToggle) {
-        checkUpdateStartupToggle.addEventListener('change', async (e) => {
-            const enabled = e.target.checked;
-            appSettings.checkUpdateOnStartup = enabled;
+    if (currentVersionNumber) {
+        currentVersionNumber.textContent = versionText;
+    }
+}
 
-            // 保存到 IndexedDB
-            try {
-                await savePreference('appSettings', JSON.stringify(appSettings));
-                console.log('[Settings] 启动检查更新设置已保存:', enabled);
+async function handleCheckUpdateStartupToggleChange(event) {
+    const enabled = event.target.checked;
+    cachedAppSettings = {
+        ...cachedAppSettings,
+        checkUpdateOnStartup: enabled
+    };
 
-                // Electron: 通知主进程
-                if (isElectron() && window.electronAPI && window.electronAPI.saveSettings) {
-                    window.electronAPI.saveSettings(appSettings);
-                }
-            } catch (err) {
-                console.error('[Settings] 保存启动检查更新设置失败:', err);
-            }
-        });
+    try {
+        await persistAppSettings();
+        logger.debug('[Settings] 启动检查更新设置已保存:', enabled);
+    } catch (error) {
+        logger.error('[Settings] 保存启动检查更新设置失败:', error);
+    }
+}
+
+async function handleDefaultSilentUpdateToggleChange(event) {
+    const enabled = event.target.checked;
+    cachedAppSettings = {
+        ...cachedAppSettings,
+        silentUpdate: enabled
+    };
+
+    try {
+        await persistAppSettings();
+        // 通知 Electron 主进程更新静默更新状态
+        if (window.electronAPI?.setSilentUpdate) {
+            window.electronAPI.setSilentUpdate(enabled);
+        }
+        logger.debug('[Settings] 静默更新设置已保存:', enabled);
+    } catch (error) {
+        logger.error('[Settings] 保存静默更新设置失败:', error);
+    }
+}
+
+async function handleManualCheckUpdate() {
+    logger.debug('[Settings] 手动检查更新');
+
+    if (isElectron() && window.electronAPI?.checkForUpdates) {
+        window.electronAPI.checkForUpdates();
+        return;
     }
 
-    // 绑定"默认静默更新"开关
-    if (defaultSilentUpdateToggle) {
-        defaultSilentUpdateToggle.addEventListener('change', async (e) => {
-            const enabled = e.target.checked;
-            appSettings.silentUpdate = enabled;
+    if (isAndroid()) {
+        const { checkForUpdatesManually } = await import('../update/apk-updater.js');
+        await checkForUpdatesManually();
+    }
+}
 
-            // 保存到 IndexedDB
-            try {
-                await savePreference('appSettings', JSON.stringify(appSettings));
-                console.log('[Settings] 静默更新设置已保存:', enabled);
+function handleElectronUpdateNotification(data) {
+    logger.debug('[Settings] 更新通知:', data);
 
-                // Electron: 立即通知主进程
-                if (isElectron() && window.electronAPI) {
-                    if (window.electronAPI.setSilentUpdate) {
-                        window.electronAPI.setSilentUpdate(enabled);
-                    }
-                    if (window.electronAPI.saveSettings) {
-                        window.electronAPI.saveSettings(appSettings);
-                    }
-                }
-            } catch (err) {
-                console.error('[Settings] 保存静默更新设置失败:', err);
-            }
-        });
+    const message =
+        typeof data?.message === 'string' && data.message.trim()
+            ? data.message.trim()
+            : typeof data?.title === 'string'
+              ? data.title.trim()
+              : '';
+    if (!message) {
+        return;
     }
 
-    // 绑定"立即检查更新"按钮
-    if (manualCheckUpdateBtn) {
-        manualCheckUpdateBtn.addEventListener('click', async () => {
-            console.log('[Settings] 手动检查更新');
+    showNotification(message, data?.type || 'info');
+}
 
-            if (isElectron() && window.electronAPI && window.electronAPI.checkForUpdates) {
-                window.electronAPI.checkForUpdates();
-            } else if (isAndroid()) {
-                // APK 平台的检查更新逻辑
-                const { checkForUpdatesManually } = await import('../update/apk-updater.js');
-                await checkForUpdatesManually();
-            }
-        });
+function bindUpdateSettingsEvents() {
+    const { checkUpdateStartupToggle, defaultSilentUpdateToggle, manualCheckUpdateBtn } =
+        getUpdateSettingsElements();
+
+    addManagedListener(
+        updateSettingsCleanupCallbacks,
+        checkUpdateStartupToggle,
+        'change',
+        handleCheckUpdateStartupToggleChange
+    );
+    addManagedListener(
+        updateSettingsCleanupCallbacks,
+        defaultSilentUpdateToggle,
+        'change',
+        handleDefaultSilentUpdateToggleChange
+    );
+    addManagedListener(
+        updateSettingsCleanupCallbacks,
+        manualCheckUpdateBtn,
+        'click',
+        handleManualCheckUpdate
+    );
+
+    if (!isElectron() || !window.electronAPI) {
+        return;
     }
 
-    // Electron: 监听更新进度
-    if (isElectron() && window.electronAPI && window.electronAPI.onUpdateProgress) {
-        window.electronAPI.onUpdateProgress((progress) => {
-            console.log('[Settings] 更新进度:', progress.percent + '%');
-            // 未来可以在 UI 显示进度条
-        });
+    const progressUnsubscribe = window.electronAPI.onUpdateProgress?.((progress) => {
+        logger.debug('[Settings] 更新进度:', `${progress.percent}%`);
+    });
+    const notificationUnsubscribe = window.electronAPI.onNotification?.(
+        handleElectronUpdateNotification
+    );
+
+    [progressUnsubscribe, notificationUnsubscribe].forEach((unsubscribe) => {
+        if (typeof unsubscribe === 'function') {
+            updateSettingsSubscriptions.push(unsubscribe);
+        }
+    });
+}
+
+/**
+ * 初始化更新设置
+ */
+async function initUpdateSettings() {
+    if (updateSettingsInitialized) {
+        await syncUpdateSettingsUI();
+        return;
     }
 
-    // Electron: 监听通知消息
-    if (isElectron() && window.electronAPI && window.electronAPI.onNotification) {
-        window.electronAPI.onNotification((data) => {
-            console.log('[Settings] 更新通知:', data);
-            // 未来可以显示 Toast 提示
-        });
+    if (updateSettingsInitPromise) {
+        return updateSettingsInitPromise;
     }
 
-    console.log('Update settings initialized');
+    updateSettingsInitPromise = (async () => {
+        await syncUpdateSettingsUI();
+        bindUpdateSettingsEvents();
+        updateSettingsInitialized = true;
+        logger.debug('Update settings initialized');
+    })().finally(() => {
+        updateSettingsInitPromise = null;
+    });
+
+    return updateSettingsInitPromise;
+}
+
+/**
+ * 初始化设置面板
+ */
+export function initSettings() {
+    initializeSettingsOverlay();
+    syncGeneralSettingsUI();
+    initMobileSettingsAccordion();
+    void initUpdateSettings();
+
+    if (settingsInitialized) {
+        return;
+    }
+
+    bindGeneralSettingsEvents();
+    settingsInitialized = true;
+    logger.debug('Settings panel initialized');
+}
+
+export function cleanupSettings() {
+    runCleanupList(updateSettingsCleanupCallbacks);
+    updateSettingsCleanupCallbacks = [];
+
+    updateSettingsSubscriptions.forEach((unsubscribe) => {
+        if (typeof unsubscribe === 'function') {
+            unsubscribe();
+        }
+    });
+    updateSettingsSubscriptions = [];
+
+    runCleanupList(settingsCleanupCallbacks);
+    settingsCleanupCallbacks = [];
+
+    settingsSubscriptions.forEach((unsubscribe) => {
+        if (typeof unsubscribe === 'function') {
+            unsubscribe();
+        }
+    });
+    settingsSubscriptions = [];
+
+    teardownMobileSettingsAccordion();
+    mobileAccordionBound = false;
+    mobileAccordionMediaQuery = null;
+    mobileAccordionChangeHandler = null;
+
+    settingsInitialized = false;
+    updateSettingsInitialized = false;
+    updateSettingsInitPromise = null;
 }

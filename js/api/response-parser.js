@@ -1,8 +1,12 @@
 /**
  * API 响应解析器
  * 解析不同 API 格式的非流式响应
+ *
+ * 注意：本文件中的 contentParts / thinkingContent 均为运行时局部变量，
+ * 用于构建解析结果后传递给 saveAssistantMessage，非旧格式字段。
  */
 
+import { logger } from '../utils/logger.js';
 import { parseMarkdownImages } from '../utils/markdown-image-parser.js';
 import { extractXMLToolCalls } from '../tools/xml-formatter.js';
 import { state } from '../core/state.js';
@@ -16,7 +20,7 @@ import { isVideoMimeType, isAudioMimeType, isVideoUrl } from '../utils/media.js'
  * @returns {Object|null} 解析后的回复对象
  */
 export function parseApiResponse(data, format = 'openai') {
-    console.log('parseApiResponse data:', data, 'format:', format);
+    logger.debug('parseApiResponse data:', data, 'format:', format);
 
     switch (format) {
         case 'openclaw':
@@ -66,7 +70,10 @@ export function parseApiResponse(data, format = 'openai') {
                 if (allText) {
                     const xmlToolCalls = extractXMLToolCalls(allText);
                     if (xmlToolCalls.length > 0) {
-                        console.log('[Response Parser] 🔧 检测到 Gemini XML 工具调用:', xmlToolCalls.length);
+                        logger.debug(
+                            '[Response Parser] 🔧 检测到 Gemini XML 工具调用:',
+                            xmlToolCalls.length
+                        );
                         return {
                             toolCalls: xmlToolCalls,
                             content: allText,
@@ -78,7 +85,7 @@ export function parseApiResponse(data, format = 'openai') {
 
             // 提取 thoughtSignature（如果有）
             let thoughtSignature = null;
-            let thinkingContent = '';
+            let thinkingContent = ''; // 运行时局部变量，非旧格式字段
             let textContent = '';
 
             // 从 parts 中提取内容和 thoughtSignature
@@ -91,7 +98,8 @@ export function parseApiResponse(data, format = 'openai') {
                     thinkingContent += part.text || '';
                 } else if (part.text) {
                     // 解析 <think> 标签
-                    const { displayText: thinkParsedText, thinkingContent: thinkContent } = parseThinkTags(part.text);
+                    const { displayText: thinkParsedText, thinkingContent: thinkContent } =
+                        parseThinkTags(part.text);
                     if (thinkContent) {
                         thinkingContent += thinkContent;
                     }
@@ -110,10 +118,11 @@ export function parseApiResponse(data, format = 'openai') {
             }
 
             // 检查 usageMetadata 中的思维链 token 统计
-            const reasoningTokens = data.usageMetadata?.thoughts_token_count ||
-                                   data.usage?.completion_tokens_details?.reasoning_tokens;
+            const reasoningTokens =
+                data.usageMetadata?.thoughts_token_count ||
+                data.usage?.completion_tokens_details?.reasoning_tokens;
 
-            const contentParts = [];
+            const contentParts = []; // 运行时局部变量，非旧格式字段
 
             // 先添加思维链（如果有）
             if (thinkingContent) {
@@ -130,8 +139,11 @@ export function parseApiResponse(data, format = 'openai') {
                     const inlineData = part.inlineData || part.inline_data;
                     const mimeType = inlineData.mimeType || inlineData.mime_type;
                     const dataUrl = `data:${mimeType};base64,${inlineData.data}`;
-                    const mediaType = isVideoMimeType(mimeType) ? 'video_url'
-                        : isAudioMimeType(mimeType) ? 'audio_url' : 'image_url';
+                    const mediaType = isVideoMimeType(mimeType)
+                        ? 'video_url'
+                        : isAudioMimeType(mimeType)
+                          ? 'audio_url'
+                          : 'image_url';
                     contentParts.push({ type: mediaType, url: dataUrl, complete: true, mimeType });
                 }
             }
@@ -143,7 +155,7 @@ export function parseApiResponse(data, format = 'openai') {
                 thoughtSignature: thoughtSignature,
                 groundingMetadata: candidate.groundingMetadata,
                 reasoningTokens: reasoningTokens || null,
-                contentParts: contentParts.length > 0 ? contentParts : null,
+                contentParts: contentParts.length > 0 ? contentParts : null
             };
         }
 
@@ -194,7 +206,10 @@ export function parseApiResponse(data, format = 'openai') {
                 if (allText) {
                     const xmlToolCalls = extractXMLToolCalls(allText);
                     if (xmlToolCalls.length > 0) {
-                        console.log('[Response Parser] 🔧 检测到 Claude XML 工具调用:', xmlToolCalls.length);
+                        logger.debug(
+                            '[Response Parser] 🔧 检测到 Claude XML 工具调用:',
+                            xmlToolCalls.length
+                        );
                         return {
                             toolCalls: xmlToolCalls,
                             content: allText,
@@ -210,9 +225,10 @@ export function parseApiResponse(data, format = 'openai') {
             const thinkingBlocks = [];
             const thinkingSigs = [];
 
-            data.content.forEach(block => {
+            data.content.forEach((block) => {
                 if (block.type === 'text') {
-                    const { displayText: thinkParsedText, thinkingContent: thinkContent } = parseThinkTags(block.text);
+                    const { displayText: thinkParsedText, thinkingContent: thinkContent } =
+                        parseThinkTags(block.text);
                     if (thinkContent) {
                         thinkingContent += thinkContent;
                         contentParts.push({ type: 'thinking', text: thinkContent });
@@ -239,10 +255,20 @@ export function parseApiResponse(data, format = 'openai') {
                     if (source.type === 'base64' && source.data) {
                         const mimeType = source.media_type || source.mimeType || 'video/mp4';
                         const dataUrl = `data:${mimeType};base64,${source.data}`;
-                        contentParts.push({ type: 'video_url', url: dataUrl, complete: true, mimeType });
+                        contentParts.push({
+                            type: 'video_url',
+                            url: dataUrl,
+                            complete: true,
+                            mimeType
+                        });
                     } else if (source.type === 'url' && source.url) {
                         const mimeType = source.media_type || source.mimeType || '';
-                        contentParts.push({ type: 'video_url', url: source.url, complete: true, mimeType });
+                        contentParts.push({
+                            type: 'video_url',
+                            url: source.url,
+                            complete: true,
+                            mimeType
+                        });
                     }
                 } else if (block.type === 'server_tool_use') {
                     // 服务端工具调用（原子保存）
@@ -250,13 +276,13 @@ export function parseApiResponse(data, format = 'openai') {
                         type: 'server_tool_use',
                         id: block.id,
                         name: block.name,
-                        input: block.input || {},
+                        input: block.input || {}
                     });
                 } else if (block.type?.endsWith('_tool_result')) {
                     // 服务端工具结果，关联到前一个 server_tool_use
-                    const prevStu = [...contentParts].reverse().find(
-                        p => p.type === 'server_tool_use' && p.id === block.tool_use_id
-                    );
+                    const prevStu = [...contentParts]
+                        .reverse()
+                        .find((p) => p.type === 'server_tool_use' && p.id === block.tool_use_id);
                     if (prevStu) {
                         prevStu.result = { type: block.type, content: block.content };
                     } else {
@@ -265,7 +291,7 @@ export function parseApiResponse(data, format = 'openai') {
                             id: block.tool_use_id || `srvtoolu_unknown`,
                             name: block.type.replace('_tool_result', ''),
                             input: {},
-                            result: { type: block.type, content: block.content },
+                            result: { type: block.type, content: block.content }
                         });
                     }
                 }
@@ -278,7 +304,7 @@ export function parseApiResponse(data, format = 'openai') {
                 thinkingBlocks: thinkingBlocks.length > 0 ? thinkingBlocks : null,
                 thinkingSignatures: thinkingSigs.length > 0 ? thinkingSigs : null,
                 contentParts: contentParts.length > 0 ? contentParts : null,
-                pauseTurn: data.stop_reason === 'pause_turn',
+                pauseTurn: data.stop_reason === 'pause_turn'
             };
         }
 
@@ -297,14 +323,20 @@ export function parseApiResponse(data, format = 'openai') {
                             try {
                                 parsedArgs = JSON.parse(item.arguments);
                             } catch (_e) {
-                                console.warn('[response-parser] Responses API 工具参数解析失败:', _e);
+                                logger.warn(
+                                    '[response-parser] Responses API 工具参数解析失败:',
+                                    _e
+                                );
                                 parsedArgs = {};
                             }
                         } else {
                             parsedArgs = item.arguments || {};
                         }
                         toolCalls.push({
-                            id: item.call_id || item.id || `resp_tc_${Date.now()}_${toolCalls.length}`,
+                            id:
+                                item.call_id ||
+                                item.id ||
+                                `resp_tc_${Date.now()}_${toolCalls.length}`,
                             name: item.name,
                             arguments: parsedArgs
                         });
@@ -319,7 +351,10 @@ export function parseApiResponse(data, format = 'openai') {
                             textContent += item.text || '';
                             if (Array.isArray(item.content)) {
                                 for (const part of item.content) {
-                                    if ((part.type === 'output_text' || part.type === 'text') && part.text) {
+                                    if (
+                                        (part.type === 'output_text' || part.type === 'text') &&
+                                        part.text
+                                    ) {
                                         textContent += part.text;
                                     }
                                 }
@@ -327,7 +362,10 @@ export function parseApiResponse(data, format = 'openai') {
                         }
                     }
 
-                    console.log('[Response Parser] 检测到 Responses API 工具调用:', toolCalls.length);
+                    logger.debug(
+                        '[Response Parser] 检测到 Responses API 工具调用:',
+                        toolCalls.length
+                    );
                     return {
                         toolCalls: toolCalls,
                         content: textContent || '',
@@ -340,7 +378,10 @@ export function parseApiResponse(data, format = 'openai') {
             if (state.xmlToolCallingEnabled && data.output_text) {
                 const xmlToolCalls = extractXMLToolCalls(data.output_text);
                 if (xmlToolCalls.length > 0) {
-                    console.log('[Response Parser] 检测到 Responses API XML 工具调用:', xmlToolCalls.length);
+                    logger.debug(
+                        '[Response Parser] 检测到 Responses API XML 工具调用:',
+                        xmlToolCalls.length
+                    );
                     return {
                         toolCalls: xmlToolCalls,
                         content: data.output_text,
@@ -368,10 +409,9 @@ export function parseApiResponse(data, format = 'openai') {
                         if (item.encrypted_content) {
                             encryptedContent = item.encrypted_content;
                             reasoningItemId = item.id || null;
-                            console.log('[Response Parser] 提取到 encrypted_content 签名');
+                            logger.debug('[Response Parser] 提取到 encrypted_content 签名');
                         }
-                    }
-                    else if (item.type === 'message') {
+                    } else if (item.type === 'message') {
                         // 消息内容
                         const messageText = item.text || '';
                         if (messageText) {
@@ -389,8 +429,21 @@ export function parseApiResponse(data, format = 'openai') {
                                     contentParts.push({ type: 'text', text: part.text });
                                 } else if (part.type === 'image_url' && part.image_url?.url) {
                                     const mediaUrl = part.image_url.url;
-                                    const mediaType = isVideoUrl(mediaUrl, part.image_url?.mime_type || part.image_url?.mimeType) ? 'video_url' : 'image_url';
-                                    contentParts.push({ type: mediaType, url: mediaUrl, complete: true, mimeType: part.image_url?.mime_type || part.image_url?.mimeType || '' });
+                                    const mediaType = isVideoUrl(
+                                        mediaUrl,
+                                        part.image_url?.mime_type || part.image_url?.mimeType
+                                    )
+                                        ? 'video_url'
+                                        : 'image_url';
+                                    contentParts.push({
+                                        type: mediaType,
+                                        url: mediaUrl,
+                                        complete: true,
+                                        mimeType:
+                                            part.image_url?.mime_type ||
+                                            part.image_url?.mimeType ||
+                                            ''
+                                    });
                                 } else if (part.type === 'video_url') {
                                     const mediaUrl = part.video_url?.url || part.url;
                                     if (mediaUrl) {
@@ -398,7 +451,12 @@ export function parseApiResponse(data, format = 'openai') {
                                             type: 'video_url',
                                             url: mediaUrl,
                                             complete: true,
-                                            mimeType: part.mime_type || part.mimeType || part.video_url?.mime_type || part.video_url?.mimeType || ''
+                                            mimeType:
+                                                part.mime_type ||
+                                                part.mimeType ||
+                                                part.video_url?.mime_type ||
+                                                part.video_url?.mimeType ||
+                                                ''
                                         });
                                     }
                                 }
@@ -424,7 +482,7 @@ export function parseApiResponse(data, format = 'openai') {
                 thinkingContent: thinkingContent || null,
                 contentParts: contentParts.length > 0 ? contentParts : null,
                 encryptedContent: encryptedContent,
-                reasoningItemId: reasoningItemId,
+                reasoningItemId: reasoningItemId
             };
         }
 
@@ -435,17 +493,21 @@ export function parseApiResponse(data, format = 'openai') {
 
             const message = data.choices[0].message;
             const finishReason = data.choices[0].finish_reason;
-            console.log('OpenAI message:', message);
+            logger.debug('OpenAI message:', message);
 
             // 检测原生 tool_calls（仅在非 XML 模式）
-            if (message.tool_calls && finishReason === 'tool_calls' && !state.xmlToolCallingEnabled) {
-                const toolCalls = message.tool_calls.map(tc => {
+            if (
+                message.tool_calls &&
+                finishReason === 'tool_calls' &&
+                !state.xmlToolCallingEnabled
+            ) {
+                const toolCalls = message.tool_calls.map((tc) => {
                     let parsedArgs;
                     if (typeof tc.function.arguments === 'string') {
                         try {
                             parsedArgs = JSON.parse(tc.function.arguments);
                         } catch (e) {
-                            console.warn('[response-parser] 工具调用参数解析失败:', e);
+                            logger.warn('[response-parser] 工具调用参数解析失败:', e);
                             parsedArgs = {};
                         }
                     } else {
@@ -458,7 +520,7 @@ export function parseApiResponse(data, format = 'openai') {
                     };
                 });
 
-                console.log('[Response Parser] 🔧 检测到 OpenAI 原生工具调用:', toolCalls.length);
+                logger.debug('[Response Parser] 🔧 检测到 OpenAI 原生工具调用:', toolCalls.length);
                 return {
                     toolCalls: toolCalls,
                     content: message.content || '',
@@ -467,11 +529,15 @@ export function parseApiResponse(data, format = 'openai') {
             }
 
             // 兜底：检测 XML <tool_use>
-            if (state.xmlToolCallingEnabled && message.content && typeof message.content === 'string') {
+            if (
+                state.xmlToolCallingEnabled &&
+                message.content &&
+                typeof message.content === 'string'
+            ) {
                 const xmlToolCalls = extractXMLToolCalls(message.content);
 
                 if (xmlToolCalls.length > 0) {
-                    console.log('[Response Parser] 🔧 检测到 XML 工具调用:', xmlToolCalls.length);
+                    logger.debug('[Response Parser] 🔧 检测到 XML 工具调用:', xmlToolCalls.length);
                     return {
                         toolCalls: xmlToolCalls,
                         content: message.content,
@@ -503,7 +569,8 @@ export function parseApiResponse(data, format = 'openai') {
                 for (const part of content) {
                     if (part.type === 'text') {
                         // 先解析 <think> 标签
-                        const { displayText: thinkParsedText, thinkingContent: thinkContent } = parseThinkTags(part.text);
+                        const { displayText: thinkParsedText, thinkingContent: thinkContent } =
+                            parseThinkTags(part.text);
                         if (thinkContent) {
                             extractedThinkingContent += thinkContent;
                             contentParts.push({ type: 'thinking', text: thinkContent });
@@ -521,7 +588,12 @@ export function parseApiResponse(data, format = 'openai') {
                         }
                     } else if (part.type === 'image_url' && part.image_url?.url) {
                         const mediaUrl = part.image_url.url;
-                        const mediaType = isVideoUrl(mediaUrl, part.image_url?.mime_type || part.image_url?.mimeType) ? 'video_url' : 'image_url';
+                        const mediaType = isVideoUrl(
+                            mediaUrl,
+                            part.image_url?.mime_type || part.image_url?.mimeType
+                        )
+                            ? 'video_url'
+                            : 'image_url';
                         contentParts.push({
                             type: mediaType,
                             url: mediaUrl,
@@ -535,14 +607,20 @@ export function parseApiResponse(data, format = 'openai') {
                                 type: 'video_url',
                                 url: mediaUrl,
                                 complete: true,
-                                mimeType: part.mime_type || part.mimeType || part.video_url?.mime_type || part.video_url?.mimeType || ''
+                                mimeType:
+                                    part.mime_type ||
+                                    part.mimeType ||
+                                    part.video_url?.mime_type ||
+                                    part.video_url?.mimeType ||
+                                    ''
                             });
                         }
                     }
                 }
             } else if (typeof content === 'string') {
                 // 先解析 <think> 标签
-                const { displayText: thinkParsedText, thinkingContent: thinkContent } = parseThinkTags(content);
+                const { displayText: thinkParsedText, thinkingContent: thinkContent } =
+                    parseThinkTags(content);
                 if (thinkContent) {
                     extractedThinkingContent += thinkContent;
                     contentParts.push({ type: 'thinking', text: thinkContent });
@@ -568,9 +646,13 @@ export function parseApiResponse(data, format = 'openai') {
             }
 
             return {
-                content: Array.isArray(content) ? textContent : (extractedThinkingContent ? textContent : content),
+                content: Array.isArray(content)
+                    ? textContent
+                    : extractedThinkingContent
+                      ? textContent
+                      : content,
                 thinkingContent: finalThinkingContent,
-                contentParts: contentParts.length > 0 ? contentParts : null,
+                contentParts: contentParts.length > 0 ? contentParts : null
             };
         }
     }

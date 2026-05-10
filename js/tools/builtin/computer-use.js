@@ -67,7 +67,7 @@ export const computerUseTool = {
 export async function computerUseHandler(args) {
     const { action } = args;
 
-    console.log(`[Computer Use] Action: ${action}`, args);
+    logger.debug(`[Computer Use] Action: ${action}`, args);
 
     // 检查是否在 Electron 环境
     if (!window.electronAPI || !window.electronAPI.isElectron()) {
@@ -83,10 +83,12 @@ export async function computerUseHandler(args) {
                 return await handleTextEditor(args);
 
             default:
-                throw new Error(`Unknown action: ${action}. Only 'bash' and 'str_replace_editor' are supported.`);
+                throw new Error(
+                    `Unknown action: ${action}. Only 'bash' and 'str_replace_editor' are supported.`
+                );
         }
     } catch (error) {
-        console.error(`[Computer Use] Error in ${action}:`, error);
+        logger.error(`[Computer Use] Error in ${action}:`, error);
         throw error;
     }
 }
@@ -104,7 +106,9 @@ async function handleBash(args) {
     const command = args.text || args.command || args.bash_command;
 
     if (!command) {
-        throw new Error('Missing bash command parameter. Expected one of: text, command, or bash_command');
+        throw new Error(
+            'Missing bash command parameter. Expected one of: text, command, or bash_command'
+        );
     }
 
     const result = await window.electronAPI.computerUse_executeBash(command);
@@ -207,7 +211,9 @@ async function replaceString(path, oldStr, newStr) {
     if (occurrences === 0) {
         throw new Error('old_str not found in file');
     } else if (occurrences > 1) {
-        throw new Error(`old_str found ${occurrences} times, must be unique. Use more context to make it unique.`);
+        throw new Error(
+            `old_str found ${occurrences} times, must be unique. Use more context to make it unique.`
+        );
     }
     const newContent = readResult.content.replace(oldStr, newStr);
 
@@ -259,5 +265,9 @@ async function insertLine(path, lineNumber, text) {
 // ========== 标准化工具对象 ==========
 
 import { buildToolFromLegacy } from '../build-tool.js';
+import { logger } from '../../utils/logger.js';
 
-export const computerUse = buildToolFromLegacy('computer', computerUseTool, computerUseHandler, { hidden: true, enabled: true });
+export const computerUse = buildToolFromLegacy('computer', computerUseTool, computerUseHandler, {
+    hidden: true,
+    enabled: true
+});

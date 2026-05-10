@@ -4,6 +4,7 @@
  */
 
 import { state } from '../core/state.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * 统一的消息索引设置函数
@@ -13,7 +14,7 @@ import { state } from '../core/state.js';
  */
 export function setMessageIndex(messageEl, messageIndex) {
     if (!messageEl || messageIndex === undefined || messageIndex === null) {
-        console.warn('[setMessageIndex] 无效参数', { messageEl, messageIndex });
+        logger.warn('[setMessageIndex] 无效参数', { messageEl, messageIndex });
         return false;
     }
 
@@ -28,7 +29,7 @@ export function setMessageIndex(messageEl, messageIndex) {
  */
 export function setCurrentMessageIndex(messageIndex) {
     if (!state.currentAssistantMessage) {
-        console.warn('[setCurrentMessageIndex] state.currentAssistantMessage 为 null');
+        logger.warn('[setCurrentMessageIndex] state.currentAssistantMessage 为 null');
         return false;
     }
 

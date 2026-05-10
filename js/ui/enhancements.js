@@ -4,15 +4,16 @@
  */
 
 import { state } from '../core/state.js';
+import { eventBus } from '../core/events.js';
 import { saveCurrentConfig } from '../state/config.js';
-import { showNotification } from './notifications.js';
 import { escapeHtml } from '../utils/helpers.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * 初始化密码显示切换
  */
 export function initPasswordToggles() {
-    document.querySelectorAll('.password-toggle').forEach(btn => {
+    document.querySelectorAll('.password-toggle').forEach((btn) => {
         // 初始化 aria-label
         btn.setAttribute('aria-label', '显示密码');
         btn.setAttribute('role', 'button');
@@ -29,7 +30,7 @@ export function initPasswordToggles() {
         });
     });
 
-    console.log('Password toggles initialized');
+    logger.debug('Password toggles initialized');
 }
 
 /**
@@ -39,6 +40,7 @@ export function renderCustomHeaders() {
     const listContainer = document.getElementById('custom-headers-list');
     if (!listContainer) return;
 
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     listContainer.innerHTML = '';
 
     state.customHeaders.forEach((header, index) => {
@@ -63,6 +65,7 @@ function addCustomHeaderRow(key = '', value = '', index = null) {
     row.className = 'custom-header-row';
     row.dataset.index = index;
 
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     row.innerHTML = `
         <input type="text" class="header-key" placeholder="Header-Name" value="${escapeHtml(key)}" data-field="key">
         <input type="text" class="header-value" placeholder="Header Value" value="${escapeHtml(value)}" data-field="value">
@@ -74,7 +77,7 @@ function addCustomHeaderRow(key = '', value = '', index = null) {
     `;
 
     // 输入事件 - 更新 state
-    row.querySelectorAll('input').forEach(input => {
+    row.querySelectorAll('input').forEach((input) => {
         input.addEventListener('input', (e) => {
             const idx = parseInt(row.dataset.index);
             const field = e.target.dataset.field;
@@ -114,7 +117,7 @@ export function initCustomHeaders() {
     // 渲染已有的请求头
     renderCustomHeaders();
 
-    console.log('Custom headers initialized');
+    logger.debug('Custom headers initialized');
 }
 
 /**
@@ -172,13 +175,18 @@ export function initRippleEffects() {
             const button = e.target.closest(selector);
             if (button && !button.disabled && typeof button.getBoundingClientRect === 'function') {
                 addRippleEffect(e, button);
-                break;  // 找到目标后立即退出，避免重复处理
+                break; // 找到目标后立即退出，避免重复处理
             }
         }
     });
 
-    console.log('Ripple effects initialized');
+    logger.debug('Ripple effects initialized');
 }
 
 // 注意：代码块增强功能（enhanceCodeBlocks）已在 messages/renderer.js 中实现
 // 此处不重复实现，避免代码冗余
+
+// 监听配置同步事件，渲染自定义请求头
+eventBus.on('config:sync-custom-headers', () => {
+    renderCustomHeaders();
+});

@@ -48,8 +48,13 @@
 }
 
 @keyframes openclaw-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.3; }
+    0%,
+    100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.3;
+    }
 }
 
 .openclaw-screen-badge.ended {
@@ -82,7 +87,9 @@
     cursor: pointer;
     border: 2px solid transparent;
     opacity: 0.6;
-    transition: opacity 0.15s, border-color 0.15s;
+    transition:
+        opacity 0.15s,
+        border-color 0.15s;
     flex-shrink: 0;
 }
 

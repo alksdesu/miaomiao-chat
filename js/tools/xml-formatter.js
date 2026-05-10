@@ -3,7 +3,12 @@
  * 用于将工具转换为 CherryStudio 风格的 XML 格式
  */
 
-import { TOOL_ID_COUNTER_MAX, XML_MAX_BUFFER_SIZE, XML_MAX_TOOL_CONTENT_LENGTH } from '../utils/constants.js';
+import {
+    TOOL_ID_COUNTER_MAX,
+    XML_MAX_BUFFER_SIZE,
+    XML_MAX_TOOL_CONTENT_LENGTH
+} from '../utils/constants.js';
+import { logger } from '../utils/logger.js';
 
 // 工具 ID 生成计数器（避免短时间内重复）
 let toolIdCounter = 0;
@@ -41,23 +46,6 @@ export function escapeXML(str) {
 }
 
 /**
- * 解码 XML 实体
- */
-function unescapeXML(str) {
-    if (typeof str !== 'string') return '';
-
-    // 修复4: 添加解码函数（顺序与编码相反，& 必须最后）
-    return str
-        .replace(/&apos;/g, "'")
-        .replace(/&quot;/g, '"')
-        .replace(/&gt;/g, '>')
-        .replace(/&lt;/g, '<')
-        .replace(/&#xD;/g, '\r')
-        .replace(/&#13;/g, '\r')
-        .replace(/&amp;/g, '&'); // 必须最后处理
-}
-
-/**
  * 将工具列表转换为 XML 描述（注入 system prompt）
  * @param {Array} tools - 工具列表（已经是 OpenAI/Claude/Gemini 格式）
  * @returns {string} XML 格式的工具描述
@@ -67,13 +55,16 @@ export function convertToolsToXML(tools) {
 
     // 提示过长警告
     if (tools.length > 20) {
-        console.warn('[XML Formatter] 工具数量过多 (>20)，可能导致 system prompt 超长');
+        logger.warn('[XML Formatter] 工具数量过多 (>20)，可能导致 system prompt 超长');
     }
 
-    let xml = '\n\nIn this environment you have access to a set of tools you can use to answer the user\'s question.\n\n';
+    let xml =
+        "\n\nIn this environment you have access to a set of tools you can use to answer the user's question.\n\n";
     xml += '## Tool Use Formatting\n\n';
-    xml += 'Tool use is formatted using XML-style tags. The tool name is enclosed in opening and closing tags, ';
-    xml += 'and each parameter is similarly enclosed within its own set of tags. Here\'s the structure:\n\n';
+    xml +=
+        'Tool use is formatted using XML-style tags. The tool name is enclosed in opening and closing tags, ';
+    xml +=
+        "and each parameter is similarly enclosed within its own set of tags. Here's the structure:\n\n";
     xml += '<tool_use>\n';
     xml += '  <name>{tool_name}</name>\n';
     xml += '  <arguments>{json_arguments}</arguments>\n';
@@ -81,11 +72,12 @@ export function convertToolsToXML(tools) {
 
     // 工具列表
     xml += '## Available Tools\n\n';
-    tools.forEach(tool => {
+    tools.forEach((tool) => {
         // 提取工具信息（兼容不同格式）
         const name = tool.name || tool.function?.name;
         const description = tool.description || tool.function?.description;
-        const parameters = tool.inputSchema || tool.input_schema || tool.parameters || tool.function?.parameters;
+        const parameters =
+            tool.inputSchema || tool.input_schema || tool.parameters || tool.function?.parameters;
 
         if (!name) return; // 跳过无效工具
 
@@ -123,7 +115,8 @@ export function convertToolsToXML(tools) {
     // Extended Thinking 支持
     xml += '## Extended Thinking with Tools\n\n';
     xml += 'You can use <thinking> tags to show your reasoning process BEFORE calling tools:\n\n';
-    xml += '<thinking>I need to check the weather in Tokyo, so I will call the weather tool.</thinking>\n';
+    xml +=
+        '<thinking>I need to check the weather in Tokyo, so I will call the weather tool.</thinking>\n';
     xml += '<tool_use>\n';
     xml += '  <name>weather</name>\n';
     xml += '  <arguments>{"location": "Tokyo"}</arguments>\n';
@@ -132,11 +125,13 @@ export function convertToolsToXML(tools) {
     // 明确的规则
     xml += '## Tool Use Rules\n\n';
     xml += 'Here are the rules you MUST follow:\n';
-    xml += '1. Always use the correct parameter values. Never use variable names, use actual values.\n';
+    xml +=
+        '1. Always use the correct parameter values. Never use variable names, use actual values.\n';
     xml += '2. Call a tool only when needed. Do not call tools if you can answer directly.\n';
     xml += '3. If no tool is needed, just answer the question directly.\n';
     xml += '4. **CRITICAL**: Never repeat the exact same tool call with the same parameters.\n';
-    xml += '5. **CRITICAL**: Simply mentioning a tool in <thinking> does NOT execute it. You MUST output the <tool_use> XML block.\n';
+    xml +=
+        '5. **CRITICAL**: Simply mentioning a tool in <thinking> does NOT execute it. You MUST output the <tool_use> XML block.\n';
     xml += '6. Use the EXACT format shown above. Do not use any other format.\n\n';
 
     // 激励语句
@@ -180,9 +175,13 @@ export function extractXMLToolCalls(text) {
                     name,
                     arguments: args
                 });
-                console.log('[XML Parser] 提取到 tool_use 格式工具调用:', name);
+                logger.debug('[XML Parser] 提取到 tool_use 格式工具调用:', name);
             } catch (error) {
-                console.error('[XML Parser] tool_use 格式解析参数失败:', argsText.substring(0, 100), error);
+                logger.error(
+                    '[XML Parser] tool_use 格式解析参数失败:',
+                    argsText.substring(0, 100),
+                    error
+                );
                 // 返回错误对象而不是跳过
                 toolCalls.push({
                     id: generateToolCallId(),
@@ -214,9 +213,13 @@ export function extractXMLToolCalls(text) {
                     name,
                     arguments: args
                 });
-                console.log('[XML Parser] 提取到 function_call 格式工具调用:', name);
+                logger.debug('[XML Parser] 提取到 function_call 格式工具调用:', name);
             } catch (error) {
-                console.error('[XML Parser] function_call 格式解析参数失败:', argsText.substring(0, 100), error);
+                logger.error(
+                    '[XML Parser] function_call 格式解析参数失败:',
+                    argsText.substring(0, 100),
+                    error
+                );
                 // 返回错误对象而不是跳过
                 toolCalls.push({
                     id: generateToolCallId(),
@@ -238,7 +241,8 @@ export function extractXMLToolCalls(text) {
         const args = {};
 
         // 解析 parameter 标签（兼容 antml:parameter）
-        const paramRegex = /<(?:antml:)?parameter\s+name="([^"]+)">([\s\S]*?)<\/(?:antml:)?parameter>/gi;
+        const paramRegex =
+            /<(?:antml:)?parameter\s+name="([^"]+)">([\s\S]*?)<\/(?:antml:)?parameter>/gi;
         let paramMatch;
         while ((paramMatch = paramRegex.exec(paramsContent)) !== null) {
             const paramName = paramMatch[1].trim();
@@ -246,7 +250,7 @@ export function extractXMLToolCalls(text) {
             // 尝试解析 JSON 值
             try {
                 paramValue = JSON.parse(paramValue);
-            } catch (e) {
+            } catch (_error) {
                 // 保留字符串值
             }
             args[paramName] = paramValue;
@@ -258,13 +262,13 @@ export function extractXMLToolCalls(text) {
                 name,
                 arguments: args
             });
-            console.log('[XML Parser] 提取到 invoke 格式工具调用:', name);
+            logger.debug('[XML Parser] 提取到 invoke 格式工具调用:', name);
         }
     }
 
     // 输出解析结果日志
     if (toolCalls.length > 0) {
-        console.log('[XML Parser] 共提取到', toolCalls.length, '个工具调用');
+        logger.debug('[XML Parser] 共提取到', toolCalls.length, '个工具调用');
     }
 
     return toolCalls;
@@ -277,14 +281,14 @@ export function extractXMLToolCalls(text) {
  */
 export class XMLStreamAccumulator {
     constructor() {
-        this.buffer = '';           // 累积的文本
-        this.displayText = '';      // 展示给用户的文本（不含 XML 标签）
-        this.inToolUse = false;     // 是否在 tool_use/invoke 标签内
-        this.inThinking = false;    // 是否在 thinking 标签内
-        this.currentToolXML = '';   // 当前工具的 XML
-        this.currentThinking = '';  // 当前思考的内容
-        this.completedCalls = [];   // 已完成的工具调用
-        this.thinkingBlocks = [];   // 已完成的思考块
+        this.buffer = ''; // 累积的文本
+        this.displayText = ''; // 展示给用户的文本（不含 XML 标签）
+        this.inToolUse = false; // 是否在 tool_use/invoke 标签内
+        this.inThinking = false; // 是否在 thinking 标签内
+        this.currentToolXML = ''; // 当前工具的 XML
+        this.currentThinking = ''; // 当前思考的内容
+        this.completedCalls = []; // 已完成的工具调用
+        this.thinkingBlocks = []; // 已完成的思考块
     }
 
     /**
@@ -300,7 +304,7 @@ export class XMLStreamAccumulator {
 
             // 错误边界 - 检测过长的 buffer（防止内存泄漏）
             if (this.buffer.length > XML_MAX_BUFFER_SIZE) {
-                console.error('[XMLStreamAccumulator] Buffer 过长，可能存在格式错误');
+                logger.error('[XMLStreamAccumulator] Buffer 过长，可能存在格式错误');
                 this.buffer = this.buffer.slice(-1000);
                 this.inToolUse = false;
                 this.currentToolXML = '';
@@ -329,7 +333,9 @@ export class XMLStreamAccumulator {
             }
 
             // 检测 tool_use 或 invoke/antml:invoke 开始
-            const toolStartMatch = this.buffer.match(/<(tool_use|(?:antml:)?invoke\s+name="[^"]+")/);
+            const toolStartMatch = this.buffer.match(
+                /<(tool_use|(?:antml:)?invoke\s+name="[^"]+")/
+            );
             if (toolStartMatch && !this.inToolUse && !this.inThinking) {
                 this.inToolUse = true;
                 const beforeTag = this.buffer.substring(0, toolStartMatch.index);
@@ -350,7 +356,7 @@ export class XMLStreamAccumulator {
                 this.currentThinking += deltaText;
 
                 if (this.currentThinking.length > 20000) {
-                    console.error('[XMLStreamAccumulator] 单个思考块过长，跳过');
+                    logger.error('[XMLStreamAccumulator] 单个思考块过长，跳过');
                     this.inThinking = false;
                     this.currentThinking = '';
                     this.buffer = '';
@@ -365,22 +371,27 @@ export class XMLStreamAccumulator {
                 const thinkingEndMatch = this.currentThinking.match(/<\/thinking>/);
                 if (thinkingEndMatch) {
                     this.inThinking = false;
-                    const thinkingContent = this.currentThinking
+                    const thinkingContent = this.currentThinking // 运行时变量，非旧格式字段
                         .replace(/<thinking>/, '')
                         .replace(/<\/thinking>/, '')
                         .trim();
 
                     if (thinkingContent) {
                         this.thinkingBlocks.push(thinkingContent);
-                        console.log('[XMLStreamAccumulator] 检测到思考块:', thinkingContent.substring(0, 50) + '...');
+                        logger.debug(
+                            '[XMLStreamAccumulator] 检测到思考块:',
+                            thinkingContent.substring(0, 50) + '...'
+                        );
                     }
 
-                    const afterTag = this.currentThinking.substring(thinkingEndMatch.index + '</thinking>'.length);
+                    const afterTag = this.currentThinking.substring(
+                        thinkingEndMatch.index + '</thinking>'.length
+                    );
 
                     // 立即将思考块后的文本添加到 displayText
                     // 如果思考块后 Claude 停止输出，afterTag 会丢失
                     this.displayText += afterTag;
-                    this.buffer = '';  // 清空 buffer（已添加到 displayText）
+                    this.buffer = ''; // 清空 buffer（已添加到 displayText）
                     this.currentThinking = '';
                 }
             }
@@ -389,7 +400,7 @@ export class XMLStreamAccumulator {
                 this.currentToolXML += deltaText;
 
                 if (this.currentToolXML.length > XML_MAX_TOOL_CONTENT_LENGTH) {
-                    console.error('[XMLStreamAccumulator] 单个工具调用过长，跳过');
+                    logger.error('[XMLStreamAccumulator] 单个工具调用过长，跳过');
                     this.inToolUse = false;
                     this.currentToolXML = '';
                     this.buffer = '';
@@ -407,25 +418,35 @@ export class XMLStreamAccumulator {
 
                     try {
                         // 调试日志：显示原始 XML 内容
-                        console.log('[XMLStreamAccumulator] 原始 XML 内容:', this.currentToolXML);
+                        logger.debug('[XMLStreamAccumulator] 原始 XML 内容:', this.currentToolXML);
 
                         const toolCalls = extractXMLToolCalls(this.currentToolXML);
                         if (toolCalls.length > 0) {
                             this.completedCalls.push(...toolCalls);
                         } else {
-                            console.warn('[XMLStreamAccumulator] 解析 XML 未提取到工具调用，XML:', this.currentToolXML.substring(0, 500));
+                            logger.warn(
+                                '[XMLStreamAccumulator] 解析 XML 未提取到工具调用，XML:',
+                                this.currentToolXML.substring(0, 500)
+                            );
                         }
                     } catch (parseError) {
-                        console.error('[XMLStreamAccumulator] 解析 XML 失败:', parseError, 'XML:', this.currentToolXML.substring(0, 500));
+                        logger.error(
+                            '[XMLStreamAccumulator] 解析 XML 失败:',
+                            parseError,
+                            'XML:',
+                            this.currentToolXML.substring(0, 500)
+                        );
                     }
 
                     const closingTag = endMatch[0];
-                    const afterTag = this.currentToolXML.substring(endMatch.index + closingTag.length);
+                    const afterTag = this.currentToolXML.substring(
+                        endMatch.index + closingTag.length
+                    );
 
                     // 立即将工具调用后的文本添加到 displayText
                     // 如果工具调用后 Claude 停止输出，afterTag 会丢失
                     this.displayText += afterTag;
-                    this.buffer = '';  // 清空 buffer（已添加到 displayText）
+                    this.buffer = ''; // 清空 buffer（已添加到 displayText）
                     this.currentToolXML = '';
                 }
             } else {
@@ -439,9 +460,8 @@ export class XMLStreamAccumulator {
                 displayText: this.displayText,
                 error: null
             };
-
         } catch (error) {
-            console.error('[XMLStreamAccumulator] processDelta 异常:', error);
+            logger.error('[XMLStreamAccumulator] processDelta 异常:', error);
             this.inToolUse = false;
             this.buffer = '';
             this.currentToolXML = '';
@@ -459,8 +479,8 @@ export class XMLStreamAccumulator {
      */
     getCompletedCalls() {
         const calls = [...this.completedCalls];
-        this.completedCalls = [];  // 清空已处理的工具
-        console.log(`[XMLStreamAccumulator] 返回 ${calls.length} 个工具调用并清空缓存`);
+        this.completedCalls = []; // 清空已处理的工具
+        logger.debug(`[XMLStreamAccumulator] 返回 ${calls.length} 个工具调用并清空缓存`);
         return calls;
     }
 

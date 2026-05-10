@@ -4,7 +4,7 @@
     border: var(--border);
     background: var(--color-bg-surface);
     color: var(--color-text-primary);
-    font-family: var(--font-mono);
+    font-family: var(--font-ui-accent);
     font-size: var(--fs-base);
     font-weight: 500;
     cursor: pointer;
@@ -36,10 +36,10 @@
     top: 8px;
     right: 8px;
     padding: 4px 10px;
-    border: 2px solid rgba(255,255,255,0.5);
+    border: 2px solid rgba(var(--color-bg-surface-rgb), 0.5);
     background: transparent;
     color: var(--color-text-inverse);
-    font-family: var(--font-mono);
+    font-family: var(--font-ui-accent);
     font-size: var(--fs-sm);
     cursor: pointer;
     opacity: 0;
@@ -62,4 +62,3 @@
         opacity: 1;
     }
 }
-

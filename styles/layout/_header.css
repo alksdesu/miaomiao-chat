@@ -87,7 +87,7 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 12px 20px;
+    padding: calc(12px + var(--app-safe-top)) 20px 12px;
 }
 
 .header-left {
@@ -112,7 +112,7 @@
     width: 44px;
     height: 44px;
     background: transparent;
-    border: 2px solid rgba(255,255,255,0.3);
+    border: 2px solid rgba(255, 255, 255, 0.3);
     color: var(--color-text-inverse);
     box-shadow: none;
 }
@@ -149,7 +149,7 @@
         display: block;
         flex: 1;
         text-align: center;
-        font-family: var(--font-mono);
+        font-family: var(--font-ui-accent);
         font-size: var(--fs-md);
         font-weight: 600;
         color: var(--color-text-inverse);
@@ -159,4 +159,3 @@
         padding: 0 4px;
     }
 }
-

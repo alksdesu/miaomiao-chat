@@ -3,7 +3,7 @@
  * 根据模型能力过滤和转换历史消息，确保跨模型对话兼容性
  */
 
-import { state } from '../core/state.js';
+import { logger } from './logger.js';
 import { PartType, MediaKind, hasParts } from '../messages/schema.js';
 
 /**
@@ -14,11 +14,11 @@ import { PartType, MediaKind, hasParts } from '../messages/schema.js';
  */
 export function filterMessagesByCapabilities(messages, modelCapabilities) {
     if (!modelCapabilities) {
-        console.warn('[消息过滤] 无能力配置，跳过过滤');
+        logger.warn('[消息过滤] 无能力配置，跳过过滤');
         return messages;
     }
 
-    console.log('[消息过滤] 开始过滤，能力配置:', modelCapabilities);
+    logger.debug('[消息过滤] 开始过滤，能力配置:', modelCapabilities);
 
     const filteredMessages = messages.map((msg, index) => {
         // 只处理 assistant 和 user 消息，system 消息保持不变
@@ -38,7 +38,7 @@ export function filterMessagesByCapabilities(messages, modelCapabilities) {
         return msg;
     });
 
-    console.log(`[消息过滤] 完成：${messages.length} → ${filteredMessages.length} 条消息`);
+    logger.debug(`[消息过滤] 完成：${messages.length} → ${filteredMessages.length} 条消息`);
     return filteredMessages;
 }
 
@@ -54,18 +54,18 @@ function handleAssistantImageMessage(msg, capabilities, index) {
 
     // 策略 1: 模型支持图片输入但不支持输出 → 转为 user 消息
     if (imageInput && !imageOutput) {
-        console.log(`[消息过滤] 转换 assistant 图片为 user（消息 #${index + 1}）`);
+        logger.debug(`[消息过滤] 转换 assistant 图片为 user（消息 #${index + 1}）`);
         return convertAssistantImageToUser(msg, index);
     }
 
     // 策略 2: 模型两者都不支持 → 删除图片，保留文本
     if (!imageInput && !imageOutput) {
-        console.log(`[消息过滤] 删除 assistant 图片（模型不支持多模态，消息 #${index + 1}）`);
+        logger.debug(`[消息过滤] 删除 assistant 图片（模型不支持多模态，消息 #${index + 1}）`);
         return removeImagesFromMessage(msg, 'assistant');
     }
 
     // 策略 3: 模型支持图片输出 → 保留原样
-    console.log(`[消息过滤] 保留 assistant 图片（模型支持输出，消息 #${index + 1}）`);
+    logger.debug(`[消息过滤] 保留 assistant 图片（模型支持输出，消息 #${index + 1}）`);
     return msg;
 }
 
@@ -78,11 +78,11 @@ function handleAssistantImageMessage(msg, capabilities, index) {
 function handleUserImageMessage(msg, capabilities) {
     // 如果模型不支持图片输入，删除用户的图片
     if (!capabilities.imageInput) {
-        console.log('[消息过滤] 删除 user 图片（模型不支持 Vision）');
+        logger.debug('[消息过滤] 删除 user 图片（模型不支持 Vision）');
         return removeImagesFromMessage(msg, 'user');
     }
 
-    console.log('[消息过滤] 保留 user 图片（模型支持 Vision）');
+    logger.debug('[消息过滤] 保留 user 图片（模型支持 Vision）');
     return msg;
 }
 
@@ -109,7 +109,7 @@ function convertAssistantImageToUser(msg, messageIndex) {
     }
     // 旧格式：从 content 读取
     else if (Array.isArray(msg.content)) {
-        msg.content.forEach(part => {
+        msg.content.forEach((part) => {
             if (part.type === 'text') {
                 textParts.push(part.text);
             } else if (part.type === 'thinking') {
@@ -146,7 +146,7 @@ function convertAssistantImageToUser(msg, messageIndex) {
     newContent.push({ type: 'text', text: placeholder });
 
     // 添加图片
-    imageParts.forEach(img => {
+    imageParts.forEach((img) => {
         newContent.push(img);
     });
 
@@ -185,7 +185,7 @@ function removeImagesFromMessage(msg, role) {
     }
     // 旧格式：从 content 读取
     else if (Array.isArray(msg.content)) {
-        msg.content.forEach(part => {
+        msg.content.forEach((part) => {
             if (part.type === 'text') {
                 textParts.push(part.text);
             } else if (part.type === 'thinking') {
@@ -217,9 +217,10 @@ function removeImagesFromMessage(msg, role) {
     }
 
     // 添加占位符说明
-    const placeholder = role === 'assistant'
-        ? `\n\n[AI 生成了 ${imageCount} 张图片，但当前模型不支持显示]`
-        : `\n\n[你上传了 ${imageCount} 张图片，但当前模型不支持图片理解]`;
+    const placeholder =
+        role === 'assistant'
+            ? `\n\n[AI 生成了 ${imageCount} 张图片，但当前模型不支持显示]`
+            : `\n\n[你上传了 ${imageCount} 张图片，但当前模型不支持图片理解]`;
 
     newText = (newText + placeholder).trim();
 
@@ -230,8 +231,10 @@ function removeImagesFromMessage(msg, role) {
     };
     // 同步更新 parts（移除 media，保留其他）
     if (result.parts && Array.isArray(result.parts)) {
-        result.parts = result.parts.filter(p => !(p.type === PartType.MEDIA && p.media === MediaKind.IMAGE));
-        const tp = result.parts.find(p => p.type === PartType.TEXT);
+        result.parts = result.parts.filter(
+            (p) => !(p.type === PartType.MEDIA && p.media === MediaKind.IMAGE)
+        );
+        const tp = result.parts.find((p) => p.type === PartType.TEXT);
         if (tp) tp.text = newText;
     }
     return result;
@@ -244,7 +247,7 @@ function removeImagesFromMessage(msg, role) {
  */
 function hasImageContent(content) {
     if (Array.isArray(content)) {
-        return content.some(part => part.type === 'image_url');
+        return content.some((part) => part.type === 'image_url');
     }
     return false;
 }
@@ -254,7 +257,7 @@ function hasImageContent(content) {
  */
 function hasImageInParts(parts) {
     if (Array.isArray(parts)) {
-        return parts.some(p => p.type === PartType.MEDIA && p.media === MediaKind.IMAGE);
+        return parts.some((p) => p.type === PartType.MEDIA && p.media === MediaKind.IMAGE);
     }
     return false;
 }

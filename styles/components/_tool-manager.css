@@ -6,7 +6,6 @@
 /* ========== 模态框容器 ========== */
 
 #tool-manager-modal {
-    display: none;
     position: fixed;
     top: 0;
     left: 0;
@@ -14,13 +13,21 @@
     height: 100%;
     background: var(--overlay-heavy);
     z-index: var(--z-modal-settings);
+    /* 始终保持 flex 布局，用 visibility 控制可见性，
+       避免 display:none→flex 在安卓 WebView 上引发重排闪烁 */
+    display: flex;
     align-items: center;
     justify-content: center;
-    animation: fadeIn 0.15s ease-out;
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+    -webkit-tap-highlight-color: transparent;
 }
 
-#tool-manager-modal.open {
-    display: flex;
+#tool-manager-modal.active {
+    visibility: visible;
+    opacity: 1;
+    pointer-events: auto;
 }
 
 /* ========== 模态框内容 ========== */
@@ -35,7 +42,6 @@
     max-height: 800px;
     display: flex;
     flex-direction: column;
-    animation: slideUp 0.3s ease-out;
     box-shadow: var(--shadow-lg);
     overflow: hidden;
 }
@@ -48,6 +54,13 @@
     to {
         transform: translateY(0);
         opacity: 1;
+    }
+}
+
+/* 桌面端：打开时内容卡片滑入动画（仅桌面，移动端全屏无需动画） */
+@media (min-width: 769px) {
+    #tool-manager-modal.active .tool-manager-content {
+        animation: slideUp 0.3s ease-out;
     }
 }
 
@@ -178,16 +191,18 @@
     box-shadow: var(--shadow-sm);
 }
 
-.tool-item:hover {
-    border-color: var(--md-blue);
-    transform: translate(3px, -3px);
-    box-shadow: none;
+@media (hover: hover) {
+    .tool-item:hover {
+        border-color: var(--md-blue);
+        transform: translate(3px, -3px);
+        box-shadow: none;
+    }
 }
 
 .tool-item.selected {
     border-color: var(--md-blue);
     border-left-width: 4px;
-    background: rgba(14, 165, 233, 0.05);
+    background: rgba(var(--palette-blue-rgb), 0.05);
 }
 
 .tool-item-content {
@@ -247,7 +262,7 @@
 
 .tool-enable-switch:checked + .switch-slider::before {
     transform: translateX(16px);
-    background: var(--color-text-inverse, #FFFFFF);
+    background: var(--color-text-inverse, #ffffff);
 }
 
 /* 添加自定义工具按钮 */
@@ -269,10 +284,12 @@
     box-shadow: var(--shadow-sm);
 }
 
-#add-custom-tool-btn:hover {
-    background: var(--md-blue-dark);
-    transform: translate(3px, -3px);
-    box-shadow: none;
+@media (hover: hover) {
+    #add-custom-tool-btn:hover {
+        background: var(--md-blue-dark);
+        transform: translate(3px, -3px);
+        box-shadow: none;
+    }
 }
 
 #add-custom-tool-btn:active {
@@ -391,7 +408,7 @@
 
 /* 代码编辑器 */
 .code-editor {
-    font-family: 'Courier New', monospace;
+    font-family: var(--font-mono);
     font-size: 0.85rem;
     line-height: 1.5;
 }
@@ -422,7 +439,7 @@
 }
 
 .validation-result.success {
-    background: rgba(20, 184, 166, 0.1);
+    background: rgba(var(--palette-teal-rgb), 0.1);
     border: 2px solid var(--md-teal);
 }
 
@@ -471,7 +488,7 @@
     width: auto;
 }
 
-.rate-limit-inputs input[type="number"] {
+.rate-limit-inputs input[type='number'] {
     width: 80px;
 }
 
@@ -497,13 +514,15 @@
     font-size: 0.9rem;
     cursor: pointer;
     transition: all 0.15s var(--ease);
-    font-family: inherit;
+    font-family: var(--font-ui-accent);
     box-shadow: var(--shadow-sm);
 }
 
-.btn:hover {
-    transform: translate(3px, -3px);
-    box-shadow: none;
+@media (hover: hover) {
+    .btn:hover {
+        transform: translate(3px, -3px);
+        box-shadow: none;
+    }
 }
 
 .btn:active {
@@ -527,8 +546,10 @@
     color: var(--color-text-inverse);
 }
 
-.btn-primary:hover {
-    background: var(--md-blue-dark);
+@media (hover: hover) {
+    .btn-primary:hover {
+        background: var(--md-blue-dark);
+    }
 }
 
 .btn-secondary {
@@ -537,8 +558,10 @@
     color: var(--color-text-inverse);
 }
 
-.btn-secondary:hover {
-    background: var(--md-muted);
+@media (hover: hover) {
+    .btn-secondary:hover {
+        background: var(--md-muted);
+    }
 }
 
 .btn-danger {
@@ -547,8 +570,10 @@
     color: var(--color-text-inverse);
 }
 
-.btn-danger:hover {
-    background: var(--md-coral);
+@media (hover: hover) {
+    .btn-danger:hover {
+        background: var(--md-coral);
+    }
 }
 
 .btn-default {
@@ -557,9 +582,11 @@
     color: var(--md-text);
 }
 
-.btn-default:hover {
-    background: var(--md-surface);
-    border-color: var(--md-muted);
+@media (hover: hover) {
+    .btn-default:hover {
+        background: var(--md-surface);
+        border-color: var(--md-muted);
+    }
 }
 
 /* ========== 桌面端隐藏移动端专用元素 ========== */
@@ -574,7 +601,9 @@
 @media (max-width: 768px) {
     /* 全屏 + 列表/详情切换 */
     .tool-manager-content {
+        animation: none;
         width: 100vw;
+        height: 100vh;
         height: 100dvh;
         max-width: 100%;
         max-height: 100%;
@@ -609,12 +638,13 @@
         background: var(--color-bg-primary);
     }
 
-    /* 移动端列表头部 */
+    /* 移动端列表头部
+       顶部真实贴边元素是 .tool-manager-tabs，这里只保留内容区自身内边距 */
     .tool-list-header {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px;
+        padding: 10px 12px;
         border-bottom: 1px solid var(--color-border-secondary);
         flex-shrink: 0;
         background: var(--color-bg-accent);
@@ -652,12 +682,13 @@
         transform: translateX(0);
     }
 
-    /* 详情头部（返回按钮 + 标题） */
+    /* 详情头部（返回按钮 + 标题）
+       安全区由上方 .tool-manager-tabs 统一承担，避免重复下压 */
     .tool-detail-header {
         display: flex;
         align-items: center;
         gap: 8px;
-        padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px;
+        padding: 10px 12px;
         border-bottom: 1px solid var(--color-border-secondary);
         flex-shrink: 0;
         background: var(--color-bg-accent);
@@ -713,10 +744,20 @@
     }
 
     /* 表单缩小 */
-    .form-actions { flex-direction: column; }
-    .form-actions .btn { width: 100%; }
-    .rate-limit-inputs { flex-direction: column; align-items: flex-start; }
-    .rate-limit-inputs input, .rate-limit-inputs select { width: 100%; }
+    .form-actions {
+        flex-direction: column;
+    }
+    .form-actions .btn {
+        width: 100%;
+    }
+    .rate-limit-inputs {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    .rate-limit-inputs input,
+    .rate-limit-inputs select {
+        width: 100%;
+    }
 }
 
 /* ========== 滚动条样式 ========== */

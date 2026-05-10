@@ -12,10 +12,19 @@
  */
 
 import {
-    PartType, MediaKind, ToolState, Role,
-    createMessage, createMeta,
-    textPart, thinkingPart, mediaPart, toolCallPart, filePart,
+    PartType,
+    MediaKind,
+    ToolState,
+    Role,
+    createMessage,
+    createMeta,
+    textPart,
+    thinkingPart,
+    mediaPart,
+    toolCallPart,
+    filePart
 } from './schema.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * 迁移一个会话的消息数组
@@ -49,7 +58,7 @@ export function migrateSession(openaiMsgs, geminiMsgs = [], claudeMsgs = []) {
                     toolMessages.set(toolCallId, {
                         content: msg.content,
                         name: msg._toolName || msg.name || '',
-                        index: i,
+                        index: i
                     });
                 }
                 continue;
@@ -91,8 +100,10 @@ export function migrateSession(openaiMsgs, geminiMsgs = [], claudeMsgs = []) {
 
     // 警告未合并的孤立 tool 消息
     if (toolMessages.size > 0) {
-        console.warn(`[migration] ${toolMessages.size} 个 tool 结果消息未能合并（无对应 tool_call）:`,
-            [...toolMessages.keys()]);
+        logger.warn(
+            `[migration] ${toolMessages.size} 个 tool 结果消息未能合并（无对应 tool_call）:`,
+            [...toolMessages.keys()]
+        );
     }
 
     result.messages = converted;
@@ -107,16 +118,20 @@ function migrateOneMessage(msg, gemini, claude) {
     const parts = [];
     const rawMeta = {};
 
-    // 1. 思维链
+    // 1. 思维链（迁移必须保留：读取旧字段以转换为新格式）
     const thinkingText = msg.thinkingContent || '';
     if (thinkingText) {
         // 签名来源：Claude 用 thinkingSignature，Gemini 用 thoughtSignature
-        const sig = msg.thinkingSignature || msg.thoughtSignature
-            || claude?.thinkingSignature || gemini?.thoughtSignature || null;
+        const sig =
+            msg.thinkingSignature ||
+            msg.thoughtSignature ||
+            claude?.thinkingSignature ||
+            gemini?.thoughtSignature ||
+            null;
         parts.push(thinkingPart(thinkingText, sig));
     }
 
-    // 2. 文本内容 + 多模态
+    // 2. 文本内容 + 多模态（迁移必须保留：读取旧 contentParts 以转换为新格式）
     if (msg.contentParts && msg.contentParts.length > 0) {
         convertOldContentParts(msg.contentParts, parts);
     } else {
@@ -132,12 +147,21 @@ function migrateOneMessage(msg, gemini, claude) {
             const name = fn.name || tc.name || '';
             let args = fn.arguments || tc.arguments || {};
             if (typeof args === 'string') {
-                try { args = JSON.parse(args); } catch { /* keep string */ }
+                try {
+                    args = JSON.parse(args);
+                } catch {
+                    /* keep string */
+                }
             }
             const part = toolCallPart(tc.id || '', name, args);
             // 保留已有的状态和结果
-            if (tc.status) part.state = tc.status === 'completed' ? ToolState.DONE
-                : tc.status === 'failed' ? ToolState.ERROR : tc.status;
+            if (tc.status)
+                part.state =
+                    tc.status === 'completed'
+                        ? ToolState.DONE
+                        : tc.status === 'failed'
+                          ? ToolState.ERROR
+                          : tc.status;
             if (tc.result) part.result = tc.result;
             parts.push(part);
         }
@@ -146,7 +170,7 @@ function migrateOneMessage(msg, gemini, claude) {
     // 4. 构建 meta
     const meta = createMeta({
         model: msg.modelName || '',
-        provider: msg.providerName || '',
+        provider: msg.providerName || ''
     });
 
     // stats
@@ -169,12 +193,12 @@ function migrateOneMessage(msg, gemini, claude) {
         meta.raw = rawMeta;
     }
 
-    // 5. 构建 replies
+    // 5. 构建 replies（迁移必须保留：读取旧 allReplies 以转换为新格式）
     let replies = null;
     if (msg.allReplies && msg.allReplies.length > 1) {
         replies = {
-            all: msg.allReplies.map(r => migrateReply(r)),
-            selected: msg.selectedReplyIndex || 0,
+            all: msg.allReplies.map((r) => migrateReply(r)), // 迁移必须保留
+            selected: msg.selectedReplyIndex || 0
         };
     }
 
@@ -184,7 +208,7 @@ function migrateOneMessage(msg, gemini, claude) {
         error = {
             type: msg.errorData?.error?.type || 'unknown',
             message: msg.errorData?.error?.message || msg.content || '',
-            status: msg.httpStatus || 0,
+            status: msg.httpStatus || 0
         };
     }
 
@@ -193,7 +217,7 @@ function migrateOneMessage(msg, gemini, claude) {
         ts: msg.timestamp || Date.now(),
         meta,
         replies,
-        error,
+        error
     });
 
     // errorHtml 保持顶层属性（restore.js 从顶层读取）
@@ -205,18 +229,18 @@ function migrateOneMessage(msg, gemini, claude) {
 }
 
 /**
- * 迁移单个 reply（allReplies 中的元素）
+ * 迁移单个 reply（迁移必须保留：allReplies 中的元素转为新格式）
  */
 function migrateReply(reply) {
     const parts = [];
 
-    // 思维链
+    // 思维链（迁移必须保留：读取旧字段）
     if (reply.thinkingContent) {
         const sig = reply.thinkingSignature || reply.thoughtSignature || null;
-        parts.push(thinkingPart(reply.thinkingContent, sig));
+        parts.push(thinkingPart(reply.thinkingContent, sig)); // 迁移必须保留
     }
 
-    // 内容
+    // 内容（迁移必须保留：读取旧 contentParts）
     if (reply.contentParts && reply.contentParts.length > 0) {
         convertOldContentParts(reply.contentParts, parts);
     } else if (reply.content) {
@@ -237,8 +261,8 @@ function migrateReply(reply) {
             ts: reply.timestamp || 0,
             error: {
                 type: reply.errorType || 'unknown',
-                message: reply.errorMessage || '',
-            },
+                message: reply.errorMessage || ''
+            }
         };
     }
 
@@ -251,15 +275,16 @@ function migrateReply(reply) {
     return {
         parts,
         meta: createMeta({ raw: Object.keys(raw).length > 0 ? raw : {} }),
-        ts: reply.timestamp || 0,
+        ts: reply.timestamp || 0
     };
 }
 
 /**
- * 将旧 contentParts 数组转换为新 parts（共享逻辑）
+ * 将旧 contentParts 数组转换为新 parts（迁移必须保留）
  */
 function convertOldContentParts(contentParts, parts) {
     for (const cp of contentParts) {
+        // 迁移必须保留
         if (cp.type === 'thinking') continue;
         if (cp.type === 'text') {
             if (cp.text && cp.text !== '(调用工具)') {
@@ -302,9 +327,13 @@ function extractContentParts(content, parts) {
             } else if (item.type === 'image' && item.source?.data) {
                 // Claude 图片格式
                 const mime = item.source.media_type || 'image/jpeg';
-                parts.push(mediaPart(MediaKind.IMAGE, `data:${mime};base64,${item.source.data}`, mime));
+                parts.push(
+                    mediaPart(MediaKind.IMAGE, `data:${mime};base64,${item.source.data}`, mime)
+                );
             } else if (item.type === 'file' && item.file?.file_data) {
-                parts.push(filePart(item.file.filename || 'file', 'application/pdf', item.file.file_data));
+                parts.push(
+                    filePart(item.file.filename || 'file', 'application/pdf', item.file.file_data)
+                );
             } else if (item.type === 'document' && item.source?.data) {
                 const mime = item.source.media_type || 'application/pdf';
                 parts.push(filePart('document', mime, `data:${mime};base64,${item.source.data}`));
@@ -328,8 +357,7 @@ function parseToolResult(content) {
             if (typeof parsed === 'object' && parsed !== null) {
                 result.content = parsed.text || parsed.content || JSON.stringify(parsed);
                 // 提取图片
-                const images = parsed.image ? [parsed.image]
-                    : parsed.images ? parsed.images : [];
+                const images = parsed.image ? [parsed.image] : parsed.images ? parsed.images : [];
                 for (const img of images) {
                     if (typeof img === 'string' && img.startsWith('data:')) {
                         result.media.push({ type: MediaKind.IMAGE, url: img });
@@ -337,7 +365,9 @@ function parseToolResult(content) {
                 }
                 return result;
             }
-        } catch { /* 不是 JSON，当作纯文本 */ }
+        } catch {
+            /* 不是 JSON，当作纯文本 */
+        }
         result.content = content;
     }
 
@@ -350,16 +380,22 @@ function parseToolResult(content) {
 function createFallbackMessage(msg, index) {
     const role = normalizeRole(msg.role);
     const parts = [];
-    const textContent = typeof msg.content === 'string' ? msg.content
-        : Array.isArray(msg.content) ? msg.content.filter(p => p.type === 'text').map(p => p.text).join('')
-        : '';
+    const textContent =
+        typeof msg.content === 'string'
+            ? msg.content
+            : Array.isArray(msg.content)
+              ? msg.content
+                    .filter((p) => p.type === 'text')
+                    .map((p) => p.text)
+                    .join('')
+              : '';
     if (textContent) parts.push(textPart(textContent));
 
-    console.warn(`[migration] 消息 ${index} 迁移失败，使用降级格式`);
+    logger.warn(`[migration] 消息 ${index} 迁移失败，使用降级格式`);
 
     return createMessage(role, parts, {
         id: msg.id,
-        ts: msg.timestamp || Date.now(),
+        ts: msg.timestamp || Date.now()
     });
 }
 
@@ -377,7 +413,7 @@ export function validateMigration(originalCount, migratedCount, toolMsgCount) {
     if (migratedCount !== expected) {
         return {
             valid: false,
-            error: `消息数量不匹配: 原始 ${originalCount} - tool ${toolMsgCount} = 期望 ${expected}, 实际 ${migratedCount}`,
+            error: `消息数量不匹配: 原始 ${originalCount} - tool ${toolMsgCount} = 期望 ${expected}, 实际 ${migratedCount}`
         };
     }
     return { valid: true };

@@ -3,6 +3,7 @@
  * 支持 Anthropic Claude Messages API
  */
 
+import { logger } from '../utils/logger.js';
 import { state } from '../core/state.js';
 import { buildModelParams, buildThinkingConfig, getCustomHeadersObject } from './params.js';
 import { getPrefillMessages, getOpeningMessages } from '../utils/prefill.js';
@@ -11,58 +12,6 @@ import { filterMessagesByCapabilities } from '../utils/message-filter.js';
 import { getCurrentModelCapabilities } from '../providers/manager.js';
 import { toClaudeMessages } from '../messages/api-adapters.js';
 import { isElectron } from '../utils/platform.js';
-import { escapeXML } from '../tools/xml-formatter.js';
-
-/**
- * 上传图片到 Claude Files API
- * @param {string} base64Data - Base64 编码的图片数据
- * @param {string} mediaType - MIME 类型
- * @returns {Promise<string>} 文件 ID
- */
-async function uploadImageToFilesAPI(base64Data, mediaType) {
-    const apiKey = state.apiKeys.claude;
-    if (!apiKey) {
-        throw new Error('Claude API key not found');
-    }
-
-    try {
-        // 将 base64 转换为 Blob
-        const byteCharacters = atob(base64Data);
-        const byteNumbers = new Array(byteCharacters.length);
-        for (let i = 0; i < byteCharacters.length; i++) {
-            byteNumbers[i] = byteCharacters.charCodeAt(i);
-        }
-        const byteArray = new Uint8Array(byteNumbers);
-        const blob = new Blob([byteArray], { type: mediaType });
-
-        // 创建 FormData
-        const formData = new FormData();
-        formData.append('file', blob, `image.${mediaType.split('/')[1]}`);
-
-        // 上传到 Files API
-        const response = await fetch('https://api.anthropic.com/v1/files', {
-            method: 'POST',
-            headers: {
-                'x-api-key': apiKey,
-                'anthropic-version': '2023-06-01',
-                'anthropic-beta': 'files-api-2025-04-14'
-            },
-            body: formData
-        });
-
-        if (!response.ok) {
-            const error = await response.text();
-            throw new Error(`Failed to upload file: ${response.status} ${error}`);
-        }
-
-        const result = await response.json();
-        console.log(`[Claude] 图片已上传到 Files API: ${result.id}`);
-        return result.id;
-    } catch (error) {
-        console.error('[uploadImageToFilesAPI] 上传失败:', error);
-        throw error;
-    }
-}
 
 /**
  * 发送 Claude 格式的请求
@@ -74,14 +23,14 @@ async function uploadImageToFilesAPI(base64Data, mediaType) {
  */
 export async function sendClaudeRequest(endpoint, apiKey, model, signal = null) {
     // 转换消息格式为 Claude Messages API（新格式 → Claude API 格式）
-    const filtered = state.messages.filter(m => !m.isError && !m.error);
+    const filtered = state.messages.filter((m) => !m.isError && !m.error);
 
     // 根据模型能力过滤消息
     const capabilities = getCurrentModelCapabilities();
     let messagesToConvert = filtered;
     if (capabilities) {
         messagesToConvert = filterMessagesByCapabilities(filtered, capabilities);
-        console.log('📋 [Claude] 消息已根据模型能力过滤:', {
+        logger.debug('📋 [Claude] 消息已根据模型能力过滤:', {
             capabilities,
             filteredCount: messagesToConvert.length
         });
@@ -109,12 +58,21 @@ export async function sendClaudeRequest(endpoint, apiKey, model, signal = null) 
         model: model,
         messages: claudeMessages,
         stream: state.streamEnabled,
-        ...buildModelParams('claude'), // 包含 max_tokens（默认 8192）及其他参数
+        ...buildModelParams('claude') // 包含 max_tokens（默认 8192）及其他参数
     };
 
     // Claude 的 system 是顶层参数（独立于预填充开关）
     if (state.systemPrompt) {
         requestBody.system = processVariables(state.systemPrompt);
+    }
+
+    // AI DevTools Monitor 上下文注入
+    if (state.monitorEnabled) {
+        const { buildDevToolsContext } = await import('../devtools/context-builder.js');
+        const devtoolsCtx = buildDevToolsContext();
+        if (devtoolsCtx) {
+            requestBody.system = (requestBody.system || '') + devtoolsCtx;
+        }
     }
 
     // 添加思维链配置 (Claude Extended Thinking)
@@ -127,10 +85,10 @@ export async function sendClaudeRequest(endpoint, apiKey, model, signal = null) 
     // 1. Code Execution 工具（需要同时添加工具定义 + beta header）
     if (state.codeExecutionEnabled) {
         tools.push({
-            type: "code_execution_20250825",
-            name: "code_execution"
+            type: 'code_execution_20250825',
+            name: 'code_execution'
         });
-        console.log('[Claude] 📊 Code Execution 工具已启用');
+        logger.debug('[Claude] 📊 Code Execution 工具已启用');
     }
 
     // 2. Computer Use 原生工具（仅 Electron 环境且非 XML 模式）
@@ -152,7 +110,7 @@ export async function sendClaudeRequest(endpoint, apiKey, model, signal = null) 
 
         tools.push({
             type: `computer_${computerVersion}`,
-            name: "computer",
+            name: 'computer',
             display_width_px: displayWidth,
             display_height_px: displayHeight,
             display_number: 1
@@ -161,29 +119,33 @@ export async function sendClaudeRequest(endpoint, apiKey, model, signal = null) 
         // 2.2 Bash 命令工具（固定版本 20250124）
         if (state.computerUsePermissions?.bash !== false) {
             tools.push({
-                type: "bash_20250124",
-                name: "bash"
+                type: 'bash_20250124',
+                name: 'bash'
             });
         }
 
         // 2.3 文本编辑器工具（固定版本 20250728）
         if (state.computerUsePermissions?.textEditor !== false) {
             tools.push({
-                type: "text_editor_20250728",
-                name: "str_replace_based_edit_tool"
+                type: 'text_editor_20250728',
+                name: 'str_replace_based_edit_tool'
             });
         }
 
-        console.log(`[Claude] 💻 Computer Use 原生工具已添加（computer: ${computerVersion}, bash: 20250124, text_editor: 20250728）`);
+        logger.debug(
+            `[Claude] 💻 Computer Use 原生工具已添加（computer: ${computerVersion}, bash: 20250124, text_editor: 20250728）`
+        );
     } else if (state.computerUseEnabled && isElectron() && state.xmlToolCallingEnabled) {
-        console.log(`[Claude] 💻 XML 模式：将使用自定义 Computer Use 工具（来自 builtin/computer-use.js）`);
+        logger.debug(
+            `[Claude] 💻 XML 模式：将使用自定义 Computer Use 工具（来自 builtin/computer-use.js）`
+        );
     }
 
     // 3. Web Search 工具（保持不变）
     if (state.webSearchEnabled) {
         tools.push({
-            type: "web_search_20250305",
-            name: "web_search",
+            type: 'web_search_20250305',
+            name: 'web_search',
             max_uses: 5
         });
     }
@@ -198,29 +160,30 @@ export async function sendClaudeRequest(endpoint, apiKey, model, signal = null) 
         tools.push(...systemTools);
 
         if (state.xmlToolCallingEnabled) {
-            console.log('[Claude] 📦 XML 模式：包含所有系统工具（含自定义 computer 工具）');
+            logger.debug('[Claude] 📦 XML 模式：包含所有系统工具（含自定义 computer 工具）');
         }
     } catch (error) {
-        console.warn('[Claude] 工具系统未加载:', error);
+        logger.warn('[Claude] 工具系统未加载:', error);
     }
 
     if (tools.length > 0) {
         if (state.xmlToolCallingEnabled) {
             // XML 模式：只注入 XML 到 system 参数，不使用原生 tools 字段
-            const { injectToolsToClaude, getXMLInjectionStats } = await import('../tools/tool-injection.js');
+            const { injectToolsToClaude, getXMLInjectionStats } =
+                await import('../tools/tool-injection.js');
             injectToolsToClaude(requestBody, tools);
 
             // 性能监控
             const stats = getXMLInjectionStats(tools);
-            console.log('[Claude] 📊 XML 模式启用，注入统计:', stats);
+            logger.debug('[Claude] 📊 XML 模式启用，注入统计:', stats);
         } else {
             // 原生模式：使用标准 tools 字段
             requestBody.tools = tools;
-            console.log('[Claude] 📊 原生 tools 模式，工具数量:', tools.length);
+            logger.debug('[Claude] 📊 原生 tools 模式，工具数量:', tools.length);
         }
     }
 
-    console.log('Sending Claude request:', JSON.stringify(requestBody, null, 2));
+    logger.debug('Sending Claude request:', JSON.stringify(requestBody, null, 2));
 
     const options = {
         method: 'POST',
@@ -229,9 +192,9 @@ export async function sendClaudeRequest(endpoint, apiKey, model, signal = null) 
             'x-api-key': apiKey,
             'anthropic-version': '2023-06-01',
             'anthropic-dangerous-direct-browser-access': 'true',
-            ...getCustomHeadersObject(), // 合并自定义请求头
+            ...getCustomHeadersObject() // 合并自定义请求头
         },
-        body: JSON.stringify(requestBody),
+        body: JSON.stringify(requestBody)
     };
     if (signal) options.signal = signal;
 
@@ -260,7 +223,7 @@ export async function sendClaudeRequest(endpoint, apiKey, model, signal = null) 
         let betaFeatures = [];
 
         if (existingBeta) {
-            betaFeatures = existingBeta.split(',').map(s => s.trim());
+            betaFeatures = existingBeta.split(',').map((s) => s.trim());
         }
 
         // 添加新的 beta 功能（去重）
@@ -271,52 +234,8 @@ export async function sendClaudeRequest(endpoint, apiKey, model, signal = null) 
         }
 
         options.headers['anthropic-beta'] = betaFeatures.join(',');
-        console.log('[Claude] 📊 Beta headers:', betaFeatures.join(', '));
+        logger.debug('[Claude] 📊 Beta headers:', betaFeatures.join(', '));
     }
 
     return await fetch(endpoint, options);
-}
-
-/**
- * 构建 Claude 工具结果消息（Claude 原生格式）
- * @param {Array} toolCalls - 工具调用列表 [{id, name, arguments}]
- * @param {Array} toolResults - 格式无关的结果 [{id, name, result, isError}]
- * @returns {Array} Claude 格式的消息数组
- */
-export function buildToolResultMessages(toolCalls, toolResults) {
-    // XML 模式
-    if (state.xmlToolCallingEnabled) {
-        let toolCallXML = '';
-        for (const tc of toolCalls) {
-            toolCallXML += `<tool_use>\n  <name>${escapeXML(tc.name)}</name>\n  <arguments>${escapeXML(JSON.stringify(tc.arguments))}</arguments>\n</tool_use>\n`;
-        }
-        let toolResultXML = '';
-        for (const r of toolResults) {
-            toolResultXML += `<tool_use_result>\n  <name>${escapeXML(r.name)}</name>\n  <result>${escapeXML(JSON.stringify(r.result))}</result>\n</tool_use_result>\n`;
-        }
-        return [
-            { role: 'assistant', content: toolCallXML.trim() },
-            { role: 'user', content: toolResultXML.trim() }
-        ];
-    }
-
-    // 原生模式：直接返回 Claude 格式
-    const assistantContent = toolCalls.map(tc => {
-        let input = tc.arguments;
-        if (typeof input === 'string') {
-            try { input = JSON.parse(input); } catch { input = {}; }
-        }
-        return { type: 'tool_use', id: tc.id, name: tc.name, input: input || {} };
-    });
-
-    const toolResultContent = toolResults.map(r => ({
-        type: 'tool_result',
-        tool_use_id: r.id,
-        content: JSON.stringify(r.result),
-    }));
-
-    return [
-        { role: 'assistant', content: assistantContent },
-        { role: 'user', content: toolResultContent }
-    ];
 }

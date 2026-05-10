@@ -8,26 +8,31 @@
  */
 export const datetimeTool = {
     name: 'datetime',
-    description: '获取当前时间、格式化日期、时区转换。支持操作: current（当前时间）、format（格式化）、timezone（时区转换）、calculate（日期计算）。',
+    description:
+        '获取当前时间、格式化日期、时区转换。支持操作: current（当前时间）、format（格式化）、timezone（时区转换）、calculate（日期计算）。',
     parameters: {
         type: 'object',
         properties: {
             operation: {
                 type: 'string',
                 enum: ['current', 'format', 'timezone', 'calculate'],
-                description: '操作类型: current-获取当前时间, format-格式化日期, timezone-时区转换, calculate-日期计算'
+                description:
+                    '操作类型: current-获取当前时间, format-格式化日期, timezone-时区转换, calculate-日期计算'
             },
             format: {
                 type: 'string',
-                description: '日期格式（可选）: "iso"（ISO 8601）, "locale"（本地化）, "timestamp"（Unix 时间戳）, "custom"（自定义格式）。默认: "iso"'
+                description:
+                    '日期格式（可选）: "iso"（ISO 8601）, "locale"（本地化）, "timestamp"（Unix 时间戳）, "custom"（自定义格式）。默认: "iso"'
             },
             timezone: {
                 type: 'string',
-                description: '目标时区（可选），例如: "UTC", "America/New_York", "Asia/Shanghai"。默认: 本地时区'
+                description:
+                    '目标时区（可选），例如: "UTC", "America/New_York", "Asia/Shanghai"。默认: 本地时区'
             },
             date: {
                 type: 'string',
-                description: '输入日期（ISO 8601 格式或时间戳），用于 format/timezone/calculate 操作'
+                description:
+                    '输入日期（ISO 8601 格式或时间戳），用于 format/timezone/calculate 操作'
             },
             calculation: {
                 type: 'object',
@@ -57,7 +62,7 @@ export const datetimeTool = {
 export async function datetimeHandler(args) {
     const { operation, format = 'iso', timezone, date, calculation } = args;
 
-    console.log(`[DateTime] 执行操作: ${operation}`, args);
+    logger.debug(`[DateTime] 执行操作: ${operation}`, args);
 
     try {
         let result;
@@ -97,9 +102,8 @@ export async function datetimeHandler(args) {
             success: true,
             ...result
         };
-
     } catch (error) {
-        console.error(`[DateTime] 错误:`, error);
+        logger.error(`[DateTime] 错误:`, error);
         throw new Error(`日期时间操作失败: ${error.message}`);
     }
 }
@@ -168,7 +172,7 @@ function convertTimezone(dateStr, targetTimezone) {
     const parts = formatter.formatToParts(date);
 
     const converted = {};
-    parts.forEach(part => {
+    parts.forEach((part) => {
         if (part.type !== 'literal') {
             converted[part.type] = part.value;
         }
@@ -302,10 +306,13 @@ function formatCustomDate(date) {
     return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
-console.log('[DateTime Tool] 📅 时间日期工具已加载');
+logger.debug('[DateTime Tool] 📅 时间日期工具已加载');
 
 // ========== 标准化工具对象 ==========
 
 import { buildToolFromLegacy } from '../build-tool.js';
+import { logger } from '../../utils/logger.js';
 
-export const datetime = buildToolFromLegacy('datetime', datetimeTool, datetimeHandler, { isReadOnly: () => true });
+export const datetime = buildToolFromLegacy('datetime', datetimeTool, datetimeHandler, {
+    isReadOnly: () => true
+});

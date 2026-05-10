@@ -3,12 +3,13 @@
  * 并行处理多个流式响应
  */
 
+import { logger } from '../utils/logger.js';
 import { state } from '../core/state.js';
-import { eventBus } from '../core/events.js';
-import { recordFirstToken, recordTokens, finalizeStreamStats, getCurrentStreamStatsData, appendStreamStats } from './stats.js';
+import { setSelectedReplyIndex, setCurrentReplies } from '../core/state-mutations.js';
+import { StreamStats, appendStreamStats } from './stats.js';
 import { updateStreamingMessage } from './helpers.js';
 import { saveAssistantMessage } from '../messages/sync.js';
-import { setCurrentMessageIndex } from '../messages/dom-sync.js';  // Bug 2 导入索引设置函数
+import { setCurrentMessageIndex } from '../messages/dom-sync.js'; // Bug 2 导入索引设置函数
 import { renderReplyWithSelector } from '../messages/renderer.js';
 import { renderHumanizedError } from '../utils/errors.js';
 import { saveErrorMessage } from '../messages/sync.js';
@@ -25,10 +26,18 @@ import { isVideoMimeType, isAudioMimeType } from '../utils/media.js';
  * @param {HTMLElement} assistantMessageEl - 助手消息元素
  * @param {string} sessionId - 会话ID
  */
-export async function handleMultiStreamResponses(endpoint, apiKey, model, abortController, assistantMessageEl, sessionId) {
+export async function handleMultiStreamResponses(
+    endpoint,
+    apiKey,
+    model,
+    abortController,
+    assistantMessageEl,
+    sessionId
+) {
     const replyCount = state.replyCount || 1;
 
     // 显示进度
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     state.currentAssistantMessage.innerHTML = `<div class="multi-reply-progress">正在并行生成 ${replyCount} 个回复...</div>`;
 
     // 并行发送所有请求
@@ -57,17 +66,27 @@ export async function handleMultiStreamResponses(endpoint, apiKey, model, abortC
             // 收集错误详情
             if (result.status === 'rejected') {
                 errorDetails.push({ index: i + 1, type: 'network', error: result.reason });
-                console.error(`Response ${i + 1} failed:`, result.reason);
+                logger.error(`Response ${i + 1} failed:`, result.reason);
             } else {
                 // 尝试解析响应体中的错误信息
                 const response = result.value;
                 try {
                     const errorData = await response.clone().json();
-                    errorDetails.push({ index: i + 1, type: 'api', status: response.status, error: errorData });
-                } catch (e) {
-                    errorDetails.push({ index: i + 1, type: 'http', status: response.status, error: { message: `HTTP ${response.status}` } });
+                    errorDetails.push({
+                        index: i + 1,
+                        type: 'api',
+                        status: response.status,
+                        error: errorData
+                    });
+                } catch (_error) {
+                    errorDetails.push({
+                        index: i + 1,
+                        type: 'http',
+                        status: response.status,
+                        error: { message: `HTTP ${response.status}` }
+                    });
                 }
-                console.error(`Response ${i + 1} not ok:`, response.status);
+                logger.error(`Response ${i + 1} not ok:`, response.status);
             }
         }
     }
@@ -80,23 +99,25 @@ export async function handleMultiStreamResponses(endpoint, apiKey, model, abortC
 
         // 添加所有错误的汇总信息（保留完整错误对象）
         if (errorDetails.length > 1) {
-            errorObj.allErrors = errorDetails.map(e => ({
+            errorObj.allErrors = errorDetails.map((e) => ({
                 request: e.index,
                 status: e.status || (e.type === 'network' ? 'Network Error' : 'Unknown'),
                 message: e.error?.error?.message || e.error?.message || String(e.error),
                 // 保留完整的错误对象以便技术详情显示
                 type: e.error?.error?.type || e.error?.type,
                 code: e.error?.error?.code || e.error?.code,
-                fullError: e.error  // 完整错误对象
+                fullError: e.error // 完整错误对象
             }));
         }
 
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
         state.currentAssistantMessage.innerHTML = renderHumanizedError(errorObj, statusCode);
         saveErrorMessage(errorObj, statusCode, renderHumanizedError);
         return;
     }
 
     // 更新进度
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     state.currentAssistantMessage.innerHTML = `<div class="multi-reply-progress">正在接收 ${validResponses.length} 个回复的流式数据...</div>`;
 
     // 并行处理所有流，第一个流实时显示，其他流后台处理
@@ -107,7 +128,7 @@ export async function handleMultiStreamResponses(endpoint, apiKey, model, abortC
     const streamResults = await Promise.allSettled(streamPromises);
 
     // 收集所有回复（成功或失败）
-    const allReplies = [];
+    const allReplies = []; // 运行时变量，非旧格式字段
     const streamErrors = [];
     for (let i = 0; i < streamResults.length; i++) {
         const result = streamResults[i];
@@ -131,19 +152,18 @@ export async function handleMultiStreamResponses(endpoint, apiKey, model, abortC
                 index: i + 1,
                 error: result.reason
             });
-            console.error(`Stream ${i + 1} failed:`, result.reason);
+            logger.error(`Stream ${i + 1} failed:`, result.reason);
         }
     }
 
-    // 完成统计
-    finalizeStreamStats();
-
-    // 处理结果
     if (allReplies.length > 0) {
-        state.currentReplies = allReplies;
-        state.selectedReplyIndex = 0;
+        setCurrentReplies(allReplies);
+        setSelectedReplyIndex(0);
 
         const reply0 = allReplies[0];
+
+        // 同步第一个回复的统计到全局（供 DOM 渲染）
+        if (reply0.stats) reply0.stats.syncToGlobal();
 
         // 保存消息并获取索引
         const messageIndex = saveAssistantMessage({
@@ -153,10 +173,10 @@ export async function handleMultiStreamResponses(endpoint, apiKey, model, abortC
             encryptedContent: reply0.encryptedContent,
             reasoningItemId: reply0.reasoningItemId,
             groundingMetadata: reply0.groundingMetadata,
-            streamStats: getCurrentStreamStatsData(),
+            streamStats: reply0.stats ? reply0.stats.getData() : null,
             allReplies: allReplies,
             selectedReplyIndex: 0,
-            sessionId: sessionId, // 传递会话ID防止串消息
+            sessionId: sessionId
         });
 
         // Bug 2 立即设置 dataset.messageIndex
@@ -188,7 +208,7 @@ export async function handleMultiStreamResponses(endpoint, apiKey, model, abortC
 
             // 如果有多个错误，添加到allErrors数组（保留完整错误对象）
             if (streamErrors.length > 1) {
-                errorObj.error.allErrors = streamErrors.map(e => {
+                errorObj.error.allErrors = streamErrors.map((e) => {
                     const errorMessage = e.error?.message || String(e.error);
                     // 尝试从错误消息中提取类型和代码
                     const [errorType, ...messageParts] = errorMessage.split(':');
@@ -197,7 +217,7 @@ export async function handleMultiStreamResponses(endpoint, apiKey, model, abortC
                         message: messageParts.join(':').trim() || errorMessage,
                         type: errorType || e.error?.type,
                         code: e.error?.code,
-                        fullError: e.error  // 完整错误对象
+                        fullError: e.error // 完整错误对象
                     };
                 });
             }
@@ -205,6 +225,7 @@ export async function handleMultiStreamResponses(endpoint, apiKey, model, abortC
             errorObj = { error: { type: 'empty_response', message: '没有收到有效回复' } };
         }
 
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
         state.currentAssistantMessage.innerHTML = renderHumanizedError(errorObj, 0);
         saveErrorMessage(errorObj, 0, renderHumanizedError);
     }
@@ -219,12 +240,13 @@ export async function handleMultiStreamResponses(endpoint, apiKey, model, abortC
 async function parseStreamToReply(response, showRealtime = false, apiFormat = 'openai') {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
+    const stats = new StreamStats();
     let buffer = '';
     let textContent = '';
     let thinkingContent = '';
     let thoughtSignature = null;
     let groundingMetadata = null;
-    const contentParts = [];
+    const contentParts = []; // 运行时变量，非旧格式字段
 
     switch (apiFormat) {
         case 'gemini':
@@ -252,7 +274,7 @@ async function parseStreamToReply(response, showRealtime = false, apiFormat = 'o
                         if (parsed.error) {
                             const errorCode = parsed.error.code || 'unknown';
                             const errorMessage = parsed.error.message || 'Unknown error';
-                            console.error(`❌ Gemini API error in multi-stream:`, parsed.error);
+                            logger.error(`❌ Gemini API error in multi-stream:`, parsed.error);
 
                             // 抛出错误，让外层Promise.allSettled捕获
                             throw new Error(`${errorCode}: ${errorMessage}`);
@@ -265,23 +287,22 @@ async function parseStreamToReply(response, showRealtime = false, apiFormat = 'o
                                 thoughtSignature = part.thoughtSignature;
                             }
                             if (part.thought) {
-                                if (showRealtime) {
-                                    recordFirstToken();
-                                    recordTokens(part.text);
-                                }
+                                stats.recordFirstToken();
+                                stats.recordTokens(part.text);
                                 thinkingContent += part.text || '';
                             } else if (part.text) {
-                                if (showRealtime) {
-                                    recordFirstToken();
-                                    recordTokens(part.text);
-                                }
+                                stats.recordFirstToken();
+                                stats.recordTokens(part.text);
                                 textContent += part.text;
                             } else if (part.inlineData || part.inline_data) {
                                 const inlineData = part.inlineData || part.inline_data;
                                 const mimeType = inlineData.mimeType || inlineData.mime_type;
                                 const dataUrl = `data:${mimeType};base64,${inlineData.data}`;
-                                const mediaType = isVideoMimeType(mimeType) ? 'video_url'
-                                    : isAudioMimeType(mimeType) ? 'audio_url' : 'image_url';
+                                const mediaType = isVideoMimeType(mimeType)
+                                    ? 'video_url'
+                                    : isAudioMimeType(mimeType)
+                                      ? 'audio_url'
+                                      : 'image_url';
                                 contentParts.push({
                                     type: mediaType,
                                     url: dataUrl,
@@ -301,7 +322,7 @@ async function parseStreamToReply(response, showRealtime = false, apiFormat = 'o
                             updateStreamingMessage(textContent, thinkingContent);
                         }
                     } catch (e) {
-                        console.warn('Gemini stream parse error:', e);
+                        logger.warn('Gemini stream parse error:', e);
                         // 如果是API错误，重新抛出
                         if (e.message.includes(':')) {
                             throw e;
@@ -310,17 +331,19 @@ async function parseStreamToReply(response, showRealtime = false, apiFormat = 'o
                 }
             }
 
+            stats.finalize();
             return {
                 content: textContent,
                 parts: buildGeminiReplyParts(textContent, contentParts),
                 thinkingContent: thinkingContent || null,
                 thoughtSignature: thoughtSignature,
-                groundingMetadata: groundingMetadata
+                groundingMetadata: groundingMetadata,
+                stats
             };
 
-        case 'claude':
-            // eslint-disable-next-line no-case-declarations
+        case 'claude': {
             let claudeSignature = '';
+
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
@@ -341,35 +364,33 @@ async function parseStreamToReply(response, showRealtime = false, apiFormat = 'o
                         if (parsed.type === 'error') {
                             const errorCode = parsed.error?.type || 'unknown';
                             const errorMessage = parsed.error?.message || 'Unknown error';
-                            console.error(`❌ Claude API error in multi-stream:`, parsed.error);
+                            logger.error('❌ Claude API error in multi-stream:', parsed.error);
 
-                            // 抛出错误，让外层Promise.allSettled捕获
+                            // 抛出错误，让外层 Promise.allSettled 捕获
                             throw new Error(`${errorCode}: ${errorMessage}`);
                         }
 
                         if (parsed.type === 'content_block_delta') {
                             const delta = parsed.delta;
                             if (delta?.type === 'text_delta') {
-                                if (showRealtime) {
-                                    recordFirstToken();
-                                    recordTokens(delta.text);
-                                }
+                                stats.recordFirstToken();
+                                stats.recordTokens(delta.text);
                                 textContent += delta.text;
-                                if (showRealtime) updateStreamingMessage(textContent, thinkingContent);
+                                if (showRealtime)
+                                    updateStreamingMessage(textContent, thinkingContent);
                             } else if (delta?.type === 'thinking_delta') {
-                                if (showRealtime) {
-                                    recordFirstToken();
-                                    recordTokens(delta.thinking);
-                                }
+                                stats.recordFirstToken();
+                                stats.recordTokens(delta.thinking);
                                 thinkingContent += delta.thinking;
-                                if (showRealtime) updateStreamingMessage(textContent, thinkingContent);
+                                if (showRealtime)
+                                    updateStreamingMessage(textContent, thinkingContent);
                             } else if (delta?.type === 'signature_delta') {
                                 claudeSignature += delta.signature;
                             }
                         }
                     } catch (e) {
-                        console.warn('Claude stream parse error:', e);
-                        // 如果是API错误，重新抛出
+                        logger.warn('Claude stream parse error:', e);
+                        // 如果是 API 错误，重新抛出
                         if (e.message.includes(':')) {
                             throw e;
                         }
@@ -377,17 +398,20 @@ async function parseStreamToReply(response, showRealtime = false, apiFormat = 'o
                 }
             }
 
+            stats.finalize();
             return {
                 content: textContent,
                 thinkingContent: thinkingContent || null,
-                thinkingSignature: claudeSignature || null
+                thinkingSignature: claudeSignature || null,
+                stats
             };
+        }
 
         case 'openai':
-        default:
-            // eslint-disable-next-line no-case-declarations
+        default: {
             let openaiEncrypted = null;
             let openaiReasoningId = null;
+
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
@@ -404,13 +428,13 @@ async function parseStreamToReply(response, showRealtime = false, apiFormat = 'o
                     try {
                         const parsed = JSON.parse(data);
 
-                        // 检测OpenAI错误响应
+                        // 检测 OpenAI 错误响应
                         if (parsed.error) {
                             const errorCode = parsed.error.code || parsed.error.type || 'unknown';
                             const errorMessage = parsed.error.message || 'Unknown error';
-                            console.error(`❌ OpenAI API error in multi-stream:`, parsed.error);
+                            logger.error('❌ OpenAI API error in multi-stream:', parsed.error);
 
-                            // 抛出错误，让外层Promise.allSettled捕获
+                            // 抛出错误，让外层 Promise.allSettled 捕获
                             throw new Error(`${errorCode}: ${errorMessage}`);
                         }
 
@@ -418,38 +442,32 @@ async function parseStreamToReply(response, showRealtime = false, apiFormat = 'o
 
                         if (delta) {
                             if (typeof delta.content === 'string') {
-                                if (showRealtime) {
-                                    recordFirstToken();
-                                    recordTokens(delta.content);
-                                }
+                                stats.recordFirstToken();
+                                stats.recordTokens(delta.content);
                                 textContent += delta.content;
-                                if (showRealtime) updateStreamingMessage(textContent, thinkingContent);
+                                if (showRealtime)
+                                    updateStreamingMessage(textContent, thinkingContent);
                             }
                             if (delta.reasoning_content) {
-                                if (showRealtime) {
-                                    recordFirstToken();
-                                    recordTokens(delta.reasoning_content);
-                                }
+                                stats.recordFirstToken();
+                                stats.recordTokens(delta.reasoning_content);
                                 thinkingContent += delta.reasoning_content;
-                                if (showRealtime) updateStreamingMessage(textContent, thinkingContent);
+                                if (showRealtime)
+                                    updateStreamingMessage(textContent, thinkingContent);
                             }
                         }
 
                         // Responses API: reasoning delta
                         if (parsed.type === 'response.reasoning.delta' && parsed.delta) {
-                            if (showRealtime) {
-                                recordFirstToken();
-                                recordTokens(parsed.delta);
-                            }
+                            stats.recordFirstToken();
+                            stats.recordTokens(parsed.delta);
                             thinkingContent += parsed.delta;
                             if (showRealtime) updateStreamingMessage(textContent, thinkingContent);
                         }
                         // Responses API: text delta
                         if (parsed.type === 'response.output_text.delta' && parsed.delta) {
-                            if (showRealtime) {
-                                recordFirstToken();
-                                recordTokens(parsed.delta);
-                            }
+                            stats.recordFirstToken();
+                            stats.recordTokens(parsed.delta);
                             textContent += parsed.delta;
                             if (showRealtime) updateStreamingMessage(textContent, thinkingContent);
                         }
@@ -463,8 +481,8 @@ async function parseStreamToReply(response, showRealtime = false, apiFormat = 'o
                             }
                         }
                     } catch (e) {
-                        console.warn('OpenAI stream parse error:', e);
-                        // 如果是API错误，重新抛出
+                        logger.warn('OpenAI stream parse error:', e);
+                        // 如果是 API 错误，重新抛出
                         if (e.message.includes(':')) {
                             throw e;
                         }
@@ -472,12 +490,15 @@ async function parseStreamToReply(response, showRealtime = false, apiFormat = 'o
                 }
             }
 
+            stats.finalize();
             return {
                 content: textContent,
                 thinkingContent: thinkingContent || null,
                 encryptedContent: openaiEncrypted,
                 reasoningItemId: openaiReasoningId,
+                stats
             };
+        }
     }
 }
 
@@ -490,7 +511,7 @@ async function parseStreamToReply(response, showRealtime = false, apiFormat = 'o
 function buildGeminiReplyParts(textContent, contentParts) {
     const parts = [];
     if (textContent) parts.push({ text: textContent });
-    contentParts.forEach(p => {
+    contentParts.forEach((p) => {
         if (p.inlineData) parts.push({ inlineData: p.inlineData });
     });
     return parts;

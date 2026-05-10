@@ -1,3 +1,5 @@
+import { logger } from '../utils/logger.js';
+
 /**
  * EventBus - 轻量级发布/订阅事件系统
  * 用于模块间解耦通信，避免循环依赖
@@ -42,11 +44,11 @@ export class EventBus {
         const listeners = this._listeners.get(event);
         if (!listeners) return;
 
-        listeners.forEach(callback => {
+        listeners.forEach((callback) => {
             try {
                 callback(data);
             } catch (error) {
-                console.error(`[EventBus] Error in event handler [${event}]:`, error);
+                logger.error(`[EventBus] Error in event handler [${event}]:`, error);
             }
         });
     }
@@ -105,14 +107,14 @@ export class EventBus {
      */
     logDebug() {
         const stats = this.debug();
-        console.log('📊 EventBus 状态:');
-        console.log(`   总监听器数: ${stats.__TOTAL__}`);
-        console.log(`   总事件数: ${stats.__EVENTS__}`);
-        console.log('   详细信息:');
+        logger.debug('📊 EventBus 状态:');
+        logger.debug(`   总监听器数: ${stats.__TOTAL__}`);
+        logger.debug(`   总事件数: ${stats.__EVENTS__}`);
+        logger.debug('   详细信息:');
 
         for (const [event, count] of Object.entries(stats)) {
             if (!event.startsWith('__')) {
-                console.log(`     ${event}: ${count}`);
+                logger.debug(`     ${event}: ${count}`);
             }
         }
     }
@@ -136,9 +138,9 @@ export class EventBus {
         }
 
         if (leaks.length > 0) {
-            console.warn('⚠️ 检测到可能的内存泄漏:');
-            leaks.forEach(leak => {
-                console.warn(`   ${leak.event}: ${leak.count} 个监听器 (阈值: ${leak.threshold})`);
+            logger.warn('⚠️ 检测到可能的内存泄漏:');
+            leaks.forEach((leak) => {
+                logger.warn(`   ${leak.event}: ${leak.count} 个监听器 (阈值: ${leak.threshold})`);
             });
         }
 

@@ -9,6 +9,13 @@ import { saveCurrentConfig } from '../state/config.js';
 import { eventBus } from '../core/events.js';
 import { renderCapabilityBadgesText } from '../utils/capability-badges.js';
 import { updateMobileHeaderTitle } from './mobile-overflow-menu.js';
+import {
+    setSelectedModel,
+    setApiFormat as setStateApiFormat,
+    setCurrentProviderId,
+    setGeminiApiKeyInHeader
+} from '../core/state-mutations.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * 填充模型下拉列表（从提供商聚合）
@@ -16,9 +23,10 @@ import { updateMobileHeaderTitle } from './mobile-overflow-menu.js';
 export function populateModelSelect() {
     if (!elements.modelSelect) return;
 
-    const enabledProviders = state.providers.filter(p => p.enabled);
+    const enabledProviders = state.providers.filter((p) => p.enabled);
 
     // 清空下拉列表
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     elements.modelSelect.innerHTML = '';
 
     if (enabledProviders.length === 0) {
@@ -27,27 +35,27 @@ export function populateModelSelect() {
         option.textContent = '请先在提供商管理中启用并添加模型';
         option.disabled = true;
         elements.modelSelect.appendChild(option);
-        console.warn('No enabled providers');
+        logger.warn('No enabled providers');
         return;
     }
 
     let hasAnyModels = false;
 
     // 遍历所有启用的提供商
-    enabledProviders.forEach(provider => {
+    enabledProviders.forEach((provider) => {
         if (provider.models && provider.models.length > 0) {
             const optgroup = document.createElement('optgroup');
             optgroup.label = provider.name;
 
-            provider.models.forEach(model => {
+            provider.models.forEach((model) => {
                 // 支持对象和字符串格式
                 const modelId = typeof model === 'string' ? model : model.id;
-                const modelName = typeof model === 'string' ? model : (model.name || model.id);
+                const modelName = typeof model === 'string' ? model : model.name || model.id;
                 const capabilities = typeof model === 'object' ? model.capabilities : null;
 
                 const option = document.createElement('option');
                 option.value = modelId;
-                option.dataset.providerId = provider.id;  // 存储提供商 ID
+                option.dataset.providerId = provider.id; // 存储提供商 ID
 
                 // 添加能力标签（纯文本格式）
                 const badgesText = renderCapabilityBadgesText(capabilities);
@@ -72,11 +80,11 @@ export function populateModelSelect() {
         option.textContent = '请在提供商管理中添加模型';
         option.disabled = true;
         elements.modelSelect.appendChild(option);
-        console.warn('Enabled providers have no models');
+        logger.warn('Enabled providers have no models');
         return;
     }
 
-    console.log(`模型列表已更新 (${enabledProviders.length} 个提供商)`);
+    logger.debug(`模型列表已更新 (${enabledProviders.length} 个提供商)`);
 
     // 更新移动端标题栏
     const selectedOption = elements.modelSelect.selectedOptions[0];
@@ -102,19 +110,21 @@ export function initModels() {
         const selectedOption = e.target.selectedOptions[0];
         const providerId = selectedOption?.dataset.providerId;
 
-        state.selectedModel = selectedModel;
+        setSelectedModel(selectedModel);
 
         // 根据 providerId 查找提供商（而不是模型名）
-        const provider = state.providers.find(p => p.id === providerId);
+        const provider = state.providers.find((p) => p.id === providerId);
 
         if (provider && provider.apiFormat !== state.apiFormat) {
-            console.log(`🔄 模型切换: ${selectedModel} (${provider.name}) -> 自动切换到 ${provider.apiFormat} 格式`);
+            logger.debug(
+                `🔄 模型切换: ${selectedModel} (${provider.name}) -> 自动切换到 ${provider.apiFormat} 格式`
+            );
 
             // 更新 apiFormat (不触发格式切换事件,避免重复刷新模型列表)
-            state.apiFormat = provider.apiFormat;
+            setStateApiFormat(provider.apiFormat);
 
             // 显示/隐藏对应的配置面板：只显示当前格式对应的配置面板
-            document.querySelectorAll('.api-config').forEach(panel => {
+            document.querySelectorAll('.api-config').forEach((panel) => {
                 panel.style.display = 'none';
             });
             const configPanel = document.getElementById(`${provider.apiFormat}-config`);
@@ -131,16 +141,18 @@ export function initModels() {
         }
 
         // 存储当前提供商 ID，供 getCurrentProvider() 使用
-        state.currentProviderId = providerId;
+        setCurrentProviderId(providerId);
 
         // 同步 provider 的 geminiApiKeyInHeader 到 state（用于 API 请求）
         if (provider && provider.apiFormat === 'gemini') {
-            state.geminiApiKeyInHeader = provider.geminiApiKeyInHeader || false;
-            console.log(`🔄 同步 geminiApiKeyInHeader: ${state.geminiApiKeyInHeader}`);
+            setGeminiApiKeyInHeader(provider.geminiApiKeyInHeader || false);
+            logger.debug(`🔄 同步 geminiApiKeyInHeader: ${state.geminiApiKeyInHeader}`);
         }
 
         saveCurrentConfig();
-        console.log(`Model selected: ${selectedModel} from ${provider?.name || 'unknown'} (format: ${state.apiFormat})`);
+        logger.debug(
+            `Model selected: ${selectedModel} from ${provider?.name || 'unknown'} (format: ${state.apiFormat})`
+        );
 
         // 更新移动端标题栏
         updateMobileHeaderTitle(selectedModel.split('/').pop() || selectedModel);
@@ -149,5 +161,5 @@ export function initModels() {
     // 初始填充
     populateModelSelect();
 
-    console.log('Models list initialized (aggregated from providers)');
+    logger.debug('Models list initialized (aggregated from providers)');
 }
