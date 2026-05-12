@@ -4,7 +4,6 @@ let autoUpdater = null;
 let mainWindow = null;
 let silentUpdate = false;
 let checkUpdateOnStartup = true;
-let updateServerUrl = null;
 
 let updaterListenersInstalled = false;
 let startupCheckTimer = null;
@@ -395,7 +394,6 @@ function downloadUpdate(options = {}) {
  * @param {Object} options - 配置选项
  * @param {boolean} options.silentUpdate - 是否静默更新
  * @param {boolean} options.checkUpdateOnStartup - 启动时是否检查更新
- * @param {string} options.updateServerUrl - 自定义更新服务器 URL
  */
 function initUpdater(win, options = {}) {
     bindUpdaterWindow(win);
@@ -406,7 +404,6 @@ function initUpdater(win, options = {}) {
 
     silentUpdate = options.silentUpdate === true;
     checkUpdateOnStartup = options.checkUpdateOnStartup !== false;
-    updateServerUrl = options.updateServerUrl || null;
 
     log.transports.file.level = 'info';
     autoUpdater.logger = log;

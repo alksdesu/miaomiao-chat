@@ -140,7 +140,6 @@ export default [
     js.configs.recommended,
     prettier,
     {
-        files: ['**/*.js', '**/*.mjs'],
         linterOptions: {
             reportUnusedDisableDirectives: 'off'
         },
