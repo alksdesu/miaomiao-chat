@@ -6,11 +6,7 @@
 import { logger } from '../utils/logger.js';
 import { state } from '../core/state.js';
 import { getCurrentProvider } from '../providers/manager.js';
-import {
-    rebuildMessageIdMap,
-    setIsImageCompressionRetry,
-    setImageRetryMessageElement
-} from '../core/state-mutations.js';
+import { rebuildMessageIdMap, setImageRetry, clearImageRetry } from '../core/state-mutations.js';
 
 /**
  * 尝试图片压缩重试
@@ -43,9 +39,8 @@ export async function attemptImageCompressionRetry(errorData, assistantMessageEl
 
     logger.debug('[ImageRetry] 图片压缩完成，准备重新发送请求...');
 
-    // 设置重试标志，让 sendToAPI 复用当前消息元素
-    setIsImageCompressionRetry(true);
-    setImageRetryMessageElement(assistantMessageEl);
+    // 设置重试标志并绑定要复用的消息元素（语义化复合 setter）
+    setImageRetry(assistantMessageEl);
 
     // 显示加载提示
     if (state.currentAssistantMessage) {
@@ -60,12 +55,10 @@ export async function attemptImageCompressionRetry(errorData, assistantMessageEl
 
 /**
  * 重置所有图片重试相关状态
- * - _imageCompressionRetried: 无限重试防护标记
- * - isImageCompressionRetry: sendToAPI 复用消息元素的信号
- * - imageRetryMessageElement: 要复用的 DOM 元素引用
+ * - _imageCompressionRetried: 无限重试防护标记（语义独立，不在 clearImageRetry 范围内）
+ * - isImageCompressionRetry + imageRetryMessageElement: 由 clearImageRetry 复合清理
  */
 export function resetAllImageRetryState() {
     state._imageCompressionRetried = false;
-    setIsImageCompressionRetry(false);
-    setImageRetryMessageElement(null);
+    clearImageRetry();
 }

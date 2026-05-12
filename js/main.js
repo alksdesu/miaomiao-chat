@@ -55,8 +55,9 @@ function initElectronTitlebar() {
         window.electronAPI.toggleDevTools();
     });
     document.getElementById('titlebar-network')?.addEventListener('click', () => {
-        import('./network/panel.js').then(({ toggleNetworkPanel }) => {
-            toggleNetworkPanel();
+        loadAndCall('./network/panel.js', 'toggleNetworkPanel', {
+            onError: 'notify',
+            context: 'Network 面板'
         });
     });
     document.getElementById('titlebar-minimize')?.addEventListener('click', () => {
@@ -169,18 +170,23 @@ import { initAndroidBackHandler } from './ui/android-back-handler.js';
 // ========== Performance & Memory ==========
 import { initMemoryManager } from './utils/memory-manager.js';
 import { logger } from './utils/logger.js';
+import { loadModule, loadAndCall } from './utils/dynamic-import.js';
 
 /**
  * 初始化应用
  */
 async function init() {
     // 尽早安装 fetch 代理，捕获所有网络请求
-    import('./network/interceptor.js').then(({ installFetchProxy }) => installFetchProxy());
+    loadAndCall('./network/interceptor.js', 'installFetchProxy', {
+        onError: 'log',
+        context: 'fetch 代理'
+    });
 
     // 安装 console 拦截器（尽早，捕获所有日志；工具注册在 initTools 中完成）
-    import('./devtools/console-interceptor.js')
-        .then(({ installConsoleInterceptor }) => installConsoleInterceptor())
-        .catch(() => {});
+    loadAndCall('./devtools/console-interceptor.js', 'installConsoleInterceptor', {
+        onError: 'log',
+        context: 'console 拦截器'
+    });
 
     logger.debug('[init] 启动...');
 
@@ -189,33 +195,42 @@ async function init() {
 
     // Chii DevTools（Web/Android 端，Electron 用原生 DevTools）
     if (!isElectron()) {
-        const chii = () => import('./devtools/chii.js');
+        // 用户主动点开发者工具，加载失败要让用户感知（按钮无反应是最糟体验）
+        const showOpts = { onError: 'notify', context: 'Chii DevTools' };
         eventBus.on('devtools:show', () => {
-            chii().then(({ showChii }) => showChii());
+            loadAndCall('./devtools/chii.js', 'showChii', showOpts);
         });
         eventBus.on('devtools:toggle', () => {
-            chii().then(({ toggleChii }) => toggleChii());
+            loadAndCall('./devtools/chii.js', 'toggleChii', showOpts);
         });
         document.getElementById('mobile-devtools-btn')?.addEventListener('click', () => {
-            chii().then(({ showChii }) => showChii());
+            loadAndCall('./devtools/chii.js', 'showChii', showOpts);
         });
     }
 
     // Network 面板按钮（三平台通用）
     document.getElementById('network-toggle')?.addEventListener('click', () => {
-        import('./network/panel.js').then(({ toggleNetworkPanel }) => {
-            toggleNetworkPanel();
+        loadAndCall('./network/panel.js', 'toggleNetworkPanel', {
+            onError: 'notify',
+            context: 'Network 面板'
         });
     });
 
-    // 抓包重放 → 打开构建器
+    // 抓包重放 → 打开构建器（用户主动从抓包列表点重放，失败需提示）
     eventBus.on('network:replay-request', async (record) => {
-        const { openNetworkPanel, switchTab } = await import('./network/panel.js');
-        openNetworkPanel();
-        switchTab('builder');
+        const panel = await loadModule('./network/panel.js', {
+            onError: 'notify',
+            context: '抓包重放打开面板'
+        });
+        if (!panel) return;
+        panel.openNetworkPanel();
+        panel.switchTab('builder');
         setTimeout(async () => {
-            const { importToBuilder } = await import('./network/builder-view.js');
-            importToBuilder(record);
+            const builder = await loadModule('./network/builder-view.js', {
+                onError: 'notify',
+                context: '抓包重放导入构建器'
+            });
+            builder?.importToBuilder(record);
         }, 100);
     });
 
@@ -433,16 +448,18 @@ async function init() {
         await initTools();
 
         // 恢复当前会话的 AI Monitor 状态（必须在 initTools 注册完工具之后）
-        import('./devtools/init.js')
-            .then(({ restoreMonitorState }) => restoreMonitorState())
-            .catch(() => {});
+        loadAndCall('./devtools/init.js', 'restoreMonitorState', {
+            onError: 'log',
+            context: 'AI Monitor 状态恢复'
+        });
 
         // 监听工具执行状态变化，保存结果到消息历史
         eventBus.on('tool:status:changed', ({ toolId, status, result }) => {
             if (status === 'completed' || status === 'failed') {
-                import('./messages/sync.js').then(({ updateToolCallResult }) => {
-                    updateToolCallResult(toolId, status, result);
-                });
+                loadModule('./messages/sync.js', {
+                    onError: 'log',
+                    context: '工具结果保存'
+                }).then((mod) => mod?.updateToolCallResult(toolId, status, result));
             }
         });
 
@@ -529,37 +546,43 @@ async function init() {
                     initExportImport();
 
                     // MCP 增强
-                    import('./ui/tool-manager-mcp-enhancements.js').then(
-                        ({ initToolManagerMCPEnhancements }) => {
-                            initToolManagerMCPEnhancements();
-                        }
+                    loadAndCall(
+                        './ui/tool-manager-mcp-enhancements.js',
+                        'initToolManagerMCPEnhancements',
+                        { onError: 'log', context: '工具管理器 MCP 增强' }
                     );
-                    import('./ui/tools-quick-selector-enhancements.js').then(
-                        ({ initQuickSelectorEnhancements }) => {
-                            initQuickSelectorEnhancements();
-                        }
+                    loadAndCall(
+                        './ui/tools-quick-selector-enhancements.js',
+                        'initQuickSelectorEnhancements',
+                        { onError: 'log', context: '快速工具选择器增强' }
                     );
 
                     // 主题编辑器
-                    import('./ui/theme-editor.js').then(({ initThemeEditor }) => {
-                        initThemeEditor();
+                    loadAndCall('./ui/theme-editor.js', 'initThemeEditor', {
+                        onError: 'log',
+                        context: '主题编辑器'
                     });
 
                     // OpenClaw 模块（审批、屏幕截图、定时任务）
-                    import('./ui/openclaw-approval.js').then(({ initOpenClawApproval }) => {
-                        initOpenClawApproval();
+                    loadAndCall('./ui/openclaw-approval.js', 'initOpenClawApproval', {
+                        onError: 'log',
+                        context: 'OpenClaw 审批模块'
                     });
-                    import('./ui/openclaw-screen.js').then(({ initOpenClawScreen }) => {
-                        initOpenClawScreen();
+                    loadAndCall('./ui/openclaw-screen.js', 'initOpenClawScreen', {
+                        onError: 'log',
+                        context: 'OpenClaw 屏幕模块'
                     });
-                    import('./ui/openclaw-cron.js').then(({ initOpenClawCron }) => {
-                        initOpenClawCron();
+                    loadAndCall('./ui/openclaw-cron.js', 'initOpenClawCron', {
+                        onError: 'log',
+                        context: 'OpenClaw 定时任务模块'
                     });
 
                     // APK 更新（仅 Android）
                     if (isAndroid()) {
-                        const { initAPKUpdater } = await import('./update/apk-updater.js');
-                        initAPKUpdater();
+                        await loadAndCall('./update/apk-updater.js', 'initAPKUpdater', {
+                            onError: 'log',
+                            context: 'APK 更新模块'
+                        });
                     }
                 } catch (error) {
                     logger.error('延迟加载 UI 模块失败:', error);
@@ -592,9 +615,10 @@ async function init() {
                 !elements.sidebar.classList.contains('open')
             ) {
                 setTimeout(() => {
-                    import('./ui/sidebar.js').then(({ toggleSidebar }) => {
-                        toggleSidebar(true); // skipSave = true, 避免循环
-                    });
+                    loadModule('./ui/sidebar.js', {
+                        onError: 'log',
+                        context: '侧边栏状态恢复'
+                    }).then((mod) => mod?.toggleSidebar(true)); // skipSave = true，避免循环
                 }, 100);
             }
         } catch (error) {
@@ -608,9 +632,10 @@ async function init() {
                 !elements.sidebar.classList.contains('open')
             ) {
                 setTimeout(() => {
-                    import('./ui/sidebar.js').then(({ toggleSidebar }) => {
-                        toggleSidebar(true);
-                    });
+                    loadModule('./ui/sidebar.js', {
+                        onError: 'log',
+                        context: '侧边栏状态恢复（降级）'
+                    }).then((mod) => mod?.toggleSidebar(true));
                 }, 100);
             }
         }
@@ -620,20 +645,23 @@ async function init() {
         // 延迟执行非关键任务
         // 请求持久化存储（不影响功能，延迟执行）
         if (dbReady) {
-            import('./state/storage.js').then(({ requestPersistentStorage }) => {
-                requestPersistentStorage();
+            loadAndCall('./state/storage.js', 'requestPersistentStorage', {
+                onError: 'log',
+                context: '持久化存储请求'
             });
         }
 
-        // 自动连接 MCP 服务器
-        import('./ui/mcp-auto-connect.js').then(({ initMCPAutoConnect }) => {
-            initMCPAutoConnect(1000);
-        });
+        // 自动连接 MCP 服务器（MCP 工具不可用会显著影响业务，需用户感知）
+        loadModule('./ui/mcp-auto-connect.js', {
+            onError: 'notify',
+            context: 'MCP 自动连接'
+        }).then((mod) => mod?.initMCPAutoConnect(1000));
 
         // Electron 环境下初始化 MCP IPC 桥接
         if (isElectron()) {
-            import('./tools/mcp/electron-bridge.js').then(({ initElectronMCPBridge }) => {
-                initElectronMCPBridge();
+            loadAndCall('./tools/mcp/electron-bridge.js', 'initElectronMCPBridge', {
+                onError: 'log',
+                context: 'MCP IPC 桥接'
             });
         }
 

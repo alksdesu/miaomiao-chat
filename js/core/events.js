@@ -1,4 +1,5 @@
 import { logger } from '../utils/logger.js';
+import { KNOWN_EVENTS } from './events-registry.js';
 
 /**
  * EventBus - 轻量级发布/订阅事件系统
@@ -8,6 +9,35 @@ export class EventBus {
     constructor() {
         // 事件监听器映射: Map<event, Set<callback>>
         this._listeners = new Map();
+        // 已警告的未注册事件名（避免日志爆炸）
+        this._warnedUnknown = new Set();
+        // 是否启用 typo 检测（开发期默认开，生产可关）
+        this._validate = true;
+    }
+
+    /**
+     * 校验事件名是否在 events-registry.js 中登记，未登记则 warn 一次
+     * state:* 是 state Proxy 动态生成的属性变更事件（87 个属性），按命名空间豁免
+     */
+    _validateEventName(event, verb) {
+        if (!this._validate) return;
+        if (typeof event === 'string' && event.startsWith('state:')) return;
+        if (KNOWN_EVENTS.has(event)) return;
+        if (this._warnedUnknown.has(event)) return;
+        this._warnedUnknown.add(event);
+        logger.warn(
+            `[EventBus] 未在 events-registry.js 注册的事件 "${event}" (${verb})。` +
+                '若为新增事件请补登记，否则请检查拼写。'
+        );
+    }
+
+    /**
+     * 启用 / 禁用事件名 typo 检测
+     * @param {boolean} enabled
+     */
+    setValidate(enabled) {
+        this._validate = !!enabled;
+        if (!enabled) this._warnedUnknown.clear();
     }
 
     /**
@@ -17,6 +47,7 @@ export class EventBus {
      * @returns {Function} 取消订阅函数
      */
     on(event, callback) {
+        this._validateEventName(event, 'on');
         if (!this._listeners.has(event)) {
             this._listeners.set(event, new Set());
         }
@@ -41,6 +72,7 @@ export class EventBus {
      * @param {*} data - 事件数据
      */
     emit(event, data) {
+        this._validateEventName(event, 'emit');
         const listeners = this._listeners.get(event);
         if (!listeners) return;
 
@@ -150,3 +182,6 @@ export class EventBus {
 
 // 导出全局单例
 export const eventBus = new EventBus();
+
+// 导出事件常量入口（推荐用法）
+export { EVENTS } from './events-registry.js';

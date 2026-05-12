@@ -8,6 +8,7 @@ import { state } from './state.js';
 import { eventBus } from './events.js';
 import { generateMessageId } from '../utils/helpers.js';
 import { PartType, hasParts } from '../messages/schema.js';
+import { normalizeAllMessages } from '../messages/legacy-adapter.js';
 
 function rebuildMessageIdMapFromIndex(fromIndex) {
     if (!state.messageIdMap) return;
@@ -116,13 +117,20 @@ export function updateMessageAt(index, updates, replace = false) {
 }
 
 /**
- * 替换所有消息
- * @param {Array} messages - 新格式消息数组
+ * 替换所有消息（持久化入口）
+ *
+ * 在此处统一调用 normalizeAllMessages：会话切换 / 导入 / 恢复等所有路径
+ * 都会经过这里，旧格式消息被一次性升级为新 parts[] 格式后再写入 state。
+ * 若实际产生升级，标记 sessionDirty 让下次保存把升级结果写回存储。
+ *
+ * @param {Array} messages - 任意格式消息数组（旧/新混合都可接受）
  */
 export function replaceAllMessages(messages) {
-    state.messages = [...messages];
+    const copy = [...messages];
+    const upgraded = normalizeAllMessages(copy); // in-place 升级旧格式
 
-    state.sessionDirty = false;
+    state.messages = copy;
+    state.sessionDirty = upgraded > 0; // 有升级才标脏，避免空写入
     rebuildMessageIdMap();
     eventBus.emit('state:messages-replaced', { newLength: state.messages.length });
 }
@@ -315,3 +323,41 @@ export const setSavedSystemPrefillPresets = createSetter('savedSystemPrefillPres
 export const setSavedGeminiPartsPresets = createSetter('savedGeminiPartsPresets');
 export const setToolPermissions = createSetter('toolPermissions');
 export const setPendingModelSelection = createSetter('pendingModelSelection');
+
+// ========== 语义化复合 setter ==========
+// 工具调用 continuation 和图片重试涉及多个相关 flag，单独 setter 调用容易遗漏一个导致状态不一致。
+// 通过 set/clear 配对入口保证 flag 和对应 DOM 引用同时设置/清空。
+
+/**
+ * 标记进入工具调用 continuation：设置 flag 并保存要复用的助手消息元素
+ * @param {HTMLElement} messageEl - 要复用的助手消息根元素
+ */
+export function setToolCallContinuation(messageEl) {
+    state.isToolCallContinuation = true;
+    state.toolCallContinuationElement = messageEl;
+}
+
+/**
+ * 清除工具调用 continuation 标记和 DOM 引用
+ */
+export function clearToolCallContinuation() {
+    state.isToolCallContinuation = false;
+    state.toolCallContinuationElement = null;
+}
+
+/**
+ * 标记进入图片压缩重试：设置 flag 并保存要复用的助手消息元素
+ * @param {HTMLElement} messageEl - 要复用的助手消息根元素
+ */
+export function setImageRetry(messageEl) {
+    state.isImageCompressionRetry = true;
+    state.imageRetryMessageElement = messageEl;
+}
+
+/**
+ * 清除图片压缩重试标记和 DOM 引用（不包含 _imageCompressionRetried 防循环锁）
+ */
+export function clearImageRetry() {
+    state.isImageCompressionRetry = false;
+    state.imageRetryMessageElement = null;
+}

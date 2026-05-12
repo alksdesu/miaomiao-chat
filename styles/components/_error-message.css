@@ -84,3 +84,15 @@
     border-left: 3px solid var(--md-coral);
     font-size: var(--fs-xs);
 }
+
+/* 工具调用 continuation 失败追加到消息正文中的错误条 */
+.message-content .continuation-error {
+    display: block;
+    margin-top: 8px;
+    padding: 8px 12px;
+    background: var(--color-error-bg);
+    border-left: 3px solid var(--md-coral);
+    color: var(--md-coral);
+    font-size: var(--fs-md);
+    border-radius: 2px;
+}

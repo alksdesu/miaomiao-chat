@@ -190,11 +190,209 @@ export function toOpenAIMessages(msgs, opts = {}) {
 // ========== Claude 格式 ==========
 
 /**
+ * 按 _turn 标记把 parts 分组成多轮。无 _turn 时全部归 turn 0。
+ *
+ * 旧数据兼容：检测到旧 merged 消息（无 _turn 但 thinking 数 > 1）时启发式降级——
+ * 只保留最后一个 thinking 块。Claude API 要求 latest assistant message 的 thinking
+ * 与原响应一致，旧数据无法精确还原 turn 边界，丢弃前序 thinking 是最安全的兜底。
+ */
+function groupPartsByTurn(parts) {
+    const groups = new Map();
+    let hasTurnTag = false;
+
+    for (const p of parts) {
+        if (p._turn !== undefined) hasTurnTag = true;
+        const t = p._turn || 0;
+        if (!groups.has(t)) groups.set(t, []);
+        groups.get(t).push(p);
+    }
+
+    // 旧数据兜底：未标记 _turn 但含多个 thinking → 只保留最后一个
+    if (!hasTurnTag) {
+        const allParts = groups.get(0) || [];
+        const thinkingCount = allParts.filter((p) => p.type === PartType.THINKING).length;
+        if (thinkingCount > 1) {
+            let toSkip = thinkingCount - 1;
+            const filtered = allParts.filter((p) => {
+                if (p.type === PartType.THINKING && toSkip > 0) {
+                    toSkip--;
+                    return false;
+                }
+                return true;
+            });
+            return new Map([[0, filtered]]);
+        }
+    }
+
+    return groups;
+}
+
+/**
+ * 把一组 parts 转换为 Claude content array + 收集需要配对 tool_result 的 tool_call parts
+ */
+function partsToClaudeContent(parts) {
+    const content = [];
+    const toolCallParts = [];
+
+    for (const p of parts) {
+        switch (p.type) {
+            case PartType.THINKING:
+                if (p.signature) {
+                    content.push({
+                        type: 'thinking',
+                        thinking: p.text,
+                        signature: p.signature
+                    });
+                }
+                break;
+            case PartType.TEXT:
+                content.push({ type: 'text', text: p.text });
+                break;
+            case PartType.MEDIA:
+                if (p.media === MediaKind.IMAGE) {
+                    const parsed = parseDataURL(p.url);
+                    if (parsed) {
+                        content.push({
+                            type: 'image',
+                            source: {
+                                type: 'base64',
+                                media_type: parsed.mimeType,
+                                data: parsed.base64
+                            }
+                        });
+                    } else {
+                        logger.warn(
+                            '[Claude Adapter] 图片非 base64 格式，已降级为文本:',
+                            p.url?.substring(0, 60)
+                        );
+                        content.push({
+                            type: 'text',
+                            text: '[图片附件无法发送：仅支持 base64 格式]'
+                        });
+                    }
+                } else if (p.media === MediaKind.VIDEO || p.media === MediaKind.AUDIO) {
+                    content.push({
+                        type: 'text',
+                        text: `[${p.media === MediaKind.VIDEO ? '视频' : '音频'}附件已省略]`
+                    });
+                }
+                break;
+            case PartType.FILE: {
+                if (isTextFile(p)) {
+                    content.push({
+                        type: 'text',
+                        text: `<document name="${p.name}">\n${p.url}\n</document>`
+                    });
+                } else {
+                    const fileParsed = parseDataURL(p.url);
+                    if (fileParsed) {
+                        content.push({
+                            type: 'document',
+                            source: {
+                                type: 'base64',
+                                media_type: fileParsed.mimeType,
+                                data: fileParsed.base64
+                            }
+                        });
+                    }
+                }
+                break;
+            }
+            case PartType.TOOL_CALL: {
+                if (p.server) {
+                    content.push({
+                        type: 'server_tool_use',
+                        id: p.id,
+                        name: p.name,
+                        input: p.args || {}
+                    });
+                    if (p.result) {
+                        content.push({
+                            type: p.result.type || `${p.name}_tool_result`,
+                            tool_use_id: p.id,
+                            content: p.result.content
+                        });
+                    }
+                } else {
+                    const claudeId = getOrCreateMappedId(p.id, 'claude');
+                    let input = p.args || {};
+                    if (typeof input === 'string') {
+                        try {
+                            input = JSON.parse(input);
+                        } catch {
+                            /* keep string */
+                        }
+                    }
+                    content.push({ type: 'tool_use', id: claudeId, name: p.name, input });
+                    toolCallParts.push(p);
+                }
+                break;
+            }
+        }
+    }
+
+    return { content, toolCallParts };
+}
+
+/**
+ * 把 tool_call parts 转为 Claude 的 user role tool_result 消息
+ */
+function buildClaudeToolResultMessage(toolCallParts) {
+    if (toolCallParts.length === 0) return null;
+    const toolResults = toolCallParts.map((p) => ({
+        type: 'tool_result',
+        tool_use_id: getOrCreateMappedId(p.id, 'claude'),
+        content: p.result
+            ? buildClaudeToolResultContent(p.result)
+            : 'Tool execution was interrupted'
+    }));
+    return { role: 'user', content: toolResults };
+}
+
+/**
+ * 处理 buildToolResultMessages 产生的旧格式临时消息
+ */
+function convertOldClaudeMsg(msg) {
+    if (msg.role === 'tool') {
+        const claudeId = msg.tool_call_id
+            ? getOrCreateMappedId(msg.tool_call_id, 'claude')
+            : msg.tool_call_id;
+        return {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: claudeId, content: msg.content || '' }]
+        };
+    }
+    if (msg.tool_calls && msg.tool_calls.length > 0) {
+        const content = [];
+        if (msg.content) content.push({ type: 'text', text: msg.content });
+        for (const tc of msg.tool_calls) {
+            const claudeId = getOrCreateMappedId(tc.id, 'claude');
+            let input = tc.function?.arguments || '{}';
+            if (typeof input === 'string') {
+                try {
+                    input = JSON.parse(input);
+                } catch {
+                    input = {};
+                }
+            }
+            content.push({
+                type: 'tool_use',
+                id: claudeId,
+                name: tc.function?.name || '',
+                input
+            });
+        }
+        return { role: 'assistant', content };
+    }
+    return passOldFormatOpenAI(msg);
+}
+
+/**
  * 新格式 → Claude API 消息数组
  *
- * system 消息被过滤（Claude 用顶级 system 参数）。
- * thinking parts 转为 content[{type:"thinking"}]（需要有 signature）。
- * tool_call 拆分为 assistant content + 独立 role:"user" tool_result 消息。
+ * 关键约束：Claude 要求 latest assistant message 的 thinking blocks 与原响应一致。
+ * 工具调用 continuation 在 UI 层合并为一条消息（mergeContinuation 给新轮 parts 打 _turn），
+ * 转 API 时按 _turn 拆回独立 assistant + tool_result 序列，避免触发"thinking modified"校验。
  */
 export function toClaudeMessages(msgs) {
     const out = [];
@@ -203,184 +401,28 @@ export function toClaudeMessages(msgs) {
         if (msg.error || msg.isError) continue;
         if (msg.role === Role.SYSTEM) continue; // system 由顶级参数处理
 
-        // 旧格式消息（buildToolResultMessages 产生的临时消息）
         if (isOldFormat(msg)) {
-            // Claude 不接受 role:"tool"，需要转换为 role:"user" + tool_result
-            if (msg.role === 'tool') {
-                const claudeId = msg.tool_call_id
-                    ? getOrCreateMappedId(msg.tool_call_id, 'claude')
-                    : msg.tool_call_id;
-                out.push({
-                    role: 'user',
-                    content: [
-                        {
-                            type: 'tool_result',
-                            tool_use_id: claudeId,
-                            content: msg.content || ''
-                        }
-                    ]
-                });
-            } else {
-                // assistant 消息：将 OpenAI tool_calls 转为 Claude tool_use content
-                if (msg.tool_calls && msg.tool_calls.length > 0) {
-                    const content = [];
-                    if (msg.content) content.push({ type: 'text', text: msg.content });
-                    for (const tc of msg.tool_calls) {
-                        const claudeId = getOrCreateMappedId(tc.id, 'claude');
-                        let input = tc.function?.arguments || '{}';
-                        if (typeof input === 'string') {
-                            try {
-                                input = JSON.parse(input);
-                            } catch {
-                                input = {};
-                            }
-                        }
-                        content.push({
-                            type: 'tool_use',
-                            id: claudeId,
-                            name: tc.function?.name || '',
-                            input
-                        });
-                    }
-                    out.push({ role: 'assistant', content });
-                } else {
-                    out.push(passOldFormatOpenAI(msg));
-                }
-            }
+            out.push(convertOldClaudeMsg(msg));
             continue;
         }
 
         const role = msg.role;
-        const content = [];
-        const toolCallParts = [];
+        const turnGroups = groupPartsByTurn(msg.parts || []);
+        // 空 parts 也要产生一条空消息占位（兼容历史行为）
+        if (turnGroups.size === 0) turnGroups.set(0, []);
+        const sortedTurns = [...turnGroups.keys()].sort((a, b) => a - b);
 
-        for (const p of msg.parts || []) {
-            switch (p.type) {
-                case PartType.THINKING:
-                    if (p.signature) {
-                        content.push({
-                            type: 'thinking',
-                            thinking: p.text,
-                            signature: p.signature
-                        });
-                    }
-                    break;
-                case PartType.TEXT:
-                    content.push({ type: 'text', text: p.text });
-                    break;
-                case PartType.MEDIA:
-                    if (p.media === MediaKind.IMAGE) {
-                        const parsed = parseDataURL(p.url);
-                        if (parsed) {
-                            content.push({
-                                type: 'image',
-                                source: {
-                                    type: 'base64',
-                                    media_type: parsed.mimeType,
-                                    data: parsed.base64
-                                }
-                            });
-                        } else {
-                            logger.warn(
-                                '[Claude Adapter] 图片非 base64 格式，已降级为文本:',
-                                p.url?.substring(0, 60)
-                            );
-                            content.push({
-                                type: 'text',
-                                text: '[图片附件无法发送：仅支持 base64 格式]'
-                            });
-                        }
-                    } else if (p.media === MediaKind.VIDEO || p.media === MediaKind.AUDIO) {
-                        // Claude API 不支持 video/audio inline，添加文本占位
-                        content.push({
-                            type: 'text',
-                            text: `[${p.media === MediaKind.VIDEO ? '视频' : '音频'}附件已省略]`
-                        });
-                    }
-                    break;
-                case PartType.FILE: {
-                    if (isTextFile(p)) {
-                        content.push({
-                            type: 'text',
-                            text: `<document name="${p.name}">\n${p.url}\n</document>`
-                        });
-                    } else {
-                        const fileParsed = parseDataURL(p.url);
-                        if (fileParsed) {
-                            content.push({
-                                type: 'document',
-                                source: {
-                                    type: 'base64',
-                                    media_type: fileParsed.mimeType,
-                                    data: fileParsed.base64
-                                }
-                            });
-                        }
-                    }
-                    break;
-                }
-                case PartType.TOOL_CALL: {
-                    if (p.server) {
-                        // 服务端工具（web_search 等）— 原样回传
-                        content.push({
-                            type: 'server_tool_use',
-                            id: p.id,
-                            name: p.name,
-                            input: p.args || {}
-                        });
-                        if (p.result) {
-                            content.push({
-                                type: p.result.type || `${p.name}_tool_result`,
-                                tool_use_id: p.id,
-                                content: p.result.content
-                            });
-                        }
-                    } else {
-                        const claudeId = getOrCreateMappedId(p.id, 'claude');
-                        let input = p.args || {};
-                        if (typeof input === 'string') {
-                            try {
-                                input = JSON.parse(input);
-                            } catch {
-                                /* keep string */
-                            }
-                        }
-                        content.push({ type: 'tool_use', id: claudeId, name: p.name, input });
-                        toolCallParts.push(p);
-                    }
-                    break;
-                }
+        for (const turn of sortedTurns) {
+            const { content, toolCallParts } = partsToClaudeContent(turnGroups.get(turn));
+            if (content.length === 0) {
+                content.push({ type: 'text', text: '' });
             }
-        }
+            const outContent =
+                content.length === 1 && content[0].type === 'text' ? content[0].text : content;
+            out.push({ role, content: outContent });
 
-        // 如果 content 为空（只有被跳过的 parts），添加空文本
-        if (content.length === 0) {
-            content.push({ type: 'text', text: '' });
-        }
-
-        // 纯文本简化
-        const outContent =
-            content.length === 1 && content[0].type === 'text' ? content[0].text : content;
-
-        out.push({ role, content: outContent });
-
-        // 拆出 tool 结果为 user 消息
-        if (toolCallParts.length > 0) {
-            const toolResults = [];
-            for (const p of toolCallParts) {
-                const claudeId = getOrCreateMappedId(p.id, 'claude');
-                const resultContent = p.result
-                    ? buildClaudeToolResultContent(p.result)
-                    : 'Tool execution was interrupted';
-                toolResults.push({
-                    type: 'tool_result',
-                    tool_use_id: claudeId,
-                    content: resultContent
-                });
-            }
-            if (toolResults.length > 0) {
-                out.push({ role: 'user', content: toolResults });
-            }
+            const toolResultMsg = buildClaudeToolResultMessage(toolCallParts);
+            if (toolResultMsg) out.push(toolResultMsg);
         }
     }
 

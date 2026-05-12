@@ -27,18 +27,15 @@ import {
     setIsLoading,
     setIsSending,
     setCurrentAssistantMessage,
-    setCurrentAbortController,
     setSelectedReplyIndex,
     setIsToolCallPending,
     setCurrentReplies,
     setIsSavingContinuation,
-    setIsToolCallContinuation,
-    setToolCallContinuationElement,
-    setIsImageCompressionRetry,
-    setImageRetryMessageElement
+    setToolCallContinuation,
+    clearToolCallContinuation,
+    clearImageRetry
 } from '../core/state-mutations.js';
 import { renderHumanizedError } from '../utils/errors.js';
-import { escapeHtml } from '../utils/helpers.js';
 import { renderFinalTextWithThinking, renderFinalContentWithThinking } from '../stream/helpers.js';
 import { parseApiResponse } from './response-parser.js';
 import { renderReplyWithSelector } from '../messages/renderer.js';
@@ -512,9 +509,8 @@ async function sendToAPI() {
         // 设置 state 标志用于 saveAssistantMessage 检测
         setIsSavingContinuation(true);
 
-        // 重置continuation标志和引用
-        setIsToolCallContinuation(false);
-        setToolCallContinuationElement(null);
+        // 重置 continuation 标志和元素引用（语义化复合 setter，保证两者同步）
+        clearToolCallContinuation();
     } else if (state.isImageCompressionRetry && state.imageRetryMessageElement) {
         // 图片压缩重试 - 复用保存的消息元素（无感重试）
         isContinuationMode = true;
@@ -527,9 +523,8 @@ async function sendToAPI() {
         state.currentAssistantMessage.innerHTML =
             '<div class="thinking-dots"><span></span><span></span><span></span></div>';
 
-        // 重置图片重试标志和引用
-        setIsImageCompressionRetry(false);
-        setImageRetryMessageElement(null);
+        // 重置图片重试标志和元素引用（语义化复合 setter，保证两者同步）
+        clearImageRetry();
     } else {
         // 创建新的消息元素
         assistantMessageEl = createAssistantMessagePlaceholder();
@@ -681,8 +676,8 @@ export function cancelCurrentRequest() {
         setIsSending(false);
         setIsToolCallPending(false);
         setCurrentAssistantMessage(null);
-        setIsToolCallContinuation(false);
-        setToolCallContinuationElement(null);
+        clearToolCallContinuation();
+        clearImageRetry();
 
         // 使用状态机强制重置
         requestStateMachine.forceReset();
@@ -695,137 +690,86 @@ export function cancelCurrentRequest() {
 }
 
 /**
- * ⭐ 发送包含工具结果的请求（工具调用第二轮）
+ * 清理 loading 指示元素（thinking-dots / continuation-loading / retry-loading）
+ * 优先在指定消息元素内查找；否则在最后一条助手消息中查找
+ * @param {HTMLElement|null} messageEl
+ */
+function removeLoadingIndicators(messageEl) {
+    const root = messageEl
+        ? messageEl.querySelector('.message-content')
+        : document.querySelector('.message.assistant:last-child .message-content');
+    if (!root) return;
+    root.querySelectorAll('.thinking-dots, .continuation-loading, .retry-loading').forEach((el) =>
+        el.remove()
+    );
+}
+
+/**
+ * 发送包含工具结果的请求（工具调用的 continuation 轮）
+ *
+ * 设计要点：
+ *  - UI 按钮状态（sendButton/cancelButton/disabled）完全交给 RequestStateMachine._updateUI 管理，
+ *    本函数不再手动操作；这是 history bug "completed→sending" 之类竞态的根因
+ *  - 工具调用链中状态机串行流转 TOOL_CALLING → CONTINUATION → STREAMING → (TOOL_CALLING | COMPLETED)
+ *  - 本函数只负责：扩展临时消息、标记 continuation、调用 sendToAPI、还原临时消息、清理 loading DOM
+ *
  * @param {Array} toolResultMessages - 工具结果消息
- * @param {Object} apiConfig - API 配置
- * @param {HTMLElement} assistantMessageEl - 要复用的助手消息元素
+ * @param {Object} _apiConfig - API 配置（保留入参以兼容老调用方，目前未使用）
+ * @param {HTMLElement|null} assistantMessageEl - 要复用的助手消息元素
  */
 export async function resendWithToolResults(
     toolResultMessages,
-    apiConfig,
+    _apiConfig,
     assistantMessageEl = null
 ) {
     logger.info('[Handler] 发送工具结果消息...');
 
-    // 保存当前会话 ID
     const sessionId = state.currentSessionId;
-
-    // 临时扩展消息数组（仅用于此次请求，通过安全函数操作）
     const backup = extendMessagesTemporarily(toolResultMessages);
 
-    // 标记这是工具调用的continuation，复用现有消息元素
-    setIsToolCallContinuation(true);
-    setToolCallContinuationElement(assistantMessageEl);
+    // 标记 continuation 并绑定要复用的消息元素（语义化复合 setter）
+    setToolCallContinuation(assistantMessageEl);
 
-    // 状态机：TOOL_CALLING → CONTINUATION（在 sendToAPI 之前完成过渡）
+    // 状态机：TOOL_CALLING → CONTINUATION（必须在 sendToAPI 之前转换，否则状态非法）
     if (requestStateMachine.canTransition(RequestState.CONTINUATION)) {
         requestStateMachine.transition(RequestState.CONTINUATION, { assistantMessageEl });
     }
 
     try {
-        // 发送请求
         await sendToAPI();
-
         logger.debug('[Handler] Continuation 请求完成');
     } catch (error) {
-        logger.error('[Handler] ❌ Continuation 请求失败:', error);
-
-        // 关键立即清理工具调用标志，防止 finally 块误判
+        // sendToAPI 内部 handleSendError 已经处理过常规错误（含状态机 transition→ERROR），
+        // 此 catch 仅兜底"handleSendError 抛二次异常"等极端情况
+        logger.error('[Handler] Continuation 请求失败:', error);
         setIsToolCallPending(false);
-
-        // 发生错误时也要清理loading状态
-        // 显示错误消息
-        if (assistantMessageEl) {
-            const errorDiv = assistantMessageEl.querySelector('.message-content');
-            if (errorDiv) {
-                // eslint-disable-next-line no-restricted-syntax -- 已审计：escapeHtml 转义用户内容
-                errorDiv.innerHTML += `<div class="error-message" style="margin-top: 8px;">工具调用后续请求失败: ${escapeHtml(error.message)}</div>`;
+        if (
+            state.currentSessionId === sessionId &&
+            assistantMessageEl &&
+            assistantMessageEl.isConnected
+        ) {
+            const contentDiv = assistantMessageEl.querySelector('.message-content');
+            if (contentDiv) {
+                // 用 appendChild 而非 innerHTML +=，避免重解析子树破坏思维链/代码块/Mermaid 的 click listener
+                const errEl = document.createElement('div');
+                errEl.className = 'error-message continuation-error';
+                errEl.textContent = `工具调用后续请求失败: ${error.message}`;
+                contentDiv.appendChild(errEl);
             }
         }
-
-        // 强制重置按钮状态（错误情况下不应保持 loading）
-        if (state.currentSessionId === sessionId) {
-            setIsLoading(false);
-            setIsSending(false);
-            if (elements.sendButton) elements.sendButton.disabled = false;
-            setCurrentAssistantMessage(null);
-            setCurrentAbortController(null);
-
-            if (elements.cancelRequestButton) {
-                elements.cancelRequestButton.style.display = 'none';
-            }
-            if (elements.sendButton) {
-                elements.sendButton.style.display = 'inline-flex';
-            }
-
-            logger.debug('[Handler] 错误情况下强制清理状态');
-        }
-
-        // 抛出错误以便外层处理
         throw error;
     } finally {
-        // 恢复原消息数组引用（通过安全函数）
         restoreMessages(backup);
-
-        // 关键只有在没有新的工具调用时才清理状态
-        // 如果 sendToAPI 中检测到新的工具调用，isToolCallPending 会被重新设置为 true
-        // 此时不应该清除它，否则会破坏多轮工具调用链
-        const hasNewToolCall = state.isToolCallPending;
-
-        if (!hasNewToolCall) {
-            // 没有新的工具调用，清理 loading 状态
-            logger.debug('[Handler] Continuation 完成且无新工具调用，清理 loading 状态');
-            if (assistantMessageEl) {
-                const contentDiv = assistantMessageEl.querySelector('.message-content');
-                if (contentDiv) {
-                    const loadingElements = contentDiv.querySelectorAll(
-                        '.thinking-dots, .continuation-loading, .retry-loading'
-                    );
-                    loadingElements.forEach((el) => el.remove());
-                }
-            } else {
-                const lastMessage = document.querySelector(
-                    '.message.assistant:last-child .message-content'
-                );
-                if (lastMessage) {
-                    const loadingElements = lastMessage.querySelectorAll(
-                        '.thinking-dots, .continuation-loading, .retry-loading'
-                    );
-                    loadingElements.forEach((el) => el.remove());
-                }
-            }
-
-            // 清除工具调用标志
-            setIsToolCallPending(false);
-        } else {
-            // 有新的工具调用，保留 loading 状态，等待下一轮完成
-            logger.debug('[Handler] 检测到新的工具调用，保持 loading 状态，等待工具执行');
-        }
-
-        // 总是清理 continuation 标志（无论是否有新工具调用）
         setIsSavingContinuation(false);
 
-        // 只有在没有新工具调用时才重置按钮状态
-        // 如果有新的工具调用，需要保持 loading 状态直到工具调用链完成
-        if (state.currentSessionId === sessionId && !hasNewToolCall) {
-            setIsLoading(false);
-            setIsSending(false);
-            elements.sendButton.disabled = false;
-            setCurrentAssistantMessage(null);
-            setCurrentAbortController(null);
-
-            // 恢复按钮显示
-            if (elements.cancelRequestButton) {
-                elements.cancelRequestButton.style.display = 'none';
-            }
-            if (elements.sendButton) {
-                elements.sendButton.style.display = 'inline-flex';
-            }
-
-            logger.debug('[Handler] Continuation 完成，按钮状态已重置');
-        } else if (hasNewToolCall) {
-            logger.debug('[Handler] 有新的工具调用，保持按钮 loading 状态');
+        // 只有不再有新工具调用时，才认为本轮真正结束
+        if (!state.isToolCallPending) {
+            removeLoadingIndicators(assistantMessageEl);
+        } else {
+            logger.debug('[Handler] 检测到新的工具调用，保留 loading 等待下一轮工具执行');
         }
+        // 注意：sendButton/cancelButton/isLoading 状态由状态机 _updateUI hook 接管，
+        // 这里不再手动操作（避免与状态机抢 UI 控制权）
     }
 }
 

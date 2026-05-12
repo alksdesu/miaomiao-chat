@@ -447,27 +447,35 @@ function findMergeTarget() {
 
 /**
  * 合并 continuation 到现有消息
+ *
+ * 给新轮 parts 打上 `_turn` 标记（递增数字），让 api-adapters 在转 Claude API 时
+ * 能按轮拆回独立的 assistant 消息——Claude 要求 latest assistant message 的 thinking
+ * blocks 必须与原响应一致，多轮 thinking 合并到一条消息会触发严格校验失败。
  */
 function mergeContinuation(index, newParts, newMeta, _toolCalls) {
     const prev = state.messages[index];
     logger.debug(`[saveAssistantMessage] Continuation 模式：更新消息 #${index}`);
 
-    // 合并 parts
+    // 计算下一轮编号（旧消息无 _turn 视为 0，多次 continuation 时递增）
+    const prevMaxTurn = prev.parts.reduce((max, p) => Math.max(max, p._turn || 0), 0);
+    const nextTurn = prevMaxTurn + 1;
+    const tagTurn = (p) => ({ ...p, _turn: nextTurn });
+
     const prevThinkingParts = filterParts(prev.parts, PartType.THINKING);
-    const newThinkingParts = newParts.filter((p) => p.type === PartType.THINKING);
+    const newThinkingParts = newParts.filter((p) => p.type === PartType.THINKING).map(tagTurn);
 
     const prevTextParts = filterParts(prev.parts, PartType.TEXT).filter(
         (p) => p.text !== '(调用工具)'
     );
-    const newTextParts = newParts.filter(
-        (p) => p.type === PartType.TEXT && p.text !== '(调用工具)'
-    );
+    const newTextParts = newParts
+        .filter((p) => p.type === PartType.TEXT && p.text !== '(调用工具)')
+        .map(tagTurn);
 
     const prevMediaParts = filterParts(prev.parts, PartType.MEDIA);
-    const newMediaParts = newParts.filter((p) => p.type === PartType.MEDIA);
+    const newMediaParts = newParts.filter((p) => p.type === PartType.MEDIA).map(tagTurn);
 
     const prevToolParts = filterParts(prev.parts, PartType.TOOL_CALL);
-    const newToolParts = newParts.filter((p) => p.type === PartType.TOOL_CALL);
+    const newToolParts = newParts.filter((p) => p.type === PartType.TOOL_CALL).map(tagTurn);
 
     const mergedParts = [
         ...prevThinkingParts,

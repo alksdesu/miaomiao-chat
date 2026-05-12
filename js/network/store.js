@@ -10,20 +10,35 @@ let records = [];
 let nextId = 1;
 
 // 跨窗口同步（主窗口广播 → 子窗口接收）
+// 协议：
+//   replica-ready：子窗口启动时发起，主窗口收到立即推一份当前快照
+//   records-sync：主窗口推送 records 数组给子窗口
 const channel = new BroadcastChannel('network-panel-sync');
 let isReplica = false;
+
+function handleChannelMessage(e) {
+    const type = e.data?.type;
+    if (type === 'records-sync' && isReplica) {
+        records = e.data.records;
+        eventBus.emit('network:store-changed', records);
+    } else if (type === 'replica-ready' && !isReplica) {
+        // 子窗口请求快照：立即推一次当前 records，避免子窗口空等下一次变化才能拿到历史
+        broadcastToReplicas();
+    }
+}
+
+// 主窗口和子窗口共用同一个 handler，由 isReplica 标志决定如何响应
+channel.onmessage = handleChannelMessage;
 
 export function setReplicaMode(enabled) {
     isReplica = enabled;
     if (enabled) {
-        channel.onmessage = (e) => {
-            if (e.data?.type === 'records-sync') {
-                records = e.data.records;
-                eventBus.emit('network:store-changed', records);
-            }
-        };
-    } else {
-        channel.onmessage = null;
+        // 通知主窗口"我准备好了，请把当前 records 推过来"
+        try {
+            channel.postMessage({ type: 'replica-ready' });
+        } catch {
+            /* 序列化或通道异常时忽略，下次 records 变化仍会自动同步 */
+        }
     }
 }
 
