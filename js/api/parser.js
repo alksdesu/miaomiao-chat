@@ -52,8 +52,9 @@ export function parseApiResponse(data) {
             }
 
             // 检查 usageMetadata 中的思维链 token 统计
-            const reasoningTokens = data.usageMetadata?.thoughts_token_count ||
-                                   data.usage?.completion_tokens_details?.reasoning_tokens;
+            const reasoningTokens =
+                data.usageMetadata?.thoughts_token_count ||
+                data.usage?.completion_tokens_details?.reasoning_tokens;
 
             return {
                 parts: candidate.content.parts,
@@ -61,7 +62,7 @@ export function parseApiResponse(data) {
                 thinkingContent: thinkingContent || null,
                 thoughtSignature: thoughtSignature,
                 groundingMetadata: candidate.groundingMetadata,
-                reasoningTokens: reasoningTokens || null,
+                reasoningTokens: reasoningTokens || null
             };
         }
 
@@ -73,7 +74,7 @@ export function parseApiResponse(data) {
             let textContent = '';
             let thinkingContent = '';
 
-            data.content.forEach(block => {
+            data.content.forEach((block) => {
                 if (block.type === 'text') {
                     textContent += block.text;
                 } else if (block.type === 'thinking') {
@@ -84,7 +85,7 @@ export function parseApiResponse(data) {
             return {
                 content: textContent,
                 claudeContent: data.content,
-                thinkingContent: thinkingContent || null,
+                thinkingContent: thinkingContent || null
             };
         }
 
@@ -111,7 +112,7 @@ export function parseApiResponse(data) {
 
             return {
                 content: content,
-                thinkingContent: message.reasoning || null,
+                thinkingContent: message.reasoning || null
             };
         }
     }

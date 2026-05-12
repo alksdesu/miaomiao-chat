@@ -21,9 +21,9 @@ const AndroidInstaller = registerPlugin('AndroidInstaller', {
             },
             async requestInstallPermission() {
                 throw new Error('AndroidInstaller is not available on web platform');
-            },
+            }
         };
-    },
+    }
 });
 
 export { AndroidInstaller };
