@@ -26,7 +26,7 @@
     align-self: end; /* 垂直靠下 */
     height: 4px;
     background: var(--md-blue);
-    transition: width 0.2s;
+    transition: width var(--duration-base);
     width: 0;
     z-index: var(--z-base);
 }
@@ -88,7 +88,7 @@
     font-size: var(--fs-base);
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
 }
 
 .export-import-btn:hover {
@@ -119,8 +119,8 @@
     visibility: hidden;
     pointer-events: none; /* 默认不可点击 */
     transition:
-        opacity 0.2s ease-out,
-        visibility 0.2s ease-out;
+        opacity var(--duration-base) ease-out,
+        visibility var(--duration-base) ease-out;
     border: none;
     padding: 0;
     cursor: pointer;

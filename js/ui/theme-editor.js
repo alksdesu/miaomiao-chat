@@ -28,6 +28,7 @@ import {
     exportThemeAsJSON,
     importThemeFromFile
 } from '../state/theme-storage.js';
+import { bindTopmostEscape } from '../utils/modal-stack.js';
 import { logger } from '../utils/logger.js';
 
 let modal = null;
@@ -626,9 +627,8 @@ export function initThemeEditor() {
     m.querySelector('#theme-preset-select')?.addEventListener('change', onPresetChange);
 
     m.querySelector('.close-theme-editor')?.addEventListener('click', () => closeThemeEditor(true));
-    m.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') closeThemeEditor(true);
-    });
+    // ESC 关闭（叠层场景仅响应最顶层 modal）
+    bindTopmostEscape(m, () => closeThemeEditor(true));
     m.addEventListener('click', (e) => {
         if (e.target === m) closeThemeEditor(true);
     });

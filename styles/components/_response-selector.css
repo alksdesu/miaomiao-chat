@@ -18,7 +18,7 @@
     font-size: var(--fs-md);
     font-weight: 600;
     cursor: pointer;
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
 }
 
 .reply-tab:hover {

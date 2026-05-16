@@ -7,20 +7,25 @@ import { logger } from './logger.js';
 import { eventBus } from '../core/events.js';
 
 /**
- * @param {string} path - 模块路径
+ * 调用方传入 () => import('./...') 工厂，import() 的相对路径在调用方所在文件解析，
+ * 避免 dynamic-import.js 本身路径影响模块解析。
+ *
+ * @param {() => Promise<any>} importFactory - 工厂函数，形如 () => import('./xxx.js')
  * @param {{onError?: 'throw'|'log'|'notify'|'silent', context?: string}} [options]
  * @returns {Promise<any|null>} onError 非 throw 且失败时返回 null
  */
-export async function loadModule(path, options = {}) {
-    if (typeof path !== 'string' || !path) {
-        throw new TypeError(`[loadModule] path 必须为非空字符串，实际收到: ${path}`);
+export async function loadModule(importFactory, options = {}) {
+    if (typeof importFactory !== 'function') {
+        throw new TypeError(
+            '[loadModule] 第一个参数必须为工厂函数 () => import("..."), 不再接受裸路径字符串'
+        );
     }
     const { onError = 'throw', context = '' } = options;
 
     try {
-        return await import(/* @vite-ignore */ path);
+        return await importFactory();
     } catch (error) {
-        const label = context ? `${context} (${path})` : path;
+        const label = context || '<未命名模块>';
 
         switch (onError) {
             case 'silent':
@@ -40,10 +45,8 @@ export async function loadModule(path, options = {}) {
 
             case 'throw':
             default: {
-                // throw 路径不写日志（交给上层 catch 决定是否记录），但补充原始错误信息便于定位
                 const wrapped = new Error(`[loadModule] ${label} 加载失败: ${error.message}`);
                 wrapped.cause = error;
-                wrapped.modulePath = path;
                 throw wrapped;
             }
         }
@@ -51,16 +54,20 @@ export async function loadModule(path, options = {}) {
 }
 
 /**
- * 加载模块并执行其命名导出函数，适合"import 一次就调一个函数"的高频场景
+ * 加载模块并执行其命名导出函数。
+ * @param {() => Promise<any>} importFactory - 工厂函数
+ * @param {string} exportName - 待调用的命名导出
+ * @param {object} [options] - 同 loadModule
  */
-export async function loadAndCall(path, exportName, options = {}) {
-    const mod = await loadModule(path, options);
+export async function loadAndCall(importFactory, exportName, options = {}) {
+    const mod = await loadModule(importFactory, options);
     if (!mod) return undefined;
 
     const fn = mod[exportName];
     if (typeof fn !== 'function') {
         const available = Object.keys(mod).join(', ');
-        const msg = `[loadAndCall] 模块 ${path} 未导出函数 ${exportName} (可用导出: ${available})`;
+        const label = options.context || '<未命名模块>';
+        const msg = `[loadAndCall] ${label} 未导出函数 ${exportName} (可用导出: ${available})`;
         switch (options.onError) {
             case 'silent':
                 return undefined;
@@ -76,7 +83,6 @@ export async function loadAndCall(path, exportName, options = {}) {
                 return undefined;
             default: {
                 const err = new Error(msg);
-                err.modulePath = path;
                 err.exportName = exportName;
                 err.availableExports = Object.keys(mod);
                 throw err;

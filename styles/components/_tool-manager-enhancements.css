@@ -52,7 +52,7 @@
     border-radius: 6px;
     margin-bottom: 0.5rem;
     cursor: pointer;
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
 }
 
 .mcp-server-header:hover {
@@ -91,7 +91,7 @@
     border: var(--border);
     border-radius: 4px;
     cursor: pointer;
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
 }
 
 .mcp-batch-btn:hover {
@@ -118,7 +118,7 @@
 .mcp-server-header .collapse-icon {
     width: 16px;
     height: 16px;
-    transition: transform 0.15s var(--ease);
+    transition: transform var(--duration-fast) var(--ease);
 }
 
 .mcp-server-group.collapsed .collapse-icon {
@@ -156,7 +156,7 @@
     border-radius: 3px;
     cursor: pointer;
     color: var(--md-muted);
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
 }
 
 .quick-selector-mcp-toggle:hover {
@@ -258,7 +258,7 @@
     font-weight: 500;
     cursor: pointer;
     position: relative;
-    transition: color 0.2s;
+    transition: color var(--duration-base);
 }
 
 .tool-manager-tabs .tab-btn:hover {

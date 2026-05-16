@@ -17,7 +17,7 @@
     opacity: 0;
     visibility: hidden;
     transform: translateY(20px) scale(0.8);
-    transition: all 0.25s var(--ease);
+    transition: all var(--duration-slow) var(--ease);
 }
 
 .scroll-to-bottom-btn.show {
@@ -39,7 +39,7 @@
 
 /* 按钮内箭头动画 */
 .scroll-to-bottom-btn svg {
-    transition: transform 0.2s var(--ease);
+    transition: transform var(--duration-base) var(--ease);
 }
 
 .scroll-to-bottom-btn:hover svg {

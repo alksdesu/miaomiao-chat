@@ -23,7 +23,7 @@
     font-size: var(--fs-md);
     font-weight: 600;
     cursor: pointer;
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
     box-shadow: var(--shadow-sm);
     white-space: nowrap;
 }
@@ -57,7 +57,7 @@
 .summary-chevron {
     flex-shrink: 0;
     opacity: 0.5;
-    transition: transform 0.15s var(--ease);
+    transition: transform var(--duration-fast) var(--ease);
 }
 
 .tool-calls-summary-btn:hover .summary-chevron {
@@ -140,7 +140,7 @@
     cursor: pointer;
     color: var(--color-text-inverse);
     opacity: 0;
-    transition: opacity 0.15s;
+    transition: opacity var(--duration-fast);
 }
 
 .tool-media-area .image-wrapper:hover .download-image-btn {
@@ -160,7 +160,8 @@
     left: 0;
     width: 100%;
     height: 100%;
-    z-index: 9999;
+    /* 工具详情可从 tool-manager 设置模态打开，需高于其层级 */
+    z-index: var(--z-modal-settings-nested);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -188,7 +189,7 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    animation: modalFadeIn 0.2s ease-out;
+    animation: modalFadeIn var(--duration-base) ease-out;
 }
 
 .tool-detail-panel-header {
@@ -427,7 +428,7 @@
     font-size: var(--fs-md);
     font-weight: 600;
     cursor: pointer;
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
     box-shadow: var(--shadow-sm);
     width: 100%;
     justify-content: center;

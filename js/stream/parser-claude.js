@@ -31,6 +31,10 @@ class ClaudeStreamParser extends BaseStreamParser {
         this.currentThinkingBlock = '';
         this.thinkingSignatures = [];
         this.currentSignature = '';
+        // 顺序数组：同时记录 thinking 和 redacted_thinking blocks，保持原响应顺序，
+        // 回传 Claude API 时不能丢任何一个，否则触发 "blocks cannot be modified" 校验
+        this.thinkingItems = [];
+        this.currentRedactedData = '';
         this.currentBlockType = null;
         this.blockIndex = 0;
 
@@ -146,6 +150,9 @@ class ClaudeStreamParser extends BaseStreamParser {
             });
         } else if (this.currentBlockType === 'thinking') {
             this.currentThinkingBlock = '';
+        } else if (this.currentBlockType === 'redacted_thinking') {
+            // block_start 时可能直接附带完整 data（非流式增量），先吸收
+            this.currentRedactedData = event.content_block?.data || '';
         }
     }
 
@@ -164,6 +171,9 @@ class ClaudeStreamParser extends BaseStreamParser {
             updateStreamingMessage(this.textContent, this.mergedThinking);
         } else if (event.delta?.type === 'signature_delta') {
             this.currentSignature += event.delta.signature;
+        } else if (event.delta?.type === 'redacted_thinking_delta') {
+            // 文档未明确该 delta 类型是否存在，保守处理以兼容未来变更
+            this.currentRedactedData += event.delta.data || '';
         } else if (event.delta?.type === 'text_delta') {
             this.stats.recordFirstToken();
             this.stats.recordTokens(event.delta.text);
@@ -181,11 +191,27 @@ class ClaudeStreamParser extends BaseStreamParser {
     }
 
     _handleBlockStop() {
-        if (this.currentBlockType === 'thinking' && this.currentThinkingBlock) {
+        // Claude Opus 4.7+ 默认 display:"omitted"，thinking 字段空字符串但 signature 有效，
+        // 必须以 signature 为准保留 block，否则下一轮回传缺 thinking blocks 触发 400
+        if (
+            this.currentBlockType === 'thinking' &&
+            (this.currentThinkingBlock || this.currentSignature)
+        ) {
             this.thinkingBlocks.push(this.currentThinkingBlock);
             this.thinkingSignatures.push(this.currentSignature);
+            this.thinkingItems.push({
+                type: 'thinking',
+                text: this.currentThinkingBlock,
+                signature: this.currentSignature
+            });
             this.currentThinkingBlock = '';
             this.currentSignature = '';
+        } else if (this.currentBlockType === 'redacted_thinking' && this.currentRedactedData) {
+            this.thinkingItems.push({
+                type: 'redacted_thinking',
+                data: this.currentRedactedData
+            });
+            this.currentRedactedData = '';
         }
         this.currentBlockType = null;
     }
@@ -214,7 +240,8 @@ class ClaudeStreamParser extends BaseStreamParser {
             this.thinkingContent = this.thinkingBlocks.join('\n\n---\n\n');
             this.executeToolCalls(completedCalls, {
                 thinkingBlocks: this.thinkingBlocks,
-                thinkingSignatures: this.thinkingSignatures
+                thinkingSignatures: this.thinkingSignatures,
+                thinkingItems: this.thinkingItems
             });
             return true;
         }
@@ -261,6 +288,7 @@ class ClaudeStreamParser extends BaseStreamParser {
             thinkingContent: finalThinking,
             thinkingBlocks: this.thinkingBlocks,
             thinkingSignatures: this.thinkingSignatures,
+            thinkingItems: this.thinkingItems,
             contentParts: this.contentParts,
             streamStats: this.stats.getPartialData(),
             sessionId: this.sessionId
@@ -343,7 +371,8 @@ class ClaudeStreamParser extends BaseStreamParser {
         this.thinkingContent = finalThinking;
         this.finalizeStream({
             thinkingBlocks: this.thinkingBlocks,
-            thinkingSignatures: this.thinkingSignatures
+            thinkingSignatures: this.thinkingSignatures,
+            thinkingItems: this.thinkingItems
         });
     }
 }

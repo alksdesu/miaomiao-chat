@@ -15,6 +15,7 @@ import {
     analyzeCode
 } from './code-editor-core.js';
 import { trapFocus, openFullscreenPreview } from './code-editor-toolbar.js';
+import { bindTopmostEscape } from '../utils/modal-stack.js';
 
 /**
  * 打开代码编辑器模态框
@@ -214,7 +215,9 @@ function bindModalEvents(modal, originalCode, originalLanguage, onSave, isReadOn
     const overlay = modal.querySelector('.modal-overlay');
 
     // 关闭模态框
+    let unbindEscape = null;
     const closeModal = () => {
+        unbindEscape?.();
         ac.abort(); // 清理所有事件监听器
         modal.remove();
         document.body.style.overflow = '';
@@ -225,13 +228,8 @@ function bindModalEvents(modal, originalCode, originalLanguage, onSave, isReadOn
     cancelBtn.addEventListener('click', closeModal, { signal });
     overlay.addEventListener('click', closeModal, { signal });
 
-    // ESC键关闭
-    const escHandler = (e) => {
-        if (e.key === 'Escape') {
-            closeModal();
-        }
-    };
-    document.addEventListener('keydown', escHandler, { signal });
+    // ESC 关闭（叠层场景仅响应最顶层 modal）
+    unbindEscape = bindTopmostEscape(modal, closeModal);
 
     // 保存按钮（只在非只读模式下绑定）
     if (!isReadOnly && saveBtn) {

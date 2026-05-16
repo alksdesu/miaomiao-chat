@@ -31,6 +31,7 @@ class OpenAIStreamParser extends BaseStreamParser {
         // Responses API 思维链签名
         this.encryptedContent = null;
         this.reasoningItemId = null;
+        this.responsesReasoningItems = new Map();
     }
 
     async parse(reader) {
@@ -117,12 +118,34 @@ class OpenAIStreamParser extends BaseStreamParser {
                 break;
 
             case 'response.output_item.added':
-                if (parsed.item?.type === 'function_call') {
+                if (parsed.item?.type === 'reasoning') {
+                    this._upsertReasoningItem(parsed.item, parsed.output_index);
+                } else if (parsed.item?.type === 'function_call') {
                     const idx = parsed.output_index ?? this.responsesToolCalls.size;
+                    const callId = parsed.item.call_id || `call_${Date.now()}_${idx}`;
                     this.responsesToolCalls.set(idx, {
-                        id: parsed.item.call_id || parsed.item.id || `resp_tc_${Date.now()}_${idx}`,
+                        id: callId,
+                        call_id: callId,
+                        responseItemId: parsed.item.id || null,
                         name: parsed.item.name || '',
                         arguments: ''
+                    });
+                    this.hasResponsesToolCalls = true;
+                }
+                break;
+
+            case 'response.output_item.done':
+                if (parsed.item?.type === 'reasoning') {
+                    this._upsertReasoningItem(parsed.item, parsed.output_index);
+                } else if (parsed.item?.type === 'function_call') {
+                    const idx = parsed.output_index ?? this.responsesToolCalls.size;
+                    const callId = parsed.item.call_id || `call_${Date.now()}_${idx}`;
+                    this.responsesToolCalls.set(idx, {
+                        id: callId,
+                        call_id: callId,
+                        responseItemId: parsed.item.id || null,
+                        name: parsed.item.name || '',
+                        arguments: parsed.item.arguments || ''
                     });
                     this.hasResponsesToolCalls = true;
                 }
@@ -142,6 +165,25 @@ class OpenAIStreamParser extends BaseStreamParser {
                 }
                 break;
 
+            case 'response.reasoning_summary_part.added':
+            case 'response.reasoning_summary_part.done':
+                this._setReasoningSummaryPart(
+                    parsed.item_id,
+                    parsed.output_index,
+                    parsed.summary_index,
+                    parsed.part
+                );
+                break;
+
+            case 'response.reasoning_summary_text.done':
+                this._setReasoningSummaryText(
+                    parsed.item_id,
+                    parsed.output_index,
+                    parsed.summary_index,
+                    parsed.text
+                );
+                break;
+
             case 'response.completed':
             case 'response.done': {
                 if (parsed.response?.output_text && !this.textContent) {
@@ -154,14 +196,14 @@ class OpenAIStreamParser extends BaseStreamParser {
                 }
                 if (parsed.response?.output) {
                     for (const item of parsed.response.output) {
-                        if (item.type === 'reasoning' && item.encrypted_content) {
-                            this.encryptedContent = item.encrypted_content;
-                            this.reasoningItemId = item.id || null;
-                        }
+                        if (item.type === 'reasoning') this._upsertReasoningItem(item);
                         if (item.type === 'function_call' && !this.responsesToolCalls.size) {
                             const idx = this.responsesToolCalls.size;
+                            const callId = item.call_id || `call_${Date.now()}_${idx}`;
                             this.responsesToolCalls.set(idx, {
-                                id: item.call_id || item.id || `resp_tc_${Date.now()}_${idx}`,
+                                id: callId,
+                                call_id: callId,
+                                responseItemId: item.id || null,
                                 name: item.name || '',
                                 arguments: item.arguments || ''
                             });
@@ -184,13 +226,16 @@ class OpenAIStreamParser extends BaseStreamParser {
 
     async _processResponsesOutput(parsed) {
         for (const item of parsed.output) {
-            if (item.type === 'reasoning' && item.content) {
-                this.stats.recordFirstToken();
-                this.stats.recordTokens(item.content);
-                this.thinkingContent += item.content;
-                this.totalReceived += item.content.length;
-                this.mergeContentPart('thinking', item.content);
-                updateStreamingMessage(this.textContent, this.thinkingContent);
+            if (item.type === 'reasoning') {
+                this._upsertReasoningItem(item);
+                if (item.content) {
+                    this.stats.recordFirstToken();
+                    this.stats.recordTokens(item.content);
+                    this.thinkingContent += item.content;
+                    this.totalReceived += item.content.length;
+                    this.mergeContentPart('thinking', item.content);
+                    updateStreamingMessage(this.textContent, this.thinkingContent);
+                }
             } else if (item.type === 'message') {
                 const messageText = item.text || item.content?.[0]?.text || '';
                 if (messageText) {
@@ -216,8 +261,11 @@ class OpenAIStreamParser extends BaseStreamParser {
                 }
             } else if (item.type === 'function_call') {
                 const idx = this.responsesToolCalls.size;
+                const callId = item.call_id || `call_${Date.now()}_${idx}`;
                 this.responsesToolCalls.set(idx, {
-                    id: item.call_id || item.id || `resp_tc_${Date.now()}_${idx}`,
+                    id: callId,
+                    call_id: callId,
+                    responseItemId: item.id || null,
                     name: item.name || '',
                     arguments: item.arguments || ''
                 });
@@ -334,6 +382,73 @@ class OpenAIStreamParser extends BaseStreamParser {
         updateStreamingMessage(this.textContent, this.thinkingContent);
     }
 
+    _getReasoningKey(itemOrId, outputIndex = null) {
+        if (typeof itemOrId === 'string' && itemOrId) return itemOrId;
+        if (itemOrId?.id) return itemOrId.id;
+        if (outputIndex !== null && outputIndex !== undefined) return `output_${outputIndex}`;
+        return `reasoning_${this.responsesReasoningItems.size}`;
+    }
+
+    _upsertReasoningItem(item, outputIndex = null) {
+        if (!item || item.type !== 'reasoning') return;
+
+        const key = this._getReasoningKey(item, outputIndex);
+        const prev = this.responsesReasoningItems.get(key) || {
+            type: 'reasoning',
+            summary: []
+        };
+
+        const next = {
+            ...prev,
+            type: 'reasoning',
+            id: item.id || prev.id || null,
+            summary: Array.isArray(item.summary) ? item.summary : prev.summary || []
+        };
+
+        if (item.encrypted_content || item.encryptedContent) {
+            next.encrypted_content = item.encrypted_content || item.encryptedContent;
+            this.encryptedContent = next.encrypted_content;
+        }
+        if (item.status) next.status = item.status;
+        if (next.id) this.reasoningItemId = next.id;
+
+        this.responsesReasoningItems.set(key, next);
+    }
+
+    _setReasoningSummaryPart(itemId, outputIndex, summaryIndex = 0, part = null) {
+        if (!part) return;
+        const key = this._getReasoningKey(itemId, outputIndex);
+        const item = this.responsesReasoningItems.get(key) || {
+            type: 'reasoning',
+            id: itemId || null,
+            summary: []
+        };
+        item.summary = Array.isArray(item.summary) ? item.summary : [];
+        item.summary[summaryIndex || 0] = part;
+        this.responsesReasoningItems.set(key, item);
+        if (item.id) this.reasoningItemId = item.id;
+    }
+
+    _setReasoningSummaryText(itemId, outputIndex, summaryIndex = 0, text = '') {
+        if (!text) return;
+        this._setReasoningSummaryPart(itemId, outputIndex, summaryIndex, {
+            type: 'summary_text',
+            text
+        });
+    }
+
+    _getReasoningItemsForSave() {
+        return Array.from(this.responsesReasoningItems.values())
+            .map((item) => ({
+                type: 'reasoning',
+                id: item.id || null,
+                summary: Array.isArray(item.summary) ? item.summary.filter(Boolean) : [],
+                encrypted_content: item.encrypted_content || item.encryptedContent || null,
+                status: item.status || null
+            }))
+            .filter((item) => item.id || item.encrypted_content);
+    }
+
     _tryExecuteResponsesToolCalls() {
         if (!this.hasResponsesToolCalls || this.responsesToolCalls.size === 0) return false;
 
@@ -345,13 +460,20 @@ class OpenAIStreamParser extends BaseStreamParser {
             } catch (_e) {
                 args = {};
             }
-            completedCalls.push({ id: tc.id, name: tc.name, arguments: args });
+            completedCalls.push({
+                id: tc.id,
+                call_id: tc.call_id || tc.id,
+                responseItemId: tc.responseItemId || null,
+                name: tc.name,
+                arguments: args
+            });
         }
 
         if (completedCalls.length > 0) {
             this.executeToolCalls(completedCalls, {
                 encryptedContent: this.encryptedContent,
-                reasoningItemId: this.reasoningItemId
+                reasoningItemId: this.reasoningItemId,
+                reasoningItems: this._getReasoningItemsForSave()
             });
             return true;
         }
@@ -386,7 +508,8 @@ class OpenAIStreamParser extends BaseStreamParser {
         if (this.textContent || this.thinkingContent || this.contentParts.length > 0) {
             this.finalizeStreamWithError(errorCode, errorMessage, {
                 encryptedContent: this.encryptedContent,
-                reasoningItemId: this.reasoningItemId
+                reasoningItemId: this.reasoningItemId,
+                reasoningItems: this._getReasoningItemsForSave()
             });
         }
     }
@@ -394,7 +517,8 @@ class OpenAIStreamParser extends BaseStreamParser {
     _finalize() {
         this.finalizeStream({
             encryptedContent: this.encryptedContent,
-            reasoningItemId: this.reasoningItemId
+            reasoningItemId: this.reasoningItemId,
+            reasoningItems: this._getReasoningItemsForSave()
         });
     }
 }

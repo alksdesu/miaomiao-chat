@@ -10,7 +10,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    animation: fadeIn 0.2s ease-out;
+    animation: fadeIn var(--duration-base) ease-out;
 }
 
 /* 弹窗主体 */
@@ -22,7 +22,7 @@
     border: 3px solid var(--color-border-primary);
     box-shadow: var(--shadow-lg);
     padding: 32px 24px 24px;
-    animation: slideUp 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+    animation: update-modal-slide-up var(--duration-slower) cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 /* 关闭按钮 */
@@ -37,8 +37,8 @@
     box-shadow: var(--shadow-sm);
     cursor: pointer;
     transition:
-        transform 0.15s ease-out,
-        box-shadow 0.15s ease-out;
+        transform var(--duration-fast) ease-out,
+        box-shadow var(--duration-fast) ease-out;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -73,16 +73,7 @@
 
 .update-modal-icon svg {
     color: var(--color-text-inverse);
-    animation: rotate 2s linear infinite;
-}
-
-@keyframes rotate {
-    from {
-        transform: rotate(0deg);
-    }
-    to {
-        transform: rotate(360deg);
-    }
+    animation: spin 2s linear infinite;
 }
 
 /* 标题 */
@@ -136,8 +127,8 @@
     box-shadow: var(--shadow-md);
     cursor: pointer;
     transition:
-        transform 0.15s ease-out,
-        box-shadow 0.15s ease-out;
+        transform var(--duration-fast) ease-out,
+        box-shadow var(--duration-fast) ease-out;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -191,7 +182,7 @@
 .update-progress-fill {
     height: 100%;
     background: var(--md-teal);
-    transition: width 0.3s ease-out;
+    transition: width var(--duration-slower) ease-out;
     box-shadow: -2px 0 0 0 var(--color-border-primary);
 }
 
@@ -203,8 +194,8 @@
     margin: 8px 0 0;
 }
 
-/* 动画 */
-@keyframes slideUp {
+/* 动画 — 命名空间化避免与其它模态 slideUp 冲突；rotate 已用 abstracts 的 spin */
+@keyframes update-modal-slide-up {
     from {
         transform: translateY(30px);
         opacity: 0;
@@ -212,15 +203,6 @@
     to {
         transform: translateY(0);
         opacity: 1;
-    }
-}
-
-@keyframes rotate {
-    from {
-        transform: rotate(0deg);
-    }
-    to {
-        transform: rotate(360deg);
     }
 }
 

@@ -189,6 +189,12 @@ export function safeDeleteMessage(index) {
 
 /**
  * 检查消息是否可编辑
+ *
+ * 含 tool_calls 的 assistant 消息允许编辑 text / thinking / media 部分；
+ * editor 的三个 update 函数（updateMessageContent / updateMessageWithThinking /
+ * updateMessageContentWithImages）都已显式保留 TOOL_CALL parts，
+ * id / name / args / result 不变，tool_use ↔ tool_result 配对不破坏。
+ *
  * @param {number} index - 消息索引
  * @returns {Object} { canEdit, reason }
  */
@@ -197,46 +203,31 @@ export function canEditMessage(index) {
     const message = messages[index];
 
     if (!message) {
-        return {
-            canEdit: false,
-            reason: '消息不存在'
-        };
+        return { canEdit: false, reason: '消息不存在' };
     }
 
-    // 不允许编辑包含 tool_calls 的助手消息
-    if (message.role === 'assistant' && hasToolCalls(message)) {
-        return {
-            canEdit: false,
-            reason: '包含工具调用的助手消息不可编辑，请删除后重新发送'
-        };
-    }
-
-    // 不允许编辑工具结果消息
+    // 工具结果消息仍禁止编辑（破坏会让 tool_use_id 失配）
     if (isToolResult(message)) {
+        return { canEdit: false, reason: '工具结果消息不可编辑' };
+    }
+
+    // 正在等待工具结果续写的消息禁止编辑（in-flight 状态保护，
+    // 编辑会破坏 mergeContinuation 对该 DOM 引用的复用）
+    const isContinuationPending =
+        state.isToolCallContinuation &&
+        state.toolCallContinuationElement?.dataset.messageIndex === String(index);
+    if (isContinuationPending) {
         return {
             canEdit: false,
-            reason: '工具结果消息不可编辑'
+            reason: '该消息正在等待工具结果续写，请等待完成后再编辑'
         };
     }
 
-    // 用户消息可编辑
-    if (message.role === 'user') {
-        return {
-            canEdit: true
-        };
+    if (message.role === 'user' || message.role === 'assistant') {
+        return { canEdit: true };
     }
 
-    // 其他助手消息可编辑
-    if (message.role === 'assistant') {
-        return {
-            canEdit: true
-        };
-    }
-
-    return {
-        canEdit: false,
-        reason: '此类型消息不可编辑'
-    };
+    return { canEdit: false, reason: '此类型消息不可编辑' };
 }
 
 // ========== 消息渲染辅助 ==========

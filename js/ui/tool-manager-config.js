@@ -111,7 +111,7 @@ export function showToolForm(modal, toolOrId, callbacks) {
             ${isEditable ? renderRateLimitForm() : ''}
 
             <div class="form-actions">
-                <button id="test-tool-btn" class="btn btn-secondary">🧪 测试工具</button>
+                <button id="test-tool-btn" class="btn btn-secondary">${getIcon('flask', { size: 14 })} 测试工具</button>
                 ${isEditable ? '<button id="delete-tool-btn" class="btn btn-danger">删除</button>' : ''}
                 ${isEditable ? '<button id="cancel-tool-btn" class="btn btn-default">取消</button>' : ''}
                 ${isEditable ? '<button id="save-tool-btn" class="btn btn-primary">保存</button>' : ''}

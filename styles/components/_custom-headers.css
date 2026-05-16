@@ -21,7 +21,7 @@
     font-size: var(--fs-base);
     background: var(--md-surface);
     color: var(--md-text);
-    transition: border-color 0.15s var(--ease);
+    transition: border-color var(--duration-fast) var(--ease);
 }
 
 .custom-header-row input:focus {
@@ -53,7 +53,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
     flex-shrink: 0;
 }
 
@@ -77,7 +77,7 @@
     font-family: var(--font-ui-accent);
     font-size: var(--fs-base);
     cursor: pointer;
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
 }
 
 .add-header-btn:hover {

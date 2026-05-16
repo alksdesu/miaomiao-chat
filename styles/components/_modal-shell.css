@@ -32,9 +32,9 @@
     position: relative;
     background: var(--color-bg-primary);
     border-radius: 16px;
-    box-shadow: 0 8px 48px rgba(0, 0, 0, 0.4);
+    box-shadow: 0 8px 48px rgba(var(--shadow-color-rgb), 0.4);
     overflow: hidden;
-    animation: modalFadeIn 0.2s ease-out;
+    animation: modalFadeIn var(--duration-base) ease-out;
     z-index: var(--z-base);
     will-change: opacity;
 }

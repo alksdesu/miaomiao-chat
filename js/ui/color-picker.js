@@ -3,6 +3,8 @@
  * Canvas 绘制的 HSV 颜色选择器
  */
 
+import { bindTopmostEscape } from '../utils/modal-stack.js';
+
 /* ===== 颜色数学 ===== */
 
 export function hsvToRgb(h, s, v) {
@@ -566,7 +568,9 @@ export function openColorPicker(anchor, initialColor, onChange, onClose) {
         destroy();
     }
 
+    let unbindEscape = null;
     function destroy() {
+        unbindEscape?.();
         ac.abort();
         el.remove();
     }
@@ -584,17 +588,9 @@ export function openColorPicker(anchor, initialColor, onChange, onClose) {
         );
     }, 0);
 
-    // ESC 关闭
-    document.addEventListener(
-        'keydown',
-        (e) => {
-            if (e.key === 'Escape') {
-                e.stopPropagation();
-                close();
-            }
-        },
-        { signal }
-    );
+    // ESC 关闭（叠层场景仅响应最顶层；色盘常在主题编辑器内打开，
+    // bindTopmostEscape 的最顶层判断会自动避免连环关闭，不再需要 stopPropagation）
+    unbindEscape = bindTopmostEscape(el, close);
 
     // 挂载
     document.body.appendChild(el);

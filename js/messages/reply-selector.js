@@ -19,8 +19,14 @@ import {
     getTextContent,
     getThinkingContent
 } from './schema.js';
-import { renderThinkingBlock, enhanceCodeBlocks, renderContentParts } from './renderer.js';
+import {
+    renderThinkingBlock,
+    enhanceCodeBlocks,
+    renderContentParts,
+    restoreToolCallsFromMessage
+} from './renderer.js';
 import { renderHumanizedError } from '../utils/errors.js';
+import { getIcon } from '../utils/icons.js';
 import { isVideoMimeType } from '../utils/media.js';
 import {
     renderImageCard as renderImageBlock,
@@ -185,6 +191,15 @@ export function selectReply(replyIndex, messageIndex = null) {
 
             // 增强代码块（绑定复制按钮、表格导出、思维链折叠等）
             enhanceCodeBlocks(messageEl);
+
+            // innerHTML 覆盖会抹掉 tool-calls-group 节点，从当前消息 parts 重建
+            const resolvedMsgIndex =
+                messageIndex !== null
+                    ? messageIndex
+                    : parseInt(messageEl.dataset?.messageIndex ?? '', 10);
+            if (Number.isInteger(resolvedMsgIndex)) {
+                restoreToolCallsFromMessage(state.messages[resolvedMsgIndex], contentDiv);
+            }
         }
     }
 }
@@ -314,7 +329,7 @@ function renderSearchGrounding(groundingMetadata) {
 
     return `
         <div class="search-sources">
-            <span class="sources-label">🔍 来源:</span>
+            <span class="sources-label">${getIcon('search', { size: 14 })} 来源:</span>
             ${sources.join('')}
         </div>
     `;

@@ -84,8 +84,8 @@
     font-size: var(--fs-lg);
     font-family: inherit;
     transition:
-        border-color 0.2s,
-        box-shadow 0.2s;
+        border-color var(--duration-base),
+        box-shadow var(--duration-base);
 }
 
 .form-field input[type='text']:focus,

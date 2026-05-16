@@ -83,17 +83,17 @@ export async function autoConnectMCPServers(options = {}) {
         }
     }
 
-    // 显示汇总通知（没有需要连接的服务器时不弹窗）
+    // 显示汇总通知（没有需要连接的服务器时不弹窗）— 通知 type 已表达成功/警告/错误语义
     if (showNotifications && results.total > 0) {
         if (results.connected === results.total) {
-            showNotification(`✅ 成功连接所有 ${results.total} 个 MCP 服务器`, 'success');
+            showNotification(`成功连接所有 ${results.total} 个 MCP 服务器`, 'success');
         } else if (results.connected > 0) {
             showNotification(
-                `⚠️ 已连接 ${results.connected}/${results.total} 个 MCP 服务器`,
+                `已连接 ${results.connected}/${results.total} 个 MCP 服务器`,
                 'warning'
             );
         } else {
-            showNotification(`❌ 无法连接任何 MCP 服务器`, 'error');
+            showNotification(`无法连接任何 MCP 服务器`, 'error');
         }
     }
 

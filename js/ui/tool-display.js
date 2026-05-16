@@ -10,6 +10,7 @@
 import { eventBus } from '../core/events.js';
 import { getIcon } from '../utils/icons.js';
 import { showConfirmDialog } from '../utils/dialogs.js';
+import { bindTopmostEscape } from '../utils/modal-stack.js';
 import { logger } from '../utils/logger.js';
 
 // 工具名称映射
@@ -478,15 +479,13 @@ function openToolDetailModal(group) {
     modal.append(overlay, panel);
     document.body.appendChild(modal);
 
-    // ESC 关闭
+    // ESC 关闭（叠层场景仅响应最顶层 modal，避免连环关闭）
+    let unbindEscape = null;
     const closeModal = () => {
+        unbindEscape?.();
         modal.remove();
-        document.removeEventListener('keydown', onKeydown);
     };
-    const onKeydown = (e) => {
-        if (e.key === 'Escape') closeModal();
-    };
-    document.addEventListener('keydown', onKeydown);
+    unbindEscape = bindTopmostEscape(modal, closeModal);
     overlay.onclick = closeModal;
     closeBtn.onclick = closeModal;
 }
@@ -708,6 +707,9 @@ eventBus.on('session:before-switch', () => {
  */
 export async function restoreToolCallsGroup(toolCalls, contentDiv) {
     if (!toolCalls || toolCalls.length === 0 || !contentDiv) return;
+
+    // 幂等：同一 contentDiv 内已存在 group 则跳过，避免编辑/多回复路径双重 prepend
+    if (contentDiv.querySelector(':scope > .tool-calls-group')) return;
 
     const group = document.createElement('div');
     group.className = 'tool-calls-group';

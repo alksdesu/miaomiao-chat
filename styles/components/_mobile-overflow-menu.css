@@ -13,8 +13,8 @@
     opacity: 0;
     pointer-events: none;
     transition:
-        transform 0.15s var(--ease),
-        opacity 0.15s var(--ease);
+        transform var(--duration-fast) var(--ease),
+        opacity var(--duration-fast) var(--ease);
     overflow: hidden;
 }
 
@@ -37,7 +37,7 @@
     font-family: var(--font-ui-accent);
     font-size: var(--fs-lg);
     cursor: pointer;
-    transition: background 0.15s;
+    transition: background var(--duration-fast);
     text-align: left;
 }
 

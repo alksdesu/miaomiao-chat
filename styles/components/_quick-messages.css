@@ -92,7 +92,7 @@
     margin-bottom: 8px;
     border-radius: 10px;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: all var(--duration-base);
     position: relative;
     background: var(--md-surface);
     border: var(--border);
@@ -140,7 +140,7 @@
     display: flex;
     gap: 8px;
     opacity: 0;
-    transition: opacity 0.2s;
+    transition: opacity var(--duration-base);
 }
 
 .quick-message-item:hover .qm-item-actions {
@@ -156,7 +156,7 @@
     padding: 0;
     border-radius: 6px;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: all var(--duration-base);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -207,7 +207,7 @@
     color: var(--md-text);
     font-size: var(--fs-lg);
     font-family: var(--font-sans);
-    transition: border-color 0.2s;
+    transition: border-color var(--duration-base);
 }
 
 #edit-quick-message-modal input:focus,

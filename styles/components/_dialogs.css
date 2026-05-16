@@ -36,7 +36,7 @@
     width: 90%;
     max-height: 90vh;
     overflow: auto;
-    animation: dialogSlideUp 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+    animation: dialogSlideUp var(--duration-slower) cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 @keyframes dialogSlideUp {
@@ -81,7 +81,7 @@
     font-size: var(--fs-3xl);
     line-height: 1;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: all var(--duration-base);
 }
 
 :where(#input-dialog-modal) .modal-header .icon-button:hover,
@@ -116,7 +116,7 @@
     background: var(--color-bg-input);
     border: 2px solid var(--color-border-primary);
     box-shadow: inset 2px 2px 0 rgba(var(--shadow-color-rgb), 0.1);
-    transition: all 0.2s;
+    transition: all var(--duration-base);
 }
 
 #input-dialog-input:focus {
@@ -149,7 +149,7 @@
     font-size: var(--fs-xs);
     border: 2px solid var(--color-border-primary);
     cursor: pointer;
-    transition: all 0.2s;
+    transition: all var(--duration-base);
     text-transform: uppercase;
     position: relative;
 }

@@ -14,6 +14,7 @@ import {
 } from '../messages/renderer.js';
 import { isVideoUrl } from '../utils/media.js';
 import { renderMediaCard } from '../ui/media-cards.js';
+import { getIcon } from '../utils/icons.js';
 
 // 性能优化：合并同帧渲染（避免每个 token 都触发重绘）
 let pendingRenderData = null;
@@ -504,7 +505,7 @@ function renderSearchGrounding(groundingMetadata) {
 
     return `
         <div class="search-sources">
-            <span class="sources-label">🔍 来源:</span>
+            <span class="sources-label">${getIcon('search', { size: 14 })} 来源:</span>
             ${sources.join('')}
         </div>
     `;

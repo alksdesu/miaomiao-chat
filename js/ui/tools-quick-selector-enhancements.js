@@ -7,6 +7,7 @@ import { state } from '../core/state.js';
 import { eventBus } from '../core/events.js';
 import { getAllTools, setToolEnabled, isToolEnabled } from '../tools/manager.js';
 import { escapeHtml } from '../utils/helpers.js';
+import { getIcon } from '../utils/icons.js';
 import { logger } from '../utils/logger.js';
 
 let initialized = false;
@@ -32,18 +33,19 @@ function getServerName(serverId) {
 }
 
 function getQuickToolIcon(type) {
-    const icons = {
-        builtin: '🔧',
-        mcp: '🔌',
-        custom: '⚙️'
+    const iconMap = {
+        builtin: 'tool',
+        mcp: 'plug',
+        custom: 'settings'
     };
-    return icons[type] || '📦';
+    return getIcon(iconMap[type] || 'package', { size: 14 });
 }
 
 function renderQuickToolItem(tool, extraClass = '') {
     const enabled = isToolEnabled(tool.id);
     const toolName = escapeHtml(tool.name || tool.id);
-    const toolIcon = escapeHtml(getQuickToolIcon(tool.type));
+    // getQuickToolIcon 已返回 SVG 字符串（受信任的静态来源），不应再 escape
+    const toolIcon = getQuickToolIcon(tool.type);
     const className = `tool-checkbox-item quick-tool-item ${extraClass}`.trim();
 
     return `

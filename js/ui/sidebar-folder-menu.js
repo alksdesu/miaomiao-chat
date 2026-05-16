@@ -6,6 +6,7 @@
 import { state } from '../core/state.js';
 import { moveSessionToFolder } from '../state/folders.js';
 import { escapeHtml } from '../utils/helpers.js';
+import { getIcon } from '../utils/icons.js';
 
 let _activeMenu = null;
 
@@ -71,7 +72,7 @@ function showFolderMenu(sessionItem, touch) {
         const isCurrent = folder.id === currentFolderId;
         const cls = isCurrent ? ' current' : '';
         html += `<div class="folder-menu-item${cls}" data-folder-id="${escapeHtml(folder.id)}">
-            <span>📁</span><span>${escapeHtml(folder.name)}</span>
+            <span class="folder-menu-icon">${getIcon('folder', { size: 14 })}</span><span>${escapeHtml(folder.name)}</span>
         </div>`;
     }
 

@@ -8,6 +8,29 @@
     }
 }
 
+/* 通用脉冲：透明度 1 → 0.5 → 1 */
+@keyframes pulse {
+    0%,
+    100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.5;
+    }
+}
+
+/* 通用右侧滑入：translateX(100%) */
+@keyframes slideInRight {
+    from {
+        opacity: 0;
+        transform: translateX(100%);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
 /* ========== 主题过渡动画 ========== */
 /* 只在用户主动切换主题时启用过渡，避免页面加载时闪烁 */
 html.theme-transition,
@@ -15,9 +38,9 @@ html.theme-transition *,
 html.theme-transition *::before,
 html.theme-transition *::after {
     transition:
-        background-color 0.3s ease,
-        border-color 0.3s ease,
-        color 0.3s ease,
-        box-shadow 0.2s ease,
-        opacity 0.2s ease;
+        background-color var(--duration-slower) ease,
+        border-color var(--duration-slower) ease,
+        color var(--duration-slower) ease,
+        box-shadow var(--duration-base) ease,
+        opacity var(--duration-base) ease;
 }

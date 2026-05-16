@@ -6,6 +6,7 @@
 import { logger } from '../utils/logger.js';
 import { showNotification } from '../ui/notifications.js';
 import { isAndroid, isElectron } from '../utils/platform.js';
+import { bindTopmostEscape } from '../utils/modal-stack.js';
 
 const DEFAULT_RELEASE_NOTES = '建议您更新到最新版本以获得更好的体验';
 const DEFAULT_PROGRESS_TEXT = '正在下载... 0%';
@@ -463,6 +464,10 @@ export function initUpdateModal() {
     addManagedListener(closeBtn, 'click', handleCloseRequest);
     addManagedListener(overlay, 'click', handleOverlayClick);
     addManagedListener(actionsContainer, 'click', handleActionClick);
+
+    // Esc 关闭弹窗（downloading 阶段也允许：仅隐藏 UI，不取消下载）
+    const unbindEscape = bindTopmostEscape(overlay, handleCloseRequest);
+    modalCleanupCallbacks.push(unbindEscape);
 
     if (isElectron()) {
         bindElectronSubscriptions();

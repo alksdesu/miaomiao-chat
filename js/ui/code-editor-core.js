@@ -4,6 +4,7 @@
  */
 
 import { escapeHtml } from '../utils/helpers.js';
+import { getIcon } from '../utils/icons.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -535,8 +536,8 @@ function renderAnalysisResult(analysis, container) {
             basicInfo.isLimited
                 ? `
         <div class="analysis-section" style="background: rgba(255, 193, 7, 0.1); border-left: 3px solid #ffc107;">
-            <p style="margin: 0; color: #f57c00; font-size: 13px;">
-                ⚠️ ${isMarkdown ? '文档' : '代码文件'}较大（${basicInfo.lines} 行），分析结果仅基于前 2000 行
+            <p style="margin: 0; color: #f57c00; font-size: 13px; display: inline-flex; align-items: center; gap: 6px;">
+                ${getIcon('alertCircle', { size: 14 })} ${isMarkdown ? '文档' : '代码文件'}较大（${basicInfo.lines} 行），分析结果仅基于前 2000 行
             </p>
         </div>
         `

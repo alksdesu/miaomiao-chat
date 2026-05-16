@@ -29,7 +29,6 @@ import {
 } from '../messages/schema.js';
 import {
     MAX_ATTACHMENTS,
-    MAX_MESSAGE_LENGTH,
     IMAGE_COMPRESSION_TIMEOUT,
     AUTO_DOCUMENT_TOKEN_THRESHOLD
 } from '../utils/constants.js';
@@ -47,26 +46,13 @@ import { logger } from '../utils/logger.js';
 export { handleAttachFile, updateImagePreview } from './attachment-handler.js';
 
 /**
- * 验证消息长度
- * @param {string} text - 消息文本
- * @returns {boolean} 是否通过验证
- */
-function validateMessageLength(text) {
-    if (text.length > MAX_MESSAGE_LENGTH) {
-        showNotification(
-            `消息过长（${text.length.toLocaleString()} 字符），最大限制 ${MAX_MESSAGE_LENGTH.toLocaleString()} 字符`,
-            'error'
-        );
-        return false;
-    }
-    return true;
-}
-
-/**
  * 处理键盘事件
  * @param {KeyboardEvent} e - 键盘事件
  */
 function handleKeyDown(e) {
+    // 中日韩等 IME 合成期间的 Enter 不应触发发送
+    // e.isComposing 标记合成中；keyCode 229 是部分浏览器/Electron 的旧式兜底
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         handleSend();
@@ -270,11 +256,8 @@ export async function handleSend() {
         textContent = quotePrefix + textContent;
     }
 
-    if (!validateMessageLength(textContent)) {
-        return;
-    }
-
-    // 检查 token 数量，超过阈值自动转换为文档
+    // 超长文本通过下面的 AUTO_DOCUMENT_TOKEN_THRESHOLD 自动转文档附件处理，
+    // 不再设硬字符上限，避免长粘贴被拦截在发送之前
     if (textContent) {
         const tokenCount = estimateTokenCount(textContent);
         logger.debug(`[input.js] 消息 token 数: ${tokenCount}`);

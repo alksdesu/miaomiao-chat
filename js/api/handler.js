@@ -144,6 +144,9 @@ async function handleNonStreamResponse(response, assistantMessageEl, sessionId) 
                     const messageIndex = saveAssistantMessage({
                         textContent: reply.content || '(调用工具)',
                         toolCalls: reply.toolCalls,
+                        encryptedContent: reply.encryptedContent,
+                        reasoningItemId: reply.reasoningItemId,
+                        reasoningItems: reply.reasoningItems,
                         streamStats: getCurrentStreamStatsData(),
                         sessionId: sessionId
                     });
@@ -260,6 +263,7 @@ async function handleNonStreamResponse(response, assistantMessageEl, sessionId) 
                 thoughtSignature: reply0.thoughtSignature,
                 thinkingBlocks: reply0.thinkingBlocks,
                 thinkingSignatures: reply0.thinkingSignatures,
+                thinkingItems: reply0.thinkingItems,
                 encryptedContent: reply0.encryptedContent,
                 reasoningItemId: reply0.reasoningItemId,
                 streamStats: getCurrentStreamStatsData(),

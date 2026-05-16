@@ -14,19 +14,10 @@
     z-index: var(--z-notification);
     font-family: var(--font-sans);
     font-size: var(--fs-md);
-    animation: slideInRight 0.3s var(--ease);
+    animation: slideInRight var(--duration-slower) var(--ease);
 }
 
-@keyframes slideInRight {
-    from {
-        transform: translateX(100px);
-        opacity: 0;
-    }
-    to {
-        transform: translateX(0);
-        opacity: 1;
-    }
-}
+/* slideInRight 已抽到 abstracts/_animations.css 公共定义 */
 
 @keyframes slideOut {
     from {
@@ -70,7 +61,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: transform 0.15s var(--ease);
+    transition: transform var(--duration-fast) var(--ease);
     z-index: var(--z-base);
 }
 

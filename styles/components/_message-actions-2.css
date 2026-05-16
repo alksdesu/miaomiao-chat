@@ -10,7 +10,7 @@
     display: flex;
     gap: 4px;
     opacity: 0;
-    transition: opacity 0.2s;
+    transition: opacity var(--duration-base);
     z-index: var(--z-sticky);
 }
 
@@ -46,7 +46,7 @@
     align-items: center;
     justify-content: center;
     box-shadow: var(--shadow-sm);
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
     position: relative;
     overflow: hidden;
 }
@@ -106,7 +106,7 @@
     cursor: pointer;
     font-family: var(--font-ui-accent);
     font-weight: 500;
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
     border: var(--border);
     box-shadow: var(--shadow-sm);
 }

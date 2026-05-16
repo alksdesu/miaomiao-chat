@@ -151,6 +151,27 @@ export function getToolCalls(msg) {
 }
 
 /**
+ * 将 TOOL_CALL parts 转换为 restoreToolCallsGroup 期望的格式
+ * 字段名差异：args→arguments、state→status（done→completed / error→failed）
+ */
+export function partsToToolCallRestoreFormat(parts) {
+    return filterParts(parts, PartType.TOOL_CALL).map((tc) => ({
+        id: tc.id,
+        name: tc.name,
+        arguments: tc.args,
+        status:
+            tc.state === ToolState.DONE
+                ? 'completed'
+                : tc.state === ToolState.ERROR
+                  ? 'failed'
+                  : tc.state,
+        result: tc.result,
+        error: tc.error,
+        duration: tc.duration
+    }));
+}
+
+/**
  * 提取媒体内容
  */
 export function getMediaParts(msg) {
@@ -238,7 +259,8 @@ export function validateMessage(msg) {
                 break;
             case PartType.THINKING:
                 if (typeof p.text !== 'string') errors.push(`parts[${i}] thinking.text 不是字符串`);
-                else if (!p.text) errors.push(`parts[${i}] thinking.text 为空`);
+                else if (!p.text && !(p.redacted && p.data))
+                    errors.push(`parts[${i}] thinking.text 为空且无 redacted data`);
                 break;
             case PartType.MEDIA:
                 if (!VALID_MEDIA_KINDS.has(p.media))

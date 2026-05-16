@@ -6,7 +6,8 @@
     left: 0;
     right: 0;
     height: 50vh;
-    z-index: 99998;
+    /* 开发者面板：高于通用模态对话框，仅低于全局通知 */
+    z-index: var(--z-modal-dialog);
     display: none;
     flex-direction: column;
     background: var(--bg-primary);
@@ -189,7 +190,7 @@
     color: var(--text-secondary);
     flex-shrink: 0;
     opacity: 0;
-    transition: opacity 0.15s;
+    transition: opacity var(--duration-fast);
 }
 
 .capture-row:hover .capture-replay-btn {

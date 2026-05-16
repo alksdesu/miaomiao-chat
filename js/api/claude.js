@@ -94,12 +94,10 @@ export async function sendClaudeRequest(endpoint, apiKey, model, signal = null) 
     // 2. Computer Use 原生工具（仅 Electron 环境且非 XML 模式）
     // ⭐ XML 模式下使用统一的自定义 computer 工具（来自 builtin/computer-use.js）
     if (state.computerUseEnabled && isElectron() && !state.xmlToolCallingEnabled) {
-        // 根据模型选择 computer 工具版本（只有 computer 工具版本会变）
-        // Opus 4.5 使用 20251124，其他模型使用 20250124
-        const isOpus45 = model && model.toLowerCase().includes('opus-4-5');
-        const computerVersion = isOpus45 ? '20251124' : '20250124';
+        // 统一使用 20251124：较新模型会拒绝旧版本 computer_20250124，新版本向后兼容
+        const computerVersion = '20251124';
 
-        // 2.1 屏幕控制工具（版本根据模型变化）
+        // 2.1 屏幕控制工具
         // 动态获取屏幕分辨率
         let displayWidth = 1920;
         let displayHeight = 1080;
@@ -209,12 +207,9 @@ export async function sendClaudeRequest(endpoint, apiKey, model, signal = null) 
         betaFeaturesToAdd.push('files-api-2025-04-14');
     }
 
-    // Computer Use beta（仅 Electron 环境）
+    // Computer Use beta（仅 Electron 环境）— 与 computer 工具版本对齐到最新
     if (state.computerUseEnabled && isElectron()) {
-        // 根据模型选择 beta header
-        const isOpus45 = model && model.toLowerCase().includes('opus-4-5');
-        const betaHeader = isOpus45 ? 'computer-use-2025-11-24' : 'computer-use-2025-01-24';
-        betaFeaturesToAdd.push(betaHeader);
+        betaFeaturesToAdd.push('computer-use-2025-11-24');
     }
 
     // 合并 beta headers

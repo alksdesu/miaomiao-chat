@@ -117,7 +117,8 @@ function buildPartsFromOldParams(opts) {
         contentParts, // 双写桥接
         toolCalls,
         thinkingBlocks,
-        thinkingSignatures
+        thinkingSignatures,
+        thinkingItems // 新顺序数组（含 redacted_thinking），优先于 thinkingBlocks
     } = opts;
 
     let parts = [];
@@ -128,8 +129,23 @@ function buildPartsFromOldParams(opts) {
 
     // 1. 思维链（仅当 contentParts 中没有 thinking 时从独立参数添加）
     if (!contentPartsHasThinking) {
-        if (thinkingBlocks && thinkingBlocks.length > 0) {
-            // 多 thinking 块：每个块有独立的 signature
+        if (thinkingItems && thinkingItems.length > 0) {
+            // 顺序数组路径：保留 thinking 和 redacted_thinking 的原响应顺序
+            // Claude API 要求所有 thinking-类 blocks 原样回传，缺一不可
+            for (const item of thinkingItems) {
+                if (item.type === 'redacted_thinking' && item.data) {
+                    parts.push({
+                        type: PartType.THINKING,
+                        text: '',
+                        redacted: true,
+                        data: item.data
+                    });
+                } else if (item.text) {
+                    parts.push(thinkingPart(item.text, item.signature || null));
+                }
+            }
+        } else if (thinkingBlocks && thinkingBlocks.length > 0) {
+            // 兼容路径：仅普通 thinking blocks（无 redacted）
             for (let i = 0; i < thinkingBlocks.length; i++) {
                 if (thinkingBlocks[i]) {
                     const sig = thinkingSignatures?.[i] || null;
@@ -163,6 +179,11 @@ function buildPartsFromOldParams(opts) {
                 }
             }
             const tcPart = toolCallPart(tc.id || `tc_${Date.now()}`, name, args);
+            if (tc.call_id) tcPart.call_id = tc.call_id;
+            if (tc.responseItemId || tc.itemId || tc.fcId) {
+                tcPart.responseItemId = tc.responseItemId || tc.itemId || tc.fcId;
+            }
+
             // 如果工具有结果，附加到 part
             if (tc.status === 'completed' && tc.result != null) {
                 tcPart.state = ToolState.DONE;
@@ -196,6 +217,7 @@ function buildMeta(opts) {
         streamStats,
         encryptedContent,
         reasoningItemId,
+        reasoningItems,
         thoughtSignature,
         thinkingSignature,
         groundingMetadata
@@ -207,8 +229,19 @@ function buildMeta(opts) {
     const providerName = provider?.name || 'Unknown';
 
     const raw = {};
-    if (encryptedContent) {
-        raw.openai = { encryptedContent };
+    if (Array.isArray(reasoningItems) && reasoningItems.length > 0) {
+        raw.openai = {
+            reasoningItems: reasoningItems.map((item) => ({
+                id: item.id || null,
+                summary: Array.isArray(item.summary) ? item.summary : [],
+                encrypted_content: item.encrypted_content || item.encryptedContent || null,
+                _turn: item._turn,
+                status: item.status || null
+            }))
+        };
+    } else if (encryptedContent || reasoningItemId) {
+        raw.openai = {};
+        if (encryptedContent) raw.openai.encryptedContent = encryptedContent;
         if (reasoningItemId) raw.openai.reasoningItemId = reasoningItemId;
     }
     if (thoughtSignature) raw.gemini = { thoughtSignature };
@@ -253,7 +286,21 @@ function buildReplies(parts, meta, allReplies, selectedReplyIndex, ts) {
  */
 function convertReplyToNewParts(reply) {
     const parts = [];
-    if (reply.thinkingContent) {
+    // 优先使用 thinkingItems 顺序数组（含 redacted_thinking），缺失才退回 thinkingContent
+    if (Array.isArray(reply.thinkingItems) && reply.thinkingItems.length > 0) {
+        for (const item of reply.thinkingItems) {
+            if (item.type === 'redacted_thinking' && item.data) {
+                parts.push({
+                    type: PartType.THINKING,
+                    text: '',
+                    redacted: true,
+                    data: item.data
+                });
+            } else if (item.text) {
+                parts.push(thinkingPart(item.text, item.signature || null));
+            }
+        }
+    } else if (reply.thinkingContent) {
         // 双写桥接
         parts.push(
             thinkingPart(
@@ -304,11 +351,13 @@ export function saveAssistantMessage(options) {
         toolCalls = null,
         encryptedContent = null,
         reasoningItemId = null,
+        reasoningItems = null,
         isError = false,
         errorData = null,
         errorHtml = null,
         thinkingBlocks = null,
-        thinkingSignatures = null
+        thinkingSignatures = null,
+        thinkingItems = null
     } = options;
 
     const ts = Date.now();
@@ -322,7 +371,8 @@ export function saveAssistantMessage(options) {
         contentParts,
         toolCalls,
         thinkingBlocks,
-        thinkingSignatures
+        thinkingSignatures,
+        thinkingItems
     });
 
     // 构建 meta
@@ -330,6 +380,7 @@ export function saveAssistantMessage(options) {
         streamStats,
         encryptedContent,
         reasoningItemId,
+        reasoningItems,
         thoughtSignature,
         thinkingSignature,
         groundingMetadata
@@ -445,6 +496,37 @@ function findMergeTarget() {
     return -1;
 }
 
+function normalizeOpenAIReasoningItemsForMerge(items, fallbackTurn) {
+    if (!Array.isArray(items)) return [];
+    return items
+        .filter((item) => item && typeof item === 'object')
+        .map((item) => ({
+            ...item,
+            _turn: item._turn ?? fallbackTurn
+        }));
+}
+
+function mergeOpenAIRaw(prevOpenAI = {}, newOpenAI = {}, nextTurn = 1) {
+    const merged = { ...prevOpenAI, ...newOpenAI };
+    const reasoningItems = [
+        ...normalizeOpenAIReasoningItemsForMerge(prevOpenAI.reasoningItems, 0),
+        ...normalizeOpenAIReasoningItemsForMerge(newOpenAI.reasoningItems, nextTurn)
+    ];
+
+    if (reasoningItems.length > 0) {
+        const seen = new Set();
+        merged.reasoningItems = reasoningItems.filter((item) => {
+            const key = item.id || item.encrypted_content || item.encryptedContent;
+            if (!key) return false;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+    }
+
+    return merged;
+}
+
 /**
  * 合并 continuation 到现有消息
  *
@@ -455,6 +537,11 @@ function findMergeTarget() {
 function mergeContinuation(index, newParts, newMeta, _toolCalls) {
     const prev = state.messages[index];
     logger.debug(`[saveAssistantMessage] Continuation 模式：更新消息 #${index}`);
+
+    // 旧 schema 消息可能没有 parts 数组；filterParts 也假设 parts 是数组，统一兜底
+    if (!Array.isArray(prev.parts)) {
+        prev.parts = [];
+    }
 
     // 计算下一轮编号（旧消息无 _turn 视为 0，多次 continuation 时递增）
     const prevMaxTurn = prev.parts.reduce((max, p) => Math.max(max, p._turn || 0), 0);
@@ -489,8 +576,12 @@ function mergeContinuation(index, newParts, newMeta, _toolCalls) {
 
     // 构建合并后的 meta
     const mergedMeta = prev.meta ? { ...prev.meta } : createMeta();
+    const prevRaw = mergedMeta.raw || {};
     if (newMeta.raw) {
-        mergedMeta.raw = { ...mergedMeta.raw, ...newMeta.raw };
+        mergedMeta.raw = { ...prevRaw, ...newMeta.raw };
+        if (prevRaw.openai || newMeta.raw.openai) {
+            mergedMeta.raw.openai = mergeOpenAIRaw(prevRaw.openai, newMeta.raw.openai, nextTurn);
+        }
     }
 
     // 合并 streamStats

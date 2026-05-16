@@ -45,7 +45,7 @@
     border: none;
     color: rgba(255, 255, 255, 0.7);
     cursor: pointer;
-    transition: background 0.15s;
+    transition: background var(--duration-fast);
 }
 
 .titlebar-btn:hover {

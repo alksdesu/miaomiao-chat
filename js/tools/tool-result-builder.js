@@ -26,6 +26,24 @@ function buildXmlToolMessages(toolCalls, toolResults) {
     ];
 }
 
+function buildResponsesFunctionCallItemId(itemId, callId) {
+    if (typeof itemId === 'string' && itemId.startsWith('fc')) return itemId;
+
+    const base = String(callId || itemId || `generated_${Date.now()}`)
+        .replace(/^call_?/, '')
+        .replace(/[^A-Za-z0-9_-]/g, '_');
+    return `fc_${base || Date.now()}`;
+}
+
+function buildResponsesCallId(rawId) {
+    if (typeof rawId === 'string' && rawId.startsWith('call')) return rawId;
+    return getOrCreateMappedId(rawId, 'openai');
+}
+
+function getToolCallResponseItemId(toolCall) {
+    return toolCall.responseItemId || toolCall.itemId || toolCall.fcId || null;
+}
+
 /**
  * 构建 OpenAI 原生格式的工具结果消息
  */
@@ -36,20 +54,25 @@ function buildOpenAIMessages(toolCalls, toolResults) {
     if (provider?.apiFormat === 'openai-responses') {
         const messages = [];
         for (const tc of toolCalls) {
+            const callId = buildResponsesCallId(tc.call_id || tc.id);
+            const functionCallItemId = buildResponsesFunctionCallItemId(
+                getToolCallResponseItemId(tc),
+                callId
+            );
             messages.push({
                 type: 'function_call',
-                id: getOrCreateMappedId(tc.id, 'openai'),
-                call_id: getOrCreateMappedId(tc.id, 'openai'),
+                id: functionCallItemId,
+                call_id: callId,
                 name: tc.name,
                 arguments:
                     typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments)
             });
         }
         for (const r of toolResults) {
-            const mappedId = getOrCreateMappedId(r.id, 'openai');
+            const callId = buildResponsesCallId(r.call_id || r.id);
             messages.push({
                 type: 'function_call_output',
-                call_id: mappedId,
+                call_id: callId,
                 output: JSON.stringify(r.result)
             });
         }
@@ -118,6 +141,9 @@ function buildClaudeMessages(toolCalls, toolResults) {
  * 构建 Gemini 原生格式的工具结果消息
  */
 function buildGeminiMessages(toolCalls, toolResults) {
+    // Gemini 3：parallel call 只第一个 functionCall 带 signature
+    // 持久化字段是 _thoughtSignature（下划线前缀，避免误发往非 Gemini provider）
+    let signatureAttached = false;
     const callParts = toolCalls.map((tc) => {
         const callPart = {
             functionCall: {
@@ -125,7 +151,11 @@ function buildGeminiMessages(toolCalls, toolResults) {
                 args: tc.arguments || {}
             }
         };
-        if (tc.thoughtSignature) callPart.thoughtSignature = tc.thoughtSignature;
+        const sig = tc._thoughtSignature || tc.thoughtSignature;
+        if (sig && !signatureAttached) {
+            callPart.thoughtSignature = sig;
+            signatureAttached = true;
+        }
         return callPart;
     });
 

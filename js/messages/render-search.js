@@ -4,6 +4,7 @@
  */
 
 import { escapeHtml } from '../utils/helpers.js';
+import { getIcon } from '../utils/icons.js';
 
 /**
  * 渲染搜索引用
@@ -26,7 +27,7 @@ export function renderSearchGrounding(groundingMetadata) {
 
     return `
         <div class="search-grounding">
-            <div class="grounding-header">🔍 搜索引用</div>
+            <div class="grounding-header">${getIcon('search', { size: 14 })} 搜索引用</div>
             <ul class="grounding-sources">${sources}</ul>
         </div>
     `;

@@ -15,7 +15,7 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--md-teal, #14b8a6);
+    background: var(--md-teal);
     animation: openclaw-pulse 1.5s ease-in-out infinite;
     flex-shrink: 0;
 }
@@ -36,7 +36,7 @@
     align-items: center;
     gap: 4px;
     font-size: var(--fs-sm);
-    transition: background 0.15s;
+    transition: background var(--duration-fast);
     min-height: 24px;
 }
 

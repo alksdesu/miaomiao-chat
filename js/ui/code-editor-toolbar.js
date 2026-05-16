@@ -3,6 +3,8 @@
  * 全屏预览、焦点陷阱
  */
 
+import { bindTopmostEscape } from '../utils/modal-stack.js';
+
 /**
  * 焦点陷阱 — 限制 Tab 焦点在模态框内循环
  * @param {HTMLElement} element - 容器元素
@@ -68,18 +70,15 @@ export function openFullscreenPreview(htmlContent) {
     const { signal } = abortController;
 
     // 关闭全屏预览
+    let unbindEscape = null;
     const closeFullscreen = () => {
+        unbindEscape?.();
         abortController.abort(); // 清理所有监听器
         fullscreenOverlay.remove();
     };
 
-    // ESC 键关闭
-    const escHandler = (e) => {
-        if (e.key === 'Escape') {
-            closeFullscreen();
-        }
-    };
-    document.addEventListener('keydown', escHandler, { signal });
+    // ESC 关闭（叠层场景仅响应最顶层 overlay）
+    unbindEscape = bindTopmostEscape(fullscreenOverlay, closeFullscreen);
 
     // 点击关闭按钮
     const closeBtn = fullscreenOverlay.querySelector('.fullscreen-preview-close');

@@ -189,11 +189,9 @@
                             stroke-linecap="round"
                             stroke-linejoin="round"
                         >
-                            <path
-                                d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"
-                            />
-                            <line x1="12" y1="11" x2="12" y2="17" />
-                            <line x1="9" y1="14" x2="15" y2="14" />
+                            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                            <line x1="12" y1="11" x2="12" y2="17"/>
+                            <line x1="9" y1="14" x2="15" y2="14"/>
                         </svg>
                     </button>
                     <button
@@ -1200,7 +1198,7 @@
                 </div>
 
                 <!-- 调试工具 -->
-                <div class="settings-group" id="devtools-settings-group" style="display: none">
+                <div class="settings-group" id="devtools-settings-group" style="display: none;">
                     <label class="settings-label">调试工具</label>
                     <div class="toggle-row">
                         <label class="switch">
@@ -1429,22 +1427,9 @@
                 <span class="titlebar-title">Web Chat</span>
                 <div class="titlebar-drag"></div>
                 <div class="titlebar-controls">
-                    <button
-                        id="titlebar-network"
-                        class="titlebar-btn titlebar-devtools-btn"
-                        title="Network Monitor"
-                    >
-                        <svg
-                            width="14"
-                            height="14"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                        >
-                            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+                    <button id="titlebar-network" class="titlebar-btn titlebar-devtools-btn" title="Network Monitor">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
                         </svg>
                         Net
                     </button>
@@ -1455,12 +1440,12 @@
                     >
                         DevTools
                     </button>
-                    <button id="titlebar-minimize" class="titlebar-btn" title="最小化">
+                    <button id="titlebar-minimize" class="titlebar-btn" title="最小化" aria-label="最小化">
                         <svg width="12" height="12" viewBox="0 0 12 12">
                             <path d="M2 6h8" stroke="currentColor" stroke-width="1.2" />
                         </svg>
                     </button>
-                    <button id="titlebar-maximize" class="titlebar-btn" title="最大化">
+                    <button id="titlebar-maximize" class="titlebar-btn" title="最大化" aria-label="最大化">
                         <svg width="12" height="12" viewBox="0 0 12 12">
                             <rect
                                 x="2"
@@ -1474,7 +1459,7 @@
                             />
                         </svg>
                     </button>
-                    <button id="titlebar-close" class="titlebar-btn titlebar-close" title="关闭">
+                    <button id="titlebar-close" class="titlebar-btn titlebar-close" title="关闭" aria-label="关闭">
                         <svg width="12" height="12" viewBox="0 0 12 12">
                             <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.2" />
                         </svg>
@@ -1507,24 +1492,9 @@
                     </div>
                     <span class="mobile-header-title" id="mobile-header-title"></span>
                     <div class="header-actions">
-                        <button
-                            id="network-toggle"
-                            class="icon-button"
-                            title="Network Monitor"
-                            aria-label="网络监控"
-                        >
-                            <svg
-                                aria-hidden="true"
-                                width="24"
-                                height="24"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="2"
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                            >
-                                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+                        <button id="network-toggle" class="icon-button" title="Network Monitor" aria-label="网络监控">
+                            <svg aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
                             </svg>
                         </button>
                         <button
@@ -1544,13 +1514,11 @@
                                 stroke-linecap="round"
                                 stroke-linejoin="round"
                             >
-                                <path
-                                    d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
-                                />
-                                <polyline points="14 2 14 8 20 8" />
-                                <line x1="16" y1="13" x2="8" y2="13" />
-                                <line x1="16" y1="17" x2="8" y2="17" />
-                                <polyline points="10 9 9 9 8 9" />
+                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                                <polyline points="14 2 14 8 20 8"/>
+                                <line x1="16" y1="13" x2="8" y2="13"/>
+                                <line x1="16" y1="17" x2="8" y2="17"/>
+                                <polyline points="10 9 9 9 8 9"/>
                             </svg>
                         </button>
                         <button
@@ -1697,21 +1665,12 @@
                 <!-- 移动端溢出菜单 -->
                 <div class="mobile-overflow-menu" id="mobile-overflow-menu">
                     <button class="mobile-overflow-item" data-target="prefill-toggle">
-                        <svg
-                            width="18"
-                            height="18"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                        >
-                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                            <polyline points="14 2 14 8 20 8" />
-                            <line x1="16" y1="13" x2="8" y2="13" />
-                            <line x1="16" y1="17" x2="8" y2="17" />
-                            <polyline points="10 9 9 9 8 9" />
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                            <polyline points="14 2 14 8 20 8"/>
+                            <line x1="16" y1="13" x2="8" y2="13"/>
+                            <line x1="16" y1="17" x2="8" y2="17"/>
+                            <polyline points="10 9 9 9 8 9"/>
                         </svg>
                         <span>预填充预设</span>
                     </button>
@@ -1787,33 +1746,15 @@
                         <span>主题编辑器</span>
                     </button>
                     <button class="mobile-overflow-item" data-target="network-toggle">
-                        <svg
-                            width="18"
-                            height="18"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                        >
-                            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
                         </svg>
                         <span>Network</span>
                     </button>
                     <button class="mobile-overflow-item" id="mobile-devtools-btn">
-                        <svg
-                            width="18"
-                            height="18"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                        >
-                            <polyline points="16 18 22 12 16 6" />
-                            <polyline points="8 6 2 12 8 18" />
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="16 18 22 12 16 6"/>
+                            <polyline points="8 6 2 12 8 18"/>
                         </svg>
                         <span>DevTools</span>
                     </button>
@@ -1839,7 +1780,7 @@
             <div id="openclaw-status-bar" class="openclaw-status-bar" style="display: none">
                 <span class="openclaw-sb-dot"></span>
                 <span class="openclaw-sb-text">已连接 OpenClaw</span>
-                <button id="openclaw-sb-cron" class="openclaw-sb-btn" title="自动化任务">
+                <button id="openclaw-sb-cron" class="openclaw-sb-btn" title="自动化任务" aria-label="自动化任务">
                     <svg
                         width="14"
                         height="14"
@@ -2167,25 +2108,13 @@
                         <span>控制</span>
                     </button>
                     <!-- AI Monitor 按钮 -->
-                    <button
-                        id="toggle-ai-monitor"
-                        class="quick-toggle-btn"
-                        title="AI DevTools Monitor"
-                    >
-                        <svg
-                            width="14"
-                            height="14"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                        >
-                            <path d="M2 12a10 10 0 1 0 20 0" />
-                            <path d="M2 12a7 7 0 0 1 14 0" />
-                            <path d="M2 12a4 4 0 0 0 8 0" />
-                            <circle cx="12" cy="12" r="1" />
+                    <button id="toggle-ai-monitor" class="quick-toggle-btn" title="AI DevTools Monitor">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M2 12a10 10 0 1 0 20 0"/>
+                            <path d="M2 12a7 7 0 0 1 14 0"/>
+                            <path d="M2 12a4 4 0 0 0 8 0"/>
+                            <circle cx="12" cy="12" r="1"/>
                         </svg>
                         <span>AI Monitor</span>
                     </button>
@@ -2214,8 +2143,19 @@
         </div>
 
         <!-- 图片查看器模态框 -->
-        <div id="image-viewer-modal" class="image-viewer-modal" onclick="closeImageViewer(event)">
-            <button class="image-viewer-close" onclick="closeImageViewer()">&times;</button>
+        <div
+            id="image-viewer-modal"
+            class="image-viewer-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="图片查看器"
+        >
+            <button
+                type="button"
+                class="image-viewer-close"
+                aria-label="关闭图片查看器"
+                onclick="closeImageViewer()"
+            >&times;</button>
             <img id="image-viewer-img" src="" alt="查看大图" />
         </div>
 
@@ -2235,7 +2175,7 @@
                 <div class="detail-header">
                     <h2 id="quick-messages-modal-title">快捷消息</h2>
                     <div class="detail-header-actions">
-                        <button id="add-quick-message-btn" class="icon-button" title="新建快捷消息">
+                        <button id="add-quick-message-btn" class="icon-button" title="新建快捷消息" aria-label="新建快捷消息">
                             <svg
                                 width="16"
                                 height="16"
@@ -2310,91 +2250,30 @@
         </div>
 
         <!-- ========== 预填充预设模态框 ========== -->
-        <div
-            id="prefill-modal"
-            class="modal"
-            role="dialog"
-            aria-labelledby="prefill-modal-title"
-            aria-modal="true"
-        >
+        <div id="prefill-modal" class="modal" role="dialog" aria-labelledby="prefill-modal-title" aria-modal="true">
             <div class="modal-overlay"></div>
             <div class="modal-content prefill-modal-content">
                 <div class="prefill-sidebar">
                     <div class="prefill-sidebar-header">
                         <h3 id="prefill-modal-title">预填充预设</h3>
-                        <button
-                            id="mobile-close-prefill"
-                            class="mobile-close-btn icon-button"
-                            title="关闭"
-                            aria-label="关闭"
-                        >
-                            <svg
-                                width="18"
-                                height="18"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="2"
-                            >
-                                <path d="M18 6L6 18M6 6l12 12" />
-                            </svg>
+                        <button id="mobile-close-prefill" class="mobile-close-btn icon-button" title="关闭" aria-label="关闭">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
                         </button>
                     </div>
                     <div class="prefill-list" id="prefill-preset-list"></div>
                     <button id="add-prefill-preset" class="add-prefill-btn">
-                        <svg
-                            width="16"
-                            height="16"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"
-                        >
-                            <line x1="12" y1="5" x2="12" y2="19" />
-                            <line x1="5" y1="12" x2="19" y2="12" />
-                        </svg>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                         新建预设
                     </button>
                 </div>
                 <div class="prefill-detail" id="prefill-detail">
                     <div class="prefill-detail-header">
-                        <button
-                            id="mobile-back-prefill"
-                            class="mobile-back-btn icon-button"
-                            title="返回列表"
-                            aria-label="返回列表"
-                        >
-                            <svg
-                                width="20"
-                                height="20"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="2"
-                            >
-                                <polyline points="15 18 9 12 15 6" />
-                            </svg>
+                        <button id="mobile-back-prefill" class="mobile-back-btn icon-button" title="返回列表" aria-label="返回列表">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
                         </button>
                         <h3 id="prefill-detail-title">编辑预设</h3>
-                        <button
-                            id="delete-prefill-preset-btn"
-                            class="delete-prefill-btn icon-button"
-                            title="删除预设"
-                            aria-label="删除预设"
-                        >
-                            <svg
-                                width="18"
-                                height="18"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="2"
-                            >
-                                <polyline points="3 6 5 6 21 6" />
-                                <path
-                                    d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
-                                />
-                            </svg>
+                        <button id="delete-prefill-preset-btn" class="delete-prefill-btn icon-button" title="删除预设" aria-label="删除预设">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                         </button>
                     </div>
                     <div class="prefill-detail-body" id="prefill-detail-body">

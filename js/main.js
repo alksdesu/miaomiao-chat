@@ -55,7 +55,7 @@ function initElectronTitlebar() {
         window.electronAPI.toggleDevTools();
     });
     document.getElementById('titlebar-network')?.addEventListener('click', () => {
-        loadAndCall('./network/panel.js', 'toggleNetworkPanel', {
+        loadAndCall(() => import('./network/panel.js'), 'toggleNetworkPanel', {
             onError: 'notify',
             context: 'Network 面板'
         });
@@ -177,13 +177,13 @@ import { loadModule, loadAndCall } from './utils/dynamic-import.js';
  */
 async function init() {
     // 尽早安装 fetch 代理，捕获所有网络请求
-    loadAndCall('./network/interceptor.js', 'installFetchProxy', {
+    loadAndCall(() => import('./network/interceptor.js'), 'installFetchProxy', {
         onError: 'log',
         context: 'fetch 代理'
     });
 
     // 安装 console 拦截器（尽早，捕获所有日志；工具注册在 initTools 中完成）
-    loadAndCall('./devtools/console-interceptor.js', 'installConsoleInterceptor', {
+    loadAndCall(() => import('./devtools/console-interceptor.js'), 'installConsoleInterceptor', {
         onError: 'log',
         context: 'console 拦截器'
     });
@@ -198,19 +198,19 @@ async function init() {
         // 用户主动点开发者工具，加载失败要让用户感知（按钮无反应是最糟体验）
         const showOpts = { onError: 'notify', context: 'Chii DevTools' };
         eventBus.on('devtools:show', () => {
-            loadAndCall('./devtools/chii.js', 'showChii', showOpts);
+            loadAndCall(() => import('./devtools/chii.js'), 'showChii', showOpts);
         });
         eventBus.on('devtools:toggle', () => {
-            loadAndCall('./devtools/chii.js', 'toggleChii', showOpts);
+            loadAndCall(() => import('./devtools/chii.js'), 'toggleChii', showOpts);
         });
         document.getElementById('mobile-devtools-btn')?.addEventListener('click', () => {
-            loadAndCall('./devtools/chii.js', 'showChii', showOpts);
+            loadAndCall(() => import('./devtools/chii.js'), 'showChii', showOpts);
         });
     }
 
     // Network 面板按钮（三平台通用）
     document.getElementById('network-toggle')?.addEventListener('click', () => {
-        loadAndCall('./network/panel.js', 'toggleNetworkPanel', {
+        loadAndCall(() => import('./network/panel.js'), 'toggleNetworkPanel', {
             onError: 'notify',
             context: 'Network 面板'
         });
@@ -218,7 +218,7 @@ async function init() {
 
     // 抓包重放 → 打开构建器（用户主动从抓包列表点重放，失败需提示）
     eventBus.on('network:replay-request', async (record) => {
-        const panel = await loadModule('./network/panel.js', {
+        const panel = await loadModule(() => import('./network/panel.js'), {
             onError: 'notify',
             context: '抓包重放打开面板'
         });
@@ -226,7 +226,7 @@ async function init() {
         panel.openNetworkPanel();
         panel.switchTab('builder');
         setTimeout(async () => {
-            const builder = await loadModule('./network/builder-view.js', {
+            const builder = await loadModule(() => import('./network/builder-view.js'), {
                 onError: 'notify',
                 context: '抓包重放导入构建器'
             });
@@ -448,7 +448,7 @@ async function init() {
         await initTools();
 
         // 恢复当前会话的 AI Monitor 状态（必须在 initTools 注册完工具之后）
-        loadAndCall('./devtools/init.js', 'restoreMonitorState', {
+        loadAndCall(() => import('./devtools/init.js'), 'restoreMonitorState', {
             onError: 'log',
             context: 'AI Monitor 状态恢复'
         });
@@ -456,7 +456,7 @@ async function init() {
         // 监听工具执行状态变化，保存结果到消息历史
         eventBus.on('tool:status:changed', ({ toolId, status, result }) => {
             if (status === 'completed' || status === 'failed') {
-                loadModule('./messages/sync.js', {
+                loadModule(() => import('./messages/sync.js'), {
                     onError: 'log',
                     context: '工具结果保存'
                 }).then((mod) => mod?.updateToolCallResult(toolId, status, result));
@@ -547,42 +547,46 @@ async function init() {
 
                     // MCP 增强
                     loadAndCall(
-                        './ui/tool-manager-mcp-enhancements.js',
+                        () => import('./ui/tool-manager-mcp-enhancements.js'),
                         'initToolManagerMCPEnhancements',
                         { onError: 'log', context: '工具管理器 MCP 增强' }
                     );
                     loadAndCall(
-                        './ui/tools-quick-selector-enhancements.js',
+                        () => import('./ui/tools-quick-selector-enhancements.js'),
                         'initQuickSelectorEnhancements',
                         { onError: 'log', context: '快速工具选择器增强' }
                     );
 
                     // 主题编辑器
-                    loadAndCall('./ui/theme-editor.js', 'initThemeEditor', {
+                    loadAndCall(() => import('./ui/theme-editor.js'), 'initThemeEditor', {
                         onError: 'log',
                         context: '主题编辑器'
                     });
 
                     // OpenClaw 模块（审批、屏幕截图、定时任务）
-                    loadAndCall('./ui/openclaw-approval.js', 'initOpenClawApproval', {
+                    loadAndCall(() => import('./ui/openclaw-approval.js'), 'initOpenClawApproval', {
                         onError: 'log',
                         context: 'OpenClaw 审批模块'
                     });
-                    loadAndCall('./ui/openclaw-screen.js', 'initOpenClawScreen', {
+                    loadAndCall(() => import('./ui/openclaw-screen.js'), 'initOpenClawScreen', {
                         onError: 'log',
                         context: 'OpenClaw 屏幕模块'
                     });
-                    loadAndCall('./ui/openclaw-cron.js', 'initOpenClawCron', {
+                    loadAndCall(() => import('./ui/openclaw-cron.js'), 'initOpenClawCron', {
                         onError: 'log',
                         context: 'OpenClaw 定时任务模块'
                     });
 
                     // APK 更新（仅 Android）
                     if (isAndroid()) {
-                        await loadAndCall('./update/apk-updater.js', 'initAPKUpdater', {
-                            onError: 'log',
-                            context: 'APK 更新模块'
-                        });
+                        await loadAndCall(
+                            () => import('./update/apk-updater.js'),
+                            'initAPKUpdater',
+                            {
+                                onError: 'log',
+                                context: 'APK 更新模块'
+                            }
+                        );
                     }
                 } catch (error) {
                     logger.error('延迟加载 UI 模块失败:', error);
@@ -615,7 +619,7 @@ async function init() {
                 !elements.sidebar.classList.contains('open')
             ) {
                 setTimeout(() => {
-                    loadModule('./ui/sidebar.js', {
+                    loadModule(() => import('./ui/sidebar.js'), {
                         onError: 'log',
                         context: '侧边栏状态恢复'
                     }).then((mod) => mod?.toggleSidebar(true)); // skipSave = true，避免循环
@@ -632,7 +636,7 @@ async function init() {
                 !elements.sidebar.classList.contains('open')
             ) {
                 setTimeout(() => {
-                    loadModule('./ui/sidebar.js', {
+                    loadModule(() => import('./ui/sidebar.js'), {
                         onError: 'log',
                         context: '侧边栏状态恢复（降级）'
                     }).then((mod) => mod?.toggleSidebar(true));
@@ -645,21 +649,21 @@ async function init() {
         // 延迟执行非关键任务
         // 请求持久化存储（不影响功能，延迟执行）
         if (dbReady) {
-            loadAndCall('./state/storage.js', 'requestPersistentStorage', {
+            loadAndCall(() => import('./state/storage.js'), 'requestPersistentStorage', {
                 onError: 'log',
                 context: '持久化存储请求'
             });
         }
 
         // 自动连接 MCP 服务器（MCP 工具不可用会显著影响业务，需用户感知）
-        loadModule('./ui/mcp-auto-connect.js', {
+        loadModule(() => import('./ui/mcp-auto-connect.js'), {
             onError: 'notify',
             context: 'MCP 自动连接'
         }).then((mod) => mod?.initMCPAutoConnect(1000));
 
         // Electron 环境下初始化 MCP IPC 桥接
         if (isElectron()) {
-            loadAndCall('./tools/mcp/electron-bridge.js', 'initElectronMCPBridge', {
+            loadAndCall(() => import('./tools/mcp/electron-bridge.js'), 'initElectronMCPBridge', {
                 onError: 'log',
                 context: 'MCP IPC 桥接'
             });

@@ -22,7 +22,8 @@ import {
     hasParts,
     isSchemaFormatParts,
     getTextContent,
-    getThinkingContent
+    getThinkingContent,
+    partsToToolCallRestoreFormat
 } from './schema.js';
 import {
     renderImageCard as renderImageMedia,
@@ -352,6 +353,11 @@ export function renderReplyWithSelector(replies, selectedIndex, assistantMessage
     bindImageClickEvents(contentDiv);
     enhanceCodeBlocks(assistantMessageEl);
 
+    // innerHTML 覆盖会抹掉 tool-calls-group 节点，从消息 parts 重建
+    if (Number.isInteger(msgIdx)) {
+        restoreToolCallsFromMessage(state.messages[msgIdx], contentDiv);
+    }
+
     scrollToBottom();
 }
 
@@ -549,7 +555,32 @@ export function rerenderMessageContent(messageEl, index, role) {
     syncCurrentAssistantMessageReference();
 
     enhanceCodeBlocks(messageEl);
+
+    if (role === 'assistant') {
+        restoreToolCallsFromMessage(message, contentDiv);
+    }
+
     return true;
+}
+
+/**
+ * 从消息 parts 中重建工具调用 UI
+ * 任何重写 .message-content innerHTML 的路径（编辑保存/取消、多回复切换）
+ * 都会抹掉 tool-calls-group 节点，导致 tool-display 的 WeakMap 数据失效。
+ * 此函数复用 restore:tool-calls 事件，与会话切换/初次加载走同一条管线。
+ */
+export function restoreToolCallsFromMessage(message, contentDiv) {
+    if (!message || !contentDiv) return;
+    const mapped = partsToToolCallRestoreFormat(message.parts);
+    if (mapped.length === 0) return;
+    const normalized = mapped.map((tc) => ({
+        ...tc,
+        status: tc.status || 'completed',
+        result:
+            tc.result ||
+            (tc.status !== 'failed' ? { restored: true, message: '(工具结果未保存)' } : null)
+    }));
+    eventBus.emit('restore:tool-calls', { toolCalls: normalized, contentDiv });
 }
 
 // 事件监听

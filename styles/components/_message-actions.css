@@ -12,7 +12,7 @@
     align-items: center;
     gap: 6px;
     box-shadow: var(--shadow-sm);
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
 }
 
 .message.assistant .retry-button {
@@ -43,7 +43,7 @@
     font-size: var(--fs-sm);
     cursor: pointer;
     opacity: 0;
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
 }
 
 .message.user:hover .edit-button {

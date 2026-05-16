@@ -23,9 +23,9 @@ import { lazyImageManager } from '../utils/lazy-image.js';
 import {
     PartType,
     MediaKind,
-    ToolState,
     hasParts,
     filterParts,
+    partsToToolCallRestoreFormat,
     getThinkingContent as schemaGetThinkingContent
 } from './schema.js';
 import { parseUserContent } from './user-content-parser.js';
@@ -356,23 +356,8 @@ function enhanceAssistantMessage(_messageEl, msg, openaiMsg) {
     }
 
     // 恢复工具调用UI：新格式 parts 优先，回退到旧字段
-    const toolCallParts = filterParts(msg.parts, PartType.TOOL_CALL);
-    if (toolCallParts.length > 0) {
-        // 映射新格式字段名到 restoreToolCallsUI 期望的格式
-        const mapped = toolCallParts.map((tc) => ({
-            id: tc.id,
-            name: tc.name,
-            arguments: tc.args,
-            status:
-                tc.state === ToolState.DONE
-                    ? 'completed'
-                    : tc.state === ToolState.ERROR
-                      ? 'failed'
-                      : tc.state,
-            result: tc.result,
-            error: tc.error,
-            duration: tc.duration
-        }));
+    const mapped = partsToToolCallRestoreFormat(msg.parts);
+    if (mapped.length > 0) {
         restoreToolCallsUI(mapped, _messageEl);
     } else if (openaiMsg?.toolCalls && openaiMsg.toolCalls.length > 0) {
         logger.warn('[Restore] 命中旧格式回退: toolCalls');

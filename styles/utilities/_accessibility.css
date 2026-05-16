@@ -14,53 +14,53 @@
 /* ========== 键盘焦点可访问性 ========== */
 /* 为所有可交互元素添加明显的焦点指示器 */
 
-/* 按钮焦点样式 */
-.icon-button:focus,
-.send-btn:focus,
-.cancel-btn:focus,
-.cancel-edit-btn:focus,
-.close-settings-btn:focus,
-.close-sidebar-btn:focus,
-.new-session-btn:focus,
-.format-btn:focus,
-.settings-icon-btn:focus,
-.session-action-btn:focus,
-.retry-button:focus,
-.edit-button:focus,
-.input-icon-btn:focus,
-.reply-tab:focus,
-.download-image-btn:focus,
-.msg-action-btn:focus,
-.edit-save-btn:focus,
-.edit-cancel-btn:focus,
-.edit-send-btn:focus,
-.quick-toggle-btn:focus,
-.remove-image:focus,
-.quote-preview-close:focus,
-.password-toggle:focus,
-.scroll-to-bottom-btn:focus,
-.image-viewer-close:focus,
-.strength-btn:focus,
-.table-export-btn:focus,
-.add-header-btn:focus,
-.remove-header-btn:focus,
-.prefill-add-btn:focus,
-.delete-prefill-msg:focus,
-.delete-system-part:focus,
-.notification-close:focus,
-.export-import-btn:focus {
+/* 按钮焦点样式 — 仅键盘导航显示，鼠标点击不触发 */
+.icon-button:focus-visible,
+.send-btn:focus-visible,
+.cancel-btn:focus-visible,
+.cancel-edit-btn:focus-visible,
+.close-settings-btn:focus-visible,
+.close-sidebar-btn:focus-visible,
+.new-session-btn:focus-visible,
+.format-btn:focus-visible,
+.settings-icon-btn:focus-visible,
+.session-action-btn:focus-visible,
+.retry-button:focus-visible,
+.edit-button:focus-visible,
+.input-icon-btn:focus-visible,
+.reply-tab:focus-visible,
+.download-image-btn:focus-visible,
+.msg-action-btn:focus-visible,
+.edit-save-btn:focus-visible,
+.edit-cancel-btn:focus-visible,
+.edit-send-btn:focus-visible,
+.quick-toggle-btn:focus-visible,
+.remove-image:focus-visible,
+.quote-preview-close:focus-visible,
+.password-toggle:focus-visible,
+.scroll-to-bottom-btn:focus-visible,
+.image-viewer-close:focus-visible,
+.strength-btn:focus-visible,
+.table-export-btn:focus-visible,
+.add-header-btn:focus-visible,
+.remove-header-btn:focus-visible,
+.prefill-add-btn:focus-visible,
+.delete-prefill-msg:focus-visible,
+.delete-system-part:focus-visible,
+.notification-close:focus-visible,
+.export-import-btn:focus-visible {
     outline: 3px solid var(--color-focus);
     outline-offset: 2px;
 }
 
-/* 输入框焦点样式已在各自的定义中 */
+/* 输入框焦点样式 — 输入框是文字操作目标，:focus 直接显示更符合习惯 */
 .input-textarea:focus {
     outline: 3px solid var(--color-focus);
     outline-offset: 2px;
 }
 
-/* 会话列表项焦点样式 */
-.session-item:focus {
+/* 会话列表项焦点样式 — 列表通过键盘方向键导航，:focus-visible 与方向键场景对齐 */
+.session-item:focus-visible {
     outline: 3px solid var(--md-orange);
     outline-offset: -3px;
 }

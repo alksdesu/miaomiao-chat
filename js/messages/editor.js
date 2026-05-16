@@ -205,6 +205,18 @@ export function editMessageInPlace(messageEl) {
     const contentDiv = messageEl.querySelector('.message-content');
     if (!contentDiv) return;
 
+    // 编辑前 detach 工具调用节点（保留事件监听器，编辑期间作为只读预览显示在底部）
+    const toolCallNodes = Array.from(contentDiv.querySelectorAll('.tool-calls-group'));
+    toolCallNodes.forEach((n) => n.remove());
+
+    // 检测多 text 合并场景（AI 在工具调用前后都说话时，多段 text 会被合并为一段）
+    const toolCallCount = Array.isArray(message.parts)
+        ? message.parts.filter((p) => p.type === PartType.TOOL_CALL).length
+        : 0;
+    const textPartCount = Array.isArray(message.parts)
+        ? message.parts.filter((p) => p.type === PartType.TEXT).length
+        : 0;
+
     // 创建编辑界面
     // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     contentDiv.innerHTML = '';
@@ -290,8 +302,10 @@ export function editMessageInPlace(messageEl) {
         thinkingSection.className = 'edit-thinking-section';
 
         const thinkingLabel = document.createElement('label');
-        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
-        thinkingLabel.innerHTML = '💡 思维链内容 <span class="hint">留空则删除思维链</span>';
+        const thinkingIcon =
+            '<svg class="edit-label-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/></svg>';
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态 SVG + 静态文本
+        thinkingLabel.innerHTML = `${thinkingIcon} 思维链内容 <span class="hint">留空则删除思维链</span>`;
 
         thinkingTextarea = document.createElement('textarea');
         thinkingTextarea.className = 'edit-thinking-textarea';
@@ -367,6 +381,25 @@ export function editMessageInPlace(messageEl) {
     }
     contentDiv.appendChild(textarea);
     contentDiv.appendChild(editActions);
+
+    // 含工具调用 / 多段文本时的提示条
+    if (toolCallCount > 0 || textPartCount > 1) {
+        const notice = document.createElement('div');
+        notice.className = 'edit-tool-calls-notice';
+        const segments = [];
+        if (toolCallCount > 0) segments.push(`含 ${toolCallCount} 个工具调用，保存时原样保留`);
+        if (textPartCount > 1) segments.push('多段文本将合并为一段');
+        notice.textContent = segments.join(' · ');
+        contentDiv.appendChild(notice);
+    }
+
+    // 工具调用节点只读预览（detach 后挂回底部，保留原事件监听器）
+    if (toolCallNodes.length > 0) {
+        const preview = document.createElement('div');
+        preview.className = 'edit-tool-calls-preview';
+        toolCallNodes.forEach((n) => preview.appendChild(n));
+        contentDiv.appendChild(preview);
+    }
 
     messageEl.classList.add('editing');
     textarea.focus();
@@ -844,13 +877,21 @@ export function updateMessageWithThinking(index, newText, newThinking, images, _
     // 编辑思维链后需要清除签名
     const signatureKeys = ['thinkingSignature', 'thoughtSignature'];
 
+    // 用户编辑的 thinking 失去原 signature，标记 _edited 让 API 转换层跳过，
+    // 避免破坏 Claude 多轮 thinking 校验（UI 渲染不受影响）
+    const buildEditedThinking = (text) => ({
+        type: PartType.THINKING,
+        text,
+        _edited: true
+    });
+
     // 新格式 parts
     if (msg.parts && Array.isArray(msg.parts)) {
         const preservedParts = msg.parts.filter(
             (p) => p.type === PartType.TOOL_CALL || p.type === PartType.FILE
         );
         const newParts = [];
-        if (newThinking) newParts.push({ type: PartType.THINKING, text: newThinking });
+        if (newThinking) newParts.push(buildEditedThinking(newThinking));
         newParts.push({ type: PartType.TEXT, text: newText });
         if (hasImages) {
             for (const n of normalized) {
@@ -867,7 +908,7 @@ export function updateMessageWithThinking(index, newText, newThinking, images, _
     } else {
         // 旧格式回退：创建 parts
         const newParts = [];
-        if (newThinking) newParts.push({ type: PartType.THINKING, text: newThinking });
+        if (newThinking) newParts.push(buildEditedThinking(newThinking));
         newParts.push({ type: PartType.TEXT, text: newText });
         if (hasImages) {
             for (const n of normalized) {

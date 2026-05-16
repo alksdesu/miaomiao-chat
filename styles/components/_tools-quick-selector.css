@@ -23,7 +23,7 @@
     /* 显示/隐藏动画 */
     opacity: 0;
     transform: translateY(8px);
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
     pointer-events: none;
     display: none;
 }
@@ -62,7 +62,7 @@
     font-size: var(--fs-2xl);
     cursor: pointer;
     color: var(--md-muted);
-    transition: color 0.15s var(--ease);
+    transition: color var(--duration-fast) var(--ease);
 }
 
 .close-selector:hover {
@@ -146,7 +146,7 @@
     padding: 8px 10px;
     border-radius: 6px;
     cursor: pointer;
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
     user-select: none;
 }
 
@@ -170,7 +170,7 @@
     border-radius: 4px;
     background: var(--md-bg);
     position: relative;
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
 }
 
 input[type='checkbox']:checked + .checkbox-custom {
@@ -179,15 +179,18 @@ input[type='checkbox']:checked + .checkbox-custom {
 }
 
 input[type='checkbox']:checked + .checkbox-custom::after {
-    content: '✓';
+    content: '';
     position: absolute;
     top: 50%;
     left: 50%;
+    width: 12px;
+    height: 12px;
     transform: translate(-50%, -50%);
-    color: var(--color-text-inverse);
-    font-size: var(--fs-lg);
-    font-weight: bold;
-    line-height: 1;
+    background-color: var(--color-text-inverse);
+    -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='3'><polyline points='20 6 9 17 4 12'/></svg>")
+        no-repeat center / contain;
+    mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='3'><polyline points='20 6 9 17 4 12'/></svg>")
+        no-repeat center / contain;
 }
 
 input[type='checkbox']:focus-visible + .checkbox-custom {
@@ -248,7 +251,7 @@ input[type='checkbox']:focus-visible + .checkbox-custom {
     color: var(--md-text);
     box-shadow: var(--shadow-sm);
     cursor: pointer;
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
     font-family: inherit;
 }
 

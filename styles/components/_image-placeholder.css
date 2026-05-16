@@ -77,7 +77,7 @@
         var(--md-teal) 50%,
         var(--md-lime) 100%
     );
-    transition: width 0.3s ease-out;
+    transition: width var(--duration-slower) ease-out;
     position: relative;
 }
 

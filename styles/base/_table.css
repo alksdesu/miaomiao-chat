@@ -55,7 +55,7 @@
 
 /* 表格主体 */
 .message-content tbody tr {
-    transition: all 0.3s ease;
+    transition: all var(--duration-slower) ease;
 }
 
 /* 斑马纹行 */
@@ -181,7 +181,7 @@
     /* 使用 opacity: 0 + transform: scale(0.8) */
     opacity: 0;
     transform: scale(0.8);
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
     box-shadow: 0 2px 4px rgba(var(--shadow-color-rgb), 0.2);
     z-index: var(--z-base);
 }
@@ -238,7 +238,7 @@
 
 /* AI 思考中动画 */
 .thinking-indicator {
-    animation: fadeIn 0.3s ease;
+    animation: fadeIn var(--duration-slower) ease;
 }
 
 .thinking-dots {

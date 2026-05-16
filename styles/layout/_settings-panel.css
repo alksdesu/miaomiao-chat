@@ -12,7 +12,7 @@
     border-left: 3px solid var(--color-border-primary);
     z-index: var(--z-settings-panel);
     transform: translateX(100%);
-    transition: transform 0.25s ease-out;
+    transition: transform var(--duration-slow) ease-out;
     display: flex;
     flex-direction: column;
     box-shadow: var(--shadow-lg);
@@ -30,7 +30,7 @@
     cursor: ew-resize;
     z-index: var(--z-sticky);
     background: transparent;
-    transition: background 0.15s ease;
+    transition: background var(--duration-fast) ease;
 }
 
 .settings-panel-resize-handle:hover,
@@ -49,7 +49,7 @@
     background: var(--md-muted);
     border-radius: 2px;
     opacity: 0;
-    transition: opacity 0.15s ease;
+    transition: opacity var(--duration-fast) ease;
 }
 
 .settings-panel-resize-handle:hover::before,
@@ -87,7 +87,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
 }
 
 .close-settings-btn:hover {
@@ -122,7 +122,7 @@
     border-radius: 4px;
     background: var(--color-bg-settings-group);
     border: 1px solid var(--color-border-settings-group);
-    transition: all 0.3s ease;
+    transition: all var(--duration-slower) ease;
     position: relative;
 }
 
@@ -282,7 +282,7 @@
     align-items: center;
     justify-content: center;
     color: var(--md-muted);
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
     z-index: var(--z-base);
 }
 
@@ -349,7 +349,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
     flex-shrink: 0;
 }
 
@@ -425,7 +425,7 @@
     font-size: var(--fs-md);
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
 }
 
 .format-btn:hover {
@@ -497,7 +497,7 @@
 @media (max-width: 768px) {
     .settings-group-body {
         overflow: hidden;
-        transition: max-height 0.25s var(--ease);
+        transition: max-height var(--duration-slow) var(--ease);
     }
 
     .settings-group-body.collapsed {
@@ -508,7 +508,7 @@
         cursor: pointer;
         user-select: none;
         margin-bottom: 0;
-        transition: margin-bottom 0.15s;
+        transition: margin-bottom var(--duration-fast);
     }
 
     .settings-group.accordion .settings-label::after {
@@ -516,7 +516,7 @@
         margin-left: auto;
         border: 4px solid transparent;
         border-top: 5px solid currentColor;
-        transition: transform 0.2s;
+        transition: transform var(--duration-base);
     }
 
     .settings-group.accordion.expanded .settings-label {

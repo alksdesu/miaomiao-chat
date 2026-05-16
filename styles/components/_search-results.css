@@ -26,7 +26,7 @@
     font-size: var(--fs-sm);
     color: var(--md-blue);
     text-decoration: none;
-    transition: all 0.15s;
+    transition: all var(--duration-fast);
 }
 
 .search-source:hover {

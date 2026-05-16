@@ -184,7 +184,7 @@
 }
 
 .prefill-summary .details-arrow {
-    transition: transform 0.2s ease;
+    transition: transform var(--duration-base) ease;
     flex-shrink: 0;
 }
 
@@ -255,7 +255,7 @@
     border-radius: 6px;
     cursor: pointer;
     margin-bottom: 2px;
-    transition: background 0.15s;
+    transition: background var(--duration-fast);
 }
 
 .prefill-item:hover {
@@ -264,7 +264,7 @@
 
 .prefill-item.active {
     background: var(--md-blue);
-    color: #fff;
+    color: var(--color-text-inverse);
 }
 
 .prefill-item-name {
@@ -375,12 +375,12 @@
     border: none;
     border-radius: 8px;
     background: var(--md-blue);
-    color: #fff;
+    color: var(--color-text-inverse);
     font-size: var(--fs-base);
     font-weight: 600;
     cursor: pointer;
     margin-top: 16px;
-    transition: opacity 0.2s;
+    transition: opacity var(--duration-base);
 }
 
 .prefill-apply-btn:hover {
@@ -408,7 +408,7 @@
         width: 100%;
         z-index: 1;
         background: var(--color-bg-primary);
-        transition: transform 0.25s ease;
+        transition: transform var(--duration-slow) ease;
     }
 
     .prefill-detail {
@@ -417,7 +417,7 @@
         z-index: 2;
         background: var(--color-bg-primary);
         transform: translateX(100%);
-        transition: transform 0.25s ease;
+        transition: transform var(--duration-slow) ease;
     }
 
     .prefill-modal-content.mobile-detail-view .prefill-detail {

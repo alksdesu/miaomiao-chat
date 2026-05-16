@@ -1,4 +1,8 @@
 /* ========== 减少动画 ========== */
+/*
+ * transition-duration 被压到 0.01ms 后，hover/active 的 transform 切换变为瞬时，
+ * 视觉上不再产生渐变位移，因此不再单独消除 transform 属性。
+ */
 @media (prefers-reduced-motion: reduce) {
     *,
     *::before,
@@ -100,8 +104,8 @@
     object-fit: cover;
     cursor: pointer;
     transition:
-        transform 0.2s ease,
-        box-shadow 0.2s ease;
+        transform var(--duration-base) ease,
+        box-shadow var(--duration-base) ease;
     box-shadow: var(--shadow-sm);
 }
 
@@ -133,7 +137,7 @@
     border: 1px solid rgba(var(--color-bg-surface-rgb), 0.2);
     border-radius: 6px;
     font-size: var(--fs-md);
-    transition: background 0.2s ease;
+    transition: background var(--duration-base) ease;
 }
 
 .message-file-item:hover {

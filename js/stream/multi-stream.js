@@ -170,6 +170,9 @@ export async function handleMultiStreamResponses(
             textContent: reply0.content || '',
             thinkingContent: reply0.thinkingContent,
             thoughtSignature: reply0.thoughtSignature || reply0.thinkingSignature,
+            thinkingBlocks: reply0.thinkingBlocks,
+            thinkingSignatures: reply0.thinkingSignatures,
+            thinkingItems: reply0.thinkingItems,
             encryptedContent: reply0.encryptedContent,
             reasoningItemId: reply0.reasoningItemId,
             groundingMetadata: reply0.groundingMetadata,
@@ -342,7 +345,18 @@ async function parseStreamToReply(response, showRealtime = false, apiFormat = 'o
             };
 
         case 'claude': {
-            let claudeSignature = '';
+            // 完整事件机制：block_start / block_delta / block_stop，保留多 thinking block 边界
+            // 同时维护 thinkingItems 顺序数组，含 thinking 和 redacted_thinking（API 多轮校验必需）
+            let currentBlockType = null;
+            let currentThinking = '';
+            let currentSignature = '';
+            let currentRedactedData = '';
+            const thinkingBlocks = [];
+            const thinkingSignatures = [];
+            const thinkingItems = [];
+            const SEP = '\n\n---\n\n';
+            const composeThinking = () =>
+                [...thinkingBlocks, currentThinking].filter(Boolean).join(SEP);
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -365,12 +379,18 @@ async function parseStreamToReply(response, showRealtime = false, apiFormat = 'o
                             const errorCode = parsed.error?.type || 'unknown';
                             const errorMessage = parsed.error?.message || 'Unknown error';
                             logger.error('❌ Claude API error in multi-stream:', parsed.error);
-
-                            // 抛出错误，让外层 Promise.allSettled 捕获
                             throw new Error(`${errorCode}: ${errorMessage}`);
                         }
 
-                        if (parsed.type === 'content_block_delta') {
+                        if (parsed.type === 'content_block_start') {
+                            currentBlockType = parsed.content_block?.type;
+                            if (currentBlockType === 'thinking') {
+                                currentThinking = '';
+                                currentSignature = '';
+                            } else if (currentBlockType === 'redacted_thinking') {
+                                currentRedactedData = parsed.content_block?.data || '';
+                            }
+                        } else if (parsed.type === 'content_block_delta') {
                             const delta = parsed.delta;
                             if (delta?.type === 'text_delta') {
                                 stats.recordFirstToken();
@@ -381,28 +401,71 @@ async function parseStreamToReply(response, showRealtime = false, apiFormat = 'o
                             } else if (delta?.type === 'thinking_delta') {
                                 stats.recordFirstToken();
                                 stats.recordTokens(delta.thinking);
-                                thinkingContent += delta.thinking;
+                                currentThinking += delta.thinking;
+                                thinkingContent = composeThinking();
                                 if (showRealtime)
                                     updateStreamingMessage(textContent, thinkingContent);
                             } else if (delta?.type === 'signature_delta') {
-                                claudeSignature += delta.signature;
+                                currentSignature += delta.signature;
+                            } else if (delta?.type === 'redacted_thinking_delta') {
+                                currentRedactedData += delta.data || '';
                             }
+                        } else if (parsed.type === 'content_block_stop') {
+                            // display:"omitted" 下 thinking 字段为空但 signature 有效，
+                            // 必须以 signature 为准保留 block 才能通过下一轮校验
+                            if (
+                                currentBlockType === 'thinking' &&
+                                (currentThinking || currentSignature)
+                            ) {
+                                thinkingBlocks.push(currentThinking);
+                                thinkingSignatures.push(currentSignature);
+                                thinkingItems.push({
+                                    type: 'thinking',
+                                    text: currentThinking,
+                                    signature: currentSignature
+                                });
+                                currentThinking = '';
+                                currentSignature = '';
+                                thinkingContent = composeThinking();
+                            } else if (
+                                currentBlockType === 'redacted_thinking' &&
+                                currentRedactedData
+                            ) {
+                                thinkingItems.push({
+                                    type: 'redacted_thinking',
+                                    data: currentRedactedData
+                                });
+                                currentRedactedData = '';
+                            }
+                            currentBlockType = null;
                         }
                     } catch (e) {
                         logger.warn('Claude stream parse error:', e);
-                        // 如果是 API 错误，重新抛出
-                        if (e.message.includes(':')) {
-                            throw e;
-                        }
+                        if (e.message.includes(':')) throw e;
                     }
                 }
+            }
+
+            // 兜底：流被截断时仍未触发 block_stop 的剩余内容
+            if (currentThinking) {
+                thinkingBlocks.push(currentThinking);
+                thinkingSignatures.push(currentSignature);
+                thinkingItems.push({
+                    type: 'thinking',
+                    text: currentThinking,
+                    signature: currentSignature
+                });
+                thinkingContent = composeThinking();
             }
 
             stats.finalize();
             return {
                 content: textContent,
                 thinkingContent: thinkingContent || null,
-                thinkingSignature: claudeSignature || null,
+                thinkingSignature: thinkingSignatures.length === 1 ? thinkingSignatures[0] : null,
+                thinkingBlocks: thinkingBlocks.length > 0 ? thinkingBlocks : null,
+                thinkingSignatures: thinkingSignatures.length > 0 ? thinkingSignatures : null,
+                thinkingItems: thinkingItems.length > 0 ? thinkingItems : null,
                 stats
             };
         }

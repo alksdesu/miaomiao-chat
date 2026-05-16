@@ -16,9 +16,6 @@ export const API_FILE_SIZE_LIMITS = {
 
 // ========== 消息限制 ==========
 
-/** 最大消息长度（约 25k tokens） */
-export const MAX_MESSAGE_LENGTH = 100000;
-
 /** 最大 Markdown 渲染长度（防卡顿） */
 export const MAX_MARKDOWN_LENGTH = 100000;
 

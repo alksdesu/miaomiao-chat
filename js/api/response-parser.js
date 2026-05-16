@@ -224,6 +224,9 @@ export function parseApiResponse(data, format = 'openai') {
             const contentParts = [];
             const thinkingBlocks = [];
             const thinkingSigs = [];
+            // 顺序数组：保留 thinking 和 redacted_thinking 的原响应顺序，
+            // Claude API 多轮校验要求所有 thinking 类 block 原样回传
+            const thinkingItems = [];
 
             data.content.forEach((block) => {
                 if (block.type === 'text') {
@@ -241,7 +244,15 @@ export function parseApiResponse(data, format = 'openai') {
                     thinkingContent += (thinkingContent ? '\n\n---\n\n' : '') + block.thinking;
                     thinkingBlocks.push(block.thinking);
                     thinkingSigs.push(block.signature || null);
+                    thinkingItems.push({
+                        type: 'thinking',
+                        text: block.thinking,
+                        signature: block.signature || null
+                    });
                     contentParts.push({ type: 'thinking', text: block.thinking });
+                } else if (block.type === 'redacted_thinking') {
+                    // 安全过滤产生的加密 thinking 块，必须原样回传给 API
+                    thinkingItems.push({ type: 'redacted_thinking', data: block.data });
                 } else if (block.type === 'image') {
                     const source = block.source;
                     if (source.type === 'base64') {
@@ -303,6 +314,7 @@ export function parseApiResponse(data, format = 'openai') {
                 thinkingContent: thinkingContent || null,
                 thinkingBlocks: thinkingBlocks.length > 0 ? thinkingBlocks : null,
                 thinkingSignatures: thinkingSigs.length > 0 ? thinkingSigs : null,
+                thinkingItems: thinkingItems.length > 0 ? thinkingItems : null,
                 contentParts: contentParts.length > 0 ? contentParts : null,
                 pauseTurn: data.stop_reason === 'pause_turn'
             };
@@ -316,8 +328,22 @@ export function parseApiResponse(data, format = 'openai') {
             // ⭐ 1. 优先检测工具调用（function_call 类型）
             if (data.output && Array.isArray(data.output)) {
                 const toolCalls = [];
+                const reasoningItems = [];
+                let encryptedContent = null;
+                let reasoningItemId = null;
+
                 for (const item of data.output) {
-                    if (item.type === 'function_call') {
+                    if (item.type === 'reasoning') {
+                        reasoningItems.push({
+                            type: 'reasoning',
+                            id: item.id || null,
+                            summary: Array.isArray(item.summary) ? item.summary : [],
+                            encrypted_content: item.encrypted_content || null,
+                            status: item.status || null
+                        });
+                        encryptedContent = item.encrypted_content || encryptedContent;
+                        reasoningItemId = item.id || reasoningItemId;
+                    } else if (item.type === 'function_call') {
                         let parsedArgs;
                         if (typeof item.arguments === 'string') {
                             try {
@@ -332,11 +358,11 @@ export function parseApiResponse(data, format = 'openai') {
                         } else {
                             parsedArgs = item.arguments || {};
                         }
+                        const callId = item.call_id || `call_${Date.now()}_${toolCalls.length}`;
                         toolCalls.push({
-                            id:
-                                item.call_id ||
-                                item.id ||
-                                `resp_tc_${Date.now()}_${toolCalls.length}`,
+                            id: callId,
+                            call_id: callId,
+                            responseItemId: item.id || null,
                             name: item.name,
                             arguments: parsedArgs
                         });
@@ -369,7 +395,10 @@ export function parseApiResponse(data, format = 'openai') {
                     return {
                         toolCalls: toolCalls,
                         content: textContent || '',
-                        hasToolCalls: true
+                        hasToolCalls: true,
+                        encryptedContent,
+                        reasoningItemId,
+                        reasoningItems
                     };
                 }
             }
@@ -394,12 +423,21 @@ export function parseApiResponse(data, format = 'openai') {
             let thinkingContent = '';
             let encryptedContent = null;
             let reasoningItemId = null;
+            const reasoningItems = [];
             const contentParts = [];
 
             // 1. 优先从 output[] 数组解析
             if (data.output && Array.isArray(data.output)) {
                 for (const item of data.output) {
                     if (item.type === 'reasoning') {
+                        reasoningItems.push({
+                            type: 'reasoning',
+                            id: item.id || null,
+                            summary: Array.isArray(item.summary) ? item.summary : [],
+                            encrypted_content: item.encrypted_content || null,
+                            status: item.status || null
+                        });
+
                         // 推理/思维链内容
                         if (item.content) {
                             thinkingContent += item.content;
@@ -482,7 +520,8 @@ export function parseApiResponse(data, format = 'openai') {
                 thinkingContent: thinkingContent || null,
                 contentParts: contentParts.length > 0 ? contentParts : null,
                 encryptedContent: encryptedContent,
-                reasoningItemId: reasoningItemId
+                reasoningItemId: reasoningItemId,
+                reasoningItems: reasoningItems
             };
         }
 

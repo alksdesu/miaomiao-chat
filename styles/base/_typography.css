@@ -292,7 +292,7 @@
     font-family: var(--font-mono);
     font-size: var(--fs-base);
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: all var(--duration-fast) ease;
     /* 自定义下拉箭头 */
     background-image: url('data:image/svg+xml;charset=UTF-8,<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 6l4 4 4-4" stroke="white" stroke-width="2" stroke-linecap="round"/></svg>');
     background-repeat: no-repeat;
@@ -378,7 +378,7 @@
     color: var(--md-blue-dark);
     text-decoration: none;
     border-bottom: 2px solid var(--md-blue);
-    transition: all 0.2s ease;
+    transition: all var(--duration-base) ease;
     position: relative;
     padding: 2px 4px;
 }
@@ -389,7 +389,7 @@
     inset: 0;
     background: var(--md-blue);
     opacity: 0;
-    transition: opacity 0.2s ease;
+    transition: opacity var(--duration-base) ease;
     z-index: -1;
     border-radius: 2px;
 }
@@ -518,7 +518,7 @@
     margin: 16px 0;
     display: block;
     box-shadow: var(--shadow-md);
-    transition: all 0.2s ease;
+    transition: all var(--duration-base) ease;
     cursor: zoom-in;
 }
 

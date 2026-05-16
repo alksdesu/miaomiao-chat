@@ -17,7 +17,7 @@
     align-items: center;
     justify-content: center;
     opacity: 0.5;
-    transition: opacity 0.15s ease;
+    transition: opacity var(--duration-fast) ease;
 }
 
 .input-resize-handle:hover {
@@ -71,7 +71,7 @@
 
 /* 输入框容器聚焦发光 */
 .input-bar-inner {
-    transition: box-shadow 0.3s var(--ease);
+    transition: box-shadow var(--duration-slower) var(--ease);
     position: relative;
 }
 
@@ -91,7 +91,7 @@
     width: 0;
     height: 3px;
     background: var(--md-blue);
-    transition: width 0.3s var(--ease);
+    transition: width var(--duration-slower) var(--ease);
 }
 
 .input-bar-inner.typing::after {
@@ -106,7 +106,7 @@
     font-size: var(--fs-sm);
     font-family: var(--font-mono);
     color: var(--md-muted);
-    transition: color 0.2s ease;
+    transition: color var(--duration-base) ease;
     z-index: var(--z-base);
 }
 
@@ -129,7 +129,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
     border-radius: 0;
 }
 
@@ -149,7 +149,7 @@
     align-items: center;
     justify-content: center;
     box-shadow: var(--shadow-sm), var(--glow-teal);
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
 }
 
 .send-btn:hover {
@@ -186,7 +186,7 @@
     box-shadow:
         var(--shadow-sm),
         0 0 20px rgba(var(--palette-coral-rgb), 0.4);
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
 }
 
 .cancel-btn:hover {
@@ -222,7 +222,7 @@
     font-family: var(--font-ui-accent);
     font-size: var(--fs-sm);
     cursor: pointer;
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
     box-shadow: var(--shadow-sm);
     position: relative;
     overflow: hidden;
@@ -264,7 +264,7 @@
     align-items: center;
     justify-content: center;
     box-shadow: var(--shadow-sm);
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
     border-radius: 4px;
 }
 
@@ -289,7 +289,7 @@
     align-items: center;
     justify-content: center;
     box-shadow: var(--shadow-sm);
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
 }
 
 .cancel-edit-btn.show {
@@ -315,10 +315,10 @@
     border: var(--border);
     border-bottom: none;
     transition:
-        max-height 0.3s var(--ease),
-        opacity 0.3s var(--ease),
-        padding 0.3s var(--ease),
-        margin 0.3s var(--ease);
+        max-height var(--duration-slower) var(--ease),
+        opacity var(--duration-slower) var(--ease),
+        padding var(--duration-slower) var(--ease),
+        margin var(--duration-slower) var(--ease);
 }
 
 .image-preview-bar.has-images {
@@ -340,7 +340,7 @@
     border-radius: 8px;
     background: var(--color-bg-primary);
     box-shadow: var(--shadow-sm);
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
 }
 
 .image-preview-item:hover {
@@ -380,7 +380,7 @@
     line-height: 1;
     opacity: 0;
     transform: scale(0.8);
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
     box-shadow: 0 2px 4px rgba(var(--shadow-color-rgb), 0.2);
     z-index: var(--z-base);
 }
@@ -419,7 +419,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    animation: slideDown 0.3s var(--ease);
+    animation: slideDown var(--duration-slower) var(--ease);
 }
 
 /* 当引用预览单独存在时（没有图片），添加底部边框和间距 */
@@ -497,7 +497,7 @@
     justify-content: center;
     border-radius: 50%;
     flex-shrink: 0;
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
 }
 
 .quote-preview-close:hover {

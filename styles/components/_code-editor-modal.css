@@ -53,7 +53,7 @@
     font-weight: 600;
     cursor: pointer;
     position: relative;
-    transition: all 0.2s;
+    transition: all var(--duration-base);
     border-top-left-radius: 4px;
     border-top-right-radius: 4px;
 }
@@ -93,7 +93,7 @@
 
 .tab-content {
     display: none;
-    animation: fadeIn 0.2s ease-in;
+    animation: fadeIn var(--duration-base) ease-in;
 }
 
 .tab-content.active {
@@ -254,7 +254,7 @@
     cursor: pointer;
     display: flex;
     align-items: center;
-    transition: all 0.15s;
+    transition: all var(--duration-fast);
 }
 
 .refresh-preview-btn:hover {
@@ -421,7 +421,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    transition: all 0.15s;
+    transition: all var(--duration-fast);
 }
 
 .refresh-live-preview-btn:hover {
@@ -472,7 +472,7 @@
     color: var(--color-text-inverse);
     font-size: var(--fs-lg);
     cursor: pointer;
-    transition: all 0.15s;
+    transition: all var(--duration-fast);
 }
 
 .clear-console-btn:hover {
@@ -510,7 +510,7 @@
     display: flex;
     flex-direction: column;
     opacity: 0;
-    transition: opacity 0.2s ease-out;
+    transition: opacity var(--duration-base) ease-out;
 }
 
 .fullscreen-preview-overlay.active {
@@ -543,7 +543,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.15s;
+    transition: all var(--duration-fast);
 }
 
 .fullscreen-preview-close:hover {
@@ -567,7 +567,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    transition: all 0.15s;
+    transition: all var(--duration-fast);
 }
 
 .fullscreen-preview-btn:hover {

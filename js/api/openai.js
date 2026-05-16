@@ -40,7 +40,7 @@ export async function sendOpenAIRequest(endpoint, apiKey, model, signal = null) 
     // Responses API 模式下注入 reasoning items（encrypted_content 配对）
     let messages = toOpenAIMessages(
         state.messages.filter((m) => !m.isError && !m.error),
-        { injectReasoning: isResponsesFormat }
+        { injectReasoning: isResponsesFormat, responsesFormat: isResponsesFormat }
     );
 
     // 根据模型能力过滤消息（在格式转换前，OpenAI格式）

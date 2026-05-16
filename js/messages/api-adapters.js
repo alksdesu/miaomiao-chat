@@ -34,6 +34,152 @@ function isOldFormat(msg) {
 }
 
 /**
+ * Responses API 的 reasoning item 要求 summary 字段存在。
+ * 当前程序只保存 encrypted_content，因此没有摘要时回传空数组。
+ */
+function normalizeReasoningSummary(summary) {
+    if (Array.isArray(summary)) return summary;
+    if (typeof summary === 'string' && summary.trim()) {
+        return [{ type: 'summary_text', text: summary }];
+    }
+    return [];
+}
+
+function normalizeResponsesReasoningItem(item) {
+    if (!item || typeof item !== 'object') return null;
+    const reasoningItem = {
+        type: 'reasoning',
+        summary: normalizeReasoningSummary(item.summary)
+    };
+    if (item.id) reasoningItem.id = item.id;
+    if (item.encrypted_content || item.encryptedContent) {
+        reasoningItem.encrypted_content = item.encrypted_content || item.encryptedContent;
+    }
+    if (item.status) reasoningItem.status = item.status;
+    if (item._turn !== undefined) reasoningItem._turn = item._turn;
+    return reasoningItem.id || reasoningItem.encrypted_content ? reasoningItem : null;
+}
+
+function buildResponsesReasoningItems(msg) {
+    const openaiRaw = msg.meta?.raw?.openai;
+    if (!openaiRaw) return [];
+
+    if (Array.isArray(openaiRaw.reasoningItems) && openaiRaw.reasoningItems.length > 0) {
+        return openaiRaw.reasoningItems.map(normalizeResponsesReasoningItem).filter(Boolean);
+    }
+
+    const encryptedContent = openaiRaw?.encryptedContent;
+    const reasoningItemId = openaiRaw?.reasoningItemId;
+    if (!encryptedContent && !reasoningItemId) return [];
+
+    const reasoningItem = {
+        type: 'reasoning',
+        summary: normalizeReasoningSummary(openaiRaw.reasoningSummary)
+    };
+
+    if (reasoningItemId) reasoningItem.id = reasoningItemId;
+    if (encryptedContent) reasoningItem.encrypted_content = encryptedContent;
+    return [reasoningItem];
+}
+
+function stringifyToolResult(result, fallback = 'Tool execution was interrupted') {
+    if (result == null) return fallback;
+    if (typeof result === 'string') return result;
+    if (typeof result.content === 'string') return result.content;
+    if (result.content !== undefined) return JSON.stringify(result.content);
+    if (result.error !== undefined) return JSON.stringify({ error: result.error });
+    return JSON.stringify(result);
+}
+
+function collectTemporaryToolCallIds(msgs) {
+    const ids = new Set();
+    for (const msg of msgs || []) {
+        if (!isOldFormat(msg)) continue;
+
+        if (msg.type === 'function_call') {
+            if (msg.call_id) ids.add(msg.call_id);
+            if (msg.id) ids.add(msg.id);
+        } else if (msg.type === 'function_call_output') {
+            if (msg.call_id) ids.add(msg.call_id);
+        } else if (msg.role === 'assistant' && Array.isArray(msg.tool_calls)) {
+            for (const tc of msg.tool_calls) {
+                if (tc.id) ids.add(tc.id);
+            }
+        } else if (msg.role === 'tool' && msg.tool_call_id) {
+            ids.add(msg.tool_call_id);
+        }
+    }
+    return ids;
+}
+
+function isTemporaryToolCall(temporaryToolCallIds, rawId) {
+    if (!temporaryToolCallIds || temporaryToolCallIds.size === 0 || !rawId) return false;
+    if (temporaryToolCallIds.has(rawId)) return true;
+    return temporaryToolCallIds.has(getOrCreateMappedId(rawId, 'openai'));
+}
+
+function hasNonEmptyContent(content) {
+    if (typeof content === 'string') return content.trim().length > 0;
+    if (Array.isArray(content)) return content.length > 0;
+    return content != null;
+}
+
+function buildResponsesFunctionCallItemId(itemId, callId) {
+    if (typeof itemId === 'string' && itemId.startsWith('fc')) return itemId;
+
+    const base = String(callId || itemId || `generated_${Date.now()}`)
+        .replace(/^call_?/, '')
+        .replace(/[^A-Za-z0-9_-]/g, '_');
+    return `fc_${base || Date.now()}`;
+}
+
+function buildResponsesCallId(rawId) {
+    if (typeof rawId === 'string' && rawId.startsWith('call')) return rawId;
+    return getOrCreateMappedId(rawId, 'openai');
+}
+
+function getStoredResponseItemId(toolCallPart) {
+    return toolCallPart.responseItemId || toolCallPart.itemId || toolCallPart.fcId || null;
+}
+
+function getPartTurn(part) {
+    return part?._turn ?? 0;
+}
+
+function getReasoningItemTurn(item) {
+    return item?._turn ?? 0;
+}
+
+function stripInternalReasoningFields(item) {
+    const publicItem = { ...item };
+    delete publicItem._turn;
+    return publicItem;
+}
+
+function getSortedToolCallTurns(parts) {
+    return Array.from(
+        new Set((parts || []).filter((p) => p.type === PartType.TOOL_CALL).map(getPartTurn))
+    ).sort((a, b) => a - b);
+}
+
+function pushResponsesFunctionCallPair(out, p) {
+    const callId = buildResponsesCallId(p.call_id || p.id);
+    const functionCallItemId = buildResponsesFunctionCallItemId(getStoredResponseItemId(p), callId);
+    out.push({
+        type: 'function_call',
+        id: functionCallItemId,
+        call_id: callId,
+        name: p.name,
+        arguments: typeof p.args === 'string' ? p.args : JSON.stringify(p.args || {})
+    });
+    out.push({
+        type: 'function_call_output',
+        call_id: callId,
+        output: stringifyToolResult(p.result)
+    });
+}
+
+/**
  * 将旧格式消息透传为 OpenAI 格式
  * 适用于 buildToolResultMessages 等产生的临时消息
  */
@@ -50,7 +196,61 @@ function passOldFormatOpenAI(msg) {
     if (msg.name) out.name = msg.name;
     if (msg.arguments !== undefined) out.arguments = msg.arguments;
     if (msg.output !== undefined) out.output = msg.output;
+    if (msg.summary !== undefined) out.summary = msg.summary;
+    if (msg.encrypted_content !== undefined) out.encrypted_content = msg.encrypted_content;
     return out;
+}
+
+function convertOldFormatToResponsesItems(msg) {
+    if (msg.type) {
+        const item = passOldFormatOpenAI(msg);
+        if (item.type === 'reasoning' && item.summary === undefined) {
+            item.summary = [];
+        } else if (item.type === 'function_call') {
+            const callId = buildResponsesCallId(item.call_id || item.id);
+            item.call_id = callId;
+            // Responses API 的 function_call item id 必须是 fc...，不能使用 call...
+            item.id = buildResponsesFunctionCallItemId(item.id, callId);
+        }
+        return [item];
+    }
+
+    if (msg.role === 'assistant' && Array.isArray(msg.tool_calls)) {
+        const items = [];
+        if (hasNonEmptyContent(msg.content)) {
+            items.push({ role: 'assistant', content: msg.content });
+        }
+        for (const tc of msg.tool_calls) {
+            const callId = buildResponsesCallId(tc.call_id || tc.id);
+            items.push({
+                type: 'function_call',
+                id: buildResponsesFunctionCallItemId(tc.responseItemId || tc.id, callId),
+                call_id: callId,
+                name: tc.function?.name || tc.name || '',
+                arguments:
+                    typeof tc.function?.arguments === 'string'
+                        ? tc.function.arguments
+                        : JSON.stringify(tc.function?.arguments || tc.arguments || {})
+            });
+        }
+        return items;
+    }
+
+    if (msg.role === 'tool') {
+        const callId = buildResponsesCallId(msg.tool_call_id);
+        return [
+            {
+                type: 'function_call_output',
+                call_id: callId,
+                output:
+                    typeof msg.content === 'string'
+                        ? msg.content
+                        : JSON.stringify(msg.content || '')
+            }
+        ];
+    }
+
+    return [passOldFormatOpenAI(msg)];
 }
 
 // ========== OpenAI 格式 ==========
@@ -68,13 +268,19 @@ function passOldFormatOpenAI(msg) {
  */
 export function toOpenAIMessages(msgs, opts = {}) {
     const out = [];
+    const responsesFormat = opts.responsesFormat === true;
+    const temporaryToolCallIds = collectTemporaryToolCallIds(msgs);
 
     for (const msg of msgs) {
         if (msg.error || msg.isError) continue; // 跳过错误消息
 
         // 旧格式消息直接透传
         if (isOldFormat(msg)) {
-            out.push(passOldFormatOpenAI(msg));
+            if (responsesFormat) {
+                out.push(...convertOldFormatToResponsesItems(msg));
+            } else {
+                out.push(passOldFormatOpenAI(msg));
+            }
             continue;
         }
 
@@ -152,28 +358,80 @@ export function toOpenAIMessages(msgs, opts = {}) {
         const outMsg = { role, content };
         if (hasToolCalls) outMsg.tool_calls = toolCalls;
 
-        // Responses API：在 assistant 消息前注入 reasoning item（encrypted_content 配对约束）
-        if (opts.injectReasoning && role === 'assistant') {
-            const ec = msg.meta?.raw?.openai?.encryptedContent;
-            if (ec) {
-                const reasoningItem = { type: 'reasoning', encrypted_content: ec };
-                const rid = msg.meta.raw.openai.reasoningItemId;
-                if (rid) reasoningItem.id = rid;
-                out.push(reasoningItem);
+        if (responsesFormat) {
+            // Responses API：在 assistant 输出项前注入 reasoning item。
+            // 必须带 summary 字段，否则接口会报 input[n].summary 缺失。
+            const reasoningItems =
+                opts.injectReasoning && role === 'assistant'
+                    ? buildResponsesReasoningItems(msg)
+                    : [];
+
+            if (!hasToolCalls) {
+                out.push(...reasoningItems.map(stripInternalReasoningFields));
+                out.push({ role, content });
+                continue;
+            }
+
+            // Responses API 对 reasoning 模型的工具调用校验很严格：
+            // 每一轮 function_call 必须带回同一轮原始 reasoning item。
+            // continuation 合并到一条 UI 消息后，这里按 _turn 还原顺序：
+            // reasoning -> function_call -> function_call_output。
+            const toolTurns = getSortedToolCallTurns(msg.parts);
+            const emittedReasoningKeys = new Set();
+
+            for (const turn of toolTurns) {
+                for (const item of reasoningItems) {
+                    const key = item.id || item.encrypted_content;
+                    if (getReasoningItemTurn(item) !== turn || emittedReasoningKeys.has(key))
+                        continue;
+                    if (key) emittedReasoningKeys.add(key);
+                    out.push(stripInternalReasoningFields(item));
+                }
+
+                for (const p of msg.parts) {
+                    if (p.type !== PartType.TOOL_CALL || getPartTurn(p) !== turn) continue;
+
+                    // continuation 请求会临时追加 function_call/function_call_output。
+                    // 如果这里再从已保存消息生成一次，就会产生重复项。
+                    if (isTemporaryToolCall(temporaryToolCallIds, p.id)) continue;
+
+                    pushResponsesFunctionCallPair(out, p);
+                }
+            }
+
+            if (hasNonEmptyContent(content)) {
+                out.push({ role, content });
+            }
+
+            continue;
+        }
+
+        const nonTemporaryToolCalls = hasToolCalls
+            ? toolCalls.filter((tc) => !isTemporaryToolCall(temporaryToolCallIds, tc.id))
+            : [];
+
+        if (hasToolCalls) {
+            if (nonTemporaryToolCalls.length > 0) {
+                outMsg.tool_calls = nonTemporaryToolCalls;
+            } else {
+                delete outMsg.tool_calls;
             }
         }
 
-        out.push(outMsg);
+        if (
+            !hasToolCalls ||
+            hasNonEmptyContent(outMsg.content) ||
+            nonTemporaryToolCalls.length > 0
+        ) {
+            out.push(outMsg);
+        }
 
         // 拆出 tool 结果为独立消息
-        if (hasToolCalls) {
+        if (nonTemporaryToolCalls.length > 0) {
             for (const p of msg.parts) {
                 if (p.type !== PartType.TOOL_CALL) continue;
-                const resultContent = p.result
-                    ? typeof p.result.content === 'string'
-                        ? p.result.content
-                        : JSON.stringify(p.result.content || '')
-                    : 'Tool execution was interrupted';
+                if (isTemporaryToolCall(temporaryToolCallIds, p.id)) continue;
+                const resultContent = stringifyToolResult(p.result);
                 out.push({
                     role: 'tool',
                     tool_call_id: p.id,
@@ -237,7 +495,12 @@ function partsToClaudeContent(parts) {
     for (const p of parts) {
         switch (p.type) {
             case PartType.THINKING:
-                if (p.signature) {
+                // 用户编辑过的 thinking 失去原 signature，跳过避免破坏多轮校验
+                if (p._edited) break;
+                if (p.redacted && p.data) {
+                    // Claude API 安全过滤产生的 redacted_thinking block：data 是加密内容，需原样回传
+                    content.push({ type: 'redacted_thinking', data: p.data });
+                } else if (p.signature) {
                     content.push({
                         type: 'thinking',
                         thinking: p.text,
@@ -494,13 +757,22 @@ export function toGeminiContents(msgs) {
         const role = msg.role === Role.ASSISTANT ? 'model' : msg.role;
         const parts = [];
         const toolCallParts = [];
-        let thoughtSignature = null;
+        // Gemini 3 严格校验：parallel call 只第一个 functionCall 带 signature，
+        // sequential（同 message 内 thinking → fc → thinking → fc 交替）每组首个独立 signature。
+        // 每次新 thinking 进来重置 group flag，使下一组 functionCall 重新可挂一次 signature。
+        let lastThinkingSignature = null;
+        let signatureUsedForToolCallGroup = false;
 
         for (const p of msg.parts || []) {
             switch (p.type) {
                 case PartType.THINKING:
+                    // 用户编辑过的 thinking 跳过（失去原 signature，发回 Gemini 也无效）
+                    if (p._edited) break;
                     parts.push({ text: p.text, thought: true });
-                    if (p.signature) thoughtSignature = p.signature;
+                    if (p.signature) {
+                        lastThinkingSignature = p.signature;
+                        signatureUsedForToolCallGroup = false;
+                    }
                     break;
                 case PartType.TEXT:
                     parts.push({ text: p.text });
@@ -539,8 +811,10 @@ export function toGeminiContents(msgs) {
                     const callPart = {
                         functionCall: { name: p.name, args }
                     };
-                    if (thoughtSignature) {
-                        callPart.thoughtSignature = thoughtSignature;
+                    // 每组第一个 functionCall 挂 signature，同组后续不重复（Gemini 3 文档明确）
+                    if (lastThinkingSignature && !signatureUsedForToolCallGroup) {
+                        callPart.thoughtSignature = lastThinkingSignature;
+                        signatureUsedForToolCallGroup = true;
                     }
                     parts.push(callPart);
                     toolCallParts.push(p);
@@ -554,8 +828,9 @@ export function toGeminiContents(msgs) {
         }
 
         const outMsg = { role, parts };
-        if (thoughtSignature && toolCallParts.length === 0) {
-            outMsg.thoughtSignature = thoughtSignature;
+        // 无 functionCall 响应：signature 落在 message 末尾（项目历史路径，保留兼容）
+        if (lastThinkingSignature && !signatureUsedForToolCallGroup && toolCallParts.length === 0) {
+            outMsg.thoughtSignature = lastThinkingSignature;
         }
 
         out.push(outMsg);
@@ -651,6 +926,8 @@ function convertOldMsgToGemini(msg) {
 
     // assistant 带 tool_calls → functionCall parts
     if (msg.tool_calls && msg.tool_calls.length > 0) {
+        // Gemini 3：parallel call 只第一个 functionCall 带 signature
+        let signatureAttached = false;
         for (const tc of msg.tool_calls) {
             const rawArgs = tc.function?.arguments;
             const callPart = {
@@ -662,7 +939,10 @@ function convertOldMsgToGemini(msg) {
                             : rawArgs || tc.args || {}
                 }
             };
-            if (tc._thoughtSignature) callPart.thoughtSignature = tc._thoughtSignature;
+            if (tc._thoughtSignature && !signatureAttached) {
+                callPart.thoughtSignature = tc._thoughtSignature;
+                signatureAttached = true;
+            }
             parts.push(callPart);
         }
     }

@@ -6,6 +6,7 @@
 import { eventBus } from '../core/events.js';
 import { downloadImage } from '../utils/images.js';
 import { downloadMedia } from '../utils/media.js';
+import { bindTopmostEscape } from '../utils/modal-stack.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -75,13 +76,8 @@ export function openImageViewer(src) {
 
 /**
  * 关闭图片查看器
- * @param {Event} event - 事件对象
  */
-export function closeImageViewer(event) {
-    // 如果点击的是图片本身，不关闭
-    if (event && event.target.id === 'image-viewer-img') {
-        return;
-    }
+export function closeImageViewer() {
     const modal = document.getElementById('image-viewer-modal');
     if (modal) {
         modal.classList.remove('open');
@@ -105,26 +101,20 @@ export function initImageViewer() {
     });
 
     // 绑定关闭按钮
-    const closeBtn = document.querySelector('#image-viewer-modal .close-viewer-btn');
+    const closeBtn = document.querySelector('#image-viewer-modal .image-viewer-close');
     if (closeBtn) {
         closeBtn.addEventListener('click', closeImageViewer);
     }
 
-    // 点击背景关闭
+    // 点击背景关闭（仅命中 modal 自身时关闭，子元素 click 不冒泡触发）
     const modal = document.getElementById('image-viewer-modal');
     if (modal) {
-        modal.addEventListener('click', closeImageViewer);
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) closeImageViewer();
+        });
+        // ESC 关闭（叠层场景仅响应最顶层；keyboard.js 全局调度器仍作为兜底）
+        bindTopmostEscape(modal, closeImageViewer);
     }
-
-    // ESC 键关闭
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') {
-            const modal = document.getElementById('image-viewer-modal');
-            if (modal && modal.classList.contains('open')) {
-                closeImageViewer();
-            }
-        }
-    });
 
     // 将函数暴露到全局作用域供 HTML onclick 使用
     window.openImageViewer = openImageViewer;

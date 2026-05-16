@@ -7,6 +7,7 @@ import { eventBus } from '../core/events.js';
 import { getIcon } from '../utils/icons.js';
 import { escapeHtml } from '../utils/helpers.js';
 import { getAllTools, isToolEnabled, setToolEnabled } from '../tools/manager.js';
+import { bindTopmostEscape } from '../utils/modal-stack.js';
 import { logger } from '../utils/logger.js';
 
 let selectorPanel = null;
@@ -94,12 +95,8 @@ export function initToolsQuickSelector() {
         }
     });
 
-    // ESC 键关闭
-    document.addEventListener('keydown', (e) => {
-        if (isOpen && e.key === 'Escape') {
-            closeSelector();
-        }
-    });
+    // ESC 关闭（叠层场景仅响应最顶层弹层）
+    bindTopmostEscape(selectorPanel, closeSelector);
 
     // 监听工具状态变化
     eventBus.on('tool:enabled:changed', () => {
@@ -266,7 +263,8 @@ function renderToolsGroup(groupName, groupIcon, tools) {
     tools.forEach((tool) => {
         const toolId = tool.id || '';
         const toolName = tool.name || '未命名工具';
-        const toolIcon = tool.icon || '🔧';
+        // 工具自带 icon 字段为纯文本/emoji 时显示原值；缺失时 fallback 到 SVG 图标
+        const toolIconHtml = tool.icon ? escapeHtml(tool.icon) : getIcon('tool', { size: 14 });
         const enabled = isToolEnabled(toolId);
         const isMCP = tool.type === 'mcp';
 
@@ -277,7 +275,7 @@ function renderToolsGroup(groupName, groupIcon, tools) {
                        ${enabled ? 'checked' : ''}
                        aria-label="${escapeHtml(toolName)}">
                 <span class="checkbox-custom" aria-hidden="true"></span>
-                <span class="tool-icon">${escapeHtml(toolIcon)}</span>
+                <span class="tool-icon">${toolIconHtml}</span>
                 <span class="tool-name">${escapeHtml(toolName)}</span>
                 ${isMCP ? '<span class="tool-badge mcp">MCP</span>' : ''}
             </label>

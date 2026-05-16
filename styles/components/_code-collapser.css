@@ -7,7 +7,7 @@
     box-shadow: var(--shadow-md);
     margin: 16px 0;
     overflow: hidden;
-    transition: all 0.2s var(--ease);
+    transition: all var(--duration-base) var(--ease);
 }
 
 .code-block-collapsible:hover {
@@ -26,7 +26,7 @@
     border-bottom: 2px solid rgba(var(--accent-blue-rgb), 0.3);
     cursor: pointer;
     user-select: none;
-    transition: background 0.15s;
+    transition: background var(--duration-fast);
 }
 
 .code-collapse-header:hover {
@@ -82,7 +82,7 @@
 }
 
 .code-toggle-icon {
-    transition: transform 0.2s;
+    transition: transform var(--duration-base);
     font-size: var(--fs-base);
     color: var(--color-text-inverse);
     flex-shrink: 0;
@@ -114,7 +114,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    transition: all 0.15s ease;
+    transition: all var(--duration-fast) ease;
 }
 
 .code-action-btn svg {

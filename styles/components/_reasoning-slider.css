@@ -16,7 +16,7 @@
     font-weight: 500;
     cursor: pointer;
     border-radius: 4px;
-    transition: all 0.15s var(--ease);
+    transition: all var(--duration-fast) var(--ease);
     min-width: 0; /* 允许按钮缩小 */
 }
 

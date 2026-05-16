@@ -1,10 +1,10 @@
 /* OpenClaw 屏幕画面实时展示 */
 .openclaw-screen-viewer {
     margin: 12px 0;
-    border: 1px solid var(--border-color, #333);
+    border: 1px solid var(--border-color);
     border-radius: 8px;
     overflow: hidden;
-    background: #000;
+    background: var(--color-bg-accent);
     max-width: 65%;
 }
 
@@ -58,11 +58,11 @@
 }
 
 .openclaw-screen-badge.ended {
-    color: var(--text-secondary, #888);
+    color: var(--text-secondary);
 }
 
 .openclaw-screen-badge.ended::before {
-    background: var(--text-secondary, #888);
+    background: var(--text-secondary);
     animation: none;
 }
 
@@ -71,7 +71,7 @@
     gap: 4px;
     padding: 6px 8px;
     overflow-x: auto;
-    background: var(--bg-secondary, #1a1a2e);
+    background: var(--bg-secondary);
     scrollbar-width: thin;
 }
 
@@ -88,8 +88,8 @@
     border: 2px solid transparent;
     opacity: 0.6;
     transition:
-        opacity 0.15s,
-        border-color 0.15s;
+        opacity var(--duration-fast),
+        border-color var(--duration-fast);
     flex-shrink: 0;
 }
 
@@ -99,7 +99,7 @@
 
 .openclaw-screen-thumb.active {
     opacity: 1;
-    border-color: var(--accent-color, #7c4dff);
+    border-color: var(--md-blue);
 }
 
 /* 移动端：满宽 */
