@@ -9,9 +9,11 @@ import {
     switchToSession,
     deleteSession,
     renameSession,
-    createNewSession
+    createNewSession,
+    reloadCurrentSessionMessages
 } from '../state/sessions.js';
 import { escapeHtml } from '../utils/helpers.js';
+import { trapFocus, removeFocusTrap } from '../utils/focus-trap.js';
 import { getSessionSearchState, highlightMatch } from './session-search.js';
 import { sessionToMarkdown } from '../state/export-import.js';
 import { getIcon } from '../utils/icons.js';
@@ -70,51 +72,6 @@ async function getSessionDataForExport(sessionMeta) {
         ...sessionMeta,
         messages: sessionMeta._pendingMessages || []
     };
-}
-
-/**
- * 焦点陷阱 - 限制焦点在指定元素内
- * @param {HTMLElement} element - 要限制焦点的元素
- */
-function trapFocus(element) {
-    if (element._focusTrapHandler) return; // 已经设置过
-
-    const focusableSelector =
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
-
-    const handler = (e) => {
-        if (e.key !== 'Tab') return;
-
-        const focusableElements = element.querySelectorAll(focusableSelector);
-        const firstFocusable = focusableElements[0];
-        const lastFocusable = focusableElements[focusableElements.length - 1];
-
-        if (e.shiftKey) {
-            if (document.activeElement === firstFocusable) {
-                lastFocusable.focus();
-                e.preventDefault();
-            }
-        } else {
-            if (document.activeElement === lastFocusable) {
-                firstFocusable.focus();
-                e.preventDefault();
-            }
-        }
-    };
-
-    element.addEventListener('keydown', handler);
-    element._focusTrapHandler = handler;
-}
-
-/**
- * 移除焦点陷阱
- * @param {HTMLElement} element - 元素
- */
-function removeFocusTrap(element) {
-    if (element._focusTrapHandler) {
-        element.removeEventListener('keydown', element._focusTrapHandler);
-        delete element._focusTrapHandler;
-    }
 }
 
 /**
@@ -232,6 +189,10 @@ function buildSessionElement(session, matchedMessages, currentQuery, isActive, h
                 messageId,
                 fallbackIndex
             });
+        } else if (session.id === state.currentSessionId) {
+            // 点击当前激活的 session 走 reload 路径，覆盖多 tab 冲突 / 远端更新场景下用户的
+            // "再次点击侧栏想看最新内容" 操作（switchToSession 对同 id 早期 return 不会刷新消息）
+            reloadCurrentSessionMessages();
         } else {
             switchToSession(session.id);
         }
@@ -243,7 +204,11 @@ function buildSessionElement(session, matchedMessages, currentQuery, isActive, h
         if (e.target !== sessionEl) return;
         if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
-            switchToSession(session.id);
+            if (session.id === state.currentSessionId) {
+                reloadCurrentSessionMessages();
+            } else {
+                switchToSession(session.id);
+            }
         }
     });
 

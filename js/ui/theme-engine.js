@@ -329,10 +329,9 @@ function clearCustomCSS() {
  * @param {Object} themeData - 主题对象
  * @param {Object} [options]
  * @param {boolean} [options.skipMermaid=false] - 跳过 Mermaid 刷新
- * @param {boolean} [options.skipEvent=false] - 跳过事件发射
  */
 export async function applyTheme(themeData, options = {}) {
-    const { skipMermaid = false, skipEvent = false } = options;
+    const { skipMermaid = false } = options;
     const root = document.documentElement;
 
     // 1. 设置 base class
@@ -384,14 +383,6 @@ export async function applyTheme(themeData, options = {}) {
                 type: 'warning'
             });
         }
-    }
-
-    // 6. 事件通知
-    if (!skipEvent) {
-        eventBus.emit('ui:theme-applied', {
-            theme: themeData.base || (root.classList.contains('dark-theme') ? 'dark' : 'light'),
-            themeId: themeData.id || null
-        });
     }
 }
 

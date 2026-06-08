@@ -8,9 +8,9 @@ import { elements } from '../core/elements.js';
 import { eventBus } from '../core/events.js';
 import { showNotification } from '../ui/notifications.js';
 import { saveCurrentConfig } from './config.js';
-import { setQuickMessages } from '../core/state-mutations.js';
 // 新增：IndexedDB 快捷消息 API
 import { loadAllQuickMessages, saveQuickMessage } from './storage.js';
+import { autoResizeTextarea } from '../ui/input.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -29,7 +29,7 @@ async function loadQuickMessagesFromStorage() {
         // 优先从 IndexedDB 加载
         if (state.storageMode !== 'localStorage') {
             const messages = await loadAllQuickMessages();
-            setQuickMessages(messages || []);
+            state.quickMessages = messages || [];
             logger.debug('[loadQuickMessages] 从 IndexedDB 加载:', state.quickMessages.length);
             return;
         }
@@ -37,10 +37,10 @@ async function loadQuickMessagesFromStorage() {
         // 降级：从 localStorage 加载
         const saved = localStorage.getItem('quickMessages');
         if (saved) {
-            setQuickMessages(JSON.parse(saved));
+            state.quickMessages = JSON.parse(saved);
             logger.debug('[loadQuickMessages] 从 localStorage 加载（降级模式）');
         } else {
-            setQuickMessages([]);
+            state.quickMessages = [];
         }
     } catch (error) {
         logger.error('加载快捷消息失败:', error);
@@ -191,11 +191,9 @@ export function sendQuickMessage(id) {
     elements.userInput.value = message.content;
 
     // 2. 调整文本框高度（复用现有函数）
-    import('../ui/resize.js').then(({ autoResizeTextarea }) => {
-        if (autoResizeTextarea) {
-            autoResizeTextarea();
-        }
-    });
+    if (autoResizeTextarea) {
+        autoResizeTextarea();
+    }
 
     // 3. 聚焦输入框
     elements.userInput.focus();

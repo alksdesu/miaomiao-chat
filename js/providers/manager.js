@@ -11,7 +11,6 @@ import { saveCurrentConfig, getDefaultCapabilities } from '../state/config.js';
 import { getCacheEntry, setCacheEntry } from './models-cache.js';
 import { syncProviderState } from './provider-sync.js';
 import { logger } from '../utils/logger.js';
-import { setCurrentProviderId } from '../core/state-mutations.js';
 
 // re-export 拆分模块的公共 API，保持导入兼容
 export {
@@ -56,7 +55,7 @@ export function getCurrentProvider() {
             logger.warn(
                 `[getCurrentProvider] currentProviderId 无效或已禁用: ${state.currentProviderId}`
             );
-            setCurrentProviderId(null);
+            state.currentProviderId = null;
         }
     }
 

@@ -22,6 +22,9 @@
     --color-text-muted: #888888;
     --color-text-tertiary: #999999;
     --color-text-inverse: #ffffff;
+    /* 品牌色背景上的固定文本色（饱和 teal/coral/yellow/blue 等需深色字保证 WCAG AA 对比度，
+       不随亮/暗主题切换 —— 否则暗主题继承浅色 --color-text-primary 时通知/进度条几乎不可读） */
+    --color-text-on-accent: #1a1a1a;
 
     --color-border-primary: #383838;
     --color-border-secondary: #e5e5e5;

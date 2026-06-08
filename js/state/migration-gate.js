@@ -99,6 +99,11 @@ async function doMigration(result) {
 
     for (const session of sessions) {
         completed++;
+        // 每 10 个 session 顶部主动 yield：跳过分支（已迁移/空）也需让出主线程，
+        // pref 写失败后启动重跑场景下 1000 个会话 continue 跳过 yield 仍会冻结
+        if (completed % 10 === 0) {
+            await yieldToMain();
+        }
         updateProgress(overlay, completed, total, session.name || session.id);
 
         try {

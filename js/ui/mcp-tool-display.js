@@ -8,7 +8,6 @@ import { mcpClient } from '../tools/mcp/client.js';
 import { saveMCPServer, deleteMCPServer } from '../state/storage.js';
 import { showNotification } from './notifications.js';
 import { getIcon } from '../utils/icons.js';
-import { setMcpServers } from '../core/state-mutations.js';
 import {
     applyModalLayerZIndex,
     bindTopmostEscape,
@@ -44,13 +43,11 @@ export async function exportMCPConfig() {
 
         setTimeout(() => URL.revokeObjectURL(link.href), 100);
 
-        showNotification(`${getIcon('download', { size: 14 })} 配置已导出: ${filename}`, 'success');
+        // showNotification 用 textContent 渲染，禁止拼 getIcon HTML（SVG 会裸显成源码文字）
+        showNotification(`配置已导出: ${filename}`, 'success');
     } catch (error) {
         logger.error('[MCP Settings] 导出配置失败:', error);
-        showNotification(
-            `${getIcon('xCircle', { size: 14 })} 导出配置失败: ${error.message}`,
-            'error'
-        );
+        showNotification(`导出配置失败: ${error.message}`, 'error');
     }
 }
 
@@ -176,10 +173,7 @@ async function selectJsonFile() {
                 const text = await file.text();
                 resolve(text);
             } catch (error) {
-                showNotification(
-                    `${getIcon('xCircle', { size: 14 })} 读取文件失败: ${error.message}`,
-                    'error'
-                );
+                showNotification(`读取文件失败: ${error.message}`, 'error');
                 resolve(null);
             }
         };
@@ -347,13 +341,18 @@ function removeJsonComments(jsonText) {
                 continue;
             }
 
-            if ((char === '"' || char === "'") && (i === 0 || line[i - 1] !== '\\')) {
-                if (!inString) {
-                    inString = true;
-                    stringChar = char;
-                } else if (char === stringChar) {
-                    inString = false;
-                    stringChar = null;
+            if (char === '"' || char === "'") {
+                // 向前数连续反斜杠：偶数个才是真定界符（"C:\\tools\\" 以 \\" 结尾时引号未被转义）
+                let backslashes = 0;
+                for (let j = i - 1; j >= 0 && line[j] === '\\'; j--) backslashes++;
+                if (backslashes % 2 === 0) {
+                    if (!inString) {
+                        inString = true;
+                        stringChar = char;
+                    } else if (char === stringChar) {
+                        inString = false;
+                        stringChar = null;
+                    }
                 }
                 cleanLine += char;
                 i++;
@@ -420,6 +419,8 @@ async function processImportedJson(modal, jsonText) {
 
         if (action === 'cancel') return;
 
+        let toImport = servers;
+
         if (action === 'replace') {
             for (const server of state.mcpServers || []) {
                 if (mcpClient.hasConnection(server.id)) {
@@ -431,34 +432,74 @@ async function processImportedJson(modal, jsonText) {
                 }
             }
 
+            // 删除失败的保留在内存，否则 DB 与 state 永久分叉且无法重试
+            const failedDeletes = [];
             for (const server of state.mcpServers || []) {
                 try {
                     await deleteMCPServer(server.id);
                 } catch (error) {
                     logger.error(`[MCP Settings] 删除服务器 ${server.id} 失败:`, error);
+                    failedDeletes.push(server);
                 }
             }
 
-            setMcpServers([]);
+            state.mcpServers = failedDeletes;
+            if (failedDeletes.length > 0) {
+                showNotification(`${failedDeletes.length} 个旧服务器删除失败，已保留`, 'warning');
+            }
+        } else if (action === 'merge') {
+            // 重复导入同一配置会无限堆积同名服务器，按 name + 连接目标查重跳过
+            const existingKeys = new Set(
+                (state.mcpServers || []).map((s) => `${s.name}|${s.url || s.command || ''}`)
+            );
+            const skipped = [];
+            toImport = servers.filter((server) => {
+                const key = `${server.name}|${server.url || server.command || ''}`;
+                if (existingKeys.has(key)) {
+                    skipped.push(server.name);
+                    return false;
+                }
+                return true;
+            });
+
+            if (skipped.length > 0) {
+                showNotification(
+                    `已跳过 ${skipped.length} 个重复服务器: ${skipped.join('、')}`,
+                    'info'
+                );
+            }
+            if (toImport.length === 0) {
+                renderServerList(modal);
+                return;
+            }
         }
 
-        for (const server of servers) {
-            await saveMCPServer(server);
-            state.mcpServers.push(server);
+        let importedCount = 0;
+        const failedImports = [];
+        for (const server of toImport) {
+            try {
+                await saveMCPServer(server);
+                state.mcpServers.push(server);
+                importedCount++;
+            } catch (error) {
+                logger.error(`[MCP Settings] 保存服务器 ${server.name} 失败:`, error);
+                failedImports.push(server.name);
+            }
         }
 
         renderServerList(modal);
 
-        showNotification(
-            `${getIcon('checkCircle', { size: 14 })} 成功导入 ${servers.length} 个 MCP 服务器`,
-            'success'
-        );
+        if (failedImports.length > 0) {
+            showNotification(
+                `成功导入 ${importedCount} 个，失败 ${failedImports.length} 个（${failedImports.join('、')}）`,
+                'warning'
+            );
+        } else {
+            showNotification(`成功导入 ${importedCount} 个 MCP 服务器`, 'success');
+        }
     } catch (error) {
         logger.error('[MCP Settings] 导入配置失败:', error);
-        showNotification(
-            `${getIcon('xCircle', { size: 14 })} 导入配置失败: ${error.message}`,
-            'error'
-        );
+        showNotification(`导入配置失败: ${error.message}`, 'error');
     }
 }
 
@@ -567,16 +608,10 @@ export async function createFromTemplate(modal, templateId) {
 
         renderServerList(modal);
 
-        showNotification(
-            `${getIcon('checkCircle', { size: 14 })} 已从模板创建 ${servers.length} 个服务器`,
-            'success'
-        );
+        showNotification(`已从模板创建 ${servers.length} 个服务器`, 'success');
     } catch (error) {
         logger.error('[MCP Settings] 从模板创建失败:', error);
-        showNotification(
-            `${getIcon('xCircle', { size: 14 })} 从模板创建失败: ${error.message}`,
-            'error'
-        );
+        showNotification(`从模板创建失败: ${error.message}`, 'error');
     }
 }
 

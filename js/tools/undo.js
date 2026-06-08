@@ -6,11 +6,7 @@
 import { state } from '../core/state.js';
 import { eventBus } from '../core/events.js';
 import { renderSessionMessages } from '../messages/restore.js';
-import {
-    replaceAllMessages,
-    setCurrentAssistantMessage,
-    setSessionDirty
-} from '../core/state-mutations.js';
+import { replaceAllMessages } from '../core/state-mutations.js';
 import { logger } from '../utils/logger.js';
 
 // ========== 状态管理 ==========
@@ -82,8 +78,8 @@ export function undo() {
         // 通过安全函数恢复消息状态（深拷贝防止快照被污染）
         replaceAllMessages(structuredClone(snapshot.messages));
         // 清空旧 DOM 引用（renderSessionMessages 会重建 DOM）
-        setCurrentAssistantMessage(null);
-        setSessionDirty(true); // 撤销后需要保存
+        state.currentAssistantMessage = null;
+        state.sessionDirty = true; // 撤销后需要保存
 
         // 重新渲染消息列表
         renderSessionMessages();

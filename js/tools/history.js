@@ -4,14 +4,39 @@
  */
 
 import { state } from '../core/state.js';
-import { debouncedSaveSession } from '../state/sessions.js';
 import { savePreference, loadPreference } from '../state/storage.js';
-import {
-    setToolCallHistory,
-    setToolHistoryEnabled as setToolHistoryEnabledState,
-    setMaxToolHistorySize as setMaxToolHistorySizeState
-} from '../core/state-mutations.js';
 import { logger } from '../utils/logger.js';
+
+// state.* 顶层赋值由 Proxy 自动派发 state:* 事件，无需 setter wrapper
+const setToolHistoryEnabledState = (v) => {
+    state.toolHistoryEnabled = v;
+};
+const setMaxToolHistorySizeState = (v) => {
+    state.maxToolHistorySize = v;
+};
+
+// 截图/图片生成类工具的 base64 结果可达数 MB，全量入库会让每次持久化卡死
+const HISTORY_RESULT_MAX_LENGTH = 10240;
+
+/**
+ * 裁剪超大 result，保留前 500 字符摘要与原始体积信息
+ * @param {*} result
+ * @returns {*}
+ */
+function sanitizeResultForHistory(result) {
+    if (result == null) return result;
+    try {
+        const serialized = JSON.stringify(result);
+        if (serialized.length <= HISTORY_RESULT_MAX_LENGTH) return result;
+        return {
+            _truncated: true,
+            _originalSize: `${(serialized.length / 1024).toFixed(1)}KB`,
+            summary: `${serialized.slice(0, 500)}…`
+        };
+    } catch {
+        return { _truncated: true, summary: '[result 无法序列化]' };
+    }
+}
 
 /**
  * 记录工具调用
@@ -34,7 +59,8 @@ export function recordToolCall(record) {
         timestamp: Date.now(),
         datetime: new Date().toISOString(),
         sessionId: state.currentSessionId,
-        ...record
+        ...record,
+        result: sanitizeResultForHistory(record.result)
     };
 
     // 添加到历史记录
@@ -42,7 +68,7 @@ export function recordToolCall(record) {
 
     // 限制历史记录数量
     if (state.toolCallHistory.length > state.maxToolHistorySize) {
-        setToolCallHistory(state.toolCallHistory.slice(0, state.maxToolHistorySize));
+        state.toolCallHistory = state.toolCallHistory.slice(0, state.maxToolHistorySize);
     }
 
     // 持久化保存
@@ -190,26 +216,24 @@ export function getToolStats(options = {}) {
 export function clearToolHistory(options = {}) {
     if (!options.toolName && !options.sessionId && !options.before) {
         // 清除所有历史
-        setToolCallHistory([]);
+        state.toolCallHistory = [];
         logger.debug('[ToolHistory] 已清除所有工具调用历史');
     } else {
         // 有条件地清除
         const originalLength = state.toolCallHistory.length;
 
-        setToolCallHistory(
-            state.toolCallHistory.filter((entry) => {
-                if (options.toolName && entry.toolName === options.toolName) {
-                    return false;
-                }
-                if (options.sessionId && entry.sessionId === options.sessionId) {
-                    return false;
-                }
-                if (options.before && entry.timestamp < options.before) {
-                    return false;
-                }
-                return true;
-            })
-        );
+        state.toolCallHistory = state.toolCallHistory.filter((entry) => {
+            if (options.toolName && entry.toolName === options.toolName) {
+                return false;
+            }
+            if (options.sessionId && entry.sessionId === options.sessionId) {
+                return false;
+            }
+            if (options.before && entry.timestamp < options.before) {
+                return false;
+            }
+            return true;
+        });
 
         const removedCount = originalLength - state.toolCallHistory.length;
         logger.debug(`[ToolHistory] 已清除 ${removedCount} 条工具调用历史`);
@@ -252,15 +276,15 @@ export function importToolHistory(data, options = {}) {
 
         if (options.merge) {
             // 合并到现有历史
-            setToolCallHistory([...imported, ...state.toolCallHistory]);
+            state.toolCallHistory = [...imported, ...state.toolCallHistory];
 
             // 限制数量
             if (state.toolCallHistory.length > state.maxToolHistorySize) {
-                setToolCallHistory(state.toolCallHistory.slice(0, state.maxToolHistorySize));
+                state.toolCallHistory = state.toolCallHistory.slice(0, state.maxToolHistorySize);
             }
         } else {
             // 替换现有历史
-            setToolCallHistory(imported);
+            state.toolCallHistory = imported;
         }
 
         // 保存到 localStorage
@@ -283,7 +307,7 @@ async function saveToolHistory() {
         // 输入验证：确保 toolCallHistory 是数组
         if (!Array.isArray(state.toolCallHistory)) {
             logger.error('[ToolHistory] ❌ toolCallHistory 不是数组，无法保存');
-            setToolCallHistory([]); // 重置为空数组
+            state.toolCallHistory = []; // 重置为空数组
             return;
         }
 
@@ -298,23 +322,38 @@ async function saveToolHistory() {
  */
 export async function loadToolHistory() {
     try {
-        const saved = await loadPreference('toolCallHistory');
+        const [saved, enabledPref, maxSizePref] = await Promise.all([
+            loadPreference('toolCallHistory'),
+            loadPreference('toolHistoryEnabled'),
+            loadPreference('maxToolHistorySize')
+        ]);
+
+        if (enabledPref !== null && enabledPref !== undefined) {
+            setToolHistoryEnabledState(enabledPref === true || enabledPref === 'true');
+        }
+        if (maxSizePref !== null && maxSizePref !== undefined) {
+            const parsedSize = parseInt(maxSizePref, 10);
+            if (Number.isFinite(parsedSize) && parsedSize > 0) {
+                setMaxToolHistorySizeState(parsedSize);
+            }
+        }
+
         if (saved) {
             const parsed = typeof saved === 'string' ? JSON.parse(saved) : saved;
 
             // 输入验证：确保加载的数据是数组
             if (!Array.isArray(parsed)) {
                 logger.error('[ToolHistory] ❌ 加载的数据不是数组，已重置');
-                setToolCallHistory([]);
+                state.toolCallHistory = [];
                 return;
             }
 
-            setToolCallHistory(parsed);
+            state.toolCallHistory = parsed;
             logger.debug(`[ToolHistory] 已加载 ${state.toolCallHistory.length} 条历史记录`);
         }
     } catch (error) {
         logger.error('[ToolHistory] 加载历史失败:', error);
-        setToolCallHistory([]);
+        state.toolCallHistory = [];
     }
 }
 
@@ -373,8 +412,10 @@ export function setToolHistoryEnabled(enabled) {
     setToolHistoryEnabledState(enabled);
     logger.debug(`[ToolHistory] 历史记录已${enabled ? '启用' : '禁用'}`);
 
-    // 保存配置
-    debouncedSaveSession();
+    // session 持久化字段集不含此开关，独立落 preference
+    Promise.resolve(savePreference('toolHistoryEnabled', !!enabled)).catch((error) =>
+        logger.error('[ToolHistory] 保存开关失败:', error)
+    );
 }
 
 /**
@@ -386,14 +427,15 @@ export function setMaxToolHistorySize(maxSize) {
 
     // 如果当前历史超过新的限制，裁剪
     if (state.toolCallHistory.length > maxSize) {
-        setToolCallHistory(state.toolCallHistory.slice(0, maxSize));
+        state.toolCallHistory = state.toolCallHistory.slice(0, maxSize);
         saveToolHistory();
     }
 
     logger.debug(`[ToolHistory] 最大历史记录数已设为: ${maxSize}`);
 
-    // 保存配置
-    debouncedSaveSession();
+    Promise.resolve(savePreference('maxToolHistorySize', maxSize)).catch((error) =>
+        logger.error('[ToolHistory] 保存配置失败:', error)
+    );
 }
 
 logger.debug('[ToolHistory] 📚 工具调用历史管理模块已加载');

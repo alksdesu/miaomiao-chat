@@ -139,6 +139,10 @@ export class ThinkTagParser {
 
 /**
  * 非流式 <think> 标签解析（用于非流式响应）
+ *
+ * 支持嵌套 <think>...<think>...</think>...</think>：用深度计数器找匹配的最外层
+ * </think>，避免之前 indexOf('</think>') 朴素匹配让外层后半段被泄漏成显示文本。
+ *
  * @param {string} text - 要解析的文本
  * @returns {{ displayText: string, thinkingContent: string }} 解析结果
  */
@@ -151,29 +155,42 @@ export function parseThinkTags(text) {
     let thinkingContent = ''; // 运行时变量，非旧格式字段
     let remaining = text;
 
-    // 循环处理所有 <think>...</think> 标签
     while (remaining.length > 0) {
         const openIndex = remaining.indexOf('<think>');
         if (openIndex === -1) {
-            // 没有更多 <think> 标签
             displayText += remaining;
             break;
         }
-
-        // 添加 <think> 之前的内容到 displayText
         displayText += remaining.substring(0, openIndex);
 
-        // 查找 </think>
-        const closeIndex = remaining.indexOf('</think>', openIndex);
-        if (closeIndex === -1) {
-            // 没有闭合标签，将剩余内容作为思考内容
-            thinkingContent += remaining.substring(openIndex + 7); // 7 = '<think>'.length
-            break;
+        // 从 openIndex+7 开始用深度计数器找匹配的最外层 </think>
+        let depth = 1;
+        let scan = openIndex + 7;
+        let matchedClose = -1;
+        while (scan < remaining.length) {
+            const nextOpen = remaining.indexOf('<think>', scan);
+            const nextClose = remaining.indexOf('</think>', scan);
+            if (nextClose === -1) break;
+            if (nextOpen !== -1 && nextOpen < nextClose) {
+                depth++;
+                scan = nextOpen + 7;
+            } else {
+                depth--;
+                if (depth === 0) {
+                    matchedClose = nextClose;
+                    break;
+                }
+                scan = nextClose + 8;
+            }
         }
 
-        // 提取思考内容
-        thinkingContent += remaining.substring(openIndex + 7, closeIndex);
-        remaining = remaining.substring(closeIndex + 8); // 8 = '</think>'.length
+        if (matchedClose === -1) {
+            // 未闭合，剩余全归 thinking
+            thinkingContent += remaining.substring(openIndex + 7);
+            break;
+        }
+        thinkingContent += remaining.substring(openIndex + 7, matchedClose);
+        remaining = remaining.substring(matchedClose + 8);
     }
 
     return { displayText: displayText.trim(), thinkingContent: thinkingContent.trim() };

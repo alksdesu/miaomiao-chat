@@ -7,10 +7,9 @@
 import { state } from '../core/state.js';
 import { elements } from '../core/elements.js';
 import { eventBus } from '../core/events.js';
-import { setCurrentAssistantMessage } from '../core/state-mutations.js';
 import { safeMarkedParse } from '../utils/markdown.js';
 import { escapeHtml } from '../utils/helpers.js';
-import { getCurrentModelCapabilities } from '../providers/manager.js';
+import { getCurrentModelCapabilities } from '../api/current.js';
 import { renderCapabilityBadgesText } from '../utils/capability-badges.js';
 import { renderHumanizedError } from '../utils/errors.js';
 import { categorizeFile, truncateFileName } from '../utils/file-helpers.js';
@@ -41,7 +40,10 @@ import {
 import {
     renderThinkingBlock,
     clearThinkingCache,
-    enhanceThinkingBlocks
+    enhanceThinkingBlocks,
+    purgeThinkingCacheInElement,
+    captureExpandedThinkingState,
+    restoreExpandedThinkingState
 } from './render-thinking.js';
 import { renderSearchGrounding } from './render-search.js';
 import { logger } from '../utils/logger.js';
@@ -273,6 +275,9 @@ export function renderReplyWithSelector(replies, selectedIndex, assistantMessage
     const loadingIndicator = contentDiv.querySelector('.loading-indicator, .thinking-dots');
     if (loadingIndicator) loadingIndicator.remove();
 
+    // 切换 reply 前清掉旧 thinking-id 缓存，避免重渲累积 100k thinking 副本
+    purgeThinkingCacheInElement(contentDiv);
+
     if (replies.length > 1) {
         let selectorEl = contentWrapper.querySelector('.reply-selector');
         if (!selectorEl) {
@@ -285,9 +290,14 @@ export function renderReplyWithSelector(replies, selectedIndex, assistantMessage
         selectorEl.innerHTML = '';
         replies.forEach((reply, index) => {
             const tab = document.createElement('button');
-            tab.className = `reply-tab${index === selectedIndex ? ' active' : ''}`;
+            const classList = ['reply-tab'];
+            if (index === selectedIndex) classList.push('active');
+            // reply.isError 在 multi-stream.js:142 / handler.js:114 落入；让 tab 视觉直接区分
+            // 失败回复，避免用户必须点进去才知道哪个 reply 失败
+            if (reply.isError) classList.push('reply-tab-error');
+            tab.className = classList.join(' ');
             tab.textContent = index + 1;
-            tab.title = `回复 ${index + 1}`;
+            tab.title = reply.isError ? `回复 ${index + 1}（失败）` : `回复 ${index + 1}`;
             tab.onclick = () => {
                 eventBus.emit('reply:select-requested', { index, messageIndex: msgIdx });
             };
@@ -472,7 +482,8 @@ function syncCurrentAssistantMessageReference() {
     const latestAssistantMessage =
         assistantMessages.length > 0 ? assistantMessages[assistantMessages.length - 1] : null;
 
-    setCurrentAssistantMessage(latestAssistantMessage?.querySelector('.message-content') || null);
+    state.currentAssistantMessage =
+        latestAssistantMessage?.querySelector('.message-content') || null;
 }
 
 function buildMessageHtml(message, role) {
@@ -550,11 +561,19 @@ export function rerenderMessageContent(messageEl, index, role) {
         contentWrapper.querySelector('.reply-selector')?.remove();
     }
 
+    // 重渲会清掉用户展开的 thinking-block；先捕获展开状态，重渲后按位置索引还原，
+    // 避免长会话每次工具调用/编辑都强制折叠所有思维链导致用户反复展开
+    const expandedThinking = captureExpandedThinkingState(contentDiv);
+
+    // 清理旧 thinking-id 缓存，避免重渲后旧 tid 永久泄漏（100k thinking × N 次重渲 → MB 级累积）
+    purgeThinkingCacheInElement(contentDiv);
+
     // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     contentDiv.innerHTML = buildMessageHtml(message, role);
     syncCurrentAssistantMessageReference();
 
     enhanceCodeBlocks(messageEl);
+    restoreExpandedThinkingState(contentDiv, expandedThinking, (block) => enhanceCodeBlocks(block));
 
     if (role === 'assistant') {
         restoreToolCallsFromMessage(message, contentDiv);

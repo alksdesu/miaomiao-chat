@@ -6,11 +6,11 @@
 import { logger } from '../utils/logger.js';
 import { BaseStreamParser } from './base-parser.js';
 
-import { updateStreamingMessage } from './helpers.js';
-import { state } from '../core/state.js';
 import { eventBus } from '../core/events.js';
 import { parseStreamingMarkdownImages } from '../utils/markdown-image-parser.js';
 import { isVideoMimeType, isAudioMimeType } from '../utils/media.js';
+import { ToolMode } from '../messages/schema.js';
+import { generateIdSet } from '../api/format-converter.js';
 
 // 响应长度限制（区分文本和图片）
 const MAX_TEXT_RESPONSE_LENGTH = 200000;
@@ -19,10 +19,11 @@ const MAX_IMAGE_RESPONSE_LENGTH = 60000000;
 /**
  * Gemini 流解析器
  */
-class GeminiStreamParser extends BaseStreamParser {
-    constructor(sessionId) {
-        super(sessionId);
+export class GeminiStreamParser extends BaseStreamParser {
+    constructor(sessionId, sink = null) {
+        super(sessionId, sink);
         this.reader = null;
+        this.signatureFormat = 'gemini';
 
         this.thoughtSignature = null;
         this.groundingMetadata = null;
@@ -37,9 +38,9 @@ class GeminiStreamParser extends BaseStreamParser {
         return hasMedia ? MAX_IMAGE_RESPONSE_LENGTH : MAX_TEXT_RESPONSE_LENGTH;
     }
 
-    async parse(reader) {
+    async parse(reader, signal = null) {
         this.reader = reader;
-        return super.parse(reader);
+        return super.parse(reader, signal);
     }
 
     async processLine(line) {
@@ -83,7 +84,7 @@ class GeminiStreamParser extends BaseStreamParser {
                 }
             }
 
-            // metadata.gemini.reasoning（Gemini 3 Pro Image）
+            // metadata.gemini.reasoning
             if (parsed.metadata?.gemini?.reasoning) {
                 const newReasoning = parsed.metadata.gemini.reasoning.slice(
                     this.thinkingContent.length
@@ -100,7 +101,7 @@ class GeminiStreamParser extends BaseStreamParser {
                 this.groundingMetadata = parsed.candidates[0].groundingMetadata;
             }
 
-            updateStreamingMessage(this.textContent, this.thinkingContent);
+            this.notifyStreaming(this.textContent, this.thinkingContent);
         } catch (_e) {
             logger.warn('Gemini stream parse error:', _e);
         }
@@ -111,15 +112,20 @@ class GeminiStreamParser extends BaseStreamParser {
         // 检查工具调用
         let finalToolCalls = [];
 
-        if (state.xmlToolCallingEnabled && !this.xmlParsingDisabled) {
+        if (this.xmlMode && !this.xmlParsingDisabled) {
             const xmlCalls = this.xmlToolCallAccumulator.getCompletedCalls();
+            // XML 模式 part.mode=XML，adapter 重发跳过 native 分支；idMap 兜底跨格式重发，
+            // originalFormat='gemini' 与 :159 native 分支对称，让 xml_tool_xxx 短 id 归位到 idMap.gemini 槽
             if (xmlCalls.length > 0) {
                 finalToolCalls = xmlCalls.map((tc) => ({
                     ...tc,
-                    thoughtSignature: this.thoughtSignature || null
+                    thoughtSignature: this.thoughtSignature || null,
+                    mode: ToolMode.XML,
+                    idMap: tc.idMap || generateIdSet(tc.id || '', 'gemini')
                 }));
             }
         } else if (this.toolCalls.length > 0) {
+            // this.toolCalls 由 _processPart 累积，下方已统一标 NATIVE
             finalToolCalls = this.toolCalls;
         }
 
@@ -142,13 +148,20 @@ class GeminiStreamParser extends BaseStreamParser {
         }
 
         // 原生工具调用
-        if (part.functionCall && !state.xmlToolCallingEnabled) {
+        if (part.functionCall && !this.xmlMode) {
             const fc = part.functionCall;
+            const id = fc.id || `gemini_tc_${Date.now()}_${this.toolCalls.length}`;
+            // 就近原则：functionCall part 自带 thoughtSignature 优先，避免被前面 thinking 的累积签名覆盖
+            const sigForCall = part.thoughtSignature || this.thoughtSignature || null;
+            // fc.id 真值时显式标记 originalFormat=gemini，避免短 id 不带前缀被前缀启发式误判
+            // 兜底生成的 gemini_tc_* 也走 gemini 槽，下游 adapter 仍能用 startsWith('gemini_tc_') 区分回传与否
             this.toolCalls.push({
-                id: fc.id || `gemini_tc_${Date.now()}_${this.toolCalls.length}`,
+                id,
                 name: fc.name,
                 arguments: fc.args,
-                thoughtSignature: this.thoughtSignature || null
+                thoughtSignature: sigForCall,
+                mode: ToolMode.NATIVE,
+                idMap: generateIdSet(id, 'gemini')
             });
             return;
         }
@@ -268,17 +281,7 @@ class GeminiStreamParser extends BaseStreamParser {
         const errorMessage = error.message || 'Unknown error';
         logger.error(`Gemini API 错误 (流式响应):`, error);
 
-        let userMessage = '';
-        if (errorCode === 429) {
-            userMessage = `请求过多 (429)：${errorMessage}\n请稍后再试或检查配额限制`;
-        } else if (errorCode === 503) {
-            userMessage = `服务暂时不可用 (503)：${errorMessage}\n请稍后重试`;
-        } else if (errorCode === 500) {
-            userMessage = `服务器内部错误 (500)：${errorMessage}`;
-        } else {
-            userMessage = `API 错误 (${errorCode}): ${errorMessage}`;
-        }
-
+        const userMessage = this.buildStreamErrorUserMessage(errorCode, errorMessage);
         eventBus.emit('ui:notification', { message: userMessage, type: 'error', duration: 8000 });
         await this.reader.cancel();
 
@@ -286,30 +289,83 @@ class GeminiStreamParser extends BaseStreamParser {
             this.finalizeStreamWithError(
                 errorCode,
                 errorMessage,
-                {
-                    thoughtSignature: this.thoughtSignature,
-                    groundingMetadata: this.groundingMetadata
-                },
-                this.groundingMetadata
+                this.getStreamErrorExtraFields(),
+                this.getGroundingMetadata()
             );
         }
     }
 
     _finalize() {
-        this.finalizeStream(
-            {
-                thoughtSignature: this.thoughtSignature,
-                groundingMetadata: this.groundingMetadata
-            },
-            this.groundingMetadata
+        this.finalizeStream(this.collectExtraSaveFields(), this.getGroundingMetadata());
+    }
+
+    // ───── Hook overrides ─────
+
+    hasOngoingToolStream() {
+        return (
+            super.hasOngoingToolStream() ||
+            (Array.isArray(this.toolCalls) && this.toolCalls.length > 0)
         );
+    }
+
+    collectExtraSaveFields() {
+        const extra = { ...super.collectExtraSaveFields() };
+        if (typeof this.thoughtSignature === 'string' && this.thoughtSignature) {
+            extra.thoughtSignature = this.thoughtSignature;
+        }
+        if (this.groundingMetadata) {
+            extra.groundingMetadata = this.groundingMetadata;
+        }
+        return extra;
+    }
+
+    /**
+     * 修复 base._handleStreamReadError 第 4 参原本钉死 null 导致
+     * idle_timeout / network_error / empty_response 三条路径下 Gemini
+     * 搜索引用全部丢失的 BUG。
+     */
+    getGroundingMetadata() {
+        return this.groundingMetadata || null;
+    }
+
+    buildStreamErrorUserMessage(errorCode, errorMessage) {
+        if (errorCode === 429 || errorCode === 'RESOURCE_EXHAUSTED') {
+            return `请求过多 (429)：${errorMessage}\n请稍后再试或检查配额限制`;
+        }
+        if (errorCode === 503) {
+            return `服务暂时不可用 (503)：${errorMessage}\n请稍后重试`;
+        }
+        if (errorCode === 500) {
+            return `服务器内部错误 (500)：${errorMessage}`;
+        }
+        if (errorCode === 'FAILED_PRECONDITION') {
+            return `Gemini 区域或权限问题 (${errorCode}): ${errorMessage}`;
+        }
+        return super.buildStreamErrorUserMessage(errorCode, errorMessage);
+    }
+
+    /**
+     * Gemini reply：含 thoughtSignature / groundingMetadata
+     */
+    collectReply() {
+        return {
+            ...super.collectReply(),
+            thoughtSignature: this.thoughtSignature,
+            groundingMetadata: this.groundingMetadata
+        };
     }
 }
 
 /**
  * 解析 Gemini 流式响应（保持原有导出签名）
+ * @param {ReadableStreamDefaultReader} reader
+ * @param {string|null} [sessionId]
+ * @param {import('./sink.js').StreamSink} [sink]
+ * @param {AbortSignal|null} [signal]
+ * @returns {Promise<GeminiStreamParser>}
  */
-export async function parseGeminiStream(reader, sessionId = null) {
-    const parser = new GeminiStreamParser(sessionId);
-    await parser.parse(reader);
+export async function parseGeminiStream(reader, sessionId = null, sink = null, signal = null) {
+    const parser = new GeminiStreamParser(sessionId, sink);
+    await parser.parse(reader, signal);
+    return parser;
 }

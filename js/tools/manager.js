@@ -94,6 +94,16 @@ function removeFromNameIndex(toolName, toolId) {
     }
 }
 
+/**
+ * 覆盖注册前清理旧 name 的索引，否则同 id 改名重注册后旧名仍可命中
+ */
+function dropStaleNameIndex(toolId, newName) {
+    const old = tools.get(toolId);
+    if (old?.name && old.name !== newName) {
+        removeFromNameIndex(old.name, toolId);
+    }
+}
+
 // ========== 工具注册 API ==========
 
 /**
@@ -114,6 +124,7 @@ export function registerTool(tool) {
     if (!tool.inputSchema) tool.inputSchema = tool.parameters;
     if (!tool.parameters) tool.parameters = tool.inputSchema;
 
+    dropStaleNameIndex(toolId, tool.name || toolId);
     tools.set(toolId, tool);
     addToNameIndex(tool.name || toolId, toolId);
 
@@ -165,12 +176,13 @@ export async function registerMCPTool(serverId, toolName, toolDefinition) {
         type: 'mcp',
         enabled,
         serverId,
-        call: async (args) => {
+        call: async (args, callOpts = {}) => {
             const fullToolId = `${serverId}/${toolName}`;
-            return await mcpClient.callTool(fullToolId, args);
+            return await mcpClient.callTool(fullToolId, args, { signal: callOpts.signal });
         }
     });
 
+    dropStaleNameIndex(toolId, toolName);
     tools.set(toolId, tool);
     addToNameIndex(toolName, toolId);
 
@@ -208,6 +220,7 @@ export function registerCustomTool(toolConfig, skipSave = false) {
         }
     });
 
+    dropStaleNameIndex(toolId, tool.name || toolId);
     tools.set(toolId, tool);
     addToNameIndex(tool.name || toolId, toolId);
 
@@ -256,6 +269,18 @@ export function getToolsForAPI(apiFormat) {
             enabledTools = enabledTools.filter((tool) => tool.name !== 'computer');
         }
     }
+
+    // 同名去重：多个 MCP server 提供同名工具时 API 不接受重复 name
+    const seenNames = new Set();
+    enabledTools = enabledTools.filter((tool) => {
+        const name = tool.name || tool.id;
+        if (seenNames.has(name)) {
+            logger.warn(`[Tools] 工具名冲突，已跳过重复项: ${name} (${tool.id})`);
+            return false;
+        }
+        seenNames.add(name);
+        return true;
+    });
 
     switch (apiFormat) {
         case 'openai':
@@ -508,12 +533,8 @@ export async function clearMCPTools(serverId) {
         (tool) => tool.type === 'mcp' && tool.serverId === serverId
     );
 
-    // 先禁用再清除
-    mcpTools.forEach((tool) => {
-        tool.enabled = false;
-    });
-    await saveToolStates();
-
+    // 只删内存注册，不持久化禁用：断线是系统事件而非用户操作，
+    // 写盘 enabled=false 会在重连后被当作用户保存状态恢复为禁用
     mcpTools.forEach((tool) => {
         if (tool.name) removeFromNameIndex(tool.name, tool.id);
         tools.delete(tool.id);

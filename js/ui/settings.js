@@ -10,12 +10,8 @@ import { saveCurrentConfig } from '../state/config.js';
 import { savePreference, loadPreference } from '../state/storage.js';
 import { showNotification } from './notifications.js';
 import { isElectron, isAndroid } from '../utils/platform.js';
-import {
-    setFastImageCompression,
-    setPdfMode,
-    setCodeExecutionEnabled,
-    setComputerUseEnabled
-} from '../core/state-mutations.js';
+import { checkForUpdatesManually } from '../update/apk-updater.js';
+import { trapFocus, removeFocusTrap } from '../utils/focus-trap.js';
 import { logger } from '../utils/logger.js';
 
 let settingsInitialized = false;
@@ -50,49 +46,6 @@ function runCleanupList(cleanupList) {
             cleanup();
         }
     });
-}
-
-/**
- * 焦点陷阱 - 限制焦点在指定元素内
- * @param {HTMLElement} element - 要限制焦点的元素
- */
-function trapFocus(element) {
-    if (element._focusTrapHandler) return;
-
-    const focusableSelector =
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
-
-    const handler = (e) => {
-        if (e.key !== 'Tab') return;
-
-        const focusableElements = element.querySelectorAll(focusableSelector);
-        const firstFocusable = focusableElements[0];
-        const lastFocusable = focusableElements[focusableElements.length - 1];
-
-        if (e.shiftKey) {
-            if (document.activeElement === firstFocusable) {
-                lastFocusable.focus();
-                e.preventDefault();
-            }
-        } else if (document.activeElement === lastFocusable) {
-            firstFocusable.focus();
-            e.preventDefault();
-        }
-    };
-
-    element.addEventListener('keydown', handler);
-    element._focusTrapHandler = handler;
-}
-
-/**
- * 移除焦点陷阱
- * @param {HTMLElement} element - 元素
- */
-function removeFocusTrap(element) {
-    if (element._focusTrapHandler) {
-        element.removeEventListener('keydown', element._focusTrapHandler);
-        delete element._focusTrapHandler;
-    }
 }
 
 function initializeSettingsOverlay() {
@@ -213,8 +166,32 @@ function syncGeneralSettingsUI() {
 
     const bashConfirm = document.getElementById('bash-require-confirmation');
     if (bashConfirm) {
-        bashConfirm.checked = bashConfig.requireConfirmation || false;
+        bashConfirm.checked = bashConfig.requireConfirmation ?? false;
     }
+}
+
+// Electron 主进程 ComputerUseManager 在创建时使用默认权限/Bash 配置，
+// 渲染层每次改动必须立即 IPC 推送，否则主进程永远拿不到用户设置。
+function syncBashConfigToMain() {
+    if (!isElectron() || !window.electronAPI?.computerUse_updateBashConfig) {
+        return;
+    }
+    Promise.resolve(window.electronAPI.computerUse_updateBashConfig({ ...state.bashConfig })).catch(
+        (error) => {
+            logger.warn('[Settings] 推送 bashConfig 到主进程失败:', error);
+        }
+    );
+}
+
+function syncPermissionsToMain() {
+    if (!isElectron() || !window.electronAPI?.computerUse_updatePermissions) {
+        return;
+    }
+    Promise.resolve(
+        window.electronAPI.computerUse_updatePermissions({ ...state.computerUsePermissions })
+    ).catch((error) => {
+        logger.warn('[Settings] 推送 computerUsePermissions 到主进程失败:', error);
+    });
 }
 
 function bindGeneralSettingsEvents() {
@@ -230,6 +207,10 @@ function bindGeneralSettingsEvents() {
 
     const configLoadedUnsubscribe = eventBus.on('config:loaded', () => {
         syncGeneralSettingsUI();
+        // 配置加载后将持久化的 bashConfig / permissions 推送给主进程，
+        // 覆盖 ComputerUseManager 构造时的默认值
+        syncBashConfigToMain();
+        syncPermissionsToMain();
     });
     settingsSubscriptions.push(configLoadedUnsubscribe);
 
@@ -239,21 +220,21 @@ function bindGeneralSettingsEvents() {
 
     const fastImageCompressionSwitch = document.getElementById('fast-image-compression');
     addManagedListener(settingsCleanupCallbacks, fastImageCompressionSwitch, 'change', (event) => {
-        setFastImageCompression(event.target.checked);
+        state.fastImageCompression = event.target.checked;
         saveCurrentConfig();
         logger.debug('[Settings] ⚡ 高速图片压缩模式已', event.target.checked ? '启用' : '禁用');
     });
 
     const pdfModeSelect = document.getElementById('pdf-mode-select');
     addManagedListener(settingsCleanupCallbacks, pdfModeSelect, 'change', (event) => {
-        setPdfMode(event.target.value);
+        state.pdfMode = event.target.value;
         saveCurrentConfig();
         logger.debug(`[Settings] PDF 处理模式: ${event.target.value}`);
     });
 
     const codeExecSwitch = document.getElementById('code-execution-enabled');
     addManagedListener(settingsCleanupCallbacks, codeExecSwitch, 'change', (event) => {
-        setCodeExecutionEnabled(event.target.checked);
+        state.codeExecutionEnabled = event.target.checked;
         document
             .getElementById('toggle-code-exec')
             ?.classList.toggle('active', event.target.checked);
@@ -263,7 +244,7 @@ function bindGeneralSettingsEvents() {
 
     const computerUseSwitch = document.getElementById('computer-use-enabled');
     addManagedListener(settingsCleanupCallbacks, computerUseSwitch, 'change', (event) => {
-        setComputerUseEnabled(event.target.checked);
+        state.computerUseEnabled = event.target.checked;
         document
             .getElementById('toggle-computer-use')
             ?.classList.toggle('active', event.target.checked);
@@ -279,6 +260,7 @@ function bindGeneralSettingsEvents() {
         addManagedListener(settingsCleanupCallbacks, checkbox, 'change', (event) => {
             state.computerUsePermissions[key] = event.target.checked;
             saveCurrentConfig();
+            syncPermissionsToMain();
             logger.debug(`[Settings] 💻 ${key} 权限已`, event.target.checked ? '启用' : '禁用');
         });
     });
@@ -287,18 +269,21 @@ function bindGeneralSettingsEvents() {
     addManagedListener(settingsCleanupCallbacks, bashWorkingDir, 'input', (event) => {
         state.bashConfig.workingDirectory = event.target.value;
         saveCurrentConfig();
+        syncBashConfigToMain();
     });
 
     const bashTimeout = document.getElementById('bash-timeout');
     addManagedListener(settingsCleanupCallbacks, bashTimeout, 'input', (event) => {
         state.bashConfig.timeout = parseInt(event.target.value, 10) || 30;
         saveCurrentConfig();
+        syncBashConfigToMain();
     });
 
     const bashConfirm = document.getElementById('bash-require-confirmation');
     addManagedListener(settingsCleanupCallbacks, bashConfirm, 'change', (event) => {
         state.bashConfig.requireConfirmation = event.target.checked;
         saveCurrentConfig();
+        syncBashConfigToMain();
     });
 
     const devtoolsToggle = document.getElementById('devtools-toggle');
@@ -581,7 +566,6 @@ async function handleManualCheckUpdate() {
     }
 
     if (isAndroid()) {
-        const { checkForUpdatesManually } = await import('../update/apk-updater.js');
         await checkForUpdatesManually();
     }
 }

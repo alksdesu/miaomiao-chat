@@ -9,7 +9,6 @@ import { elements } from '../core/elements.js';
 import { eventBus } from '../core/events.js';
 import { saveCurrentConfig } from '../state/config.js';
 import { syncProviderState } from './provider-sync.js';
-import { setCurrentProviderId } from '../core/state-mutations.js';
 import { generateKeyId } from './key-rotation.js';
 
 /**
@@ -106,7 +105,7 @@ export function deleteProvider(id) {
     if (state.currentProviderId === id) {
         const remaining = state.providers.filter((p) => p.id !== id && p.enabled);
         const fallback = remaining[0] || state.providers.find((p) => p.id !== id);
-        setCurrentProviderId(fallback?.id || null);
+        state.currentProviderId = fallback?.id || null;
         if (fallback) {
             syncProviderState(fallback);
         }

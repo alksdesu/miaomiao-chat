@@ -90,6 +90,37 @@ async function persistVideoDataUrlOnAndroid(dataUrl, cache) {
     return dataUrl;
 }
 
+// IPC hang 兜底超时（30s），防止主进程死锁让上层 persist 永挂
+const VIDEO_IPC_TIMEOUT_MS = 30000;
+
+// 短期失败 TTL：避免高频重试时同一 dataUrl 每次都触发 IPC；30 秒后允许重试
+const VIDEO_PERSIST_FAILURE_TTL_MS = 30000;
+const failurePersistTimestamps = new Map();
+function shouldSkipDueToRecentFailure(dataUrl) {
+    const ts = failurePersistTimestamps.get(dataUrl);
+    if (!ts) return false;
+    if (performance.now() - ts < VIDEO_PERSIST_FAILURE_TTL_MS) return true;
+    failurePersistTimestamps.delete(dataUrl);
+    return false;
+}
+function markRecentFailure(dataUrl) {
+    failurePersistTimestamps.set(dataUrl, performance.now());
+    // 防止 failure map 无限增长（大量失败的极端场景）
+    if (failurePersistTimestamps.size > 1000) {
+        const oldest = failurePersistTimestamps.keys().next().value;
+        if (oldest !== undefined) failurePersistTimestamps.delete(oldest);
+    }
+}
+
+async function withIpcTimeout(promise, label) {
+    return Promise.race([
+        promise,
+        new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`${label} IPC 超时`)), VIDEO_IPC_TIMEOUT_MS)
+        )
+    ]);
+}
+
 async function persistVideoDataUrl(dataUrl, cache) {
     if (!VIDEO_DATA_URL_PATTERN.test(dataUrl)) return dataUrl;
 
@@ -97,37 +128,53 @@ async function persistVideoDataUrl(dataUrl, cache) {
         return cache.get(dataUrl);
     }
 
+    // 失败后 30s 内不重试，直接返回原 dataUrl（不污染 cache）
+    if (shouldSkipDueToRecentFailure(dataUrl)) {
+        return dataUrl;
+    }
+
     const mimeMatch = dataUrl.match(/^data:(video\/[^;]+);base64,/i);
     const mimeType = (mimeMatch?.[1] || '').toLowerCase();
 
     if (isElectronIpcAvailable()) {
         try {
-            const result = await window.electron.ipcRenderer.invoke('mcp:store-video', {
-                dataUrl,
-                mimeType
-            });
+            const result = await withIpcTimeout(
+                window.electron.ipcRenderer.invoke('mcp:store-video', {
+                    dataUrl,
+                    mimeType
+                }),
+                'Electron 视频持久化'
+            );
 
             if (result?.success && result.fileUrl) {
                 cache.set(dataUrl, result.fileUrl);
                 return result.fileUrl;
             }
+            // IPC 返回但无 fileUrl 也视为失败
+            markRecentFailure(dataUrl);
         } catch (error) {
             logger.error('[Session] Electron 视频持久化失败:', error);
+            markRecentFailure(dataUrl);
         }
     }
 
     if (isAndroidFilesystemAvailable()) {
         try {
-            const androidUrl = await persistVideoDataUrlOnAndroid(dataUrl, cache);
+            const androidUrl = await withIpcTimeout(
+                persistVideoDataUrlOnAndroid(dataUrl, cache),
+                'Android 视频持久化'
+            );
             if (androidUrl !== dataUrl) {
                 return androidUrl;
             }
+            markRecentFailure(dataUrl);
         } catch (error) {
             logger.error('[Session] Android 视频持久化失败:', error);
+            markRecentFailure(dataUrl);
         }
     }
 
-    cache.set(dataUrl, dataUrl);
+    // 关键修复：失败不写 cache，避免下次 saveCurrentSessionMessages 把 base64 直接写入 IDB 触发 quota
     return dataUrl;
 }
 

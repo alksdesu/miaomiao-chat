@@ -98,7 +98,13 @@ export async function discoverTools(serverId, connection, toolsMap, platform) {
             toolsList = await listRemoteTools(connection);
         }
 
-        // 注册工具
+        // 取到新列表后先清掉该服务器的旧注册，否则服务器已删除的工具会永久残留
+        for (const [staleId, staleTool] of toolsMap.entries()) {
+            if (staleTool.serverId === serverId) {
+                toolsMap.delete(staleId);
+            }
+        }
+
         for (const tool of toolsList) {
             const normalizedTool = normalizeToolDefinition(tool);
             if (!normalizedTool) continue;
@@ -168,7 +174,11 @@ export async function listRemoteTools(connection) {
                 if (response.id === requestId) {
                     clearTimeout(timeout);
                     ws.removeEventListener('message', handler);
-                    resolve(extractToolsFromPayload(response.result));
+                    if (response.error) {
+                        reject(new Error(response.error.message || JSON.stringify(response.error)));
+                    } else {
+                        resolve(extractToolsFromPayload(response.result));
+                    }
                 }
             };
 
@@ -275,8 +285,20 @@ export async function callRemoteTool(connection, toolName, args, retryConfig, op
         return new Promise((resolve, reject) => {
             const requestId = nextWsRequestId();
 
+            // signal 上累积 listener 是长会话内存泄漏的常见源头：
+            // {once:true} 仅在 fired 时自移除，未 fire 场景永久挂留。
+            // resolve/reject/timeout 路径统一调 detachAbort 移除
+            let abortHandler = null;
+            const detachAbort = () => {
+                if (abortHandler && options.signal) {
+                    options.signal.removeEventListener('abort', abortHandler);
+                    abortHandler = null;
+                }
+            };
+
             const timeout = setTimeout(() => {
                 ws.removeEventListener('message', handler);
+                detachAbort();
                 reject(new Error(`WebSocket 工具调用超时 (${retryConfig.toolCallTimeout}ms)`));
             }, retryConfig.toolCallTimeout);
 
@@ -290,6 +312,7 @@ export async function callRemoteTool(connection, toolName, args, retryConfig, op
                 if (response.id === requestId) {
                     clearTimeout(timeout);
                     ws.removeEventListener('message', handler);
+                    detachAbort();
                     if (response.error) {
                         reject(new Error(response.error.message));
                     } else {
@@ -299,15 +322,13 @@ export async function callRemoteTool(connection, toolName, args, retryConfig, op
             };
 
             if (options.signal) {
-                options.signal.addEventListener(
-                    'abort',
-                    () => {
-                        clearTimeout(timeout);
-                        ws.removeEventListener('message', handler);
-                        reject(new Error('工具执行已取消'));
-                    },
-                    { once: true }
-                );
+                abortHandler = () => {
+                    clearTimeout(timeout);
+                    ws.removeEventListener('message', handler);
+                    detachAbort();
+                    reject(new Error('工具执行已取消'));
+                };
+                options.signal.addEventListener('abort', abortHandler, { once: true });
             }
 
             ws.addEventListener('message', handler);
@@ -326,15 +347,21 @@ export async function callRemoteTool(connection, toolName, args, retryConfig, op
     const abortController = new AbortController();
     const timeoutId = setTimeout(() => abortController.abort(), retryConfig.toolCallTimeout);
 
+    // signal 上累积 listener 是长会话内存泄漏的常见源头；
+    // try / catch / finally 路径都调 detachAbort 显式移除
+    let abortHandler = null;
+    const detachAbort = () => {
+        if (abortHandler && options.signal) {
+            options.signal.removeEventListener('abort', abortHandler);
+            abortHandler = null;
+        }
+    };
     if (options.signal) {
-        options.signal.addEventListener(
-            'abort',
-            () => {
-                clearTimeout(timeoutId);
-                abortController.abort();
-            },
-            { once: true }
-        );
+        abortHandler = () => {
+            clearTimeout(timeoutId);
+            abortController.abort();
+        };
+        options.signal.addEventListener('abort', abortHandler, { once: true });
     }
 
     try {
@@ -394,5 +421,7 @@ export async function callRemoteTool(connection, toolName, args, retryConfig, op
             throw new Error(`HTTP 工具调用超时 (${retryConfig.toolCallTimeout}ms)`);
         }
         throw error;
+    } finally {
+        detachAbort();
     }
 }

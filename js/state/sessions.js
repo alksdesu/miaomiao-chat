@@ -15,38 +15,23 @@ import {
     savePreference,
     loadPreference,
     loadSessionMessages,
-    saveSessionAtomic
+    saveSessionAtomic,
+    SessionConflictError
 } from './storage.js';
 import { generateSessionId, generateSessionName } from '../utils/helpers.js';
 import { renderSessionMessages } from '../messages/restore.js';
-import {
-    replaceAllMessages,
-    setIsLoading,
-    setIsSending,
-    setCurrentAssistantMessage,
-    setCurrentAbortController,
-    setCurrentSessionId,
-    setSelectedReplyIndex,
-    setSessionDirty,
-    setEditingIndex,
-    setEditingElement,
-    setSessions,
-    setIsSwitchingSession,
-    setLastUserMessage,
-    setMessageHistory,
-    setCurrentReplies,
-    setUploadedImages,
-    setApiFormat as setStateApiFormat
-} from '../core/state-mutations.js';
+import { replaceAllMessages } from '../core/state-mutations.js';
 import { requestStateMachine } from '../core/request-state-machine.js';
 import { broadcastEvent } from './tab-sync.js';
 import { buildSessionSearchIndex } from './session-search-index.js';
-import { getTextContent } from '../messages/schema.js';
+import { createThinkingDots } from '../api/handler-loading-dots.js';
+import { getTextContent, agePendingToolCallsInPlace } from '../messages/schema.js';
 import {
     replaceVideoDataUrlsDeep,
     isElectronIpcAvailable,
     isAndroidFilesystemAvailable
 } from './video-persistence.js';
+import { showConfirmDialog } from '../utils/dialogs.js';
 import { logger } from '../utils/logger.js';
 
 // 防抖保存定时器
@@ -54,10 +39,91 @@ let saveSessionTimer = null;
 // 已删除会话 ID 集合，防止异步保存操作重建已删除的记录
 const _deletedSessionIds = new Set();
 
+// 启动/切回会话时把上次中断的 pending/running tool_call 老化为 ERROR。
+// 浏览器关闭/崩溃时正在执行的工具调用 part.state 永久停留在 'pending'/'running'，
+// UI 转圈无法恢复，重发时 adapter 也会带这个孤儿 part 触发
+// 'tool_use without tool_result' 400 — 加载/重载入口主动 age 一次让用户看到明确中断态。
+// 实现已下沉到 messages/schema.js，sessions.js 仅在入口调用并传 nowMs 触发时间窗判定。
+
+/**
+ * 跨 tab 标记 session 已删（由 tab-sync 在收到 session-deleted 广播时调用）
+ *
+ * 让本 tab 后续 saveAssistantMessage / saveCurrentSessionMessages / debouncedSaveSession
+ * 路径的 isSessionDeleted 守卫生效，防止另一 tab 删除后本 tab 用陈旧 state 重建该 session
+ */
+export function addDeletedSessionId(sessionId) {
+    if (sessionId) _deletedSessionIds.add(sessionId);
+}
+
+/**
+ * 检测会话是否已被标记为删除（防止 sync.js 等异步保存路径写回已删除会话）
+ */
+export function isSessionDeleted(sessionId) {
+    return _deletedSessionIds.has(sessionId);
+}
+
+/**
+ * 从 state.sessions 移除指定 id 的元数据条目（如已存在）
+ * 返回是否真实发生删除，由调用方决定是否 emit sessions:updated
+ */
+export function removeSessionMeta(sessionId) {
+    const idx = state.sessions.findIndex((s) => s.id === sessionId);
+    if (idx === -1) return false;
+    state.sessions.splice(idx, 1);
+    return true;
+}
+
+/**
+ * 把外部 tab 创建的会话元数据塞到列表头部（dedup by id）
+ */
+export function addSessionMetaIfAbsent(sessionMeta) {
+    if (!sessionMeta?.id) return false;
+    if (state.sessions.some((s) => s.id === sessionMeta.id)) return false;
+    state.sessions.unshift(sessionMeta);
+    return true;
+}
+
+/**
+ * 更新已存在 session 的元数据字段（updatedAt / messageCount）
+ */
+export function updateSessionMeta(sessionId, patch) {
+    const session = state.sessions.find((s) => s.id === sessionId);
+    if (!session) return false;
+    let changed = false;
+    if (patch.updatedAt && session.updatedAt !== patch.updatedAt) {
+        session.updatedAt = patch.updatedAt;
+        changed = true;
+    }
+    if (patch.messageCount !== undefined && session.messageCount !== patch.messageCount) {
+        session.messageCount = patch.messageCount;
+        changed = true;
+    }
+    return changed;
+}
+
 // 会话切换 AbortController
 let sessionSwitchController = null;
 
+// 视频 dataURL → 持久化 URL 映射缓存。会话切换前不再 clear，让后台流仍能命中映射
+// 避免重复 IPC store-video 落盘相同视频；用 LRU 容量上限防内存无限增长（每条映射 ~150 字节
+// + 大量长时会话视频）
+const MAX_VIDEO_URL_CACHE_ENTRIES = 500;
 const persistedVideoUrlCache = new Map();
+function setVideoCacheEntry(key, value) {
+    // sanity 守卫：value 必须是 file://、blob:、http(s):// 等持久 URL；data: 进 LRU 会让数百 MB base64 长驻内存
+    if (typeof value !== 'string' || value.startsWith('data:')) {
+        return;
+    }
+    if (persistedVideoUrlCache.has(key)) {
+        // LRU：重新插入到末尾
+        persistedVideoUrlCache.delete(key);
+    } else if (persistedVideoUrlCache.size >= MAX_VIDEO_URL_CACHE_ENTRIES) {
+        // 淘汰最老一条（Map.keys() 按插入顺序）
+        const oldest = persistedVideoUrlCache.keys().next().value;
+        if (oldest !== undefined) persistedVideoUrlCache.delete(oldest);
+    }
+    persistedVideoUrlCache.set(key, value);
+}
 
 function cloneSerializable(data) {
     if (typeof globalThis.structuredClone === 'function') {
@@ -86,7 +152,7 @@ export async function createPersistedSessionPayload(source = {}) {
     await replaceVideoDataUrlsDeep(clonedPayload.messages, cache);
 
     for (const [dataUrl, fileUrl] of cache.entries()) {
-        persistedVideoUrlCache.set(dataUrl, fileUrl);
+        setVideoCacheEntry(dataUrl, fileUrl);
     }
 
     return clonedPayload;
@@ -101,10 +167,10 @@ export async function loadSessions() {
         await migrateFromLocalStorage();
 
         // 从 IndexedDB 加载会话
-        setSessions(await loadAllSessionsFromDB());
+        state.sessions = await loadAllSessionsFromDB();
     } catch (e) {
         logger.error('加载会话失败:', e);
-        setSessions([]);
+        state.sessions = [];
     }
 
     // 加载当前会话ID
@@ -127,7 +193,7 @@ export async function loadSessions() {
     if (state.sessions.length === 0) {
         const newSession = await createNewSession(false);
         // 必须设置 currentSessionId，否则 saveCurrentSessionMessages 不会保存
-        setCurrentSessionId(newSession.id);
+        state.currentSessionId = newSession.id;
         await saveCurrentSessionId();
     } else if (currentId && state.sessions.find((s) => s.id === currentId)) {
         await switchToSession(currentId, false);
@@ -159,6 +225,10 @@ export async function saveCurrentSessionId() {
     }
 }
 
+// in-flight 守卫：save 进行时新的 dirty 不会被 sessionDirty=false 错误清零
+// 也避免并发 save 重复写 IDB；并发请求被合并到 trailing-save
+let _savingPromise = null;
+
 /**
  * 保存当前会话的消息（立即执行）
  */
@@ -168,6 +238,12 @@ export async function saveCurrentSessionMessages(force = false) {
     if (_deletedSessionIds.has(state.currentSessionId)) return;
     // 跳过无变更的保存（除非强制）
     if (!force && !state.sessionDirty) return;
+
+    // in-flight：上一轮 save 还没完成，标记保留 dirty 让其完成后由 finally 触发 trailing
+    if (_savingPromise) {
+        state.sessionDirty = true;
+        return _savingPromise;
+    }
 
     const session = state.sessions.find((s) => s.id === state.currentSessionId);
     if (!session) return;
@@ -207,51 +283,86 @@ export async function saveCurrentSessionMessages(force = false) {
         }
     }
 
-    let persistedPayload;
-    try {
-        persistedPayload = await createPersistedSessionPayload({
-            messages: state.messages
-        });
-    } catch (error) {
-        logger.error('[Session] 构建持久化快照失败，回退到原始消息:', error);
-        persistedPayload = {
-            messages: cloneSerializable(state.messages)
-        };
-    }
+    // 进入 save 流程：起点记录 dirty 快照，写完后只有 dirty 仍是该值（中间无新增）才清零
+    const dirtyAtStart = state.sessionDirty;
 
-    // 保存到 IndexedDB（消息和元数据原子写入同一事务）
-    try {
-        const searchIndex = buildSessionSearchIndex(state.messages);
-        session.messageCount = state.messages.length;
-        const sessionMeta = {
-            id: session.id,
-            name: session.name,
-            apiFormat: session.apiFormat,
-            createdAt: session.createdAt,
-            updatedAt: session.updatedAt,
-            customName: session.customName,
-            messageCount: session.messageCount,
-            prefillSnapshot: session.prefillSnapshot,
-            folderId: session.folderId ?? null,
-            monitorEnabled: session.monitorEnabled ?? false
-        };
-        await saveSessionAtomic(sessionMeta, {
-            ...persistedPayload,
-            searchIndex
-        });
-        setSessionDirty(false);
-        broadcastEvent('session-updated', {
-            sessionId: session.id,
-            updatedAt: session.updatedAt,
-            messageCount: session.messageCount
-        });
-    } catch (e) {
-        logger.error('保存会话到 IndexedDB 失败:', e);
-        eventBus.emit('ui:notification', { message: '保存会话失败', type: 'error' });
-    }
+    const doSave = async () => {
+        let persistedPayload;
+        try {
+            persistedPayload = await createPersistedSessionPayload({
+                messages: state.messages
+            });
+        } catch (error) {
+            logger.error('[Session] 构建持久化快照失败，回退到原始消息:', error);
+            persistedPayload = {
+                messages: cloneSerializable(state.messages)
+            };
+        }
 
-    saveCurrentSessionId();
-    eventBus.emit('sessions:updated', { sessions: state.sessions });
+        // 保存到 IndexedDB（消息和元数据原子写入同一事务 + 乐观锁防多 tab 后写覆盖）
+        try {
+            const searchIndex = buildSessionSearchIndex(state.messages);
+            session.messageCount = state.messages.length;
+            const sessionMeta = {
+                id: session.id,
+                name: session.name,
+                apiFormat: session.apiFormat,
+                createdAt: session.createdAt,
+                updatedAt: session.updatedAt,
+                customName: session.customName,
+                messageCount: session.messageCount,
+                prefillSnapshot: session.prefillSnapshot,
+                folderId: session.folderId ?? null,
+                monitorEnabled: session.monitorEnabled ?? false
+            };
+            const expectedUpdatedAt = state._lastKnownSessionUpdatedAt?.get(session.id) ?? null;
+            await saveSessionAtomic(
+                sessionMeta,
+                {
+                    ...persistedPayload,
+                    searchIndex
+                },
+                { expectedUpdatedAt }
+            );
+            state._lastKnownSessionUpdatedAt?.set(session.id, session.updatedAt);
+            // dirty 快照模式：save 期间新到的 dirty 不被清零，防止丢一轮变更
+            if (state.sessionDirty === dirtyAtStart) {
+                state.sessionDirty = false;
+            }
+            broadcastEvent('session-updated', {
+                sessionId: session.id,
+                updatedAt: session.updatedAt,
+                messageCount: session.messageCount
+            });
+        } catch (e) {
+            if (e instanceof SessionConflictError) {
+                cancelPendingSave();
+                logger.warn(
+                    `[Session] 多 tab 写入冲突 ${e.sessionId}: 期望 ${e.expectedUpdatedAt}, IDB ${e.actualUpdatedAt}`
+                );
+                eventBus.emit('storage:conflict', {
+                    sessionId: e.sessionId,
+                    expectedUpdatedAt: e.expectedUpdatedAt,
+                    actualUpdatedAt: e.actualUpdatedAt
+                });
+            } else {
+                logger.error('保存会话到 IndexedDB 失败:', e);
+                eventBus.emit('ui:notification', { message: '保存会话失败', type: 'error' });
+            }
+        }
+
+        saveCurrentSessionId();
+        eventBus.emit('sessions:updated', { sessions: state.sessions });
+    };
+
+    _savingPromise = doSave().finally(() => {
+        _savingPromise = null;
+        // trailing save：若 save 期间有新 dirty 到来（dirty 仍为 true），排下一轮 debounced
+        if (state.sessionDirty) {
+            debouncedSaveSession();
+        }
+    });
+    return _savingPromise;
 }
 
 /**
@@ -262,6 +373,62 @@ export function debouncedSaveSession() {
     saveSessionTimer = setTimeout(() => {
         saveCurrentSessionMessages();
     }, 500);
+}
+
+/**
+ * 取消当前会话的待保存定时器（不触发立即保存）
+ *
+ * 用于：另一 tab 删除了 currentSession 时，本 tab 需要丢弃尚未 flush 的 dirty 数据，
+ * 避免下次 timer 触发时把已删 session 重建
+ */
+export function cancelPendingSave() {
+    if (saveSessionTimer) {
+        clearTimeout(saveSessionTimer);
+        saveSessionTimer = null;
+    }
+}
+
+/**
+ * 从 IDB 重新加载 currentSession 的消息（用于多 tab 冲突/远端更新恢复路径）
+ *
+ * 流程：丢弃 dirty + 重 load messages + 更新乐观锁基线 + 触发 UI 重渲染。
+ * 仅在 currentSessionId 已存在且非已删的情况下执行
+ */
+export async function reloadCurrentSessionMessages() {
+    const sid = state.currentSessionId;
+    if (!sid || _deletedSessionIds.has(sid)) return false;
+    cancelPendingSave();
+    state.sessionDirty = false;
+
+    let msgData = null;
+    try {
+        msgData = await loadSessionMessages(sid);
+    } catch (e) {
+        logger.error('[Session] 重新加载消息失败:', e);
+        return false;
+    }
+    const aged = agePendingToolCallsInPlace(msgData?.messages, { nowMs: Date.now() });
+    replaceAllMessages(msgData?.messages || []);
+
+    // 更新乐观锁基线：从 sessions 数组对应记录拿最新 updatedAt（loadAllSessions 已同步过元数据）
+    const session = state.sessions.find((s) => s.id === sid);
+    if (session?.updatedAt) {
+        state._lastKnownSessionUpdatedAt.set(sid, session.updatedAt);
+    }
+
+    // 触发 UI 重渲染。emit 用 'reloaded' action 让全局 messages:changed 监听器跳过
+    // debouncedSaveSession，避免 reload → debounce → save → broadcast → 其他 tab 收
+    // remote-updated → toast 的连环风暴
+    renderSessionMessages(state.messages);
+    eventBus.emit('messages:changed', { action: 'reloaded', sessionId: sid });
+
+    // 仅当 aged > 0 时需要持久化老化结果，主动调用一次而不依赖 debouncedSaveSession
+    if (aged > 0) {
+        logger.info(`[Session] reload 老化 ${aged} 个中断的 pending tool_call → ERROR`);
+        state.sessionDirty = true;
+        await saveCurrentSessionMessages(true);
+    }
+    return true;
 }
 
 /**
@@ -309,14 +476,21 @@ export async function createNewSession(shouldSwitch = true) {
         }
     };
 
-    state.sessions.unshift(newSession);
-
-    // 保存到 IndexedDB
+    // 先落盘再 unshift，失败时不留"内存有 IDB 无"的孤儿会话
+    // 用户对孤儿编辑会持续保存失败，刷新后数据全部丢失
     try {
         await saveSessionToDB(newSession);
     } catch (e) {
         logger.error('保存新会话失败:', e);
+        eventBus.emit('ui:notification', {
+            message: '创建会话失败：存储空间不足或数据库异常',
+            type: 'error',
+            duration: 8000
+        });
+        return null;
     }
+
+    state.sessions.unshift(newSession);
 
     if (shouldSwitch) {
         await switchToSession(newSession.id, false);
@@ -324,6 +498,12 @@ export async function createNewSession(shouldSwitch = true) {
     }
 
     eventBus.emit('sessions:updated', { sessions: state.sessions });
+    // 跨 tab 通知新建（其他 tab 列表里此会话）
+    try {
+        broadcastEvent('session-created', { session: newSession });
+    } catch (_) {
+        /* tab-sync 未就绪时静默 */
+    }
     return newSession;
 }
 
@@ -354,15 +534,14 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
     const { signal } = sessionSwitchController;
 
     // 设置切换标志
-    setIsSwitchingSession(true);
+    state.isSwitchingSession = true;
 
     // 触发会话切换前事件（用于清理）
     eventBus.emit('session:before-switch');
 
-    // 清理视频 data URL 缓存（键为完整 base64 data URL，占用大量内存）
-    if (persistedVideoUrlCache.size > 0) {
-        persistedVideoUrlCache.clear();
-    }
+    // 之前 switchToSession 主动 clear 会让后台流（生成含视频的回复）丢失映射，
+    // 后续 enrichToolResultWithFiles 重复 IPC store-video 落盘相同视频。
+    // 改为 LRU 容量限制（MAX_VIDEO_URL_CACHE_ENTRIES）自动淘汰，不再切会话主动 clear
 
     try {
         // 检查是否被中断
@@ -374,37 +553,39 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
         const oldSessionId = state.currentSessionId;
 
         // 将当前会话的生成任务移到后台（必须在 cancel 之前，否则 abort 会取消请求）
-        // 注意：AbortController 存储在状态机中，不在 state.currentAbortController
+        // AbortController 仅存于状态机 + backgroundTask；state 上无对应字段
         const activeAbortController = requestStateMachine.abortController;
         const hasActiveRequest = requestStateMachine.isBusy() && activeAbortController;
         if (oldSessionId && hasActiveRequest) {
             logger.debug(`[sessions.js] 将会话 ${oldSessionId} 的任务移到后台`);
-            state.backgroundTasks.set(oldSessionId, {
+
+            // 一次性构建 task 对象再 set，避免事后回填 cleanupTimer 期间被并发 delete
+            // （deleteSession / cleanupAfterSend / 自身 timer 三处竞争）导致 TypeError
+            const task = {
                 abortController: activeAbortController,
                 messageElement: state.currentAssistantMessage,
-                createdAt: Date.now()
-            });
-
-            // 立即清空全局引用，阻止后台流的 rAF 回调继续渲染到旧 DOM
-            setCurrentAssistantMessage(null);
-
-            eventBus.emit('ui:notification', {
-                message: '上一个会话的生成将在后台继续',
-                type: 'info',
-                duration: 3000
-            });
-
-            // 3分钟后自动清理超时的后台任务
-            const cleanupTimer = setTimeout(() => {
-                const task = state.backgroundTasks.get(oldSessionId);
-                if (task && Date.now() - task.createdAt > 180000) {
+                createdAt: Date.now(),
+                cleanupTimer: null
+            };
+            task.cleanupTimer = setTimeout(() => {
+                const current = state.backgroundTasks.get(oldSessionId);
+                if (current === task && Date.now() - task.createdAt > 180000) {
                     logger.warn('[sessions.js] 清理超时后台任务:', oldSessionId);
                     task.abortController?.abort();
                     state.backgroundTasks.delete(oldSessionId);
                     eventBus.emit('sessions:updated');
                 }
             }, 180000);
-            state.backgroundTasks.get(oldSessionId).cleanupTimer = cleanupTimer;
+            state.backgroundTasks.set(oldSessionId, task);
+
+            // 立即清空全局引用，阻止后台流的 rAF 回调继续渲染到旧 DOM
+            state.currentAssistantMessage = null;
+
+            eventBus.emit('ui:notification', {
+                message: '上一个会话的生成将在后台继续',
+                type: 'info',
+                duration: 3000
+            });
 
             // 不 cancel/abort 请求，只重置状态机到 IDLE
             // 请求继续在后台运行，由 sendToAPI 的 finally 清理
@@ -431,15 +612,20 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
             return;
         }
 
-        // 切换会话 - 从 IndexedDB 按需加载消息
-        setCurrentSessionId(sessionId);
-
         // v4: 从 messages store 按需加载（不再从内存中的 session 对象取消息）
+        // 重要：currentSessionId 赋值延后到 await 完成之后；中间 await 被 abort 时 currentSessionId
+        // 保持原值，避免 B 数据落库到 C 的连切覆盖 race
         let msgData = null;
         try {
             msgData = await loadSessionMessages(sessionId);
         } catch (e) {
             logger.error('[Session] 从 IndexedDB 加载消息失败:', e);
+        }
+
+        // 关键检查：await 后立即查 abort，否则 replaceAllMessages 会覆盖 C 的 state.messages
+        if (signal.aborted) {
+            logger.debug('[Session] 会话切换在 loadSessionMessages 后被取消');
+            return;
         }
 
         // 兼容: 如果 messages store 没有数据，尝试从 session 对象中取（v3 未迁移数据）
@@ -453,17 +639,31 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
             }
         }
 
+        // 启动/切回时把上次中断的 pending tool_call 老化为 ERROR，防 UI 永久转圈 + 重发 400
+        const aged = agePendingToolCallsInPlace(msgData.messages, { nowMs: Date.now() });
+        if (aged > 0) {
+            logger.info(`[Session] 老化 ${aged} 个中断的 pending tool_call → ERROR`);
+            state.sessionDirty = true;
+        }
+
+        // 与 replaceAllMessages 紧邻同步执行，保证 currentSessionId 与 state.messages 原子切换
+        state.currentSessionId = sessionId;
         replaceAllMessages(msgData.messages || []);
 
-        setLastUserMessage(null);
-        setMessageHistory([]);
+        // 记录加载时的 updatedAt 作为乐观锁基线，下次 saveSessionAtomic 用它对比
+        if (session.updatedAt) {
+            state._lastKnownSessionUpdatedAt.set(sessionId, session.updatedAt);
+        }
+
+        state.lastUserMessage = null;
+        state.messageHistory = [];
 
         // 退出编辑模式（清理 DOM 状态）
         if (state.editingElement) {
             state.editingElement.classList.remove('editing');
         }
-        setEditingIndex(null);
-        setEditingElement(null);
+        state.editingIndex = null;
+        state.editingElement = null;
 
         // 清空输入框
         if (elements && elements.userInput) {
@@ -474,16 +674,16 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
         // 通知 UI 更新编辑按钮状态
         eventBus.emit('editor:mode-changed', { isEditing: false });
 
-        setCurrentReplies([]);
-        setSelectedReplyIndex(0);
-        setUploadedImages([]);
+        state.currentReplies = [];
+        state.selectedReplyIndex = 0;
+        state.uploadedImages = [];
 
         // 更新图片预览（清空）
         eventBus.emit('ui:update-image-preview');
 
         // 恢复会话的 API 格式
         if (session.apiFormat && session.apiFormat !== state.apiFormat) {
-            setStateApiFormat(session.apiFormat);
+            state.apiFormat = session.apiFormat;
             eventBus.emit('config:format-change-requested', {
                 format: session.apiFormat,
                 shouldFetchModels: false
@@ -521,18 +721,15 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
 
         // 恢复 AI Monitor 状态
         state.monitorEnabled = session.monitorEnabled ?? false;
-        import('../devtools/monitor-state.js')
-            .then(({ syncMonitorOnSessionSwitch }) => {
-                syncMonitorOnSessionSwitch(session);
-            })
-            .catch(() => {});
+        // 走 eventBus 反向通知 devtools 层（避免 state → devtools 静态边把 tools 链拖进来）
+        // 用专用事件名避免与下方 UI 通知用的 session:switched 双发触发所有 listener 跑两次
+        eventBus.emit('session:monitor-ready', { session });
 
         // 检查目标会话是否有后台任务
         const backgroundTask = state.backgroundTasks.get(sessionId);
         if (backgroundTask) {
-            // 恢复后台任务的状态
-            setIsLoading(true);
-            setCurrentAbortController(backgroundTask.abortController);
+            // 恢复后台任务的状态（abortController 由状态机/backgroundTask 持有，state 字段已废除）
+            state.isLoading = true;
             // currentAssistantMessage 将在 renderSessionMessages 后自动恢复
             logger.debug(
                 `[sessions.js] 恢复会话 ${sessionId} 的后台任务, state.isLoading =`,
@@ -543,10 +740,9 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
             eventBus.emit('ui:show-cancel-button');
         } else {
             // 🔧 没有后台任务，完全重置状态和UI（修复切换会话后按钮卡住的问题）
-            setIsLoading(false);
-            setIsSending(false);
-            setCurrentAssistantMessage(null);
-            setCurrentAbortController(null);
+            state.isLoading = false;
+            state.isSending = false;
+            state.currentAssistantMessage = null;
 
             // 清除发送锁超时定时器（通过状态机统一管理）
             requestStateMachine.clearSendLockTimeout();
@@ -597,44 +793,33 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
                         return;
                     }
 
-                    const lastAssistantMsg = messagesArea.querySelector(
-                        '.message.assistant:last-child .message-content'
-                    );
-                    if (lastAssistantMsg) {
-                        setCurrentAssistantMessage(lastAssistantMsg);
-                        logger.debug('[sessions.js] 后台任务 DOM 引用已恢复（已保存的消息）');
-                    } else {
-                        // 未找到消息框，创建新的占位符（消息还没保存到数组）
-                        logger.debug('[sessions.js] 未找到助手消息，创建新占位符（正在流式输出）');
+                    // renderSessionMessages 已基于 state.messages 重渲，DOM 上的
+                    // .message.assistant:last-child 一定是已落库的历史消息（流式 placeholder
+                    // 未 commit 不在 state.messages 中、不会被渲染）。复用历史 DOM 会让流式
+                    // update 覆盖老消息内容 — 总是新建占位符，commit 后由 messages:changed
+                    // 触发 renderSessionMessages 重渲换成正式 DOM
+                    logger.debug('[sessions.js] 后台任务切回：新建流式占位符');
 
-                        // 创建消息框（与 handler.js 中的逻辑一致）
-                        const messageDiv = document.createElement('div');
-                        messageDiv.className = 'message assistant';
+                    const messageDiv = document.createElement('div');
+                    messageDiv.className = 'message assistant';
 
-                        const avatar = document.createElement('div');
-                        avatar.className = 'message-avatar';
-                        avatar.textContent = 'AI';
+                    const avatar = document.createElement('div');
+                    avatar.className = 'message-avatar';
+                    avatar.textContent = 'AI';
 
-                        const contentWrapper = document.createElement('div');
-                        contentWrapper.className = 'message-content-wrapper';
+                    const contentWrapper = document.createElement('div');
+                    contentWrapper.className = 'message-content-wrapper';
 
-                        const contentDiv = document.createElement('div');
-                        contentDiv.className = 'message-content';
-                        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
-                        contentDiv.innerHTML =
-                            '<div class="thinking-dots"><span></span><span></span><span></span></div>';
+                    const contentDiv = document.createElement('div');
+                    contentDiv.className = 'message-content';
+                    contentDiv.appendChild(createThinkingDots());
 
-                        messageDiv.appendChild(avatar);
-                        contentWrapper.appendChild(contentDiv);
-                        messageDiv.appendChild(contentWrapper);
+                    messageDiv.appendChild(avatar);
+                    contentWrapper.appendChild(contentDiv);
+                    messageDiv.appendChild(contentWrapper);
+                    messagesArea.appendChild(messageDiv);
 
-                        // 添加到 DOM
-                        messagesArea.appendChild(messageDiv);
-
-                        // 恢复引用
-                        setCurrentAssistantMessage(contentDiv);
-                        logger.debug('[sessions.js] 后台任务占位符已创建');
-                    }
+                    state.currentAssistantMessage = contentDiv;
                 } catch (error) {
                     logger.error('[sessions.js] ❌ 恢复后台任务失败:', error);
                 }
@@ -659,7 +844,7 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
         // 清除切换标志（只有在没有新的切换时）
         // 如果已经有新的 AbortController，说明新的切换已经开始，不要清除标志
         if (sessionSwitchController && sessionSwitchController.signal === signal) {
-            setIsSwitchingSession(false);
+            state.isSwitchingSession = false;
             sessionSwitchController = null;
         }
     }
@@ -678,7 +863,7 @@ export async function deleteSession(sessionId) {
         clearTimeout(saveSessionTimer);
         saveSessionTimer = null;
     }
-    setSessionDirty(false);
+    state.sessionDirty = false;
 
     // 记录已删除的会话 ID，防止异步保存回写
     _deletedSessionIds.add(sessionId);
@@ -710,7 +895,7 @@ export async function deleteSession(sessionId) {
 
     // 如果删除的是当前会话，先清空 currentSessionId 再切换
     if (state.currentSessionId === sessionId) {
-        setCurrentSessionId(null);
+        state.currentSessionId = null;
         if (state.sessions.length > 0) {
             const nextSession = state.sessions[sessionIndex] || state.sessions[sessionIndex - 1];
             await switchToSession(nextSession.id, false);
@@ -743,14 +928,70 @@ export async function renameSession(sessionId, newName) {
 }
 
 // 监听消息变更事件，自动保存会话
-eventBus.on('messages:changed', () => {
-    setSessionDirty(true);
+// action='reloaded' 走 reloadCurrentSessionMessages 内部已自决是否保存的路径，
+// 此处跳过避免 reload → save → broadcast → 其他 tab toast 的连环风暴
+eventBus.on('messages:changed', (payload) => {
+    if (payload?.action === 'reloaded') return;
+    state.sessionDirty = true;
     debouncedSaveSession();
 });
 
-// 监听存储配额超出事件，显示通知
-eventBus.on('storage:quota-exceeded', ({ message }) => {
-    eventBus.emit('ui:notification', { message, type: 'error' });
+// 监听存储配额超出事件，显示通知 + 调用 navigator.storage.estimate 给用户具体配额数字
+// 1s 窗口内同 message 去重：IDB 协议下 request.onerror 与 transaction.onerror 都会 emit
+// 用户瞬间收到 2 个相同 toast 堆叠在屏幕上
+let _lastQuotaEmitTs = 0;
+let _lastQuotaMessage = '';
+eventBus.on('storage:quota-exceeded', async ({ message }) => {
+    const now = performance.now();
+    if (message === _lastQuotaMessage && now - _lastQuotaEmitTs < 1000) {
+        return;
+    }
+    _lastQuotaEmitTs = now;
+    _lastQuotaMessage = message;
+    let detail = message;
+    try {
+        if (navigator.storage?.estimate) {
+            const est = await navigator.storage.estimate();
+            const usedMb = (est.usage / 1024 / 1024).toFixed(1);
+            const quotaMb = (est.quota / 1024 / 1024).toFixed(1);
+            detail = `${message}（已用 ${usedMb}MB / ${quotaMb}MB），请删除旧会话或清理浏览器存储`;
+        }
+    } catch (_e) {
+        /* navigator.storage 不可用走原 message */
+    }
+    eventBus.emit('ui:notification', { message: detail, type: 'error', duration: 10000 });
+});
+
+// 监听多 tab 写入冲突：弹 confirm dialog 让用户决定是否丢弃本地改动重新加载
+// 之前只发 toast 8s 自动消失，用户错过提示就不知道还能 reload
+eventBus.on('storage:conflict', async ({ sessionId }) => {
+    if (sessionId !== state.currentSessionId) return;
+    try {
+        const confirmed = await showConfirmDialog(
+            '另一标签页已更新此会话，是否丢弃本地未保存改动并重新加载？\n\n选「取消」可继续编辑（再次保存仍会冲突）',
+            '会话保存冲突'
+        );
+        if (confirmed) {
+            await reloadCurrentSessionMessages();
+        }
+    } catch (e) {
+        logger.error('[Session] 处理冲突 dialog 失败:', e);
+        eventBus.emit('ui:notification', {
+            message: '检测到此会话在其他标签页已更新（保存冲突），点击侧栏对应会话可重新加载',
+            type: 'warning',
+            duration: 8000
+        });
+    }
+});
+
+// 监听远端 tab 更新：仅提示，不主动覆盖避免打断本 tab 输入
+eventBus.on('storage:remote-updated', ({ sessionId }) => {
+    if (sessionId !== state.currentSessionId) return;
+    eventBus.emit('ui:notification', {
+        message: '此会话在其他标签页有更新，点击侧栏对应会话可同步最新内容',
+        type: 'info',
+        duration: 5000
+    });
 });
 
 // 监听跨标签页会话切换请求

@@ -1,58 +1,16 @@
 /**
  * 图片查看器模块
- * 处理图片的全屏查看
+ * 处理图片的全屏查看、消息内媒体卡片的事件委托（data-action 派发）
  */
 
 import { eventBus } from '../core/events.js';
+import { elements } from '../core/state.js';
 import { downloadImage } from '../utils/images.js';
 import { downloadMedia } from '../utils/media.js';
 import { bindTopmostEscape } from '../utils/modal-stack.js';
+import { trapFocus, removeFocusTrap } from '../utils/focus-trap.js';
+import { getMediaExtension } from '../utils/media.js';
 import { logger } from '../utils/logger.js';
-
-/**
- * 焦点陷阱 - 限制焦点在指定元素内
- * @param {HTMLElement} element - 要限制焦点的元素
- */
-function trapFocus(element) {
-    if (element._focusTrapHandler) return; // 已经设置过
-
-    const focusableSelector =
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
-
-    const handler = (e) => {
-        if (e.key !== 'Tab') return;
-
-        const focusableElements = element.querySelectorAll(focusableSelector);
-        const firstFocusable = focusableElements[0];
-        const lastFocusable = focusableElements[focusableElements.length - 1];
-
-        if (e.shiftKey) {
-            if (document.activeElement === firstFocusable) {
-                lastFocusable.focus();
-                e.preventDefault();
-            }
-        } else {
-            if (document.activeElement === lastFocusable) {
-                firstFocusable.focus();
-                e.preventDefault();
-            }
-        }
-    };
-
-    element.addEventListener('keydown', handler);
-    element._focusTrapHandler = handler;
-}
-
-/**
- * 移除焦点陷阱
- * @param {HTMLElement} element - 元素
- */
-function removeFocusTrap(element) {
-    if (element._focusTrapHandler) {
-        element.removeEventListener('keydown', element._focusTrapHandler);
-        delete element._focusTrapHandler;
-    }
-}
 
 /**
  * 打开图片查看器
@@ -92,6 +50,38 @@ export function closeImageViewer() {
 }
 
 /**
+ * 消息区媒体卡片事件委托
+ * 处理 data-action: open-viewer / download-media
+ */
+function handleMediaAreaClick(e) {
+    const target = e.target.closest('[data-action]');
+    if (!target) return;
+
+    const action = target.dataset.action;
+    const url = target.dataset.url;
+    if (!url) return;
+
+    if (action === 'open-viewer') {
+        openImageViewer(url);
+        return;
+    }
+
+    if (action === 'download-media') {
+        // 下载按钮的祖先链上有 .image-wrapper（图片）/ .video-wrapper / .audio-wrapper
+        // 当前 download-media 统一走 downloadMedia，仅图片走 downloadImage（保持原 inline 行为）
+        e.stopPropagation();
+        const mediaKind = target.dataset.mediaKind || 'image';
+        const ext = target.dataset.ext || getMediaExtension(url, '', 'png');
+        const filename = target.dataset.filename || `${mediaKind}-${Date.now()}.${ext}`;
+        if (mediaKind === 'image') {
+            downloadImage(url, filename);
+        } else {
+            downloadMedia(url, filename);
+        }
+    }
+}
+
+/**
  * 初始化图片查看器
  */
 export function initImageViewer() {
@@ -116,11 +106,9 @@ export function initImageViewer() {
         bindTopmostEscape(modal, closeImageViewer);
     }
 
-    // 将函数暴露到全局作用域供 HTML onclick 使用
-    window.openImageViewer = openImageViewer;
-    window.closeImageViewer = closeImageViewer;
-    window.downloadImage = downloadImage;
-    window.downloadMedia = downloadMedia;
+    // 消息区媒体卡片统一事件委托（图片点击放大、下载按钮）
+    // 委托到 #messages 容器，覆盖 renderer.js / stream/helpers.js / reply-selector.js 三处渲染
+    elements.messagesArea?.addEventListener('click', handleMediaAreaClick);
 
     logger.debug('Image viewer initialized');
 }

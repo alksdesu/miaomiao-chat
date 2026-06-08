@@ -90,3 +90,10 @@
 .thinking-content p:last-child {
     margin-bottom: 0;
 }
+
+/* 图片压缩重试期间的临时提示文本 —— class 替代 image-retry.js 原 inline style */
+.image-retry-hint {
+    margin-top: 8px;
+    font-size: var(--fs-xs);
+    color: var(--color-text-secondary);
+}

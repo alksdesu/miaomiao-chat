@@ -63,9 +63,10 @@ export async function saveSessionToDB(session) {
             const transaction = getDB().transaction([STORE_NAME], 'readwrite');
             const store = transaction.objectStore(STORE_NAME);
             const request = store.put(session);
+            let txAborted = false;
 
-            request.onsuccess = () => resolve();
-            request.onerror = () => {
+            // 仅在 transaction.oncomplete 才算真正落盘
+            request.onerror = (event) => {
                 const error = request.error;
                 logger.error('保存会话失败:', error);
 
@@ -79,19 +80,23 @@ export async function saveSessionToDB(session) {
                         message: '存储空间不足！请清理一些旧会话或浏览器数据'
                     });
                 }
+                event.preventDefault?.();
                 reject(error);
             };
 
+            transaction.oncomplete = () => {
+                if (!txAborted) resolve();
+            };
             transaction.onerror = (event) => {
                 const error = event.target.error;
-                if (
-                    error &&
-                    (error.name === 'QuotaExceededError' || error.message?.includes('quota'))
-                ) {
-                    eventBus.emit('storage:quota-exceeded', {
-                        message: '存储空间不足！请清理一些旧会话或浏览器数据'
-                    });
-                }
+                logger.error('保存会话事务错误:', error);
+                reject(error || new Error('Session transaction error'));
+            };
+            transaction.onabort = () => {
+                txAborted = true;
+                const error = transaction.error;
+                logger.error('保存会话事务 abort:', error);
+                reject(error || new Error('Session transaction aborted'));
             };
         });
     });
@@ -117,20 +122,17 @@ export async function loadAllSessionsFromDB() {
 
         request.onsuccess = () => {
             // v4+: sessions store 只包含元数据，直接返回
-            // v3 兼容: 如果 session 还包含消息数据（尚未迁移），剥离后返回
+            // v3 兼容: 如果 session 还包含消息数据（尚未迁移），解构剥离 messages 但保留所有其他字段
+            // 白名单写法会永久丢失 prefillSnapshot/folderId/monitorEnabled 等用户扩展字段
             const sessions = request.result.map((s) => {
                 if (s.messages) {
-                    // 未迁移的 v3 数据，返回元数据视图（不修改原始对象）
+                    const { messages, ...meta } = s;
                     return {
-                        id: s.id,
-                        name: s.name,
-                        apiFormat: s.apiFormat,
-                        createdAt: s.createdAt,
-                        updatedAt: s.updatedAt,
-                        customName: s.customName || false,
-                        messageCount: (s.messages || []).length,
+                        ...meta,
+                        customName: meta.customName || false,
+                        messageCount: messages.length,
                         // 临时保留消息引用（v4 迁移前需要）
-                        _pendingMessages: s.messages
+                        _pendingMessages: messages
                     };
                 }
                 return s;
@@ -240,9 +242,34 @@ export async function saveSessionMessages(sessionId, data) {
 }
 
 /**
- * 原子保存会话元数据 + 消息（单事务，两个 store）
+ * 多 tab 写入冲突：另一 tab 已在本 tab 上次同步后改写过该 session。
+ * saveSessionAtomic 抛出此 error 让上游 saveCurrentSessionMessages 触发 storage:conflict
+ * 让 UI 提示用户「另一 tab 已更新此会话，是否丢弃本地改动重新加载」
  */
-export async function saveSessionAtomic(sessionMeta, messagesData) {
+export class SessionConflictError extends Error {
+    constructor(sessionId, expected, actual) {
+        super(
+            `Session ${sessionId} updatedAt mismatch: expected ${expected}, found ${actual} in IDB`
+        );
+        this.name = 'SessionConflictError';
+        this.sessionId = sessionId;
+        this.expectedUpdatedAt = expected;
+        this.actualUpdatedAt = actual;
+    }
+}
+
+/**
+ * 原子保存会话元数据 + 消息（单事务，两个 store）
+ *
+ * @param {Object} sessionMeta - session 元数据，含 id/updatedAt 等
+ * @param {Object} messagesData - { messages, searchIndex? }
+ * @param {Object} [opts]
+ * @param {number|null} [opts.expectedUpdatedAt]
+ *     乐观锁：写入前先读现存 sessionMeta.updatedAt 与此值比对，不匹配抛 SessionConflictError。
+ *     null/undefined = 不做乐观锁检查（首次保存或显式覆盖路径）
+ */
+export async function saveSessionAtomic(sessionMeta, messagesData, opts = {}) {
+    const { expectedUpdatedAt = null } = opts;
     return withDBLock(`webchat-session-${sessionMeta.id}`, async () => {
         if (!getDB()) {
             try {
@@ -252,6 +279,7 @@ export async function saveSessionAtomic(sessionMeta, messagesData) {
             }
             if (!getDB()) throw new Error('数据库未初始化且重连失败');
         }
+
         return new Promise((resolve, reject) => {
             const messages = Array.isArray(messagesData?.messages) ? messagesData.messages : [];
             const searchIndex = createSessionSearchIndexRecord(
@@ -264,15 +292,43 @@ export async function saveSessionAtomic(sessionMeta, messagesData) {
                 storeNames.push(STORES.SEARCH_INDEXES);
             }
 
+            // 同事务内 get → compare → put：让 IDB 自身的 readwrite 隔离保证 read-modify-write
+            // 原子性，跨 tab 抢占场景下另一 tab 的 commit 不会插入到我们的 get 与 put 之间
             const transaction = getDB().transaction(storeNames, 'readwrite');
-            transaction.objectStore(STORES.MESSAGES).put({
-                sessionId: sessionMeta.id,
-                messages
-            });
-            transaction.objectStore(STORE_NAME).put(sessionMeta);
+            let conflictError = null;
 
-            if (hasSearchIndexStore()) {
-                transaction.objectStore(STORES.SEARCH_INDEXES).put(searchIndex);
+            const sessionStore = transaction.objectStore(STORE_NAME);
+            const messagesStore = transaction.objectStore(STORES.MESSAGES);
+            const searchStore = hasSearchIndexStore()
+                ? transaction.objectStore(STORES.SEARCH_INDEXES)
+                : null;
+
+            const proceedWithWrite = () => {
+                messagesStore.put({ sessionId: sessionMeta.id, messages });
+                sessionStore.put(sessionMeta);
+                if (searchStore) searchStore.put(searchIndex);
+            };
+
+            if (expectedUpdatedAt != null) {
+                const getReq = sessionStore.get(sessionMeta.id);
+                getReq.onsuccess = () => {
+                    const existing = getReq.result || null;
+                    if (existing && existing.updatedAt !== expectedUpdatedAt) {
+                        conflictError = new SessionConflictError(
+                            sessionMeta.id,
+                            expectedUpdatedAt,
+                            existing.updatedAt
+                        );
+                        transaction.abort();
+                        return;
+                    }
+                    proceedWithWrite();
+                };
+                getReq.onerror = () => {
+                    // get 失败让 tx.onerror 接管
+                };
+            } else {
+                proceedWithWrite();
             }
 
             transaction.oncomplete = () => {
@@ -283,6 +339,10 @@ export async function saveSessionAtomic(sessionMeta, messagesData) {
                 resolve();
             };
             transaction.onerror = () => {
+                if (conflictError) {
+                    reject(conflictError);
+                    return;
+                }
                 const error = transaction.error;
                 if (
                     error &&
@@ -291,6 +351,10 @@ export async function saveSessionAtomic(sessionMeta, messagesData) {
                     eventBus.emit('storage:quota-exceeded', { message: '存储空间不足！' });
                 }
                 reject(error);
+            };
+            transaction.onabort = () => {
+                if (conflictError) reject(conflictError);
+                else reject(transaction.error || new Error('Transaction aborted'));
             };
         });
     });
@@ -454,16 +518,10 @@ export async function migrateSessionsToV4() {
                     searchStore.put(createSessionSearchIndexRecord(session.id, session.messages));
                 }
 
-                // 从 session 中移除消息，只保留元数据
-                const metaSession = {
-                    id: session.id,
-                    name: session.name,
-                    apiFormat: session.apiFormat,
-                    createdAt: session.createdAt,
-                    updatedAt: session.updatedAt,
-                    customName: session.customName || false,
-                    messageCount: (session.messages || []).length
-                };
+                // 解构剥离 messages 但保留所有用户扩展字段（prefillSnapshot/folderId/monitorEnabled 等）
+                const { messages: _migMsgs, ...metaSession } = session;
+                metaSession.customName = metaSession.customName || false;
+                metaSession.messageCount = _migMsgs.length;
                 cursor.update(metaSession);
                 migratedCount++;
             } else if (!session.messageCount && session.messageCount !== 0) {

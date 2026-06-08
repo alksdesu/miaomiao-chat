@@ -150,8 +150,12 @@ function createWindow() {
     Menu.setApplicationMenu(null);
 
     // 设置 CSP 响应头（在 Electron 中生效，包含 frame-ancestors）
-    // 安全备注：connect-src 包含 http: 和 ws: 是因为用户可能使用本地 HTTP API 代理（如 localhost）
-    // 如非必要，生产环境应收紧为仅 https: 和 wss:
+    // 收紧边界：
+    // - script-src 去 'unsafe-inline'：内联事件处理器已全量迁移；去 cdn.jsdelivr.net：第三方库已本地化
+    // - script-src 保留 'unsafe-eval'：pdfjs Type 4 函数编译走 new Function（fallback 解释器性能差）
+    // - style-src 保留 'unsafe-inline'：内联 style 属性 + 主题热切换运行时改 CSS 变量
+    // - style-src/font-src 去 fonts.googleapis.com / fonts.gstatic.com：CSS 已无 Google Fonts 引用
+    // - connect-src 通配 http/https/ws/wss：用户可配置任意 LLM 端点
     windowInstance.webContents.session.webRequest.onHeadersReceived((details, callback) => {
         // chii 本地 HTTP server 的响应不加 CSP，否则 frame-ancestors 会阻止 iframe 嵌入
         if (details.url.startsWith('http://127.0.0.1:')) {
@@ -163,11 +167,11 @@ function createWindow() {
                 ...details.responseHeaders,
                 'Content-Security-Policy': [
                     "default-src 'self'; " +
-                        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net http://127.0.0.1:*; " +
-                        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com http://127.0.0.1:*; " +
+                        "script-src 'self' 'unsafe-eval' http://127.0.0.1:*; " +
+                        "style-src 'self' 'unsafe-inline' http://127.0.0.1:*; " +
                         "img-src 'self' data: blob: https: http:; " +
-                        "font-src 'self' data: https://fonts.gstatic.com; " +
-                        "connect-src 'self' https://api.openai.com https://api.anthropic.com https://generativelanguage.googleapis.com https://aiplatform.googleapis.com https: http: wss: ws:; " +
+                        "font-src 'self' data:; " +
+                        "connect-src 'self' https: http: wss: ws:; " +
                         "media-src 'self' data: blob: https: http: file:; " +
                         "frame-src 'self' file: http://127.0.0.1:*; " +
                         "object-src 'none'; " +

@@ -130,7 +130,6 @@ export function loadTheme() {
 
     // 异步刷新 Mermaid（不阻塞首屏）
     scheduleMermaidThemeRefresh(theme);
-    eventBus.emit('ui:theme-applied', { theme, themeId: getActiveThemeId() });
 }
 
 /**

@@ -70,23 +70,16 @@ export function renderSessionMessages() {
         return;
     }
 
-    // 如果消息数量超过阈值，使用虚拟滚动
-    if (messages.length >= 50) {
-        logger.debug(`消息数量 ${messages.length}，启用虚拟滚动模式`);
-        eventBus.emit('restore:init-virtual-scroll');
-        rebuildMessageIdMap(); // 重建索引映射
-        // 虚拟滚动模块会自动渲染
-        return;
-    }
-
-    // 传统渲染模式（< 100 条消息）
-
+    // 所有消息一次性创建 DOM，content-visibility:auto 由浏览器跳过屏幕外渲染
     // 性能优化：使用 DocumentFragment 批量插入，避免频繁 reflow
     const fragment = document.createDocumentFragment();
     const enhancementQueue = []; // 增强操作队列（异步执行）
 
     // 批量补充缺少 ID 的旧消息
     ensureMessageIds();
+    // 先建 ID map 再渲染：map 只依赖 state.messages 数组，与 DOM 解耦；
+    // 若渲染期 createMessageElement 抛错，map 仍为当前会话状态，不会残留上一会话
+    rebuildMessageIdMap();
 
     // 渲染所有消息（统一读 state.messages）
     state.messages.forEach((msg, index) => {
@@ -158,15 +151,28 @@ export function renderSessionMessages() {
     // 一次性插入所有消息（只触发一次 reflow）
     elements.messagesArea.appendChild(fragment);
 
-    // Render assistant enhancements immediately on restore.
-    for (let idx = 0; idx < enhancementQueue.length; idx++) {
-        const { messageEl, msg, openaiMsg } = enhancementQueue[idx];
-        try {
-            enhanceAssistantMessage(messageEl, msg, openaiMsg);
-        } catch (e) {
-            logger.error('[Restore] 消息增强失败 (index:', idx, '):', e);
+    // 长会话启用 content-visibility:auto 优化（屏幕外节点跳过 layout/paint）
+    eventBus.emit('restore:init-virtual-scroll');
+
+    // Render assistant enhancements chunked：每 K 条 yield 一次让浏览器渲染中间帧
+    // 千楼会话 1000×1-15ms 同步串行会冻结主线程 1-15s，分块 yield 后 UI 可滚动/响应
+    const ENHANCE_CHUNK = 10;
+    const enhanceAllAsync = async () => {
+        for (let idx = 0; idx < enhancementQueue.length; idx++) {
+            const { messageEl, msg, openaiMsg } = enhancementQueue[idx];
+            try {
+                enhanceAssistantMessage(messageEl, msg, openaiMsg);
+            } catch (e) {
+                logger.error('[Restore] 消息增强失败 (index:', idx, '):', e);
+            }
+            if ((idx + 1) % ENHANCE_CHUNK === 0 && idx + 1 < enhancementQueue.length) {
+                // setTimeout(0) 比 requestIdleCallback 更确定性，避免 idle 长时间不来
+                await new Promise((r) => setTimeout(r, 0));
+            }
         }
-    }
+    };
+    // 不 await：让 restoreMessages 同步路径快速完成 + scroll to bottom，enhance 异步追加
+    enhanceAllAsync().catch((e) => logger.error('[Restore] enhanceAllAsync 异常:', e));
 
     // 观察所有懒加载图片
     requestIdleCallback(
@@ -332,6 +338,7 @@ function enhanceAssistantMessage(_messageEl, msg, openaiMsg) {
     if (statsData) {
         const wrapper = _messageEl.querySelector('.message-content-wrapper');
         if (wrapper) {
+            // eslint-disable-next-line no-restricted-syntax -- 已审计：renderStreamStatsFromData 输出静态 SVG + 数值字段（ttft/totalTime/tokens/tps）
             wrapper.insertAdjacentHTML('beforeend', renderStreamStatsFromData(statsData));
         }
     }
@@ -351,6 +358,7 @@ function enhanceAssistantMessage(_messageEl, msg, openaiMsg) {
     if (groundingMetadata) {
         const contentDiv = _messageEl.querySelector('.message-content');
         if (contentDiv) {
+            // eslint-disable-next-line no-restricted-syntax -- 已审计：renderSearchGrounding 已对 uri/title 双 escapeHtml + safeHref 协议白名单
             contentDiv.insertAdjacentHTML('beforeend', renderSearchGrounding(groundingMetadata));
         }
     }

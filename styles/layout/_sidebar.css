@@ -176,6 +176,7 @@
 
 .session-item.active {
     background: var(--md-blue);
+    color: var(--color-text-on-accent, #1a1a1a);
 }
 
 .session-info {

@@ -25,6 +25,10 @@ export const STORES = {
 
 let db = null;
 let _versionChangePending = false;
+// onclose 自动重连退避：避免反复关闭抛 init→close 死循环
+let _reconnectAttempts = 0;
+let _reconnectTimer = null;
+const RECONNECT_BACKOFFS_MS = [5000, 15000, 60000]; // 5s → 15s → 60s 后放弃
 
 /**
  * 跨标签页写入锁：防止多标签页并发覆盖 IndexedDB 数据
@@ -163,6 +167,9 @@ export async function checkPersistentStorage() {
     return false;
 }
 
+// IDB 升级 spec 边界：另一 tab 持长事务时 db.close() 转 pending close，新 open 永久 blocked 不触发 error/success
+const INIT_DB_TIMEOUT_MS = 30000;
+
 /**
  * 初始化 IndexedDB
  * @returns {Promise<IDBDatabase|null>} 数据库实例，失败时返回 null
@@ -177,12 +184,36 @@ export function initDB() {
         }
 
         const request = indexedDB.open(DB_NAME, DB_VERSION);
+        let settled = false;
+        const settle = (value) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutId);
+            resolve(value);
+        };
+
+        // spec 边界兜底：避免 onblocked 触发后 db.close() 仍 pending 时 init 永挂
+        const timeoutId = setTimeout(() => {
+            logger.error(`IndexedDB 初始化超时（${INIT_DB_TIMEOUT_MS}ms），降级 localStorage`);
+            settle(null);
+        }, INIT_DB_TIMEOUT_MS);
 
         request.onerror = () => {
             logger.error('IndexedDB 打开失败:', request.error);
             // 降级处理：不抛出错误，返回 null
             logger.warn('IndexedDB 初始化失败，将使用 localStorage 降级模式');
-            resolve(null);
+            settle(null);
+        };
+
+        // 另一 tab 仍持有旧版本连接阻塞升级
+        request.onblocked = () => {
+            logger.warn('IndexedDB 升级被其他标签页阻塞');
+            eventBus.emit('ui:notification', {
+                message: '其他标签页阻止了数据库升级，请关闭其他标签页后刷新',
+                type: 'warning',
+                duration: 0
+            });
+            // 不立即 settle，等其他 tab 关闭后 open 会自然成功；超时兜底
         };
 
         request.onsuccess = () => {
@@ -201,15 +232,34 @@ export function initDB() {
                 });
             };
 
-            // 监听连接关闭，自动重连（版本升级导致的关闭除外）
+            // 监听连接关闭，按退避策略自动重连（版本升级导致的关闭除外）
+            // 反复异常关闭会让裸 initDB() 链入无限循环（每次 30s init timeout + close + 重试）
             db.onclose = () => {
                 if (_versionChangePending) return;
-                logger.warn('IndexedDB 连接已关闭，尝试重新连接...');
                 db = null;
-                initDB().catch((e) => logger.error('IndexedDB 重连失败:', e));
+                if (_reconnectAttempts >= RECONNECT_BACKOFFS_MS.length) {
+                    logger.error(
+                        `IndexedDB 重连达上限 (${RECONNECT_BACKOFFS_MS.length} 次)，放弃，数据将仅写入内存`
+                    );
+                    eventBus.emit('ui:notification', {
+                        message: '数据库连接异常，请刷新页面',
+                        type: 'error',
+                        duration: 0
+                    });
+                    return;
+                }
+                const delay = RECONNECT_BACKOFFS_MS[_reconnectAttempts++];
+                logger.warn(`IndexedDB 连接关闭，${delay}ms 后第 ${_reconnectAttempts} 次重连...`);
+                if (_reconnectTimer) clearTimeout(_reconnectTimer);
+                _reconnectTimer = setTimeout(() => {
+                    _reconnectTimer = null;
+                    initDB().catch((e) => logger.error('IndexedDB 重连失败:', e));
+                }, delay);
             };
 
-            resolve(db);
+            // 重连成功，重置计数器
+            _reconnectAttempts = 0;
+            settle(db);
         };
 
         request.onupgradeneeded = (event) => {
@@ -355,13 +405,15 @@ export async function saveToStore(storeName, key, value) {
             const store = transaction.objectStore(storeName);
             const data = { key, value, updatedAt: Date.now() };
             const request = store.put(data);
+            let txAborted = false;
 
-            request.onsuccess = () => resolve();
-            request.onerror = () => {
+            // 不在 request.onsuccess 直接 resolve；必须等 transaction.oncomplete 才算真正落盘
+            // 避免 commit-phase 失败时数据未写入但 Promise 已 resolve 的静默数据丢失
+            request.onerror = (event) => {
                 const error = request.error;
                 logger.error(`保存到 ${storeName} 失败:`, error);
 
-                // 配额检测
+                // 配额检测（仅在此处 emit，transaction.onerror 不再重复 emit，避免双 toast）
                 if (
                     error &&
                     (error.name === 'QuotaExceededError' ||
@@ -372,19 +424,24 @@ export async function saveToStore(storeName, key, value) {
                         message: `IndexedDB 存储空间不足（${storeName}）`
                     });
                 }
+                // 阻止错误冒泡到 transaction，避免重复 emit 与 abort
+                event.preventDefault?.();
                 reject(error);
             };
 
+            transaction.oncomplete = () => {
+                if (!txAborted) resolve();
+            };
             transaction.onerror = (event) => {
                 const error = event.target.error;
-                if (
-                    error &&
-                    (error.name === 'QuotaExceededError' || error.message?.includes('quota'))
-                ) {
-                    eventBus.emit('storage:quota-exceeded', {
-                        message: `IndexedDB 存储空间不足（${storeName}）`
-                    });
-                }
+                logger.error(`保存到 ${storeName} 事务错误:`, error);
+                reject(error || new Error(`Transaction error: ${storeName}`));
+            };
+            transaction.onabort = () => {
+                txAborted = true;
+                const error = transaction.error;
+                logger.error(`保存到 ${storeName} 事务 abort:`, error);
+                reject(error || new Error(`Transaction aborted: ${storeName}`));
             };
         } catch (error) {
             logger.error(`保存到 ${storeName} 异常:`, error);

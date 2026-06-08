@@ -118,6 +118,11 @@
     animation: avatarPulse 2s ease-in-out infinite;
 }
 
+/* 流式期间隔离 reflow/style 冒泡；不加 paint 避免裁掉 avatarPulse 光圈 */
+.message.assistant.generating {
+    contain: layout style;
+}
+
 @keyframes avatarPulse {
     0%,
     100% {
@@ -672,4 +677,25 @@
     background: var(--color-bg-surface);
     font-size: var(--fs-xs);
     color: var(--md-muted);
+}
+
+/* ========== 流式代码块占位 ========== */
+.streaming-code-placeholder {
+    background: var(--color-bg-code);
+    color: var(--color-text-muted);
+    font-family: var(--font-mono);
+    font-size: var(--fs-md);
+    border: var(--border-thin);
+    border-radius: 4px;
+    padding: 12px;
+    margin: 8px 0;
+    transition: opacity var(--duration-base) var(--ease);
+}
+
+.streaming-code-placeholder::after {
+    content: '编译中…';
+    color: var(--color-text-muted);
+    font-size: var(--fs-sm);
+    margin-left: 8px;
+    opacity: 0.7;
 }

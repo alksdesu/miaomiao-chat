@@ -9,13 +9,10 @@ import { saveCurrentConfig } from '../state/config.js';
 import { handleAttachFile } from './input.js';
 import { showNotification } from './notifications.js';
 import { isElectron } from '../utils/platform.js';
-import {
-    setStreamEnabled,
-    setThinkingEnabled,
-    setWebSearchEnabled,
-    setCodeExecutionEnabled,
-    setComputerUseEnabled
-} from '../core/state-mutations.js';
+import { setToolEnabled } from '../tools/manager.js';
+import { setMonitorEnabled } from '../devtools/monitor-state.js';
+import { openCronPanel } from './openclaw-cron.js';
+import { openclawClient } from '../api/openclaw.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -43,7 +40,7 @@ export function initQuickToggles() {
     if (toggleStream) {
         toggleStream.classList.toggle('active', state.streamEnabled);
         toggleStream.addEventListener('click', () => {
-            setStreamEnabled(!state.streamEnabled);
+            state.streamEnabled = !state.streamEnabled;
             toggleStream.classList.toggle('active', state.streamEnabled);
             // 同步设置面板开关
             const panelSwitch = document.getElementById('stream-enabled');
@@ -57,7 +54,7 @@ export function initQuickToggles() {
     if (toggleThinking) {
         toggleThinking.classList.toggle('active', state.thinkingEnabled);
         toggleThinking.addEventListener('click', () => {
-            setThinkingEnabled(!state.thinkingEnabled);
+            state.thinkingEnabled = !state.thinkingEnabled;
             toggleThinking.classList.toggle('active', state.thinkingEnabled);
             // 同步设置面板开关
             const panelSwitch = document.getElementById('thinking-enabled');
@@ -87,7 +84,7 @@ export function initQuickToggles() {
     if (toggleWebsearch) {
         toggleWebsearch.classList.toggle('active', state.webSearchEnabled);
         toggleWebsearch.addEventListener('click', () => {
-            setWebSearchEnabled(!state.webSearchEnabled);
+            state.webSearchEnabled = !state.webSearchEnabled;
             toggleWebsearch.classList.toggle('active', state.webSearchEnabled);
             // 同步设置面板开关
             const panelSwitch = document.getElementById('web-search-enabled');
@@ -110,7 +107,7 @@ export function initQuickToggles() {
 
         // 点击事件
         toggleCodeExec.addEventListener('click', async () => {
-            setCodeExecutionEnabled(!state.codeExecutionEnabled);
+            state.codeExecutionEnabled = !state.codeExecutionEnabled;
             toggleCodeExec.classList.toggle('active', state.codeExecutionEnabled);
 
             // 同步设置面板开关
@@ -137,7 +134,7 @@ export function initQuickToggles() {
 
         // 点击事件
         toggleComputerUse.addEventListener('click', async () => {
-            setComputerUseEnabled(!state.computerUseEnabled);
+            state.computerUseEnabled = !state.computerUseEnabled;
             toggleComputerUse.classList.toggle('active', state.computerUseEnabled);
 
             // 同步设置面板开关
@@ -146,7 +143,6 @@ export function initQuickToggles() {
 
             // ⭐ 同步到工具管理器（Computer Use 工具 ID 为 'computer'）
             try {
-                const { setToolEnabled } = await import('../tools/manager.js');
                 setToolEnabled('computer', state.computerUseEnabled);
                 logger.debug(
                     `[Quick Toggle] Computer Use 工具已${state.computerUseEnabled ? '启用' : '禁用'}`
@@ -166,7 +162,6 @@ export function initQuickToggles() {
         toggleMonitor.classList.toggle('active', state.monitorEnabled);
         toggleMonitor.addEventListener('click', async () => {
             const newVal = !state.monitorEnabled;
-            const { setMonitorEnabled } = await import('../devtools/monitor-state.js');
             await setMonitorEnabled(newVal);
             toggleMonitor.classList.toggle('active', state.monitorEnabled);
             state.sessionDirty = true;
@@ -183,8 +178,7 @@ export function initQuickToggles() {
     const statusCronBtn = document.getElementById('openclaw-sb-cron');
 
     // 打开定时任务面板
-    const openCron = async () => {
-        const { openCronPanel } = await import('./openclaw-cron.js');
+    const openCron = () => {
         openCronPanel();
     };
 
@@ -193,11 +187,9 @@ export function initQuickToggles() {
 
     // 条件显隐：apiFormat === 'openclaw' && connected
     const updateOpenClawUI = () => {
-        import('../api/openclaw.js').then(({ openclawClient }) => {
-            const visible = state.apiFormat === 'openclaw' && openclawClient.connected;
-            if (toggleCron) toggleCron.style.display = visible ? '' : 'none';
-            if (statusBar) statusBar.style.display = visible ? 'flex' : 'none';
-        });
+        const visible = state.apiFormat === 'openclaw' && openclawClient.connected;
+        if (toggleCron) toggleCron.style.display = visible ? '' : 'none';
+        if (statusBar) statusBar.style.display = visible ? 'flex' : 'none';
     };
 
     eventBus.on('openclaw:connected', updateOpenClawUI);

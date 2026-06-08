@@ -234,6 +234,7 @@ function createTab(tabId, label, active, svgPath) {
     btn.className = 'network-tab' + (active ? ' active' : '');
     btn.dataset.tab = tabId;
     if (svgPath) {
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：svgPath 为模块内联静态 SVG path 字符串，与同文件 251 行 createBtn innerHTML 同源
         btn.insertAdjacentHTML(
             'afterbegin',
             `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${svgPath}</svg> `

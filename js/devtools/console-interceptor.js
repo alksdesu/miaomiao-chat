@@ -1,8 +1,7 @@
 /**
  * Console 日志捕获 — hook 全局 console 方法，维护循环缓冲区
+ * 消费侧（DevTools 面板）走 getConsoleEntries() pull 模式，不做 push 推送。
  */
-
-import { eventBus } from '../core/events.js';
 
 const MAX_ENTRIES = 500;
 const entries = [];
@@ -29,26 +28,21 @@ function serialize(args) {
 }
 
 function capture(level, args) {
-    // 防止自递归（eventBus 监听器内部可能调用 console）
+    // 防止自递归：serialize 可能触发 console（如对象 toJSON 抛错时浏览器内部告警）
     if (capturing) return;
     capturing = true;
     try {
-        captureInner(level, args);
+        const entry = {
+            id: nextId++,
+            timestamp: Date.now(),
+            level,
+            message: serialize(args)
+        };
+        entries.push(entry);
+        if (entries.length > MAX_ENTRIES) entries.shift();
     } finally {
         capturing = false;
     }
-}
-
-function captureInner(level, args) {
-    const entry = {
-        id: nextId++,
-        timestamp: Date.now(),
-        level,
-        message: serialize(args)
-    };
-    entries.push(entry);
-    if (entries.length > MAX_ENTRIES) entries.shift();
-    eventBus.emit('devtools:console-entry', entry);
 }
 
 export function installConsoleInterceptor() {

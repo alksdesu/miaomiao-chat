@@ -27,9 +27,122 @@
  */
 
 import { state } from '../core/state.js';
-import { setToolPermissions } from '../core/state-mutations.js';
-import { debouncedSaveSession } from '../state/sessions.js';
+import { savePreference, loadPreference } from '../state/storage.js';
+import { showConfirmDialog } from '../utils/dialogs.js';
 import { logger } from '../utils/logger.js';
+
+import { TOOL_CONFIRM_DIALOG_TIMEOUT } from '../utils/constants.js';
+
+// Claude computer-use 的 3 件原生工具：bashConfig.requireConfirmation 仅对它们生效
+const NATIVE_TOOL_IDS = new Set(['computer', 'bash', 'str_replace_based_edit_tool']);
+
+// 本会话内用户已勾选"全部允许"的工具集合，整会话内免询问
+const sessionGrantedTools = new Set();
+
+// 同 turn 同 toolName+args 哈希只确认一次；拒绝结果同样缓存，避免一轮内反复弹窗逼降意志
+const turnApprovalCache = new Map();
+let currentTurnId = null;
+
+function hashArgs(args) {
+    try {
+        return JSON.stringify(args).slice(0, 256);
+    } catch {
+        return String(args);
+    }
+}
+
+/**
+ * 进入新 turn 边界时调用，幂等：同 turnId 重复调用不清缓存
+ * 由 chat 发送入口（api:send-requested handler）传入新 requestId 触发
+ * @param {string|number} turnId - 本轮请求的唯一标识
+ */
+export function resetTurnApprovalCache(turnId) {
+    if (turnId !== currentTurnId) {
+        turnApprovalCache.clear();
+        currentTurnId = turnId;
+    }
+}
+
+/**
+ * 切换会话时调用，清空"本次会话全部允许"集合 + turn 缓存
+ * 避免授权跨会话残留，符合"会话级"语义
+ */
+export function resetSessionGrants() {
+    sessionGrantedTools.clear();
+    turnApprovalCache.clear();
+    currentTurnId = null;
+}
+
+/**
+ * 工具执行前的用户确认
+ *
+ * 触发条件（满足任一即弹窗）：
+ *   1) state.toolPermissions.requireConfirmation = true（全局开关）
+ *   2) NATIVE_TOOL_IDS 命中 && state.bashConfig.requireConfirmation = true（Claude 原生 3 件套专属）
+ *
+ * 短路路径：
+ *   - sessionGrantedTools 命中 → 直接放行（本会话用户已勾选"全部允许"）
+ *   - turnApprovalCache 命中 → 沿用上次结果（拒绝也缓存，避免一轮内反复打扰）
+ *
+ * 之前 setRequireConfirmation 只写 state，executor.js 从未读取触发 → 假开关。
+ * 此 helper 由 executor.executeTool 在权限检查通过后调用，返回 false 时 executor
+ * 抛 "用户拒绝执行" 走 ERROR 路径，UI tool-display 显示 'failed' 状态。
+ *
+ * @param {string} toolId
+ * @param {string} toolName
+ * @param {Object} args - 工具参数（用于摘要展示给用户）
+ * @param {object} [options]
+ * @param {AbortSignal} [options.signal] - 用户点停止按钮 → abort → 关闭对话框 resolve(false)
+ * @returns {Promise<boolean>} true = 批准执行，false = 用户拒绝/超时/abort
+ */
+export async function confirmToolExecutionIfRequired(toolId, toolName, args, options = {}) {
+    // 本会话已授权 → 直接放行（不进缓存判定，省一次 hash 计算）
+    if (sessionGrantedTools.has(toolName) || sessionGrantedTools.has(toolId)) return true;
+
+    const isNative = NATIVE_TOOL_IDS.has(toolId) || NATIVE_TOOL_IDS.has(toolName);
+    const needConfirm =
+        !!state.toolPermissions?.requireConfirmation ||
+        (isNative && !!state.bashConfig?.requireConfirmation);
+    if (!needConfirm) return true;
+
+    // 同 turn 同参数复用历史决定（含拒绝）
+    const cacheKey = toolName + ':' + hashArgs(args);
+    if (turnApprovalCache.has(cacheKey)) return turnApprovalCache.get(cacheKey);
+
+    let argsSummary = '';
+    try {
+        const s = typeof args === 'string' ? args : JSON.stringify(args);
+        argsSummary = s.length > 200 ? s.slice(0, 200) + '…' : s;
+    } catch {
+        argsSummary = '[args 无法序列化]';
+    }
+
+    const result = await showConfirmDialog(
+        `工具：${toolName}\n参数：${argsSummary}\n\n是否允许执行？`,
+        '工具调用确认',
+        {
+            signal: options.signal,
+            timeoutMs: TOOL_CONFIRM_DIALOG_TIMEOUT,
+            allowSessionPersistOption: {
+                label: '本次会话全部允许',
+                key: 'persist'
+            }
+        }
+    );
+
+    // 兼容 dialog 两种返回形态：boolean（未传 option）/ {confirmed, persistForSession}（传了 option）
+    const confirmed = typeof result === 'object' && result !== null ? !!result.confirmed : !!result;
+    const persistForSession =
+        typeof result === 'object' && result !== null ? !!result.persistForSession : false;
+
+    if (confirmed && persistForSession) {
+        sessionGrantedTools.add(toolName);
+        logger.debug(`[Permissions] 本会话已授权工具: ${toolName}`);
+    }
+
+    turnApprovalCache.set(cacheKey, confirmed);
+    return confirmed;
+}
 
 /**
  * 检查工具是否有执行权限
@@ -180,13 +293,13 @@ export function getPermissions() {
  * 重置权限配置
  */
 export function resetPermissions() {
-    setToolPermissions({
+    state.toolPermissions = {
         enabled: false,
         mode: 'whitelist',
         whitelist: [],
         blacklist: [],
         requireConfirmation: false
-    });
+    };
 
     savePermissions();
 
@@ -215,10 +328,10 @@ export function importPermissions(data) {
         }
 
         // 合并到当前配置
-        setToolPermissions({
+        state.toolPermissions = {
             ...state.toolPermissions,
             ...imported
-        });
+        };
 
         savePermissions();
 
@@ -287,9 +400,29 @@ export function setBlacklist(tools, replace = false) {
 
 /**
  * 保存权限配置到 IndexedDB
+ * session/config 持久化字段集均不含 toolPermissions，必须独立落 preference
  */
 function savePermissions() {
-    debouncedSaveSession();
+    Promise.resolve(savePreference('toolPermissions', JSON.stringify(state.toolPermissions))).catch(
+        (error) => logger.error('[Permissions] 保存权限配置失败:', error)
+    );
+}
+
+/**
+ * 启动时恢复权限配置
+ */
+export async function loadToolPermissions() {
+    try {
+        const saved = await loadPreference('toolPermissions');
+        if (!saved) return;
+        const parsed = typeof saved === 'string' ? JSON.parse(saved) : saved;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            state.toolPermissions = { ...state.toolPermissions, ...parsed };
+            logger.debug('[Permissions] 已恢复权限配置');
+        }
+    } catch (error) {
+        logger.error('[Permissions] 加载权限配置失败:', error);
+    }
 }
 
 logger.debug('[Permissions] 🔒 工具权限管理模块已加载');

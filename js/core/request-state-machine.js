@@ -4,8 +4,9 @@
  */
 
 import { eventBus } from './events.js';
+import { EVENTS } from './events-registry.js';
 import { elements } from './elements.js';
-import { setIsLoading, setIsSending } from './state-mutations.js';
+import { state } from './state.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -128,15 +129,13 @@ export class RequestStateMachine {
         logger.debug(`[StateMachine] 状态转换: ${oldState} -> ${newState}`, metadata);
 
         // 同步旧版标志位
-        setIsLoading(
-            [
-                RequestState.SENDING,
-                RequestState.STREAMING,
-                RequestState.TOOL_CALLING,
-                RequestState.CONTINUATION
-            ].includes(newState)
-        );
-        setIsSending(newState === RequestState.SENDING);
+        state.isLoading = !![
+            RequestState.SENDING,
+            RequestState.STREAMING,
+            RequestState.TOOL_CALLING,
+            RequestState.CONTINUATION
+        ].includes(newState);
+        state.isSending = !!(newState === RequestState.SENDING);
 
         // 执行状态进入钩子
         this._onEnterState(newState, metadata);
@@ -210,6 +209,9 @@ export class RequestStateMachine {
             sendButtonVisible: true,
             cancelButtonVisible: false
         });
+
+        // 通知 provider-sync 等待者：本轮流式/工具/续写已彻底结束，可以安全清 cross-provider 元数据
+        eventBus.emit(EVENTS.STREAM_COMPLETE);
 
         logger.debug('[StateMachine] 已进入 IDLE 状态，所有资源已清理');
     }
@@ -331,8 +333,13 @@ export class RequestStateMachine {
     _onCancelled() {
         logger.debug('[StateMachine] 请求已取消');
 
-        // 性能优化：缓存 querySelectorAll 结果，避免在 forEach 中重复调用
-        const allLoadingElements = document.querySelectorAll(
+        // 限定 scope 到当前 assistantMessageEl 内，避免未来引入并发请求时全局清干扰其他流
+        // 与 handler.removeLoadingIndicators 行为对齐
+        const root =
+            this.assistantMessageEl?.querySelector('.message-content') ||
+            document.querySelector('.message.assistant:last-child .message-content');
+        if (!root) return;
+        const allLoadingElements = root.querySelectorAll(
             '.thinking-dots, .continuation-loading, .retry-loading'
         );
         if (allLoadingElements.length > 0) {
@@ -384,12 +391,17 @@ export class RequestStateMachine {
             }
         }
 
-        // 清理 loading 元素
-        const allLoadingElements = document.querySelectorAll(
-            '.thinking-dots, .continuation-loading, .retry-loading'
-        );
-        if (allLoadingElements.length > 0) {
-            allLoadingElements.forEach((el) => el.remove());
+        // 清理 loading 元素：限定 scope 到当前 assistantMessageEl
+        const cleanupRoot =
+            this.assistantMessageEl?.querySelector('.message-content') ||
+            document.querySelector('.message.assistant:last-child .message-content');
+        if (cleanupRoot) {
+            const allLoadingElements = cleanupRoot.querySelectorAll(
+                '.thinking-dots, .continuation-loading, .retry-loading'
+            );
+            if (allLoadingElements.length > 0) {
+                allLoadingElements.forEach((el) => el.remove());
+            }
         }
 
         // 强制设置为 IDLE 状态（跳过状态验证）

@@ -12,6 +12,7 @@ import {
     setToolEnabled
 } from '../tools/manager.js';
 import { getToolHistory, clearToolHistory } from '../tools/history.js';
+import { executeTool } from '../tools/executor.js';
 import { debouncedSaveSession } from '../state/sessions.js';
 import { showNotification } from './notifications.js';
 import { showConfirmDialog } from '../utils/dialogs.js';
@@ -102,7 +103,6 @@ export function showToolForm(modal, toolOrId, callbacks) {
                 ${isEditable ? '<button id="validate-schema-btn" class="btn btn-sm btn-secondary">验证 Schema</button>' : ''}
                 <small class="form-hint">
                     定义工具接受的参数结构。
-                    ${isEditable ? '<a href="#" onclick="showSchemaExamples(); return false;">查看示例</a>' : ''}
                 </small>
                 <div id="schema-validation-result" class="validation-result"></div>
             </div>
@@ -522,7 +522,6 @@ async function showToolTestDialog(tool) {
             executeBtn.textContent = '执行中...';
             resultContainer.style.display = 'none';
 
-            const { executeTool } = await import('../tools/executor.js');
             const result = await executeTool(tool.id, args);
 
             // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出

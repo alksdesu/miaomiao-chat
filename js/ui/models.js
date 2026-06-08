@@ -9,12 +9,6 @@ import { saveCurrentConfig } from '../state/config.js';
 import { eventBus } from '../core/events.js';
 import { renderCapabilityBadgesText } from '../utils/capability-badges.js';
 import { updateMobileHeaderTitle } from './mobile-overflow-menu.js';
-import {
-    setSelectedModel,
-    setApiFormat as setStateApiFormat,
-    setCurrentProviderId,
-    setGeminiApiKeyInHeader
-} from '../core/state-mutations.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -110,7 +104,7 @@ export function initModels() {
         const selectedOption = e.target.selectedOptions[0];
         const providerId = selectedOption?.dataset.providerId;
 
-        setSelectedModel(selectedModel);
+        state.selectedModel = selectedModel;
 
         // 根据 providerId 查找提供商（而不是模型名）
         const provider = state.providers.find((p) => p.id === providerId);
@@ -121,7 +115,7 @@ export function initModels() {
             );
 
             // 更新 apiFormat (不触发格式切换事件,避免重复刷新模型列表)
-            setStateApiFormat(provider.apiFormat);
+            state.apiFormat = provider.apiFormat;
 
             // 显示/隐藏对应的配置面板：只显示当前格式对应的配置面板
             document.querySelectorAll('.api-config').forEach((panel) => {
@@ -141,11 +135,11 @@ export function initModels() {
         }
 
         // 存储当前提供商 ID，供 getCurrentProvider() 使用
-        setCurrentProviderId(providerId);
+        state.currentProviderId = providerId;
 
         // 同步 provider 的 geminiApiKeyInHeader 到 state（用于 API 请求）
         if (provider && provider.apiFormat === 'gemini') {
-            setGeminiApiKeyInHeader(provider.geminiApiKeyInHeader || false);
+            state.geminiApiKeyInHeader = !!(provider.geminiApiKeyInHeader || false);
             logger.debug(`🔄 同步 geminiApiKeyInHeader: ${state.geminiApiKeyInHeader}`);
         }
 

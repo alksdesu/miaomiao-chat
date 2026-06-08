@@ -19,11 +19,15 @@
     -webkit-overflow-scrolling: touch;
 }
 
-/* 虚拟滚动消息项优化 */
-.messages-area.virtual-scroll-active .message {
-    /* 使用 content-visibility 优化渲染 */
+/* 虚拟滚动消息项优化（content-visibility 接入）
+ * - :nth-child(n+11) 跳过首屏前 10 条，保护 LCP 不被延迟渲染
+ * - contain-intrinsic-size 用 auto 关键字：浏览器记住真实测量高度，scroll-back 近免费，消除滚动条抖动
+ * - scroll-margin-top: scrollIntoView 跳转后自动留出顶部边距，避免被 sticky 栏挡住
+ */
+.messages-area.virtual-scroll-active .message:nth-child(n + 11) {
     content-visibility: auto;
-    contain-intrinsic-size: 150px; /* 预估高度，避免布局抖动 */
+    contain-intrinsic-size: auto 150px;
+    scroll-margin-top: 1rem;
 }
 
 /* 虚拟滚动加载指示器 */

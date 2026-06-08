@@ -3,7 +3,17 @@
  * 注册所有内置工具
  */
 
-import { registerTool, loadToolStates, loadCustomTools } from './manager.js';
+import {
+    registerTool,
+    loadToolStates,
+    loadCustomTools,
+    setToolEnabled,
+    getToolStats,
+    debugTools
+} from './manager.js';
+import { loadToolHistory } from './history.js';
+import { loadToolPermissions } from './permissions.js';
+import { registerDevToolsTools } from '../devtools/tools/index.js';
 import { calculator } from './builtin/calculator.js';
 import { datetime } from './builtin/datetime.js';
 import { unitConverter } from './builtin/unit-converter.js';
@@ -37,10 +47,16 @@ export async function initTools() {
 
     // 加载工具调用历史
     try {
-        const { loadToolHistory } = await import('./history.js');
         await loadToolHistory();
     } catch (error) {
         logger.warn('[Tools] 加载历史记录失败:', error);
+    }
+
+    // 加载工具权限配置
+    try {
+        await loadToolPermissions();
+    } catch (error) {
+        logger.warn('[Tools] 加载权限配置失败:', error);
     }
 
     // 暴露调试函数到控制台
@@ -67,7 +83,6 @@ async function registerBuiltins() {
         registerTool(computerUse);
 
         // 立即启用（hidden 工具，不在管理面板显示）
-        const { setToolEnabled } = await import('./manager.js');
         setToolEnabled('computer', true);
 
         logger.debug('[Tools] Computer Use 工具已注册并启用');
@@ -77,7 +92,6 @@ async function registerBuiltins() {
     const cuCount = isElectron() ? 1 : 0;
 
     // DevTools Monitor 工具
-    const { registerDevToolsTools } = await import('../devtools/tools/index.js');
     registerDevToolsTools();
 
     logger.debug(`[Tools] 已注册 ${baseCount + cuCount + 7} 个内置工具`);
@@ -88,8 +102,6 @@ async function registerBuiltins() {
  * @returns {Promise<Object>}
  */
 export async function getToolSystemStatus() {
-    const { getToolStats, debugTools } = await import('./manager.js');
-
     return {
         initialized: true,
         stats: getToolStats(),

@@ -167,7 +167,7 @@
 }
 
 .mermaid-source-panel[hidden] {
-    display: none !important;
+    display: none;
 }
 
 .mermaid-source-text {

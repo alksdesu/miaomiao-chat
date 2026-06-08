@@ -17,7 +17,6 @@ export const EVENTS = Object.freeze({
     CONFIG_SYNC_QUICK_TOGGLES: 'config:sync-quick-toggles',
 
     // DevTools 内置面板
-    DEVTOOLS_CONSOLE_ENTRY: 'devtools:console-entry',
     DEVTOOLS_SHOW: 'devtools:show',
     DEVTOOLS_TOGGLE: 'devtools:toggle',
 
@@ -41,11 +40,9 @@ export const EVENTS = Object.freeze({
     MCP_SERVER_RESTARTING: 'mcp:server-restarting',
     MCP_TOOLS_DISCOVERED: 'mcp:tools-discovered',
 
-    // Mermaid 渲染
-    MERMAID_LAYOUT_UPDATED: 'mermaid:layout-updated',
-
     // 单条消息生命周期
     MESSAGE_CONTENT_UPDATED: 'message:content-updated',
+    MESSAGE_COPY_REQUESTED: 'message:copy-requested',
     MESSAGE_DELETE_REQUESTED: 'message:delete-requested',
     MESSAGE_EDIT_REQUESTED: 'message:edit-requested',
     MESSAGE_QUOTE_REQUESTED: 'message:quote-requested',
@@ -94,6 +91,7 @@ export const EVENTS = Object.freeze({
 
     // 会话生命周期
     SESSION_BEFORE_SWITCH: 'session:before-switch',
+    SESSION_MONITOR_READY: 'session:monitor-ready',
     SESSION_SWITCH_REQUESTED: 'session:switch-requested',
     SESSION_SWITCHED: 'session:switched',
     SESSIONS_LOADED: 'sessions:loaded',
@@ -106,7 +104,8 @@ export const EVENTS = Object.freeze({
     // 存储
     STORAGE_QUOTA_EXCEEDED: 'storage:quota-exceeded',
 
-    // 流式错误
+    // 流式生命周期
+    STREAM_COMPLETE: 'stream:complete',
     STREAM_ERROR: 'stream:error',
 
     // 工具管理 / 工具调用
@@ -126,7 +125,6 @@ export const EVENTS = Object.freeze({
     UI_RESET_INPUT_BUTTONS: 'ui:reset-input-buttons',
     UI_SCROLL_TO_BOTTOM: 'ui:scroll-to-bottom',
     UI_SHOW_CANCEL_BUTTON: 'ui:show-cancel-button',
-    UI_THEME_APPLIED: 'ui:theme-applied',
     UI_UPDATE_IMAGE_PREVIEW: 'ui:update-image-preview'
 });
 

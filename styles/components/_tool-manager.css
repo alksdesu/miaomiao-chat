@@ -632,7 +632,7 @@
         min-height: auto;
         border-right: none;
         border-bottom: none;
-        z-index: 1;
+        z-index: var(--z-base);
         transition: transform var(--duration-slow) ease-out;
         display: flex;
         flex-direction: column;
@@ -671,7 +671,7 @@
         position: absolute;
         inset: 0;
         width: 100%;
-        z-index: 2;
+        z-index: var(--z-above-base);
         transform: translateX(100%);
         transition: transform var(--duration-slow) ease-out;
         display: flex;

@@ -18,6 +18,9 @@
 import { getTool } from './manager.js';
 import { safeValidate, formatValidationErrors } from './validator.js';
 import { checkRateLimit } from './rate-limiter.js';
+import { state } from '../core/state.js';
+import { checkToolPermission, confirmToolExecutionIfRequired } from './permissions.js';
+import { recordToolCall } from './history.js';
 import { isElectron } from '../utils/platform.js';
 import { logger } from '../utils/logger.js';
 
@@ -273,6 +276,9 @@ async function executeTextEditorTool(args) {
  * @param {string} toolId - 工具 ID
  * @param {Object} args - 工具参数
  * @param {Object} options - 执行选项
+ * @param {AbortSignal} [options.signal] - 外部取消信号；abort 时 race 进 executeWithTimeout
+ *   内部 AbortController，tool.call({signal}) 收到合并 signal 后可立即停止长跑操作
+ * @param {number} [options.timeout] - 自定义超时（毫秒，上限 MAX_TIMEOUT）
  * @returns {Promise<Object>} 执行结果
  */
 export async function executeTool(toolId, args, options = {}) {
@@ -282,7 +288,6 @@ export async function executeTool(toolId, args, options = {}) {
     // 这些工具通过 beta header 启用，只在 Claude 原生模式下使用
     // ⭐ XML 模式下即使是 Claude 也使用自定义工具
     const nativeTools = ['computer', 'bash', 'str_replace_based_edit_tool'];
-    const { state } = await import('../core/state.js');
     const isClaudeNativeMode = state.apiFormat === 'claude' && !state.xmlToolCallingEnabled;
 
     // 只有在 Claude 原生模式下才将这些工具名当作原生工具处理
@@ -290,13 +295,78 @@ export async function executeTool(toolId, args, options = {}) {
         logger.debug(`[Executor] 🚀 执行 Claude 原生工具: ${toolId}`);
         logger.debug(`[Executor] 参数:`, args);
 
-        const result = await executeNativeTool(toolId, args);
-        const duration = Date.now() - startTime;
+        try {
+            // gate: 权限检查（与主分支等价，不进入 getTool 路径所以独立执行）
+            const permission = checkToolPermission(toolId, toolId);
+            if (!permission.allowed) {
+                const reason = permission.message || `无权限执行工具: ${toolId}`;
+                logger.warn(`[Executor] Claude native ${toolId} 被拒：${reason}`);
+                throw new Error(reason);
+            }
 
-        logger.debug(`[Executor] 工具执行成功: ${toolId} (耗时 ${duration}ms)`);
-        logger.debug(`[Executor] 结果:`, result);
+            // gate: 用户确认（内部承载 sessionAllow 缓存 + toolPermissions/bashConfig OR 逻辑）
+            const approved = await confirmToolExecutionIfRequired(toolId, toolId, args, {
+                signal: options?.signal
+            });
+            if (!approved) {
+                const reason = `用户拒绝执行工具 "${toolId}"`;
+                logger.warn(`[Executor] Claude native ${toolId} 被拒：${reason}`);
+                throw new Error(reason);
+            }
 
-        return result;
+            const result = await executeNativeTool(toolId, args);
+            const duration = Date.now() - startTime;
+
+            logger.debug(`[Executor] 工具执行成功: ${toolId} (耗时 ${duration}ms)`);
+            logger.debug(`[Executor] 结果:`, result);
+
+            // 记录到历史（与主分支对齐）
+            try {
+                recordToolCall({
+                    toolId,
+                    toolName: toolId,
+                    args,
+                    result,
+                    success: true,
+                    duration
+                });
+            } catch (err) {
+                if (err instanceof SyntaxError) {
+                    logger.error('[Executor] ❌ 历史模块存在语法错误:', err);
+                } else {
+                    logger.warn('[Executor] ⚠️ 记录历史失败:', err.message);
+                }
+            }
+
+            return result;
+        } catch (error) {
+            const duration = Date.now() - startTime;
+            logger.error(
+                `[Executor] ❌ Claude native 工具执行失败: ${toolId} (耗时 ${duration}ms)`
+            );
+            logger.error(error);
+
+            // 失败也记录（与主分支 catch 路径对齐）
+            try {
+                recordToolCall({
+                    toolId,
+                    toolName: toolId,
+                    args,
+                    result: null,
+                    success: false,
+                    duration,
+                    error: error.message
+                });
+            } catch (err) {
+                if (err instanceof SyntaxError) {
+                    logger.error('[Executor] ❌ 历史模块存在语法错误:', err);
+                } else {
+                    logger.warn('[Executor] ⚠️ 记录历史失败:', err.message);
+                }
+            }
+
+            throw error;
+        }
     }
 
     // XML 模式下的提示
@@ -333,7 +403,6 @@ export async function executeTool(toolId, args, options = {}) {
     try {
         // 1. 权限检查
         try {
-            const { checkToolPermission } = await import('./permissions.js');
             const permission = checkToolPermission(toolId, toolName);
 
             if (!permission.allowed) {
@@ -342,9 +411,22 @@ export async function executeTool(toolId, args, options = {}) {
 
                 throw new Error(permission.message || `无权限执行工具: ${toolName}`);
             }
+
+            // requireConfirmation 开启时弹窗等待用户批准，拒绝走 ERROR 路径让 LLM 知道。
+            // 透传 options.signal 让用户点停止按钮 / 切走会话时关闭对话框，避免永久 RUNNING
+            const approved = await confirmToolExecutionIfRequired(toolId, toolName, args, {
+                signal: options.signal
+            });
+            if (!approved) {
+                logger.warn(`[Executor] ❌ 用户拒绝执行: ${toolName}`);
+                throw new Error(`用户拒绝执行工具 "${toolName}"`);
+            }
         } catch (err) {
-            // 如果是权限拒绝错误，直接抛出
-            if (err.message && err.message.includes('无权限')) {
+            // 如果是权限拒绝 / 用户拒绝错误，直接抛出
+            if (
+                err.message &&
+                (err.message.includes('无权限') || err.message.includes('用户拒绝'))
+            ) {
                 throw err;
             }
             // 模块导入失败（语法错误、文件缺失）- 这是严重错误
@@ -377,11 +459,12 @@ export async function executeTool(toolId, args, options = {}) {
             throw new Error(errorMsg);
         }
 
-        // 4. 执行工具（带超时）— MCP 工具使用更长的超时
-        const isMCP = toolId.includes('__');
+        // 4. 执行工具（带超时 + 外部 abort）— MCP 工具使用更长的超时
+        // orchestrator 传的是裸工具名（不含 serverId__ 前缀），必须按注册类型判定
+        const isMCP = tool.type === 'mcp';
         const defaultTimeout = isMCP ? MCP_TIMEOUT : DEFAULT_TIMEOUT;
         const timeout = Math.min(options.timeout || defaultTimeout, MAX_TIMEOUT);
-        const result = await executeWithTimeout(tool, args, timeout);
+        const result = await executeWithTimeout(tool, args, timeout, options.signal);
 
         const duration = Date.now() - startTime;
 
@@ -390,7 +473,6 @@ export async function executeTool(toolId, args, options = {}) {
 
         // 记录到历史
         try {
-            const { recordToolCall } = await import('./history.js');
             recordToolCall({
                 toolId,
                 toolName,
@@ -417,7 +499,6 @@ export async function executeTool(toolId, args, options = {}) {
 
         // 记录到历史
         try {
-            const { recordToolCall } = await import('./history.js');
             recordToolCall({
                 toolId,
                 toolName,
@@ -441,19 +522,41 @@ export async function executeTool(toolId, args, options = {}) {
 }
 
 /**
- * 带超时的工具执行
- * @param {Object} tool - 工具定义
- * @param {Object} args - 参数
- * @param {number} timeout - 超时时间（毫秒）
- * @returns {Promise<Object>} 执行结果
+ * 带超时 + 外部取消的工具执行
+ *
+ * 内部 AbortController 同时承载 timeout 触发 + 外部 signal forward：
+ * - tool.call({ signal }) 拿到的 signal 在任一条件触发时 aborted=true，长跑工具可主动停止
+ * - timeoutPromise / externalAbortPromise 任一 reject 让 Promise.race 立即返回
+ * - 外部 signal 已 aborted 时直接抛 AbortError，连 tool.call 都不调用
  */
-async function executeWithTimeout(tool, args, timeout) {
+async function executeWithTimeout(tool, args, timeout, externalSignal = null) {
+    if (typeof tool.call !== 'function') {
+        throw new Error(`工具处理器不存在: ${tool.id}`);
+    }
+
+    // 已 abort 短路，避免无谓的工具启动
+    if (externalSignal?.aborted) {
+        throw new DOMException('Tool execution aborted', 'AbortError');
+    }
+
     const abortController = new AbortController();
     const { signal } = abortController;
 
-    // 统一路径：所有工具都通过 tool.call 执行
-    if (typeof tool.call !== 'function') {
-        throw new Error(`工具处理器不存在: ${tool.id}`);
+    // 收集所有挂在 externalSignal 上的 listener，正常完成路径统一移除避免内存泄漏。
+    // 之前 detachExternal 只清第一个 forward listener，externalAbortPromise 内的匿名
+    // onAbort 永久滞留 → 长会话多次工具调用 → signal 累积 N 个 listener
+    const externalListeners = [];
+    const detachExternal = () => {
+        if (!externalSignal) return;
+        for (const fn of externalListeners) {
+            externalSignal.removeEventListener('abort', fn);
+        }
+        externalListeners.length = 0;
+    };
+    if (externalSignal) {
+        const forwardAbort = () => abortController.abort();
+        externalSignal.addEventListener('abort', forwardAbort, { once: true });
+        externalListeners.push(forwardAbort);
     }
 
     const executePromise = tool.call(args, { signal });
@@ -466,12 +569,26 @@ async function executeWithTimeout(tool, args, timeout) {
         }, timeout);
     });
 
+    // 外部 signal abort 时显式 reject Promise.race，避免 tool.call 不响应 signal 时永久挂起
+    const externalAbortPromise = new Promise((_, reject) => {
+        if (!externalSignal) return;
+        if (externalSignal.aborted) {
+            reject(new DOMException('Tool execution aborted', 'AbortError'));
+            return;
+        }
+        const onAbort = () => reject(new DOMException('Tool execution aborted', 'AbortError'));
+        externalSignal.addEventListener('abort', onAbort, { once: true });
+        externalListeners.push(onAbort);
+    });
+
     try {
-        const result = await Promise.race([executePromise, timeoutPromise]);
+        const result = await Promise.race([executePromise, timeoutPromise, externalAbortPromise]);
         clearTimeout(timeoutId);
+        detachExternal();
         return result;
     } catch (error) {
         clearTimeout(timeoutId);
+        detachExternal();
         abortController.abort();
         throw error;
     }
@@ -538,9 +655,19 @@ export async function executeToolWithRetry(toolId, args, options = {}) {
         } catch (error) {
             lastError = error;
 
+            // 用户取消/拒绝/权限拒绝不是瞬态故障，重试只会连环弹确认框
+            if (
+                error.name === 'AbortError' ||
+                (error.message &&
+                    (error.message.includes('用户拒绝') || error.message.includes('无权限')))
+            ) {
+                throw error;
+            }
+
             if (attempt < maxRetries) {
-                logger.warn(`[Executor] ⚠️ 第 ${attempt} 次尝试失败，${retryDelay}ms 后重试...`);
-                await delay(retryDelay * attempt); // 指数退避
+                const backoff = retryDelay * 2 ** (attempt - 1);
+                logger.warn(`[Executor] ⚠️ 第 ${attempt} 次尝试失败，${backoff}ms 后重试...`);
+                await delay(backoff); // 指数退避
             }
         }
     }

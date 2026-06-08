@@ -600,7 +600,7 @@ export function closeThemeEditor(revert = true) {
 
     if (revert && beforeSnapshot) {
         resetTheme();
-        applyTheme(beforeSnapshot, { skipEvent: true });
+        applyTheme(beforeSnapshot);
     }
 
     m.style.display = 'none';

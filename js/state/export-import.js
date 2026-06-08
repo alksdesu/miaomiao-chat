@@ -20,19 +20,70 @@ import {
     loadAllFromStore
 } from './storage.js';
 import { loadSavedConfigs } from './config.js';
-import { loadSessions } from './sessions.js';
+import { loadSessions, reloadCurrentSessionMessages } from './sessions.js';
 import { showNotification } from '../ui/notifications.js';
+import { populateModelSelect } from '../ui/models.js';
 import { showConfirmDialog } from '../utils/dialogs.js';
-import { sanitizeMessageForExport } from '../api/format-converter.js'; // 过滤私有字段
+import { sanitizeMessageForExport, ensureIdMap } from '../api/format-converter.js'; // 过滤私有字段 + 旧数据 idMap 补齐
 import { categorizeFile } from '../utils/file-helpers.js';
 import {
     SCHEMA_VERSION,
     isSchemaFormatParts,
     getTextContent,
-    getThinkingContent
+    getThinkingContent,
+    agePendingToolCallsInPlace,
+    validateToolPairings
 } from '../messages/schema.js';
 import { migrateSession } from '../messages/migration.js';
 import { logger } from '../utils/logger.js';
+import { IMPORT_FILE_MAX_SIZE } from '../utils/constants.js';
+
+/**
+ * 标记导入消息中缺签名的 thinking part 为 _edited
+ *
+ * 导出走 sanitizeMessageForExport / EXPORT_SENSITIVE_KEYS 黑名单剥离了 signature 等私有字段；
+ * 重新导入后 thinking part 缺 signature 在 Claude adapter 会被整块跳过 → thinking 文本丢失。
+ * 标 _edited=true 让 adapter 走"用户编辑过"路径，按 redacted 之外的 fallback 保留文本但不下发
+ * （Anthropic 推荐的处理方式：缺签名的 thinking block 不能回传 API 校验）
+ */
+function markStrippedThinkingAsEdited(messages) {
+    if (!Array.isArray(messages)) return 0;
+    let marked = 0;
+    for (const msg of messages) {
+        if (!Array.isArray(msg?.parts)) continue;
+        for (const p of msg.parts) {
+            if (p?.type !== 'thinking') continue;
+            // redacted_thinking 走 data 字段路径，不需要 signature
+            if (p.redacted) continue;
+            // 同时清理可能残留的孤儿 signatureFormat / 跨家继承字段
+            if (!p.signature || p.signature.length === 0) {
+                p._edited = true;
+                delete p.signatureFormat;
+                marked++;
+            }
+        }
+    }
+    return marked;
+}
+
+/**
+ * 主动补齐导入消息的 tool_call part.idMap 三槽（旧版本备份可能缺 idMap）。
+ *
+ * 拆分 ensureIdMap 入口后，请求路径上的 getMappedId 退化为纯 select，
+ * 缺 idMap 时只返回临时派生 id 不写回 part；持久化补齐统一在导入入口完成
+ * @returns {number} 实际补齐的 tool_call part 数量
+ */
+function backfillToolCallIdMap(messages) {
+    if (!Array.isArray(messages)) return 0;
+    let filled = 0;
+    for (const msg of messages) {
+        if (!Array.isArray(msg?.parts)) continue;
+        for (const p of msg.parts) {
+            if (p?.type === 'tool_call' && ensureIdMap(p)) filled++;
+        }
+    }
+    return filled;
+}
 
 /**
  * 生成导出文件名
@@ -108,9 +159,10 @@ async function loadMessagesForSessions(sessions) {
 /**
  * 清理会话中的私有字段
  * @param {Object} session - 会话对象
+ * @param {{sensitiveStripped:number}} [stats] - 可选累加器，导出路径用于统计剥离量提示用户
  * @returns {Object} 清理后的会话对象
  */
-function sanitizeSession(session) {
+function sanitizeSession(session, stats = null) {
     if (!session) return null;
 
     // 深拷贝会话对象
@@ -118,7 +170,7 @@ function sanitizeSession(session) {
 
     // 清理 messages 数组
     if (Array.isArray(cleaned.messages)) {
-        cleaned.messages = cleaned.messages.map((msg) => sanitizeMessageForExport(msg));
+        cleaned.messages = cleaned.messages.map((msg) => sanitizeMessageForExport(msg, stats));
     }
 
     return cleaned;
@@ -201,7 +253,10 @@ export async function exportSessions() {
         const sessionsWithMessages = await loadMessagesForSessions(sessions);
 
         // 清理会话中的私有字段
-        const cleanedSessions = sessionsWithMessages.map((session) => sanitizeSession(session));
+        const exportStats = { sensitiveStripped: 0 };
+        const cleanedSessions = sessionsWithMessages.map((session) =>
+            sanitizeSession(session, exportStats)
+        );
 
         const folders = await loadAllFromStore(STORES.FOLDERS);
 
@@ -215,7 +270,11 @@ export async function exportSessions() {
         };
 
         downloadJSON(exportData, generateExportFilename('sessions'));
-        showNotification(`已导出 ${cleanedSessions.length} 个会话`, 'success');
+        const strippedNote =
+            exportStats.sensitiveStripped > 0
+                ? `（已移除 ${exportStats.sensitiveStripped} 个服务端签名字段以保护隐私）`
+                : '';
+        showNotification(`已导出 ${cleanedSessions.length} 个会话${strippedNote}`, 'success');
     } catch (error) {
         logger.error('导出会话失败:', error);
         showNotification('导出会话失败: ' + error.message, 'error');
@@ -261,7 +320,10 @@ export async function exportAllData() {
 
         // 清理会话中的私有字段
         const sessionsWithMessages = await loadMessagesForSessions(sessions);
-        const cleanedSessions = sessionsWithMessages.map((session) => sanitizeSession(session));
+        const exportStats = { sensitiveStripped: 0 };
+        const cleanedSessions = sessionsWithMessages.map((session) =>
+            sanitizeSession(session, exportStats)
+        );
 
         const folders = await loadAllFromStore(STORES.FOLDERS);
 
@@ -282,7 +344,14 @@ export async function exportAllData() {
         };
 
         downloadJSON(exportData, generateExportFilename('backup'));
-        showNotification(`已导出完整备份（${cleanedSessions.length} 个会话）`, 'success');
+        const strippedNote =
+            exportStats.sensitiveStripped > 0
+                ? `（已移除 ${exportStats.sensitiveStripped} 个服务端签名字段以保护隐私）`
+                : '';
+        showNotification(
+            `已导出完整备份（${cleanedSessions.length} 个会话）${strippedNote}`,
+            'success'
+        );
     } catch (error) {
         logger.error('导出失败:', error);
         showNotification('导出失败: ' + error.message, 'error');
@@ -333,11 +402,11 @@ async function importConfig(data) {
         loadSavedConfigs();
 
         // 新增：触发模型列表刷新
-        import('../ui/models.js')
-            .then(({ populateModelSelect }) => {
-                populateModelSelect();
-            })
-            .catch((err) => logger.warn('Failed to refresh model list:', err));
+        try {
+            populateModelSelect();
+        } catch (err) {
+            logger.warn('Failed to refresh model list:', err);
+        }
 
         showNotification('配置已导入，请刷新页面应用更改', 'success');
     } catch (error) {
@@ -356,6 +425,32 @@ async function importConfig(data) {
 }
 
 /**
+ * 白名单清理 folders 数组：剥离 __proto__/constructor 等危险 id + 字段类型校验
+ * 防御恶意 JSON 文件污染文件夹列表 / 破坏 sort 比较函数
+ */
+const _FOLDER_DANGER_IDS = new Set(['__proto__', 'constructor', 'prototype']);
+function sanitizeFolders(arr) {
+    if (!Array.isArray(arr)) return [];
+    return arr
+        .filter(
+            (f) =>
+                f &&
+                typeof f === 'object' &&
+                typeof f.id === 'string' &&
+                f.id.length > 0 &&
+                !_FOLDER_DANGER_IDS.has(f.id) &&
+                typeof f.name === 'string'
+        )
+        .map((f) => ({
+            id: f.id,
+            name: String(f.name).slice(0, 200),
+            order: Number.isFinite(Number(f.order)) ? Number(f.order) : 0,
+            collapsed: !!f.collapsed,
+            createdAt: Number.isFinite(Number(f.createdAt)) ? Number(f.createdAt) : Date.now()
+        }));
+}
+
+/**
  * 导入会话
  * @param {Object} data - 导入的数据
  */
@@ -365,9 +460,18 @@ async function importSessions(data) {
     }
 
     let importCount = 0;
+    let totalOrphans = 0;
     const errors = [];
 
+    // 每 K 个 session 后让出主线程，避免 50MB 大备份串行导入冻结整 tab
+    const IMPORT_YIELD_EVERY = 5;
+    let _sessionIndex = 0;
+
     for (const session of data.sessions) {
+        if (_sessionIndex > 0 && _sessionIndex % IMPORT_YIELD_EVERY === 0) {
+            await new Promise((r) => setTimeout(r, 0));
+        }
+        _sessionIndex++;
         try {
             // 检查会话是否已存在
             const existing = state.sessions.find((s) => s.id === session.id);
@@ -406,6 +510,31 @@ async function importSessions(data) {
                         logger.warn(`[Import] 迁移失败，使用原始格式:`, e);
                     }
                 }
+                // 导出时已剥离 signature / signatureFormat / encryptedContent 等私有字段
+                // (clearForeignSignatures 走 EXPORT_SENSITIVE_KEYS 黑名单)；
+                // 没有 signature 的 thinking part 在 Claude adapter 会走 'signature 缺失则跳过'
+                // 分支让整块 thinking 消失。改标 _edited=true 让 adapter 走编辑路径，
+                // 行为语义等价于"用户编辑过推理"，Claude 不会校验 signature 也不报 400
+                markStrippedThinkingAsEdited(finalMessages);
+                // 旧版本备份的 tool_call part 可能缺 idMap 三槽，主动补齐避免请求路径上隐式触发
+                backfillToolCallIdMap(finalMessages);
+                // 跨设备/旧备份的 pending/running tool_call 在新设备上不可能等到结果，
+                // 必须老化为 error 并校验配对；否则下次请求会带着孤儿 tool_call 触发 API 400
+                let _agedCount = 0;
+                let _orphanCount = 0;
+                try {
+                    _agedCount = agePendingToolCallsInPlace(finalMessages, { nowMs: Date.now() });
+                    const v = validateToolPairings(finalMessages);
+                    _orphanCount = v.orphans.length;
+                    if (_agedCount > 0 || !v.valid) {
+                        logger.warn(
+                            `[Import] 会话 ${session.id} 老化 ${_agedCount} 个 pending tool_call, 剩余孤儿 ${_orphanCount}`
+                        );
+                    }
+                } catch (e) {
+                    logger.warn('[Import] 老化/校验失败:', e);
+                }
+                totalOrphans += _agedCount;
                 await saveSessionMessages(session.id, {
                     messages: finalMessages
                 });
@@ -417,32 +546,51 @@ async function importSessions(data) {
         }
     }
 
-    // 导入 folders
+    // 导入 folders（白名单校验防恶意字段污染 + __proto__ 注入）
     if (Array.isArray(data.folders) && data.folders.length > 0) {
         try {
             const { loadFolders } = await import('./folders.js');
             const { getDB } = await import('./storage.js');
             const db = getDB();
             if (db) {
+                const sanitized = sanitizeFolders(data.folders);
+                const skipped = data.folders.length - sanitized.length;
                 const tx = db.transaction([STORES.FOLDERS], 'readwrite');
                 const store = tx.objectStore(STORES.FOLDERS);
-                for (const folder of data.folders) {
+                for (const folder of sanitized) {
                     store.put(folder);
                 }
                 await new Promise((resolve, reject) => {
                     tx.oncomplete = resolve;
                     tx.onerror = () => reject(tx.error);
                 });
+                if (skipped > 0) {
+                    showNotification(`已跳过 ${skipped} 个非法文件夹条目`, 'warning');
+                }
             }
             await loadFolders();
         } catch (e) {
             logger.warn('[Import] 导入 folders 失败:', e);
+            showNotification(`导入文件夹失败：${e.message || e}`, 'warning');
         }
     }
 
     // 重新加载会话列表
     await loadSessions();
 
+    // 若导入数据中含当前激活会话，loadSessions 内部对同 id 不重切，需主动 reload messages + 刷 baseline
+    // 否则 UI 仍显示旧消息且下次保存触发乐观锁假冲突让用户被强制丢改动
+    if (data.sessions.some((s) => s.id === state.currentSessionId)) {
+        try {
+            await reloadCurrentSessionMessages();
+        } catch (e) {
+            logger.warn('[Import] 覆盖当前会话后 reload 失败:', e);
+        }
+    }
+
+    if (totalOrphans > 0) {
+        showNotification(`导入完成, ${totalOrphans} 个工具调用孤儿已自动老化`, 'warning');
+    }
     if (errors.length > 0) {
         showNotification(`已导入 ${importCount} 个会话，${errors.length} 个失败`, 'warning');
     } else {
@@ -480,7 +628,14 @@ async function importFullBackup(data) {
 
         // 导入会话
         let importCount = 0;
+        let totalOrphans = 0;
+        const FB_YIELD_EVERY = 5;
+        let _fbIndex = 0;
         for (const session of data.sessions) {
+            if (_fbIndex > 0 && _fbIndex % FB_YIELD_EVERY === 0) {
+                await new Promise((r) => setTimeout(r, 0));
+            }
+            _fbIndex++;
             try {
                 const {
                     messages,
@@ -508,6 +663,27 @@ async function importFullBackup(data) {
                             logger.warn(`[Import] 迁移失败，使用原始格式:`, e);
                         }
                     }
+                    markStrippedThinkingAsEdited(finalMessages);
+                    backfillToolCallIdMap(finalMessages);
+                    // 跨设备/旧备份的 pending/running tool_call 在新设备上不可能等到结果，
+                    // 必须老化为 error 并校验配对；否则下次请求会带着孤儿 tool_call 触发 API 400
+                    let _agedCount = 0;
+                    let _orphanCount = 0;
+                    try {
+                        _agedCount = agePendingToolCallsInPlace(finalMessages, {
+                            nowMs: Date.now()
+                        });
+                        const v = validateToolPairings(finalMessages);
+                        _orphanCount = v.orphans.length;
+                        if (_agedCount > 0 || !v.valid) {
+                            logger.warn(
+                                `[Import] 会话 ${session.id} 老化 ${_agedCount} 个 pending tool_call, 剩余孤儿 ${_orphanCount}`
+                            );
+                        }
+                    } catch (e) {
+                        logger.warn('[Import] 老化/校验失败:', e);
+                    }
+                    totalOrphans += _agedCount;
                     await saveSessionMessages(session.id, {
                         messages: finalMessages
                     });
@@ -523,15 +699,20 @@ async function importFullBackup(data) {
             const { getDB } = await import('./storage.js');
             const db = getDB();
             if (db) {
+                const sanitized = sanitizeFolders(data.folders);
+                const skipped = data.folders.length - sanitized.length;
                 const tx = db.transaction([STORES.FOLDERS], 'readwrite');
                 const store = tx.objectStore(STORES.FOLDERS);
-                for (const folder of data.folders) {
+                for (const folder of sanitized) {
                     store.put(folder);
                 }
                 await new Promise((resolve, reject) => {
                     tx.oncomplete = resolve;
                     tx.onerror = () => reject(tx.error);
                 });
+                if (skipped > 0) {
+                    showNotification(`完整备份已跳过 ${skipped} 个非法文件夹条目`, 'warning');
+                }
             }
             await loadFolders();
         }
@@ -540,13 +721,25 @@ async function importFullBackup(data) {
         loadSavedConfigs();
         await loadSessions();
 
-        // 新增：触发模型列表刷新
-        import('../ui/models.js')
-            .then(({ populateModelSelect }) => {
-                populateModelSelect();
-            })
-            .catch((err) => logger.warn('Failed to refresh model list:', err));
+        // 与 importSessions 同款守卫：覆盖当前激活会话时主动 reload + 刷 baseline
+        if (data.sessions.some((s) => s.id === state.currentSessionId)) {
+            try {
+                await reloadCurrentSessionMessages();
+            } catch (e) {
+                logger.warn('[Import] 覆盖当前会话后 reload 失败:', e);
+            }
+        }
 
+        // 新增：触发模型列表刷新
+        try {
+            populateModelSelect();
+        } catch (err) {
+            logger.warn('Failed to refresh model list:', err);
+        }
+
+        if (totalOrphans > 0) {
+            showNotification(`导入完成, ${totalOrphans} 个工具调用孤儿已自动老化`, 'warning');
+        }
         showNotification(
             `已导入完整备份（${importCount} 个会话），请刷新页面应用配置更改`,
             'success'
@@ -580,6 +773,17 @@ export function triggerImport() {
 export async function handleImportFile(event) {
     const file = event.target.files[0];
     if (!file) return;
+
+    // size cap：用户误选大文件（含大量 base64 图）会直接 OOM 卡死 tab + 无救援路径
+    if (file.size > IMPORT_FILE_MAX_SIZE) {
+        const limitMb = (IMPORT_FILE_MAX_SIZE / 1024 / 1024).toFixed(0);
+        showNotification(
+            `导入文件过大（${(file.size / 1024 / 1024).toFixed(1)}MB），上限 ${limitMb}MB`,
+            'error',
+            8000
+        );
+        return;
+    }
 
     try {
         const text = await file.text();

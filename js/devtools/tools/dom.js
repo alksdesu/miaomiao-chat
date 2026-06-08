@@ -2,6 +2,7 @@
  * DevTools DOM 查询工具 — CSS 选择器查询元素
  */
 
+import { state } from '../../core/state.js';
 import { buildToolFromLegacy } from '../../tools/build-tool.js';
 
 const DEFAULT_STYLE_PROPS = [
@@ -46,7 +47,6 @@ export const queryDomTool = {
 };
 
 export async function queryDomHandler(args) {
-    const { state } = await import('../../core/state.js');
     const sessionId = state.currentSessionId;
 
     const elements = document.querySelectorAll(args.selector);

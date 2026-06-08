@@ -2,7 +2,10 @@
  * DevTools 请求构建器工具 — 发送 HTTP 请求
  */
 
+import { state } from '../../core/state.js';
 import { buildToolFromLegacy } from '../../tools/build-tool.js';
+import { openNetworkPanel, switchTab } from '../../network/panel.js';
+import { importToBuilder, programmaticSend } from '../../network/builder-view.js';
 
 export const sendRequestTool = {
     name: 'devtools_send_request',
@@ -39,15 +42,12 @@ export const sendRequestTool = {
 };
 
 export async function sendRequestHandler(args) {
-    const { state } = await import('../../core/state.js');
     const sessionId = state.currentSessionId;
 
     try {
-        const { openNetworkPanel, switchTab } = await import('../../network/panel.js');
         openNetworkPanel();
         switchTab('builder');
 
-        const { importToBuilder, programmaticSend } = await import('../../network/builder-view.js');
         const record = {
             method: args.method,
             url: args.url,

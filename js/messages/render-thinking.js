@@ -9,12 +9,86 @@ import { safeMarkedParse } from '../utils/markdown.js';
 const THINKING_BLOCK_SEPARATOR = '\n\n---\n\n';
 
 // 惰性渲染缓存：thinkingId -> rawText
+// LRU 上限：100k thinking 多次重渲累积百份副本可达 GB 级，需主动淘汰最老条目
+const THINKING_CACHE_MAX_ENTRIES = 200;
 const thinkingRawContentMap = new Map();
 let thinkingIdCounter = 0;
+
+function setThinkingCacheEntry(tid, content) {
+    if (thinkingRawContentMap.has(tid)) {
+        thinkingRawContentMap.delete(tid);
+    } else if (thinkingRawContentMap.size >= THINKING_CACHE_MAX_ENTRIES) {
+        // 淘汰最老一条（Map.keys() 按插入顺序）
+        const oldest = thinkingRawContentMap.keys().next().value;
+        if (oldest !== undefined) thinkingRawContentMap.delete(oldest);
+    }
+    thinkingRawContentMap.set(tid, content);
+}
 
 /** 清理思维链惰性渲染缓存（会话切换时调用） */
 export function clearThinkingCache() {
     thinkingRawContentMap.clear();
+}
+
+/**
+ * 主动清理指定 DOM 节点内的所有 thinking-id 缓存
+ * 用于 rerenderMessageContent / renderReplyWithSelector 重渲前避免旧 tid 永久泄漏
+ */
+export function purgeThinkingCacheInElement(el) {
+    if (!el || typeof el.querySelectorAll !== 'function') return;
+    el.querySelectorAll('[data-thinking-id]').forEach((node) => {
+        const tid = node.dataset.thinkingId;
+        if (tid) thinkingRawContentMap.delete(tid);
+    });
+}
+
+/**
+ * 捕获指定容器内所有 thinking-block 的展开状态（按位置索引）
+ * thinkingId 每次渲染都是新临时值不能持久化，按 block 在容器内的位置索引识别即可对齐
+ * @param {HTMLElement} el
+ * @returns {number[]} 当前已展开的 block 索引数组
+ */
+export function captureExpandedThinkingState(el) {
+    if (!el || typeof el.querySelectorAll !== 'function') return [];
+    const blocks = el.querySelectorAll('.thinking-block');
+    const expanded = [];
+    blocks.forEach((block, idx) => {
+        if (!block.classList.contains('collapsed')) expanded.push(idx);
+    });
+    return expanded;
+}
+
+/**
+ * 还原 thinking-block 展开状态（位置索引匹配）
+ * rerender 后调用：把 captureExpandedThinkingState 拿到的索引集合还原到新 block 上，
+ * 让用户展开的思维链不会因重渲被强制折叠
+ * @param {HTMLElement} el
+ * @param {number[]} expanded - captureExpandedThinkingState 返回值
+ * @param {Function} [enhanceCodeBlocksFn] - 展开时按需触发代码块增强
+ */
+export function restoreExpandedThinkingState(el, expanded, enhanceCodeBlocksFn) {
+    if (!el || !Array.isArray(expanded) || expanded.length === 0) return;
+    const blocks = el.querySelectorAll('.thinking-block');
+    expanded.forEach((idx) => {
+        const block = blocks[idx];
+        if (!block) return;
+        block.classList.remove('collapsed');
+        const header = block.querySelector('.thinking-header');
+        header?.setAttribute('aria-expanded', 'true');
+        const icon = header?.querySelector('.thinking-toggle-icon');
+        if (icon) icon.textContent = '▼';
+
+        // 走和 toggleThinking 展开分支一样的惰性渲染路径，避免还原后展开仍是空白
+        const contentDiv = block.querySelector('.thinking-content');
+        const tid = contentDiv?.dataset.thinkingId;
+        if (tid && thinkingRawContentMap.has(tid)) {
+            // eslint-disable-next-line no-restricted-syntax -- 已审计：safeMarkedParse 输出
+            contentDiv.innerHTML = safeMarkedParse(thinkingRawContentMap.get(tid));
+            thinkingRawContentMap.delete(tid);
+            delete contentDiv.dataset.thinkingId;
+            if (enhanceCodeBlocksFn) enhanceCodeBlocksFn(block);
+        }
+    });
 }
 
 /**
@@ -57,11 +131,11 @@ function renderSingleThinkingBlock(content, label, streamingClass = '') {
     const isStreaming = streamingClass.includes('streaming');
     const contentHtml = isStreaming ? safeMarkedParse(content || '') : '';
 
-    // 折叠状态下不解析 Markdown，存储原始文本到 JS Map
+    // 折叠状态下不解析 Markdown，存储原始文本到 JS Map（带 LRU 淘汰）
     let lazyAttr = '';
     if (!isStreaming && content) {
         const tid = `t_${++thinkingIdCounter}`;
-        thinkingRawContentMap.set(tid, content);
+        setThinkingCacheEntry(tid, content);
         lazyAttr = ` data-thinking-id="${tid}"`;
     }
 

@@ -4,7 +4,7 @@
  */
 
 import { logger } from './logger.js';
-import { PartType, MediaKind, hasParts } from '../messages/schema.js';
+import { PartType, MediaKind, hasParts, textPart, mediaPart } from '../messages/schema.js';
 
 /**
  * 根据模型能力过滤和转换消息
@@ -150,18 +150,24 @@ function convertAssistantImageToUser(msg, messageIndex) {
         newContent.push(img);
     });
 
+    // 同步重建 parts[] 与 content 字段一致 — Claude/Gemini 的 partsToAPIMessages
+    // 只迭代 msg.parts，若 delete result.parts 转换后的 user 消息整条丢失
+    const newParts = [textPart(placeholder)];
+    for (const img of imageParts) {
+        const url = img.image_url?.url;
+        if (url) newParts.push(mediaPart(MediaKind.IMAGE, url, ''));
+    }
+
     // 返回转换后的 user 消息（保留原消息的 id 等字段）
-    const result = {
+    return {
         ...msg,
         role: 'user',
         content: newContent,
+        parts: newParts,
         _converted: true,
         _originalRole: 'assistant',
         _originalIndex: messageIndex
     };
-    // 移除旧的 parts，避免角色不一致
-    delete result.parts;
-    return result;
 }
 
 /**
@@ -224,20 +230,14 @@ function removeImagesFromMessage(msg, role) {
 
     newText = (newText + placeholder).trim();
 
-    // 简化为字符串格式
-    const result = {
+    // 简化为字符串格式 + 同步重建 parts[] 让 Claude/Gemini partsToAPIMessages
+    // 走 parts 路径时也能拿到合并后的文本（之前只覆写首个 TEXT 不处理多 TEXT/THINKING 合并）
+    const newParts = [textPart(newText)];
+    return {
         ...msg,
-        content: newText
+        content: newText,
+        parts: newParts
     };
-    // 同步更新 parts（移除 media，保留其他）
-    if (result.parts && Array.isArray(result.parts)) {
-        result.parts = result.parts.filter(
-            (p) => !(p.type === PartType.MEDIA && p.media === MediaKind.IMAGE)
-        );
-        const tp = result.parts.find((p) => p.type === PartType.TEXT);
-        if (tp) tp.text = newText;
-    }
-    return result;
 }
 
 /**

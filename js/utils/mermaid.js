@@ -4,7 +4,6 @@
  */
 
 import { logger } from './logger.js';
-import { eventBus } from '../core/events.js';
 
 let mermaidLoadPromise = null;
 let mermaidInstance = null;
@@ -534,12 +533,6 @@ export function getCurrentMermaidTheme() {
     return document.documentElement.classList.contains('dark-theme') ? 'dark' : 'default';
 }
 
-function notifyMermaidLayoutUpdated(container) {
-    if (container?.isConnected) {
-        eventBus.emit('mermaid:layout-updated', { container });
-    }
-}
-
 export function setMermaidSourcePanelVisible(container, visible) {
     const sourcePanel = container.querySelector('.mermaid-source-panel');
     const toggleButton = container.querySelector('.mermaid-toggle-source');
@@ -552,8 +545,6 @@ export function setMermaidSourcePanelVisible(container, visible) {
         toggleButton.textContent = visible ? '收起源码' : '源码';
         toggleButton.setAttribute('aria-expanded', visible ? 'true' : 'false');
     }
-
-    notifyMermaidLayoutUpdated(container);
 }
 
 export async function loadMermaid() {
@@ -673,7 +664,6 @@ export async function renderMermaidBlock(container, options = {}) {
         resetMermaidCanvasScrollPosition(canvas);
         setMermaidStatus(container, 'ready', '已生成图表');
         syncThemeRefreshState(container, requestedTheme);
-        notifyMermaidLayoutUpdated(container);
 
         return {
             ok: true,
@@ -697,7 +687,6 @@ export async function renderMermaidBlock(container, options = {}) {
         setMermaidStatus(container, failure.status, failure.text, {
             showRetry: failure.canRetry
         });
-        notifyMermaidLayoutUpdated(container);
 
         return {
             ok: false,

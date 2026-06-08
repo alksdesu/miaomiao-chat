@@ -4,36 +4,22 @@
  */
 
 import { bindTopmostEscape } from '../utils/modal-stack.js';
+import { trapFocus as baseTrapFocus } from '../utils/focus-trap.js';
 
 /**
- * 焦点陷阱 — 限制 Tab 焦点在模态框内循环
+ * 焦点陷阱 + 初始聚焦（保留原副作用：100ms 后聚焦第一个可聚焦元素）
+ * 公用 utils/focus-trap.js 的 trap 实现，避免 trapFocus 4 处复制漂移
  * @param {HTMLElement} element - 容器元素
  */
 export function trapFocus(element) {
-    const focusableElements = element.querySelectorAll(
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-    );
-    const firstFocusable = focusableElements[0];
-    const lastFocusable = focusableElements[focusableElements.length - 1];
-
-    element.addEventListener('keydown', (e) => {
-        if (e.key === 'Tab') {
-            if (e.shiftKey) {
-                if (document.activeElement === firstFocusable) {
-                    e.preventDefault();
-                    lastFocusable.focus();
-                }
-            } else {
-                if (document.activeElement === lastFocusable) {
-                    e.preventDefault();
-                    firstFocusable.focus();
-                }
-            }
-        }
-    });
-
-    // 初始聚焦
-    setTimeout(() => firstFocusable?.focus(), 100);
+    baseTrapFocus(element);
+    // 初始聚焦：等模态完成显示后聚焦第一个可聚焦元素
+    setTimeout(() => {
+        const first = element.querySelector(
+            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+        );
+        first?.focus();
+    }, 100);
 }
 
 /**

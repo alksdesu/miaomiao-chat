@@ -15,6 +15,7 @@
 
 import { isAndroid } from '../utils/platform.js';
 import { showNotification } from './notifications.js';
+import { closeImageViewer } from './viewer.js';
 import { logger } from '../utils/logger.js';
 
 const ROOT_EXIT_WINDOW_MS = 2000;
@@ -261,7 +262,7 @@ async function dispatchAndroidBack() {
 
     const imageViewerModal = document.getElementById('image-viewer-modal');
     if (imageViewerModal?.classList.contains('open') && isActuallyVisible(imageViewerModal)) {
-        window.closeImageViewer?.();
+        closeImageViewer();
         return markLayerHandled();
     }
 

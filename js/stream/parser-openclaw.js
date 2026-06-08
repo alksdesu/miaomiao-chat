@@ -6,20 +6,29 @@
 import { logger } from '../utils/logger.js';
 import { eventBus } from '../core/events.js';
 import { state } from '../core/state.js';
-import { setIsToolCallPending } from '../core/state-mutations.js';
-import { updateStreamingMessage, renderFinalTextWithThinking } from './helpers.js';
-import { StreamStats, appendStreamStats } from './stats.js';
-import { saveAssistantMessage } from '../messages/sync.js';
-import { setCurrentMessageIndex } from '../messages/dom-sync.js';
+import { StreamStats } from './stats.js';
+import {
+    buildPartsFromStreamingState,
+    buildMetaFromStreamingState
+} from '../messages/parts-builder.js';
 import { openclawClient } from '../api/openclaw.js';
 import { ThinkTagParser } from './think-tag-parser.js';
-import { handleToolCallStream } from './tool-call-handler.js';
+import { ToolMode } from '../messages/schema.js';
+import { DefaultSink } from './sink.js';
+import { generateIdSet } from '../api/format-converter.js';
+import { renderHumanizedError } from '../utils/errors.js';
 
 /**
  * 处理 OpenClaw 的流式事件
  * 由 handler.js 在 openclaw 格式下调用
+ *
+ * @param {string} sessionId
+ * @param {import('./sink.js').StreamSink} [sink] - 输出 sink，缺省走 DefaultSink(sessionId)
+ * @param {AbortSignal|null} [signal] - 用户取消信号；abort 时清理 eventBus listener + 失败 WS run
  */
-export async function handleOpenClawStream(sessionId) {
+export async function handleOpenClawStream(sessionId, sink = null, signal = null) {
+    sink = sink || new DefaultSink(sessionId);
+
     let textContent = '';
     let thinkingContent = ''; // 运行时变量，非旧格式字段
     const thinkTagParser = new ThinkTagParser();
@@ -43,6 +52,22 @@ export async function handleOpenClawStream(sessionId) {
     }
 
     return new Promise((resolve, reject) => {
+        let abortListener = null;
+        let settled = false;
+        const cleanup = () => {
+            removeAllListeners();
+            if (abortListener && signal) {
+                signal.removeEventListener('abort', abortListener);
+                abortListener = null;
+            }
+        };
+        const settle = (fn) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            fn();
+        };
+
         // chat.delta - 流式文本/思维链
         addListener('openclaw:chat-delta', (payload) => {
             if (!payload) return;
@@ -52,7 +77,7 @@ export async function handleOpenClawStream(sessionId) {
             if (deltaType === 'thinking' || deltaType === 'reasoning') {
                 thinkingContent += delta || '';
                 stats.recordTokens(delta || '');
-                updateStreamingMessage(textContent, thinkingContent);
+                sink.streamingUpdate(textContent, thinkingContent);
             } else {
                 const text = delta || payload.text || payload.content || '';
                 if (!text) return;
@@ -64,7 +89,7 @@ export async function handleOpenClawStream(sessionId) {
                 if (thinkingDelta) thinkingContent += thinkingDelta;
                 if (displayText) textContent += displayText;
 
-                updateStreamingMessage(textContent, thinkingContent);
+                sink.streamingUpdate(textContent, thinkingContent);
             }
         });
 
@@ -87,10 +112,15 @@ export async function handleOpenClawStream(sessionId) {
                     } catch {
                         args = {};
                     }
+                    // OpenClaw 永远走原生协议（无 XML 注入路径）
+                    // OpenClaw 网关返回 OpenAI 兼容 id（call_*），按 openai 槽预生成 idMap
+                    const tcId = tc.id || `oc_tc_${Date.now()}`;
                     collectedToolCalls.push({
-                        id: tc.id || `oc_tc_${Date.now()}`,
+                        id: tcId,
                         name: tc.name || tc.function?.name,
-                        arguments: args
+                        arguments: args,
+                        mode: ToolMode.NATIVE,
+                        idMap: generateIdSet(tcId, 'openai')
                     });
                     break;
                 }
@@ -106,102 +136,148 @@ export async function handleOpenClawStream(sessionId) {
 
         // chat.done - 完成
         addListener('openclaw:chat-done', () => {
-            removeAllListeners();
+            settle(() => {
+                // 处理 <think> 标签剩余内容
+                const remaining = thinkTagParser.flush();
+                if (remaining.thinkingDelta) thinkingContent += remaining.thinkingDelta;
+                if (remaining.displayText) textContent += remaining.displayText;
 
-            // 处理 <think> 标签剩余内容
-            const remaining = thinkTagParser.flush();
-            if (remaining.thinkingDelta) thinkingContent += remaining.thinkingDelta;
-            if (remaining.displayText) textContent += remaining.displayText;
-
-            // 如果有工具调用
-            if (hasToolCalls) {
-                if (collectedToolCalls.length > 0) {
+                // 如果有工具调用
+                if (hasToolCalls && collectedToolCalls.length > 0) {
                     if (textContent || thinkingContent) {
-                        renderFinalTextWithThinking(textContent, thinkingContent);
+                        sink.renderFinalText(textContent, thinkingContent);
                     }
 
-                    const messageIndex = saveAssistantMessage({
-                        textContent: textContent || '(调用工具)',
-                        thinkingContent,
-                        toolCalls: collectedToolCalls,
-                        streamStats: stats.getPartialData(),
-                        sessionId
-                    });
-                    setCurrentMessageIndex(messageIndex);
+                    sink.commit(
+                        buildPartsFromStreamingState({
+                            textContent: textContent || '(调用工具)',
+                            thinkingContent,
+                            toolCalls: collectedToolCalls,
+                            signatureFormat: 'claude'
+                        }),
+                        buildMetaFromStreamingState({
+                            streamStats: stats.getPartialData()
+                        }),
+                        { toolCalls: collectedToolCalls }
+                    );
 
-                    handleToolCallStream(collectedToolCalls, {
-                        endpoint: openclawClient.url,
-                        apiKey: openclawClient.token,
-                        model: state.selectedModel,
-                        sessionId
-                    });
+                    sink.triggerToolCalls(collectedToolCalls);
 
                     resolve();
                     return;
                 }
-            }
 
-            // 无工具调用，正常完成
-            finalizeOpenClawStream(textContent, thinkingContent, sessionId, stats);
-            openclawClient.completeRun({ done: true });
-            resolve();
+                // 无工具调用，正常完成
+                finalizeOpenClawStream(textContent, thinkingContent, sessionId, stats, sink);
+                openclawClient.completeRun({ done: true });
+                resolve();
+            });
         });
 
-        // 错误事件
+        // 错误事件 — 走 sink.commitError 让消息标记 isError + 携 errorHtml，
+        // 与 base-parser.finalizeStreamWithError 路径对称；不再用 finalizeOpenClawStream
+        // 把错误消息当正常 commit 保存
         addListener('openclaw:error', (payload) => {
-            removeAllListeners();
+            settle(() => {
+                const errorCode = payload?.code || 'openclaw_error';
+                const errorMessage = payload?.message || '未知错误';
+                logger.error('[OpenClaw Parser] 错误:', errorMessage);
 
-            const errorMsg = payload?.message || '未知错误';
-            logger.error('[OpenClaw Parser] 错误:', errorMsg);
+                if (state.isToolCallPending) state.isToolCallPending = false;
+                stats.finalize();
 
-            if (textContent || thinkingContent) {
-                finalizeOpenClawStream(textContent, thinkingContent, sessionId, stats);
-            }
+                if (textContent || thinkingContent) {
+                    sink.renderFinalText(textContent, thinkingContent);
+                }
 
-            if (sessionId === state.currentSessionId) {
-                eventBus.emit('stream:error', {
-                    errorCode: payload?.code || 'openclaw_error',
-                    errorMessage: errorMsg
-                });
-            }
+                const errorObject = { code: errorCode, message: errorMessage, type: errorCode };
+                const errorHtml =
+                    renderHumanizedError(errorObject, errorCode, true) +
+                    `<div class="stream-error-partial-save">\u{1F4BE} 已保存部分接收的内容</div>`;
+                sink.renderError(errorHtml);
 
-            openclawClient.failRun(new Error(errorMsg));
-            reject(new Error(errorMsg));
+                stats.recalculateTokenCount({ textContent, thinkingContent, contentParts: [] });
+                sink.appendStats(stats);
+
+                sink.commitError(
+                    buildPartsFromStreamingState({
+                        textContent,
+                        thinkingContent,
+                        signatureFormat: 'claude'
+                    }),
+                    buildMetaFromStreamingState({ streamStats: stats.getData() }),
+                    {},
+                    { errorCode, errorMessage, errorHtml, partialContent: textContent }
+                );
+
+                openclawClient.failRun(new Error(errorMessage));
+                reject(new Error(errorMessage));
+            });
         });
+
+        // WS 异常断开 — openclaw.js _setupMessageHandler.onclose 会触发
+        // openclaw:disconnected 事件并 reject activeRunReject；如果 parser 此时仍
+        // 挂着 5 个 listener 且没收到 chat.done/error，listener 会永久驻留，被多次
+        // 重试污染 eventBus。订阅 disconnected 让 settle 也走清理路径
+        addListener('openclaw:disconnected', (payload) => {
+            settle(() => {
+                const reason = payload?.reason || 'WebSocket disconnected';
+                logger.warn('[OpenClaw Parser] 连接断开，清理 listener:', reason);
+                const disconnectErr = new Error(reason);
+                disconnectErr.name = 'OpenClawDisconnectedError';
+                reject(disconnectErr);
+            });
+        });
+
+        // abort 信号 — 清理 listener 防止后续 WS 事件触发已 settled 流程，
+        // 同时让 openclawClient 取消 run；抛 AbortError 与 base-parser F9 对称
+        if (signal) {
+            if (signal.aborted) {
+                settle(() => {
+                    openclawClient.failRun(new Error('Aborted'));
+                    const abortErr = new Error('Stream aborted by user');
+                    abortErr.name = 'AbortError';
+                    reject(abortErr);
+                });
+                return;
+            }
+            abortListener = () => {
+                settle(() => {
+                    openclawClient.failRun(new Error('Aborted'));
+                    const abortErr = new Error('Stream aborted by user');
+                    abortErr.name = 'AbortError';
+                    reject(abortErr);
+                });
+            };
+            signal.addEventListener('abort', abortListener, { once: true });
+        }
     });
 }
 
 /**
  * 完成 OpenClaw 流处理
  */
-function finalizeOpenClawStream(textContent, thinkingContent, sessionId, stats) {
-    const isBackground = sessionId && sessionId !== state.currentSessionId;
-
+function finalizeOpenClawStream(textContent, thinkingContent, sessionId, stats, sink) {
     if (state.isToolCallPending) {
-        setIsToolCallPending(false);
+        state.isToolCallPending = false;
     }
 
     stats.finalize();
 
-    if (!isBackground && (textContent || thinkingContent)) {
-        renderFinalTextWithThinking(textContent, thinkingContent);
+    if (textContent || thinkingContent) {
+        sink.renderFinalText(textContent, thinkingContent);
     }
 
     stats.recalculateTokenCount({ textContent, thinkingContent, contentParts: [] });
+    sink.appendStats(stats);
 
-    if (!isBackground) {
-        stats.syncToGlobal();
-        appendStreamStats();
-    }
-
-    const messageIndex = saveAssistantMessage({
-        textContent,
-        thinkingContent,
-        streamStats: stats.getData(),
-        sessionId
-    });
-
-    if (!isBackground) {
-        setCurrentMessageIndex(messageIndex);
-    }
+    sink.commit(
+        buildPartsFromStreamingState({
+            textContent,
+            thinkingContent,
+            signatureFormat: 'claude'
+        }),
+        buildMetaFromStreamingState({ streamStats: stats.getData() }),
+        {}
+    );
 }

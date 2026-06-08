@@ -6,28 +6,114 @@
 import { logger } from '../utils/logger.js';
 import { state, elements } from '../core/state.js';
 import { safeMarkedParse } from '../utils/markdown.js';
-import { escapeHtml } from '../utils/helpers.js';
 import {
     renderThinkingBlock,
     enhanceCodeBlocks,
     enhanceThinkingBlocks
 } from '../messages/renderer.js';
+import { renderSearchGrounding } from '../messages/render-search.js';
 import { isVideoUrl } from '../utils/media.js';
 import { renderMediaCard } from '../ui/media-cards.js';
-import { getIcon } from '../utils/icons.js';
+import {
+    RENDER_THROTTLE_CHARS,
+    RENDER_THROTTLE_MS,
+    SCROLL_LOCK_TIMEOUT_MS,
+    SCROLL_FOLLOW_THRESHOLD_PX,
+    THINKING_HEAVY_THRESHOLD_CHARS,
+    THINKING_HEAVY_RENDER_THROTTLE_MS
+} from '../utils/constants.js';
 
-// 性能优化：合并同帧渲染（避免每个 token 都触发重绘）
+// 合并同帧渲染（避免每个 token 都触发重绘）
 let pendingRenderData = null;
 let rafId = null;
 
+// 阈值节流状态：字符增量未到 RENDER_THROTTLE_CHARS 且时间未到 RENDER_THROTTLE_MS 时跳过 doRender
+let lastRenderedLen = 0;
+let lastRenderedTs = 0;
+
+// user-scrolled 锁：用户主动滚动后短时窗内禁止自动 scrollToBottom，避免抢走阅读位
+let userScrolledUp = false;
+let scrollLockTimer = null;
+let scrollListenerAttached = false;
+
 /**
- * 滚动到底部
+ * lazy 挂载 user-scrolled 探测监听器（passive，避免阻塞滚动）
+ * wheel/touchmove/keydown(PageUp/PageDown/Up/Down) 触发即上锁；scroll 拉回底部即解锁
+ */
+function ensureScrollListener() {
+    if (scrollListenerAttached) return;
+    const area = elements.messagesArea;
+    if (!area) return;
+
+    const lockUp = () => {
+        userScrolledUp = true;
+        if (scrollLockTimer) {
+            clearTimeout(scrollLockTimer);
+        }
+        scrollLockTimer = setTimeout(() => {
+            userScrolledUp = false;
+            scrollLockTimer = null;
+        }, SCROLL_LOCK_TIMEOUT_MS);
+    };
+
+    const onScroll = () => {
+        // 拉回底部视为重新跟随
+        const distance = area.scrollHeight - area.scrollTop - area.clientHeight;
+        if (distance < SCROLL_FOLLOW_THRESHOLD_PX) {
+            userScrolledUp = false;
+            if (scrollLockTimer) {
+                clearTimeout(scrollLockTimer);
+                scrollLockTimer = null;
+            }
+        }
+    };
+
+    const onKey = (e) => {
+        // 仅响应可能改变滚动位置的按键
+        if (
+            e.key === 'PageUp' ||
+            e.key === 'PageDown' ||
+            e.key === 'ArrowUp' ||
+            e.key === 'ArrowDown' ||
+            e.key === 'Home' ||
+            e.key === 'End'
+        ) {
+            lockUp();
+        }
+    };
+
+    area.addEventListener('wheel', lockUp, { passive: true });
+    area.addEventListener('touchmove', lockUp, { passive: true });
+    area.addEventListener('keydown', onKey, { passive: true });
+    area.addEventListener('scroll', onScroll, { passive: true });
+    scrollListenerAttached = true;
+}
+
+/**
+ * 滚动到底部（用户主动上滚后短时窗内不抢位）
  */
 function scrollToBottom() {
+    if (userScrolledUp) return;
     elements.messagesArea.scrollTo({
         top: elements.messagesArea.scrollHeight,
         behavior: 'smooth'
     });
+}
+
+/**
+ * 立即同步渲染所有待处理数据，并清掉 RAF / pending 缓冲
+ * finalize 路径必须先调用此函数，确保流式最后一帧不被节流吞掉
+ */
+export function flushPendingRender() {
+    if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+    }
+    if (pendingRenderData) {
+        const { textContent, thinkingContent } = pendingRenderData;
+        pendingRenderData = null;
+        doRender(textContent, thinkingContent);
+    }
 }
 
 /**
@@ -64,6 +150,15 @@ function cleanupStreamingState(container) {
 
     // 清除 continuation 标记
     delete container.dataset.isContinuation;
+
+    // 重置流式节流状态：下一条流式消息从干净基线起算，避免上一条残留计数把首帧吞掉
+    lastRenderedLen = 0;
+    lastRenderedTs = 0;
+    userScrolledUp = false;
+    if (scrollLockTimer) {
+        clearTimeout(scrollLockTimer);
+        scrollLockTimer = null;
+    }
 }
 
 /**
@@ -109,7 +204,7 @@ function doRender(textContent, thinkingContent) {
 
         // 渲染文本内容
         if (textContent) {
-            html += safeMarkedParse(textContent);
+            html += safeMarkedParse(textContent, { isStreaming: true });
         }
 
         // 添加打字光标
@@ -144,7 +239,9 @@ function doRender(textContent, thinkingContent) {
 
                 // 只更新内容，不重建 DOM
                 // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
-                thinkingContentEl.innerHTML = safeMarkedParse(thinkingContent);
+                thinkingContentEl.innerHTML = safeMarkedParse(thinkingContent, {
+                    isStreaming: true
+                });
 
                 // 恢复滚动位置（如果用户在查看，保持位置；如果在底部，跟随新内容）
                 if (isScrolledToBottom) {
@@ -166,7 +263,7 @@ function doRender(textContent, thinkingContent) {
             if (textContent) {
                 const textDiv = document.createElement('div');
                 // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
-                textDiv.innerHTML = safeMarkedParse(textContent);
+                textDiv.innerHTML = safeMarkedParse(textContent, { isStreaming: true });
                 state.currentAssistantMessage.appendChild(textDiv);
             }
 
@@ -201,7 +298,7 @@ function doRender(textContent, thinkingContent) {
 
             // 渲染文本内容
             if (textContent) {
-                html += safeMarkedParse(textContent);
+                html += safeMarkedParse(textContent, { isStreaming: true });
             }
 
             // 添加打字光标
@@ -245,16 +342,35 @@ function doRender(textContent, thinkingContent) {
         }
     }
 
+    // 更新节流计数器（doRender 真正执行了才记 baseline）
+    lastRenderedLen = (textContent || '').length;
+    lastRenderedTs = performance.now();
+
     scrollToBottom();
 }
 
 /**
  * 实时更新流式消息内容
- * 性能优化：使用 requestAnimationFrame + 防抖，避免过度渲染
+ * 三层节流：阈值守卫（字符增量 + 时间间隔）→ RAF 合帧 → doRender 写 baseline
  * @param {string} textContent - 文本内容
  * @param {string} thinkingContent - 思维链内容
  */
 export function updateStreamingMessage(textContent, thinkingContent) {
+    // 首次调用时挂滚动监听（element 此时已就绪）
+    ensureScrollListener();
+
+    // 阈值守卫：字符增量 + 时间间隔同时不够则跳过本次渲染，但保留最新数据供下次或 flush 用
+    // thinking 重负载（>5k 字符）下整段 reparse 单帧 100-200ms，时间间隔放宽到 1.5s 让浏览器有空闲
+    const nowTs = performance.now();
+    const newLen = (textContent || '').length;
+    const thinkingLen = (thinkingContent || '').length;
+    const isHeavyThinking = thinkingLen > THINKING_HEAVY_THRESHOLD_CHARS;
+    const throttleMs = isHeavyThinking ? THINKING_HEAVY_RENDER_THROTTLE_MS : RENDER_THROTTLE_MS;
+    if (newLen - lastRenderedLen < RENDER_THROTTLE_CHARS && nowTs - lastRenderedTs < throttleMs) {
+        pendingRenderData = { textContent, thinkingContent };
+        return;
+    }
+
     // 保存最新的渲染数据
     pendingRenderData = { textContent, thinkingContent };
 
@@ -284,6 +400,9 @@ export function renderFinalTextWithThinking(
     thinkingContent,
     groundingMetadata = null
 ) {
+    // 先把还在 pending 缓冲里的最后一帧刷掉，避免被阈值节流吞掉
+    flushPendingRender();
+
     if (!state.currentAssistantMessage) return;
 
     // 检测是否是 continuation 模式（有工具调用 UI 或持久标记）
@@ -337,6 +456,7 @@ export function renderFinalTextWithThinking(
         }
 
         // 使用 insertAdjacentHTML 追加内容（而不是覆盖）
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：html 由 renderThinkingBlock + safeMarkedParse + renderSearchGrounding + renderMediaCard 组合，与同函数下方 innerHTML 分支同源
         state.currentAssistantMessage.insertAdjacentHTML('beforeend', html);
 
         // 清除 continuation 标记
@@ -379,6 +499,9 @@ export function renderFinalContentWithThinking(
     thinkingContent,
     groundingMetadata = null
 ) {
+    // 先把还在 pending 缓冲里的最后一帧刷掉，避免被阈值节流吞掉
+    flushPendingRender();
+
     if (!state.currentAssistantMessage) return;
 
     // 检测是否是 continuation 模式（有工具调用 UI 或持久标记）
@@ -465,6 +588,7 @@ export function renderFinalContentWithThinking(
         }
 
         // 使用 insertAdjacentHTML 追加内容（而不是覆盖）
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：html 由 renderThinkingBlock + safeMarkedParse + renderSearchGrounding + renderMediaCard 组合，与同函数下方 innerHTML 分支同源
         state.currentAssistantMessage.insertAdjacentHTML('beforeend', html);
 
         // 清除 continuation 标记
@@ -480,35 +604,6 @@ export function renderFinalContentWithThinking(
 
     enhanceCodeBlocks(state.currentAssistantMessage);
     scrollToBottom();
-}
-
-/**
- * 渲染搜索引用信息
- * @param {Object} groundingMetadata - 搜索结果元数据
- * @returns {string} 引用 HTML
- */
-function renderSearchGrounding(groundingMetadata) {
-    if (!groundingMetadata?.groundingChunks && !groundingMetadata?.webSearchQueries) return '';
-
-    const chunks = groundingMetadata.groundingChunks || [];
-    const sources = chunks
-        .filter((chunk) => chunk.web)
-        .map(
-            (chunk) => `
-            <a href="${escapeHtml(chunk.web.uri)}" target="_blank" rel="noopener" class="search-source">
-                ${escapeHtml(chunk.web.title || new URL(chunk.web.uri).hostname)}
-            </a>
-        `
-        );
-
-    if (sources.length === 0) return '';
-
-    return `
-        <div class="search-sources">
-            <span class="sources-label">${getIcon('search', { size: 14 })} 来源:</span>
-            ${sources.join('')}
-        </div>
-    `;
 }
 
 /**

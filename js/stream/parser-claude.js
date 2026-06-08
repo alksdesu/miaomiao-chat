@@ -6,25 +6,23 @@
 import { logger } from '../utils/logger.js';
 import { BaseStreamParser } from './base-parser.js';
 
-import {
-    updateStreamingMessage,
-    renderFinalContentWithThinking,
-    renderFinalTextWithThinking
-} from './helpers.js';
-import { saveAssistantMessage } from '../messages/sync.js';
-import { setCurrentMessageIndex } from '../messages/dom-sync.js';
 import { state } from '../core/state.js';
-import { setIsToolCallPending } from '../core/state-mutations.js';
 import { eventBus } from '../core/events.js';
-import { requestStateMachine, RequestState } from '../core/request-state-machine.js';
+import { ToolMode } from '../messages/schema.js';
+import {
+    buildPartsFromStreamingState,
+    buildMetaFromStreamingState
+} from '../messages/parts-builder.js';
+import { generateIdSet } from '../api/format-converter.js';
 
 /**
  * Claude 流解析器
  */
-class ClaudeStreamParser extends BaseStreamParser {
-    constructor(sessionId) {
-        super(sessionId);
+export class ClaudeStreamParser extends BaseStreamParser {
+    constructor(sessionId, sink = null) {
+        super(sessionId, sink);
         this.reader = null;
+        this.signatureFormat = 'claude';
 
         // 思考块管理（Claude 支持多个独立思考块）
         this.thinkingBlocks = [];
@@ -57,9 +55,9 @@ class ClaudeStreamParser extends BaseStreamParser {
         this.currentThinkingBlock += delta;
     }
 
-    async parse(reader) {
+    async parse(reader, signal = null) {
         this.reader = reader;
-        return super.parse(reader);
+        return super.parse(reader, signal);
     }
 
     async processLine(line) {
@@ -109,10 +107,29 @@ class ClaudeStreamParser extends BaseStreamParser {
     async onStreamEnd() {
         // flushThinkTagParser 通过 appendThinking 写入 currentThinkingBlock
         this.flushThinkTagParser();
-        if (this.currentThinkingBlock) {
-            this.thinkingBlocks.push(this.currentThinkingBlock);
-        }
+        this._flushCurrentThinkingBlock();
         this._finalize();
+    }
+
+    /**
+     * 收尾未关闭的 thinking 块（流被截断 / 提前 EOF）—— 同时同步 thinkingBlocks、
+     * thinkingSignatures、thinkingItems 三个数组，避免 parts-builder 优先取 items
+     * 时遗漏最后那段 thinking 文本（buildPartsFromStreamingState line 138-145）。
+     *
+     * signature 缺失时填空串占位，让 claude-adapter 据 F6 严格判定直接跳过整块发送
+     * 而非用空签名触发 Anthropic invalid_signature 400。
+     */
+    _flushCurrentThinkingBlock() {
+        if (!this.currentThinkingBlock && !this.currentSignature) return;
+        const text = this.currentThinkingBlock;
+        const sig = this.currentSignature || '';
+        this.thinkingBlocks.push(text);
+        if (this.thinkingSignatures.length < this.thinkingBlocks.length) {
+            this.thinkingSignatures.push(sig);
+        }
+        this.thinkingItems.push({ type: 'thinking', text, signature: sig });
+        this.currentThinkingBlock = '';
+        this.currentSignature = '';
     }
 
     // ───── 事件处理 ─────
@@ -134,7 +151,7 @@ class ClaudeStreamParser extends BaseStreamParser {
                 name: block.name,
                 input: ''
             });
-        } else if (this.currentBlockType === 'tool_use' && !state.xmlToolCallingEnabled) {
+        } else if (this.currentBlockType === 'tool_use' && !this.xmlMode) {
             const block = event.content_block;
             this.toolCalls.set(this.blockIndex, {
                 id: block.id,
@@ -168,7 +185,7 @@ class ClaudeStreamParser extends BaseStreamParser {
             this.stats.recordTokens(event.delta.thinking);
             this.currentThinkingBlock += event.delta.thinking;
             this.totalReceived += event.delta.thinking.length;
-            updateStreamingMessage(this.textContent, this.mergedThinking);
+            this.notifyStreaming(this.textContent, this.mergedThinking);
         } else if (event.delta?.type === 'signature_delta') {
             this.currentSignature += event.delta.signature;
         } else if (event.delta?.type === 'redacted_thinking_delta') {
@@ -186,7 +203,7 @@ class ClaudeStreamParser extends BaseStreamParser {
             // <think> + markdown 图片解析（通过 appendThinking 写入 currentThinkingBlock）
             this.processThinkAndMarkdown(deltaText);
 
-            updateStreamingMessage(this.textContent, this.mergedThinking);
+            this.notifyStreaming(this.textContent, this.mergedThinking);
         }
     }
 
@@ -220,9 +237,20 @@ class ClaudeStreamParser extends BaseStreamParser {
         // 检查工具调用
         let completedCalls = [];
 
-        if (state.xmlToolCallingEnabled && !this.xmlParsingDisabled) {
+        if (this.xmlMode && !this.xmlParsingDisabled) {
             const xmlCalls = this.xmlToolCallAccumulator.getCompletedCalls();
-            if (xmlCalls.length > 0) completedCalls = xmlCalls;
+            // XML 模式调用 part.mode=XML，adapter 重发时跳过 native 分支；idMap 仍预生成兜底跨格式重发
+            // originalFormat='claude' 与 :265 native 分支对称：让短/非标 tc.id（xml_tool_xxx）
+            // 也归位到 idMap.claude 槽，避免前缀启发式漏判
+            if (xmlCalls.length > 0) {
+                completedCalls = xmlCalls
+                    .filter((tc) => tc && tc.name)
+                    .map((tc) => ({
+                        ...tc,
+                        mode: ToolMode.XML,
+                        idMap: tc.idMap || generateIdSet(tc.id || '', 'claude')
+                    }));
+            }
         } else if (this.stopReason === 'tool_use' && this.toolCalls.size > 0) {
             for (const [_index, call] of this.toolCalls) {
                 let args;
@@ -231,7 +259,13 @@ class ClaudeStreamParser extends BaseStreamParser {
                 } catch (_e) {
                     args = {};
                 }
-                completedCalls.push({ id: call.id, name: call.name, arguments: args });
+                completedCalls.push({
+                    id: call.id,
+                    name: call.name,
+                    arguments: args,
+                    mode: ToolMode.NATIVE,
+                    idMap: generateIdSet(call.id, 'claude')
+                });
             }
         }
 
@@ -278,65 +312,37 @@ class ClaudeStreamParser extends BaseStreamParser {
         const finalThinking = this.thinkingBlocks.join('\n\n---\n\n');
 
         if (this.contentParts.length > 0) {
-            renderFinalContentWithThinking(this.contentParts, finalThinking);
+            this.sink.renderFinalContent(this.contentParts, finalThinking);
         } else if (this.textContent || finalThinking) {
-            renderFinalTextWithThinking(this.textContent, finalThinking);
+            this.sink.renderFinalText(this.textContent, finalThinking);
         }
 
-        const messageIndex = saveAssistantMessage({
-            textContent: this.textContent,
-            thinkingContent: finalThinking,
-            thinkingBlocks: this.thinkingBlocks,
-            thinkingSignatures: this.thinkingSignatures,
-            thinkingItems: this.thinkingItems,
-            contentParts: this.contentParts,
-            streamStats: this.stats.getPartialData(),
-            sessionId: this.sessionId
-        });
-        setCurrentMessageIndex(messageIndex);
+        this.sink.commit(
+            buildPartsFromStreamingState({
+                textContent: this.textContent,
+                thinkingContent: finalThinking,
+                thinkingBlocks: this.thinkingBlocks,
+                thinkingSignatures: this.thinkingSignatures,
+                thinkingItems: this.thinkingItems,
+                contentParts: this.contentParts,
+                signatureFormat: this.signatureFormat
+            }),
+            buildMetaFromStreamingState({
+                streamStats: this.stats.getPartialData()
+            }),
+            {}
+        );
 
         const assistantMessageEl = state.currentAssistantMessage?.closest('.message');
-
-        requestStateMachine.transition(RequestState.TOOL_CALLING);
-        setIsToolCallPending(true);
-
-        import('../api/handler.js')
-            .then(
-                ({
-                    resendWithToolResults,
-                    getCurrentEndpoint,
-                    getCurrentApiKey,
-                    getCurrentModel
-                }) => {
-                    resendWithToolResults(
-                        [],
-                        {
-                            endpoint: getCurrentEndpoint(),
-                            apiKey: getCurrentApiKey(),
-                            model: getCurrentModel()
-                        },
-                        assistantMessageEl
-                    ).catch((error) => {
-                        logger.error('[Claude] pause_turn resend 失败:', error);
-                    });
-                }
-            )
-            .catch((error) => {
-                logger.error('[Claude] pause_turn 加载 handler 模块失败:', error);
-                setIsToolCallPending(false);
-                requestStateMachine.forceReset();
-                eventBus.emit('ui:reset-input-buttons');
-            });
+        this.sink.triggerPauseTurnResend(assistantMessageEl);
 
         return true;
     }
 
-    /** 截断前：flushThinkTagParser 通过 appendThinking 写入 currentThinkingBlock，然后推入 thinkingBlocks */
+    /** 截断前：flushThinkTagParser 写入 currentThinkingBlock，三数组（blocks/signatures/items）同步收尾 */
     beforeTruncationFinalize() {
         this.flushThinkTagParser();
-        if (this.currentThinkingBlock) {
-            this.thinkingBlocks.push(this.currentThinkingBlock);
-        }
+        this._flushCurrentThinkingBlock();
     }
 
     async _handleStreamError(error) {
@@ -344,43 +350,109 @@ class ClaudeStreamParser extends BaseStreamParser {
         const errorMessage = error?.message || 'Unknown error';
         logger.error(`Claude API 错误 (流式响应):`, error);
 
-        let userMessage = '';
-        if (errorCode === 'rate_limit_error' || errorCode === 429) {
-            userMessage = `请求过多 (429)：${errorMessage}\n请稍后再试`;
-        } else if (errorCode === 'overloaded_error' || errorCode === 529) {
-            userMessage = `服务过载 (529)：${errorMessage}\n请稍后重试`;
-        } else if (errorCode === 'api_error') {
-            userMessage = `API 错误：${errorMessage}`;
-        } else {
-            userMessage = `错误 (${errorCode}): ${errorMessage}`;
-        }
-
+        const userMessage = this.buildStreamErrorUserMessage(errorCode, errorMessage);
         eventBus.emit('ui:notification', { message: userMessage, type: 'error', duration: 8000 });
         await this.reader.cancel();
+
+        // 错误中断也要收尾未关闭的 thinking 块，否则 retry 重发时缺最后那段 thinking
+        // 导致 Anthropic 校验 thinking blocks 不一致 400
+        this._flushCurrentThinkingBlock();
 
         const partialThinking = this.mergedThinking;
         if (this.textContent || partialThinking || this.contentParts.length > 0) {
             // 临时同步 thinkingContent 供 finalizeStreamWithError 使用
             this.thinkingContent = partialThinking;
-            this.finalizeStreamWithError(errorCode, errorMessage);
+            // getStreamErrorExtraFields() 透传 thinkingBlocks/Signatures/Items + serverTool*
+            this.finalizeStreamWithError(errorCode, errorMessage, this.getStreamErrorExtraFields());
         }
     }
 
     _finalize() {
-        const finalThinking = this.thinkingBlocks.join('\n\n---\n\n');
-        this.thinkingContent = finalThinking;
-        this.finalizeStream({
-            thinkingBlocks: this.thinkingBlocks,
-            thinkingSignatures: this.thinkingSignatures,
-            thinkingItems: this.thinkingItems
-        });
+        this.syncBeforeFinalize();
+        this.finalizeStream(this.collectExtraSaveFields());
+    }
+
+    // ───── Hook overrides ─────
+
+    hasOngoingToolStream() {
+        return (
+            super.hasOngoingToolStream() ||
+            (this.toolCalls?.size ?? 0) > 0 ||
+            (this.serverToolCalls?.size ?? 0) > 0 ||
+            (Array.isArray(this.serverToolResults) && this.serverToolResults.length > 0)
+        );
+    }
+
+    /**
+     * finalize 出口前把多段 thinkingBlocks join 写回 thinkingContent,
+     * 避免 buildPartsFromStreamingState 读到旧 thinkingContent 导致下轮 retry
+     * 触发 'thinking blocks modified' 400
+     */
+    syncBeforeFinalize() {
+        if (Array.isArray(this.thinkingBlocks) && this.thinkingBlocks.length > 0) {
+            this.thinkingContent = this.mergedThinking;
+        }
+    }
+
+    collectExtraSaveFields() {
+        const extra = { ...super.collectExtraSaveFields() };
+        if (this.thinkingBlocks.length > 0) extra.thinkingBlocks = this.thinkingBlocks;
+        if (this.thinkingSignatures.length > 0) extra.thinkingSignatures = this.thinkingSignatures;
+        if (this.thinkingItems.length > 0) extra.thinkingItems = this.thinkingItems;
+        // serverToolCalls / serverToolResults 在 idle_timeout / network_error 路径下也要落库
+        // 否则 _handleMessageStop 注入到 contentParts 前就丢失了
+        if (this.serverToolCalls.size > 0) {
+            extra.serverToolCalls = Array.from(this.serverToolCalls.values());
+        }
+        if (this.serverToolResults.length > 0) {
+            extra.serverToolResults = this.serverToolResults;
+        }
+        return extra;
+    }
+
+    buildStreamErrorUserMessage(errorCode, errorMessage) {
+        if (errorCode === 'rate_limit_error' || errorCode === 429) {
+            return `请求过多 (429)：${errorMessage}\n请稍后再试`;
+        }
+        if (errorCode === 'overloaded_error' || errorCode === 529) {
+            return `服务过载 (529)：${errorMessage}\n请稍后重试`;
+        }
+        if (errorCode === 'api_error') {
+            return `API 错误：${errorMessage}`;
+        }
+        if (errorCode === 'invalid_request_error' && /thinking/i.test(errorMessage)) {
+            return `Thinking blocks 校验失败 (${errorCode}): ${errorMessage}`;
+        }
+        return `错误 (${errorCode}): ${errorMessage}`;
+    }
+
+    /**
+     * Claude reply：含 thinkingBlocks / thinkingSignatures / thinkingItems 顺序数组
+     */
+    collectReply() {
+        const merged = this.mergedThinking;
+        return {
+            ...super.collectReply(),
+            thinkingContent: merged || null,
+            thinkingBlocks: this.thinkingBlocks.length > 0 ? this.thinkingBlocks : null,
+            thinkingSignatures: this.thinkingSignatures.length > 0 ? this.thinkingSignatures : null,
+            thinkingItems: this.thinkingItems.length > 0 ? this.thinkingItems : null,
+            thinkingSignature:
+                this.thinkingSignatures.length === 1 ? this.thinkingSignatures[0] : null
+        };
     }
 }
 
 /**
  * 解析 Claude 流式响应（保持原有导出签名）
+ * @param {ReadableStreamDefaultReader} reader
+ * @param {string|null} [sessionId]
+ * @param {import('./sink.js').StreamSink} [sink]
+ * @param {AbortSignal|null} [signal]
+ * @returns {Promise<ClaudeStreamParser>}
  */
-export async function parseClaudeStream(reader, sessionId = null) {
-    const parser = new ClaudeStreamParser(sessionId);
-    await parser.parse(reader);
+export async function parseClaudeStream(reader, sessionId = null, sink = null, signal = null) {
+    const parser = new ClaudeStreamParser(sessionId, sink);
+    await parser.parse(reader, signal);
+    return parser;
 }

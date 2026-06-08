@@ -72,8 +72,10 @@ libs/mermaid/**/*.map
 coverage/
 .madgerc
 
-# 测试相关（本地保留，不上传）
-tests/
-vitest.config.js
+# 测试相关
+# tests/ 和 vitest.config.js 已入库 — CI 跑覆盖率门槛依赖之
 jsconfig.json
 dev-app-update.yml
+
+# 重构期间的旧版本备份（本地参考用，不入库）
+.tmp-old-*.js

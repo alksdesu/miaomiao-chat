@@ -6,7 +6,6 @@
 import { state } from '../core/state.js';
 import { elements } from '../core/elements.js';
 import { eventBus } from '../core/events.js';
-import { setUploadedImages, setEditingElement, setEditingIndex } from '../core/state-mutations.js';
 import { toggleSettings } from './settings.js';
 import { toggleSidebar } from './sidebar.js';
 import { closeImageViewer } from './viewer.js';
@@ -23,7 +22,7 @@ function cancelEdit() {
     if (elements.userInput.style) {
         elements.userInput.style.height = 'auto';
     }
-    setUploadedImages([]);
+    state.uploadedImages = [];
 
     // 更新图片预览
     const previewContainer = document.getElementById('image-preview-container');
@@ -36,9 +35,9 @@ function cancelEdit() {
     // 重置编辑状态
     if (state.editingElement) {
         state.editingElement.classList.remove('editing');
-        setEditingElement(null);
+        state.editingElement = null;
     }
-    setEditingIndex(null);
+    state.editingIndex = null;
 
     // 隐藏保存和取消按钮
     const cancelBtn = document.getElementById('cancel-edit');

@@ -60,6 +60,9 @@ export function showNotification(message, type = 'info', duration = 3000) {
 
     const notification = document.createElement('div');
 
+    // info 类型显式挂 .notification-info 让 CSS .notification-info 生效；
+    // 之前 info 走 fallback 空字符串 → 只挂 .notification 默认背景与 success 同色，
+    // 用户看到 storage:remote-updated 等 info 提示视觉上像成功通知容易混淆
     const typeClass =
         type === 'error'
             ? 'notification-error'
@@ -67,8 +70,8 @@ export function showNotification(message, type = 'info', duration = 3000) {
               ? 'notification-success'
               : type === 'warning'
                 ? 'notification-warning'
-                : '';
-    notification.className = `notification${typeClass ? ' ' + typeClass : ''}`;
+                : 'notification-info';
+    notification.className = `notification ${typeClass}`;
     notification.setAttribute('role', 'alert');
     notification.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');
 
@@ -102,11 +105,16 @@ export function showNotification(message, type = 'info', duration = 3000) {
     document.body.appendChild(notification);
     repositionNotifications({ immediate: true });
 
-    setTimeout(removeNotification, duration);
+    // duration <= 0 或 Infinity 表示永久显示直到用户手动关闭（IDB 版本变更等关键警告需要）
+    if (Number.isFinite(duration) && duration > 0) {
+        setTimeout(removeNotification, duration);
+    }
 }
 
 // ========== 事件监听 ==========
 
 eventBus.on('ui:notification', ({ message, type, duration }) => {
-    showNotification(message, type || 'info', duration || 3000);
+    // nullish coalescing 让 duration=0 透传到 showNotification 实现永久显示语义
+    // 之前 duration || 3000 会把 0 兜底成 3000 让永久警告 3 秒自动消失
+    showNotification(message, type || 'info', duration ?? 3000);
 });

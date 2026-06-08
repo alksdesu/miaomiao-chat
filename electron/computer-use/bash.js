@@ -14,15 +14,16 @@ const { exec } = require('child_process');
  * @returns {Promise<{stdout: string, stderr: string, exitCode: number}>}
  */
 async function execute(command, config = {}) {
-    const {
-        workingDirectory = process.cwd(),
-        timeout = 30
-    } = config;
+    const { workingDirectory = process.cwd(), timeout = 30, permissions } = config;
+
+    // 主进程兜底闸门：调用方（manager.executeBash）已 checkPermission，此处为双层防御，防止 bash.execute 被绕过 manager 直接调用
+    if (permissions && permissions.bash === false) {
+        throw new Error('bash 权限未授权（主进程闸门）');
+    }
 
     // ✅ 如果 workingDirectory 为空字符串，使用 process.cwd()
-    const cwd = workingDirectory && workingDirectory.trim() !== ''
-        ? workingDirectory
-        : process.cwd();
+    const cwd =
+        workingDirectory && workingDirectory.trim() !== '' ? workingDirectory : process.cwd();
 
     return new Promise((resolve, reject) => {
         const options = {
@@ -37,12 +38,12 @@ async function execute(command, config = {}) {
         console.log(`[Bash] Timeout: ${timeout}s`);
 
         const childProcess = exec(command, options, (error, stdout, stderr) => {
-            const exitCode = error ? (error.code || 1) : 0;
+            const exitCode = error ? error.code || 1 : 0;
             const result = {
                 stdout: stdout.toString(),
                 stderr: stderr.toString(),
                 exitCode: exitCode,
-                success: exitCode === 0  // ✅ 添加成功标志
+                success: exitCode === 0 // ✅ 添加成功标志
             };
 
             if (error) {
@@ -103,9 +104,7 @@ async function getCurrentDirectory() {
  * 列出目录内容
  */
 async function listDirectory(directory = '.') {
-    const command = process.platform === 'win32'
-        ? `dir "${directory}"`
-        : `ls -la "${directory}"`;
+    const command = process.platform === 'win32' ? `dir "${directory}"` : `ls -la "${directory}"`;
 
     const result = await execute(command);
     return result.stdout;

@@ -4,7 +4,6 @@
  */
 
 import { state } from '../core/state.js';
-import { setPrefillPresets, setActivePrefillPresetId } from '../core/state-mutations.js';
 import { eventBus } from '../core/events.js';
 import { escapeHtml, generateId } from '../utils/helpers.js';
 import { saveCurrentConfig } from '../state/config.js';
@@ -131,7 +130,7 @@ function updatePreset(id, key, value) {
     const updated = { ...state.prefillPresets[idx], [key]: value };
     const presets = [...state.prefillPresets];
     presets[idx] = updated;
-    setPrefillPresets(presets);
+    state.prefillPresets = presets;
     debouncedSaveConfig();
 }
 
@@ -428,7 +427,7 @@ async function createPreset() {
         createdAt: Date.now()
     };
 
-    setPrefillPresets([...state.prefillPresets, newPreset]);
+    state.prefillPresets = [...state.prefillPresets, newPreset];
     selectedPresetId = newPreset.id;
     saveCurrentConfig();
     renderPresetList();
@@ -445,10 +444,10 @@ async function deleteSelectedPreset() {
     const confirmed = await showConfirmDialog(`确定删除预设 "${preset.name}" 吗？`, '确认删除');
     if (!confirmed) return;
 
-    setPrefillPresets(state.prefillPresets.filter((p) => p.id !== selectedPresetId));
+    state.prefillPresets = state.prefillPresets.filter((p) => p.id !== selectedPresetId);
 
     if (state.activePrefillPresetId === selectedPresetId) {
-        setActivePrefillPresetId(null);
+        state.activePrefillPresetId = null;
     }
 
     selectedPresetId = null;
@@ -468,7 +467,7 @@ function applyPresetToSession(preset) {
     state.geminiSystemPartsEnabled = preset.geminiSystemPartsEnabled || false;
     state.geminiSystemParts = JSON.parse(JSON.stringify(preset.geminiSystemParts || []));
 
-    setActivePrefillPresetId(preset.id);
+    state.activePrefillPresetId = preset.id;
     saveCurrentConfig();
     debouncedSaveSession();
     eventBus.emit('config:sync-prefill-ui');

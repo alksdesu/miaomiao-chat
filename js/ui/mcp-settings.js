@@ -8,9 +8,8 @@ import { state } from '../core/state.js';
 import { eventBus } from '../core/events.js';
 import { showConfirmDialog } from '../utils/dialogs.js';
 import { showNotification } from './notifications.js';
-import { setMcpServers } from '../core/state-mutations.js';
-import { getIcon } from '../utils/icons.js';
 import { bindTopmostEscape } from '../utils/modal-stack.js';
+import { trapFocus, removeFocusTrap } from '../utils/focus-trap.js';
 
 // 子模块
 import { renderServerList, renderPlatformInfo } from './mcp-server-list.js';
@@ -34,7 +33,6 @@ export { exportMCPConfig, importMCPConfig, showTemplateDialog, createFromTemplat
 // 模态框相关变量
 let modal = null;
 let isFormOpen = false;
-let removeFocusTrap = null;
 let removeModalEscape = null;
 let isInitialized = false;
 
@@ -44,44 +42,6 @@ let isInitialized = false;
  */
 function setFormOpen(open) {
     isFormOpen = open;
-}
-
-/**
- * 创建焦点陷阱 - WCAG 2.4.3 合规
- * @param {HTMLElement} container - 容器元素
- * @returns {Function} 移除焦点陷阱的函数
- */
-function createFocusTrap(container) {
-    if (!container) return () => {};
-
-    const focusableSelector =
-        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-
-    function handleTab(e) {
-        if (e.key !== 'Tab') return;
-
-        const focusableElements = container.querySelectorAll(focusableSelector);
-        const firstElement = focusableElements[0];
-        const lastElement = focusableElements[focusableElements.length - 1];
-
-        if (e.shiftKey) {
-            if (document.activeElement === firstElement) {
-                e.preventDefault();
-                lastElement?.focus();
-            }
-        } else {
-            if (document.activeElement === lastElement) {
-                e.preventDefault();
-                firstElement?.focus();
-            }
-        }
-    }
-
-    container.addEventListener('keydown', handleTab);
-
-    return () => {
-        container.removeEventListener('keydown', handleTab);
-    };
 }
 
 // ========== 初始化 ==========
@@ -115,7 +75,7 @@ export function initMCPSettings() {
     setupEventListeners();
 
     if (!state.mcpServers) {
-        setMcpServers([]);
+        state.mcpServers = [];
     }
 
     isInitialized = true;
@@ -145,7 +105,8 @@ export function openModal() {
     renderPlatformInfo(modal);
     renderServerList(modal);
 
-    removeFocusTrap = createFocusTrap(modal);
+    // trapFocus 幂等，重复 openModal 不会累积 keydown listener
+    trapFocus(modal);
 
     removeModalEscape?.();
     removeModalEscape = bindTopmostEscape(modal, () => {
@@ -166,11 +127,7 @@ export function closeModal() {
                 hideServerForm(modal, setFormOpen);
                 modal.classList.remove('open');
 
-                if (removeFocusTrap) {
-                    removeFocusTrap();
-                    removeFocusTrap = null;
-                }
-
+                removeFocusTrap(modal);
                 removeModalEscape?.();
                 removeModalEscape = null;
             }
@@ -178,11 +135,7 @@ export function closeModal() {
     } else {
         modal.classList.remove('open');
 
-        if (removeFocusTrap) {
-            removeFocusTrap();
-            removeFocusTrap = null;
-        }
-
+        removeFocusTrap(modal);
         removeModalEscape?.();
         removeModalEscape = null;
     }
@@ -244,57 +197,40 @@ function setupEventListeners() {
         renderServerList(modal);
     });
 
+    // showNotification 经 textContent 纯文本渲染，禁止拼接 getIcon 等 HTML 字符串
     eventBus.on('mcp:connection-lost', (data) => {
         logger.warn(`[MCP Settings] 连接丢失: ${data.serverName}`);
-        showNotification(
-            `${getIcon('alertCircle', { size: 14 })} ${data.serverName} 连接断开，将在 5 秒后自动重连...`,
-            'warning'
-        );
+        showNotification(`${data.serverName} 连接断开，将在 5 秒后自动重连...`, 'warning');
         renderServerList(modal);
     });
 
     eventBus.on('mcp:reconnect-failed', (data) => {
         logger.error(`[MCP Settings] 自动重连失败: ${data.serverName}`);
-        showNotification(
-            `${getIcon('xCircle', { size: 14 })} ${data.serverName} 自动重连失败，请手动重试`,
-            'error'
-        );
+        showNotification(`${data.serverName} 自动重连失败，请手动重试`, 'error');
         renderServerList(modal);
     });
 
     if (window.electron) {
         eventBus.on('mcp:server-restarting', (data) => {
             logger.debug(`[MCP Settings] 服务器重启中: ${data.serverId} (尝试 ${data.attempt})`);
-            showNotification(
-                `${getIcon('loader', { size: 14 })} MCP 服务器正在重启... (${data.attempt}/3)`,
-                'info'
-            );
+            showNotification(`MCP 服务器正在重启... (${data.attempt}/3)`, 'info');
         });
 
         eventBus.on('mcp:server-restarted', (data) => {
             logger.debug(`[MCP Settings] 服务器重启成功: ${data.serverId}`);
-            showNotification(
-                `${getIcon('checkCircle', { size: 14 })} MCP 服务器已自动恢复`,
-                'success'
-            );
+            showNotification('MCP 服务器已自动恢复', 'success');
             renderServerList(modal);
         });
 
         eventBus.on('mcp:server-restart-failed', (data) => {
             logger.error(`[MCP Settings] 服务器重启失败: ${data.serverId}`);
-            showNotification(
-                `${getIcon('xCircle', { size: 14 })} MCP 服务器重启失败，请手动重新连接`,
-                'error'
-            );
+            showNotification('MCP 服务器重启失败，请手动重新连接', 'error');
             renderServerList(modal);
         });
 
         eventBus.on('mcp:restart-limit-exceeded', (data) => {
             logger.error(`[MCP Settings] 达到重启上限: ${data.serverId}`);
-            showNotification(
-                `${getIcon('xCircle', { size: 14 })} MCP 服务器频繁崩溃，已停止自动重启`,
-                'error'
-            );
+            showNotification('MCP 服务器频繁崩溃，已停止自动重启', 'error');
             renderServerList(modal);
         });
     }

@@ -77,9 +77,9 @@ function waitForMessageElement(index, maxAttempts = DEFAULT_MAX_ATTEMPTS) {
 }
 
 export function resolveMessageIndex({ messageId = '', fallbackIndex = -1 } = {}) {
-    if (messageId && state.messageIdMap?.has(messageId)) {
-        const resolvedIndex = state.messageIdMap.get(messageId);
-        if (Number.isInteger(resolvedIndex)) {
+    if (messageId && state.messageStore) {
+        const resolvedIndex = state.messageStore.findIndexById(messageId);
+        if (resolvedIndex !== -1) {
             return resolvedIndex;
         }
     }

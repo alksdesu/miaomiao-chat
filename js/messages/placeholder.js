@@ -4,6 +4,7 @@
  */
 
 import { eventBus } from '../core/events.js';
+import { createThinkingDots } from '../api/handler-loading-dots.js';
 
 /**
  * 创建助手消息占位符
@@ -22,9 +23,7 @@ export function createAssistantMessagePlaceholder() {
 
     const contentDiv = document.createElement('div');
     contentDiv.className = 'message-content';
-    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
-    contentDiv.innerHTML =
-        '<div class="thinking-dots"><span></span><span></span><span></span></div>';
+    contentDiv.appendChild(createThinkingDots());
 
     const actionsDiv = document.createElement('div');
     actionsDiv.className = 'message-actions';
@@ -74,6 +73,19 @@ export function createAssistantMessagePlaceholder() {
             content: ''
         });
     actionsDiv.appendChild(quoteButton);
+
+    // 复制全文按钮 —— 用户视角的基础功能（ChatGPT / Claude.ai 默认提供消息级复制）
+    const copyButton = document.createElement('button');
+    copyButton.className = 'msg-action-btn copy-msg';
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
+    copyButton.innerHTML = `<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+    </svg>`;
+    copyButton.title = '复制全文';
+    copyButton.setAttribute('aria-label', '复制助手消息全文');
+    copyButton.onclick = () => eventBus.emit('message:copy-requested', { messageEl: messageDiv });
+    actionsDiv.appendChild(copyButton);
 
     // 删除按钮
     const deleteButton = document.createElement('button');

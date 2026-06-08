@@ -10,6 +10,22 @@ if (typeof window.requestIdleCallback !== 'function') {
 }
 
 // ========== 全局错误处理器 ==========
+// eventBus 直接 import；window.eventBus 从未挂载导致 if(window.eventBus) 死守门吞 toast
+import { eventBus as _globalErrorEventBus } from './core/events.js';
+import { escapeHtml } from './utils/helpers.js';
+import { isSafeHref } from './utils/uri.js';
+
+function _emitGlobalErrorNotification(rawMessage) {
+    try {
+        _globalErrorEventBus.emit('ui:notification', {
+            message: `操作失败: ${escapeHtml(String(rawMessage || '未知错误'))}`,
+            type: 'error',
+            duration: 8000
+        });
+    } catch (_) {
+        /* eventBus 早期未就绪时 fallback console，已经在 catch 外打过 */
+    }
+}
 
 /**
  * 全局未捕获的 Promise rejection 处理器
@@ -17,13 +33,7 @@ if (typeof window.requestIdleCallback !== 'function') {
 window.addEventListener('unhandledrejection', (event) => {
     console.error('未捕获的 Promise rejection:', event.reason);
     event.preventDefault();
-    const errorMessage = event.reason?.message || String(event.reason) || '未知错误';
-    if (window.eventBus) {
-        window.eventBus.emit('ui:notification', {
-            message: `操作失败: ${errorMessage}`,
-            type: 'error'
-        });
-    }
+    _emitGlobalErrorNotification(event.reason?.message || event.reason);
 });
 
 /**
@@ -38,6 +48,7 @@ window.addEventListener('error', (event) => {
         error: event.error
     });
     event.preventDefault();
+    _emitGlobalErrorNotification(event.error?.message || event.message);
 });
 
 /**
@@ -76,7 +87,6 @@ import './core/events.js';
 import { eventBus } from './core/events.js';
 import { state } from './core/state.js';
 import { elements, initElements } from './core/elements.js';
-import { setStorageMode, setMcpServers } from './core/state-mutations.js';
 
 // ========== Utils Layer ==========
 import './utils/helpers.js';
@@ -102,7 +112,7 @@ import {
     migrateSessionsToV4
 } from './state/storage.js';
 import { loadConfig, saveCurrentConfigImmediate } from './state/config.js';
-import { loadSessions } from './state/sessions.js';
+import { loadSessions, saveCurrentSessionMessages } from './state/sessions.js';
 import { initTabSync } from './state/tab-sync.js';
 // initExportImport → 延迟动态加载
 import { initQuickMessages } from './state/quick-messages.js';
@@ -141,7 +151,7 @@ import './stream/helpers.js';
 import './stream/parser-openai.js';
 import './stream/parser-claude.js';
 import './stream/parser-gemini.js';
-import './stream/tool-call-handler.js';
+import './tools/orchestrator.js';
 
 // ========== Tools Layer (第10层) ==========
 import { initTools } from './tools/init.js';
@@ -257,7 +267,7 @@ async function init() {
 
         if (!hasIndexedDB && hasLocalStorage) {
             logger.warn('⚠️ IndexedDB 被阻止，将使用 localStorage 降级模式');
-            setStorageMode('localStorage');
+            state.storageMode = 'localStorage';
         }
 
         // 1. 初始化 DOM 元素引用（必须最先执行）
@@ -267,15 +277,19 @@ async function init() {
         // 1. 配置 Marked.js（代码高亮）
         if (typeof marked !== 'undefined') {
             // 自定义链接渲染器：外部链接在新标签页打开
+            // 必须 escapeHtml(href/title)：marked v15 默认 renderer 会做该处理，自定义覆写需补回
+            // 否则 [click](https://x "a\" style=\"background:url(javascript:alert(1))\"") 可注入属性
             const renderer = new marked.Renderer();
             renderer.link = function ({ href, title, text }) {
-                const titleAttr = title ? ` title="${title}"` : '';
+                // isSafeHref 拦截 javascript:/vbscript:/data:text/html，escapeHtml 防属性注入
+                const safeHrefStr = href && isSafeHref(href) ? escapeHtml(href) : '';
+                const safeTitleAttr = title ? ` title="${escapeHtml(title)}"` : '';
                 // 判断是否为外部链接（http/https 开头）
                 if (href && /^https?:\/\//i.test(href)) {
-                    return `<a href="${href}"${titleAttr} target="_blank" rel="noopener noreferrer">${text}</a>`;
+                    return `<a href="${safeHrefStr}"${safeTitleAttr} target="_blank" rel="noopener noreferrer">${text}</a>`;
                 }
                 // 内部链接或其他协议，正常渲染
-                return `<a href="${href}"${titleAttr}>${text}</a>`;
+                return `<a href="${safeHrefStr}"${safeTitleAttr}>${text}</a>`;
             };
 
             marked.setOptions({
@@ -304,11 +318,11 @@ async function init() {
                 dbReady = true;
             } else {
                 logger.warn('IndexedDB 初始化返回空实例，启用 localStorage 降级模式');
-                setStorageMode('localStorage');
+                state.storageMode = 'localStorage';
             }
         } catch (error) {
             logger.error('IndexedDB 初始化失败，启用 localStorage 降级模式:', error);
-            setStorageMode('localStorage');
+            state.storageMode = 'localStorage';
             eventBus.emit('ui:notification', {
                 message: 'IndexedDB 不可用，数据将保存到 localStorage',
                 type: 'warning',
@@ -400,14 +414,14 @@ async function init() {
                     if (migratedCount > 0) {
                         logger.debug(`[Main] 迁移 ${migratedCount} 个 MCP 服务器`);
                     }
-                    setMcpServers(await loadAllMCPServers());
+                    state.mcpServers = await loadAllMCPServers();
                     logger.debug(`[Main] 加载 ${state.mcpServers.length} 个 MCP 服务器`);
                 } catch (error) {
                     logger.error('[Main] 加载 MCP 配置失败:', error);
                     try {
                         const saved = localStorage.getItem('mcpServers');
                         if (saved) {
-                            setMcpServers(JSON.parse(saved));
+                            state.mcpServers = JSON.parse(saved);
                             logger.debug(
                                 `[Main] 从 localStorage 加载 ${state.mcpServers.length} 个 MCP 服务器`
                             );
@@ -669,17 +683,50 @@ async function init() {
             });
         }
 
-        // 添加页面关闭前保存配置
-        window.addEventListener('beforeunload', () => {
+        // 关闭/隐藏前 flush 未保存的会话 dirty。
+        // visibilitychange='hidden' 在用户切走 tab 时触发但页面不立即销毁，await 是有意义的；
+        // beforeunload 则是同步事件，async 操作大概率被浏览器 kill，仅作为保底入口
+        const flushOnHidden = async () => {
             saveCurrentConfigImmediate();
-        });
+            try {
+                await saveCurrentSessionMessages(true);
+            } catch (_e) {
+                /* 后台路径吞掉异常 */
+            }
+        };
 
-        // 添加页面visibility变化时保存配置（移动端）
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) {
-                saveCurrentConfigImmediate();
+                // 用户切 tab/锁屏时页面还活着，可 await 完整 IDB 事务
+                flushOnHidden();
             }
         });
+
+        // beforeunload 是浏览器关页前最后机会。IDB readwrite 事务在 unload 期间是 best-effort
+        // 完成（Chrome 实现允许 in-flight tx commit），但 async/await 的 microtask 链会断。
+        // 主要保存路径已由 visibilitychange 覆盖，此处仅同步入口启动事务
+        window.addEventListener('beforeunload', () => {
+            saveCurrentConfigImmediate();
+            try {
+                // 不 await：fire-and-forget 让浏览器最后一拍捎带提交
+                saveCurrentSessionMessages(true);
+            } catch (_e) {
+                /* 关闭路径吞掉异常 */
+            }
+        });
+
+        // pagehide 在移动 Safari / BFCache 场景下比 beforeunload 可靠（unload 不一定触发）
+        window.addEventListener('pagehide', () => {
+            saveCurrentConfigImmediate();
+            try {
+                saveCurrentSessionMessages(true);
+            } catch (_e) {
+                /* 隐藏路径吞掉异常 */
+            }
+        });
+
+        // 死事件检测：emit 过但无 on() 监听者的事件名首次出现时 warn 一次
+        eventBus.startDeadEventScanner();
     } catch (error) {
         logger.error('初始化失败:', error);
         logger.error('Stack trace:', error.stack);

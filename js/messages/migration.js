@@ -25,6 +25,8 @@ import {
     filePart
 } from './schema.js';
 import { logger } from '../utils/logger.js';
+import { generateIdSet } from '../api/format-converter.js';
+import { TOOL_RESULT_NOT_SAVED_MESSAGE } from '../utils/constants.js';
 
 /**
  * 迁移一个会话的消息数组
@@ -89,10 +91,16 @@ export function migrateSession(openaiMsgs, geminiMsgs = [], claudeMsgs = []) {
                 }
                 toolMessages.delete(part.id);
             } else {
-                // 没有匹配的 tool 结果，标记为完成但无结果
+                // 没有匹配的 tool 结果：旧消息孤儿 pending 视为中断，翻 ERROR + is_error
+                // 让下轮 adapter.partsToAPIMessages 看到 is_error 透传，避免 API 把 stale
+                // pending 当成新一轮工具调用触发 'tool_use without tool_result' 400
                 if (part.state === ToolState.PENDING) {
-                    part.state = ToolState.DONE;
-                    part.result = { content: '(结果未保存)', media: [], error: null };
+                    part.state = ToolState.ERROR;
+                    part.result = {
+                        error: TOOL_RESULT_NOT_SAVED_MESSAGE,
+                        is_error: true,
+                        content: ''
+                    };
                 }
             }
         }
@@ -142,6 +150,10 @@ function migrateOneMessage(msg, gemini, claude) {
     // 3. 工具调用（旧数据可能用 tool_calls 或 toolCalls）
     const rawToolCalls = msg.tool_calls || msg.toolCalls;
     if (rawToolCalls && rawToolCalls.length > 0) {
+        // 老对话 thoughtSignature 只挂在 message 顶层/meta，迁移时下沉到第一个 tool_call
+        // 让 Gemini 重发链路（gemini-adapter.partsToAPIMessages）能从 part 取签名
+        const legacyThoughtSig = msg.thoughtSignature || gemini?.thoughtSignature || null;
+        let sigSunk = false;
         for (const tc of rawToolCalls) {
             const fn = tc.function || tc;
             const name = fn.name || tc.name || '';
@@ -153,7 +165,21 @@ function migrateOneMessage(msg, gemini, claude) {
                     /* keep string */
                 }
             }
-            const part = toolCallPart(tc.id || '', name, args);
+            // 旧数据可能已有 idMap（导出再导入），优先复用避免重新生成破坏跨格式配对
+            // 调用方早已弃用 gemini/claude 并行数组（始终传空），不能用真值判定推断原格式 —
+            // 否则 toolu_xxx 会被强写入 openai 槽导致跨格式重发 400。
+            // 不显式传 originalFormat，由 generateIdSet 内部按 id 前缀 (call_/toolu_/gemini_) 自然归位；
+            // 无前缀（如裸 Gemini fc.id）走三槽 generate 兜底（Gemini API 不接受外部 id 也能工作）
+            const idMap = tc.idMap || generateIdSet(tc.id || '');
+            const opts = { idMap };
+            // tc 自身已带 thoughtSignature 优先，否则把消息级签名挂到第一个 tc
+            if (tc.thoughtSignature) {
+                opts.thoughtSignature = tc.thoughtSignature;
+            } else if (legacyThoughtSig && !sigSunk) {
+                opts.thoughtSignature = legacyThoughtSig;
+                sigSunk = true;
+            }
+            const part = toolCallPart(tc.id || '', name, args, opts);
             // 保留已有的状态和结果
             if (tc.status)
                 part.state =

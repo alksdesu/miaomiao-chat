@@ -10,14 +10,7 @@ import { requestStateMachine } from '../core/request-state-machine.js';
 import { createMessageElement } from '../messages/renderer.js';
 import { removeMessagesAfterAll, updateMessageContentWithImages } from '../messages/editor.js';
 import { showNotification } from './notifications.js';
-import {
-    pushMessage,
-    updateMessageAt,
-    setUploadedImages,
-    setEditingIndex,
-    setEditingElement,
-    setLastUserMessage
-} from '../core/state-mutations.js';
+import { pushMessage, updateMessageAt } from '../core/state-mutations.js';
 import { categorizeFile } from '../utils/file-helpers.js';
 import {
     createMessage,
@@ -164,14 +157,14 @@ function cancelEdit() {
 
     elements.userInput.value = '';
     autoResizeTextarea();
-    setUploadedImages([]);
+    state.uploadedImages = [];
     _doUpdateImagePreview();
 
     if (state.editingElement) {
         state.editingElement.classList.remove('editing');
-        setEditingElement(null);
+        state.editingElement = null;
     }
-    setEditingIndex(null);
+    state.editingIndex = null;
     updateCancelEditButton();
 
     showNotification('已取消编辑', 'info');
@@ -211,14 +204,14 @@ function saveEdit() {
 
     elements.userInput.value = '';
     autoResizeTextarea();
-    setUploadedImages([]);
+    state.uploadedImages = [];
     _doUpdateImagePreview();
 
     if (state.editingElement) {
         state.editingElement.classList.remove('editing');
-        setEditingElement(null);
+        state.editingElement = null;
     }
-    setEditingIndex(null);
+    state.editingIndex = null;
     updateCancelEditButton();
 
     showNotification('消息已保存', 'success');
@@ -244,6 +237,12 @@ export async function handleSend() {
             '[input.js] handleSend 被阻止: 请求正在进行中, 当前状态:',
             requestStateMachine.getState()
         );
+        // 用户感知：流式期间按 Enter / 点 Send 完全无反馈会以为按键丢失
+        eventBus.emit('ui:notification', {
+            message: '请等待当前请求完成或先点取消',
+            type: 'warning',
+            duration: 2000
+        });
         return;
     }
 
@@ -313,19 +312,22 @@ export async function handleSend() {
             } else if (cat === 'pdf') {
                 parts.push(filePart(file.name, file.type, file.data));
             } else if (cat === 'text') {
-                parts.push(filePart(file.name, file.type || 'text/plain', file.data, 'text'));
+                parts.push(
+                    filePart(file.name, file.type || 'text/plain', file.data, { encoding: 'text' })
+                );
             }
         }
     }
 
     const userMessage = createMessage(Role.USER, parts);
 
-    setLastUserMessage(userMessage);
+    state.lastUserMessage = userMessage;
     state.messageHistory.push({ message: userMessage, timestamp: Date.now() });
     if (state.messageHistory.length > state.maxHistorySize) {
         state.messageHistory.shift();
     }
 
+    let messageIndex;
     if (isEditing) {
         const targetIndex = state.editingIndex;
         updateMessageAt(targetIndex, userMessage, true);
@@ -339,10 +341,9 @@ export async function handleSend() {
         }
 
         removeMessagesAfterAll(targetIndex);
+        messageIndex = targetIndex;
     } else {
-        pushMessage(userMessage);
-
-        const messageIndex = state.messages.length - 1;
+        messageIndex = pushMessage(userMessage);
         const messageEl = createMessageElement(
             'user',
             textContent,
@@ -358,15 +359,15 @@ export async function handleSend() {
     // 清空输入
     elements.userInput.value = '';
     autoResizeTextarea();
-    setUploadedImages([]);
+    state.uploadedImages = [];
     _doUpdateImagePreview();
 
     clearQuotedMessage();
 
-    setEditingIndex(null);
+    state.editingIndex = null;
     if (state.editingElement) {
         state.editingElement.classList.remove('editing');
-        setEditingElement(null);
+        state.editingElement = null;
     }
     updateCancelEditButton();
 
@@ -374,7 +375,7 @@ export async function handleSend() {
 
     eventBus.emit('messages:changed', {
         action: 'user_sent',
-        index: state.messages.length - 1
+        index: messageIndex
     });
 
     eventBus.emit('api:send-requested');
@@ -399,11 +400,9 @@ export function initInputHandlers() {
         eventBus.emit('api:cancel-requested');
     });
 
-    // 取消编辑按钮
-    const cancelBtn = document.getElementById('cancel-edit');
-    if (cancelBtn) {
-        cancelBtn.addEventListener('click', cancelEdit);
-    }
+    // 编辑模式按钮
+    document.getElementById('cancel-edit')?.addEventListener('click', cancelEdit);
+    document.getElementById('save-edit')?.addEventListener('click', saveEdit);
 
     // 字数统计、token 计算和 typing 效果
     let tokenCountTimeout = null;
@@ -506,10 +505,6 @@ export function initInputHandlers() {
     // 编辑模式刷新
     eventBus.on('editor:refresh-attachments', () => _doUpdateImagePreview());
     eventBus.on('editor:resize-textarea', () => autoResizeTextarea());
-
-    // 暴露到全局作用域（用于 HTML onclick）
-    window.cancelEdit = cancelEdit;
-    window.saveEdit = saveEdit;
 
     // 全局按钮状态检测器
     setInterval(() => {

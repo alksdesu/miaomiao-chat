@@ -159,7 +159,12 @@ async function _connectWebSocket(config, mergedHeaders, retryConfig, context) {
             };
 
             initHandler = (event) => {
-                const response = JSON.parse(event.data);
+                let response;
+                try {
+                    response = JSON.parse(event.data);
+                } catch {
+                    return;
+                }
                 if (response.id === 1) {
                     ws.removeEventListener('message', initHandler);
                     clearTimeout(timeout);
@@ -167,7 +172,9 @@ async function _connectWebSocket(config, mergedHeaders, retryConfig, context) {
                     ws._serverCapabilities = response.result?.capabilities || {};
                     ws._serverInfo = response.result?.serverInfo || {};
 
-                    ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'initialized' }));
+                    ws.send(
+                        JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })
+                    );
                     resolve();
                 }
             };
@@ -176,7 +183,7 @@ async function _connectWebSocket(config, mergedHeaders, retryConfig, context) {
             ws.send(JSON.stringify(initRequest));
         };
 
-        ws.onerror = (error) => {
+        ws.onerror = () => {
             if (initHandler) ws.removeEventListener('message', initHandler);
             clearTimeout(timeout);
             try {
@@ -184,16 +191,17 @@ async function _connectWebSocket(config, mergedHeaders, retryConfig, context) {
             } catch {
                 /* ignore */
             }
-            reject(error);
+            // onerror 收到的是 Event 而非 Error，直接 reject 会让 classifyError 读不到 message
+            reject(new Error(`WebSocket 连接失败: ${url}`));
         };
     });
 
     const instanceId = `ws_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
-    // 心跳保活（30 秒）
+    // 心跳保活（30 秒）；MCP 规范要求 ping 是带 id 的 request，响应由 id 匹配机制自然忽略
     const pingTimer = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ jsonrpc: '2.0', method: 'ping' }));
+            ws.send(JSON.stringify({ jsonrpc: '2.0', id: nextWsRequestId(), method: 'ping' }));
         }
     }, 30000);
 
@@ -209,16 +217,23 @@ async function _connectWebSocket(config, mergedHeaders, retryConfig, context) {
         }
     });
 
-    // 异常断开时自动重连
+    // 断开时统一清理；仅异常断开（!wasClean）走自动重连
     ws.onclose = (event) => {
         clearInterval(pingTimer);
-        if (!event.wasClean && context.hasConnection(id)) {
+        if (context.hasConnection(id)) {
             const current = context.getConnection(id);
             if (!current || current.instanceId !== instanceId) return;
+            if (current.connected === false) return;
 
             current.connected = false;
             context.clearToolsForServer(id);
             eventBus.emit('mcp:disconnected', { serverId: id, reason: 'connection-lost' });
+
+            if (event.wasClean) {
+                // 优雅关闭（1000/1001）不重连：服务器主动结束会话，盲目重连易死循环
+                logger.warn(`[MCP] WebSocket 已被服务器关闭: ${config.name} (code: ${event.code})`);
+                return;
+            }
 
             logger.warn(`[MCP] WebSocket 异常断开: ${config.name} (code: ${event.code})`);
             eventBus.emit('mcp:connection-lost', {
@@ -366,7 +381,8 @@ async function _connectSSE(config, requestHeaders, retryConfig, context) {
         instanceId,
         lastEventTime: Date.now(),
         shouldReconnect: true,
-        healthCheckTimer: null
+        healthCheckTimer: null,
+        healthAbort: false
     };
 
     const rejectPendingRequests = (error) => {
@@ -462,6 +478,8 @@ async function _connectSSE(config, requestHeaders, retryConfig, context) {
                 const { value, done } = await sseReader.read();
                 if (done) break;
 
+                // 任何字节到达都证明连接活着，注释行 keepalive（': ping'）也必须刷新活性
+                connection.lastEventTime = Date.now();
                 buffer += decoder.decode(value, { stream: true });
 
                 let separatorMatch;
@@ -495,8 +513,9 @@ async function _connectSSE(config, requestHeaders, retryConfig, context) {
         rejectPendingRequests(new Error('SSE 连接已关闭'));
 
         const current = context.getConnection(id);
+        // 健康检查触发的 abort 必须走重连，仅手动 disconnect 的 abort 才终止
         const canReconnect =
-            !sseAbortController.signal.aborted &&
+            (connection.healthAbort || !sseAbortController.signal.aborted) &&
             current &&
             current.protocol === 'sse' &&
             current.shouldReconnect &&
@@ -582,13 +601,21 @@ async function _connectSSE(config, requestHeaders, retryConfig, context) {
         throw error;
     }
 
+    // SSE 规范不强制 keepalive，静默不等于断开：60s 无字节先 ping 探活，
+    // 任何响应字节（含 error response）都会经 readLoop 刷新 lastEventTime
     connection.healthCheckTimer = setInterval(() => {
-        if (Date.now() - connection.lastEventTime > 60000) {
-            logger.warn(`[MCP] SSE 连接可能已断开（60s 无事件），触发重连: ${id}`);
-            clearInterval(connection.healthCheckTimer);
-            connection.healthCheckTimer = null;
+        if (Date.now() - connection.lastEventTime <= 60000) return;
+
+        sendSSERequest(connection, 'ping', {}, { connectionTimeout: 5000 }).catch(() => {
+            if (Date.now() - connection.lastEventTime <= 60000) return;
+            logger.warn(`[MCP] SSE 连接已断开（ping 无响应），触发重连: ${id}`);
+            if (connection.healthCheckTimer) {
+                clearInterval(connection.healthCheckTimer);
+                connection.healthCheckTimer = null;
+            }
+            connection.healthAbort = true;
             sseAbortController.abort();
-        }
+        });
     }, 30000);
 
     try {
@@ -605,7 +632,7 @@ async function _connectSSE(config, requestHeaders, retryConfig, context) {
 
         connection.serverCapabilities = initResult?.capabilities || {};
         connection.serverInfo = initResult?.serverInfo || {};
-        sendSSENotification(connection, 'initialized');
+        sendSSENotification(connection, 'notifications/initialized');
     } catch (error) {
         sseAbortController.abort();
         try {
@@ -623,7 +650,7 @@ async function _connectSSE(config, requestHeaders, retryConfig, context) {
 // ========== HTTP 连接 ==========
 
 async function _connectHTTP(config, requestHeaders, retryConfig, protocol) {
-    const { id, url } = config;
+    const { url } = config;
     const fullHeaders = {
         Accept: 'application/json, text/event-stream',
         ...requestHeaders
@@ -684,11 +711,6 @@ async function _connectHTTP(config, requestHeaders, retryConfig, protocol) {
         if (sessionId) {
             logger.debug(`[MCP] 获取到 Session ID: ${sessionId}`);
             fullHeaders['Mcp-Session-Id'] = sessionId;
-            try {
-                sessionStorage.setItem(`mcp-session-${id}`, sessionId);
-            } catch {
-                /* ignore */
-            }
         }
 
         fetch(url, {
@@ -698,7 +720,7 @@ async function _connectHTTP(config, requestHeaders, retryConfig, protocol) {
                 Accept: 'application/json, text/event-stream',
                 ...fullHeaders
             },
-            body: JSON.stringify({ jsonrpc: '2.0', method: 'initialized' })
+            body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })
         }).catch((err) => logger.warn('[MCP] initialized 通知失败:', err));
 
         return {
@@ -885,13 +907,10 @@ export function parseSSE(text) {
  * @returns {{ type: string, retryable: boolean }}
  */
 export function classifyError(error) {
-    const message = error.message.toLowerCase();
+    const message = String(error?.message || error || '').toLowerCase();
 
     if (message.includes('platform') || message.includes('平台')) {
         return { type: 'platform_unsupported', retryable: false };
-    }
-    if (message.includes('url') || message.includes('参数') || message.includes('invalid')) {
-        return { type: 'invalid_config', retryable: false };
     }
     if (
         message.includes('unauthorized') ||
@@ -904,9 +923,6 @@ export function classifyError(error) {
     if (message.includes('timeout') || message.includes('超时')) {
         return { type: 'timeout', retryable: true };
     }
-    if (message.includes('network') || message.includes('fetch') || message.includes('websocket')) {
-        return { type: 'network_error', retryable: true };
-    }
     if (
         message.includes('500') ||
         message.includes('502') ||
@@ -914,6 +930,17 @@ export function classifyError(error) {
         message.includes('504')
     ) {
         return { type: 'server_error', retryable: true };
+    }
+    // 仅匹配客户端自产/浏览器构造器的固定文案：SSE/HTTP 错误会拼接服务器响应体，
+    // 宽泛子串匹配会误判；构造器报错的非法 URL 重试永远不可能成功
+    if (
+        message.includes('远程 mcp 需要提供') ||
+        message.includes("failed to construct 'websocket'")
+    ) {
+        return { type: 'invalid_config', retryable: false };
+    }
+    if (message.includes('network') || message.includes('fetch') || message.includes('websocket')) {
+        return { type: 'network_error', retryable: true };
     }
     return { type: 'unknown_error', retryable: true };
 }

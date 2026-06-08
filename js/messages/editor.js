@@ -10,13 +10,7 @@ import { eventBus } from '../core/events.js';
 import {
     removeMessagesAfter,
     popLastAssistantMessage,
-    updateMessageAt,
-    setUploadedImages,
-    setEditingIndex,
-    setEditingElement,
-    setCurrentAssistantMessage,
-    setCurrentReplies,
-    setSelectedReplyIndex
+    updateMessageAt
 } from '../core/state-mutations.js';
 // 不直接导入 input.js 的函数，通过 eventBus 解耦（避免循环依赖）
 import { showConfirmDialog } from '../utils/dialogs.js';
@@ -43,33 +37,6 @@ function autoResizeGeneric(textarea, minHeight = 60, maxHeight = 400) {
 }
 
 /**
- * 根据消息ID查找索引
- * 优化：使用 messageIdMap 快速查找，避免 O(n) 遍历
- * @param {string} messageId - 消息ID
- * @returns {number} 消息索引，-1 表示未找到
- */
-function getMessageIndexById(messageId) {
-    if (!messageId) return -1;
-
-    // 优先使用 messageIdMap（O(1) 查找）
-    if (state.messageIdMap && state.messageIdMap.has(messageId)) {
-        return state.messageIdMap.get(messageId);
-    }
-
-    // Fallback：遍历数组查找（向后兼容，防止 map 未同步）
-    const messages = state.messages;
-    const index = messages.findIndex((msg) => msg.id === messageId);
-
-    // 如果找到但 map 中没有，同步到 map
-    if (index !== -1 && state.messageIdMap) {
-        logger.warn(`消息ID ${messageId} 在 map 中缺失，自动同步`);
-        state.messageIdMap.set(messageId, index);
-    }
-
-    return index;
-}
-
-/**
  * 进入编辑模式（将消息加载到输入框）
  * @param {HTMLElement} messageEl - 消息元素
  */
@@ -81,14 +48,15 @@ export function enterEditMode(messageEl) {
     }
 
     logger.debug('[editor.js] enterEditMode 被调用', { messageEl });
-    const targetIndex = resolveMessageIndex(messageEl);
-    logger.debug('[editor.js] targetIndex =', targetIndex);
-    if (targetIndex === -1) {
+    const hit = resolveMessageHit(messageEl);
+    logger.debug('[editor.js] targetIndex =', hit?.index ?? -1);
+    if (!hit) {
         logger.error('[ERROR] 无效的 targetIndex');
         return;
     }
 
-    const message = state.messages[targetIndex];
+    const targetIndex = hit.index;
+    const message = hit.msg;
     if (!message || message.role !== 'user') return;
 
     // 新格式：从 parts 提取文本和附件
@@ -114,20 +82,20 @@ export function enterEditMode(messageEl) {
             }
         }
         elements.userInput.value = text;
-        setUploadedImages(attachments);
+        state.uploadedImages = attachments;
     } else {
         // 旧格式兼容
         const { text, images } = parseUserContent(message.content);
         elements.userInput.value = text;
-        setUploadedImages(images);
+        state.uploadedImages = images;
     }
 
     // 更新编辑状态
     if (state.editingElement) {
         state.editingElement.classList.remove('editing');
     }
-    setEditingIndex(targetIndex);
-    setEditingElement(messageEl);
+    state.editingIndex = targetIndex;
+    state.editingElement = messageEl;
     messageEl.classList.add('editing');
     logger.debug('[editor.js] 编辑状态已更新, state.editingIndex =', state.editingIndex);
 
@@ -161,8 +129,10 @@ export function editMessageInPlace(messageEl) {
         return;
     }
 
-    const index = resolveMessageIndex(messageEl);
-    if (index === -1) return;
+    const hit = resolveMessageHit(messageEl);
+    if (!hit) return;
+    const index = hit.index;
+    const message = hit.msg;
 
     // 避免重复进入编辑模式
     if (messageEl.classList.contains('editing')) return;
@@ -173,8 +143,6 @@ export function editMessageInPlace(messageEl) {
     let textContent = '';
     const images = [];
     let thinkingContent = ''; // 运行时局部变量，非旧格式字段
-
-    const message = state.messages[index];
     if (!message) return;
 
     // 新格式：从 parts 读取
@@ -417,18 +385,11 @@ export function updateMessageContent(index, newContent, _role) {
     const msg = state.messages[index];
     const updates = {};
 
-    // 新格式 parts：合并所有 text part 为一个，替换为新内容
     if (msg.parts && Array.isArray(msg.parts)) {
-        const nonTextParts = msg.parts.filter((p) => p.type !== PartType.TEXT);
-        // 找到第一个 text part 的位置，在该位置插入新 text
-        const firstTextIdx = msg.parts.findIndex((p) => p.type === PartType.TEXT);
-        const insertIdx = firstTextIdx >= 0 ? firstTextIdx : nonTextParts.length;
-        const newParts = [
-            ...nonTextParts.slice(0, insertIdx),
-            { type: PartType.TEXT, text: newContent },
-            ...nonTextParts.slice(insertIdx)
-        ];
-        updates.parts = newParts;
+        updates.parts = preserveStructuralParts(msg.parts, {
+            newText: newContent,
+            newImages: null
+        });
     } else {
         // 旧格式兜底：只创建 parts
         updates.parts = [{ type: PartType.TEXT, text: newContent }];
@@ -436,6 +397,7 @@ export function updateMessageContent(index, newContent, _role) {
 
     updateAndCleanup(index, getEditCleanupKeys(msg), updates);
     clearSubsequentSignatures(index);
+    runPostEditValidation();
 
     eventBus.emit('messages:changed', { action: 'updated', index });
 }
@@ -473,25 +435,11 @@ export function updateMessageContentWithImages(index, newText, images, _role) {
     const msg = state.messages[index];
     const updates = {};
 
-    // 新格式 parts
     if (msg.parts && Array.isArray(msg.parts)) {
-        const thinkingParts = msg.parts.filter((p) => p.type === PartType.THINKING);
-        const preservedParts = msg.parts.filter(
-            (p) => p.type === PartType.TOOL_CALL || p.type === PartType.FILE
-        );
-        const newParts = [...thinkingParts, { type: PartType.TEXT, text: newText }];
-        if (hasImages) {
-            for (const n of normalized) {
-                newParts.push({
-                    type: PartType.MEDIA,
-                    media: MediaKind.IMAGE,
-                    url: n.dataUrl,
-                    mime: n.mimeType
-                });
-            }
-        }
-        newParts.push(...preservedParts);
-        updates.parts = newParts;
+        updates.parts = preserveStructuralParts(msg.parts, {
+            newText,
+            newImages: hasImages ? normalized : null
+        });
     } else {
         // 旧格式回退：更新 content 并创建 parts
         const newParts = [{ type: PartType.TEXT, text: newText }];
@@ -510,6 +458,7 @@ export function updateMessageContentWithImages(index, newText, images, _role) {
 
     updateAndCleanup(index, getEditCleanupKeys(msg), updates);
     clearSubsequentSignatures(index);
+    runPostEditValidation();
 
     eventBus.emit('messages:changed', { action: 'updated', index });
 }
@@ -519,8 +468,18 @@ export function updateMessageContentWithImages(index, newText, images, _role) {
  * @param {HTMLElement} messageEl - 消息元素
  */
 export async function deleteMessage(messageEl) {
-    const index = resolveMessageIndex(messageEl);
-    if (index === -1) return;
+    const hit = resolveMessageHit(messageEl);
+    if (!hit) return;
+    const index = hit.index;
+
+    // 流式响应中禁止删除：消息 DOM 被 remove 后 state.currentAssistantMessage 指向 detached
+    // node，后续 rAF 持续往 detached tree 写 innerHTML；finalRender 时 saveAssistantMessage
+    // 通过 .closest('.message').dataset.messageIndex 取索引会取到 -1 落到错误位置。
+    // 编辑/清空路径已有 isLoading 守卫，删除路径之前漏了
+    if (state.isLoading) {
+        eventBus.emit('ui:notification', { message: '请等待回复完成后再删除', type: 'warning' });
+        return;
+    }
 
     // 使用自定义确认对话框
     const confirmed = await showConfirmDialog('确定要删除这条消息吗？', '确认删除');
@@ -612,7 +571,7 @@ export function removeMessagesAfterAll(index) {
         node.dataset.messageIndex = idx;
     });
 
-    setCurrentAssistantMessage(null);
+    state.currentAssistantMessage = null;
 
     // 通知会话保存
     eventBus.emit('messages:changed', {
@@ -628,8 +587,8 @@ export async function handleRetry() {
     if (state.isLoading) return;
 
     // 清空当前的多回复状态
-    setCurrentReplies([]);
-    setSelectedReplyIndex(0);
+    state.currentReplies = [];
+    state.selectedReplyIndex = 0;
 
     // 检查是否有内容可以重试
     if (state.messages.length === 0) return;
@@ -658,30 +617,12 @@ export async function handleRetry() {
 }
 
 /**
- * 解析消息索引
+ * 解析消息元素到 {msg, index}，统一委托 store.findByEl
  * @param {HTMLElement} messageEl - 消息元素
- * @returns {number} 消息索引，-1 表示未找到
+ * @returns {{msg: Object, index: number} | null}
  */
-function resolveMessageIndex(messageEl) {
-    // 优先使用消息ID查找（稳定且准确）
-    const messageId = messageEl.dataset?.messageId;
-    if (messageId) {
-        const index = getMessageIndexById(messageId);
-        if (index !== -1) return index;
-        logger.warn(`消息ID ${messageId} 未找到，fallback到索引查找`);
-    }
-
-    // Fallback 1: 使用 dataset.messageIndex（向后兼容）
-    const indexAttr = messageEl.dataset?.messageIndex;
-    if (indexAttr !== undefined) {
-        const parsed = parseInt(indexAttr, 10);
-        if (!Number.isNaN(parsed)) return parsed;
-    }
-
-    // Fallback 2: 使用 DOM 位置（最后的手段）
-    const nodes = Array.from(elements.messagesArea.querySelectorAll('.message'));
-    const domIndex = nodes.indexOf(messageEl);
-    return domIndex;
+function resolveMessageHit(messageEl) {
+    return state.messageStore.findByEl(messageEl, { messagesArea: elements.messagesArea });
 }
 
 // ========== 事件监听 ==========
@@ -689,9 +630,9 @@ function resolveMessageIndex(messageEl) {
 // 监听编辑请求
 eventBus.on('message:edit-requested', ({ messageEl }) => {
     // 工具调用兼容性检查
-    const index = resolveMessageIndex(messageEl);
-    if (index !== -1) {
-        const checkResult = canEditMessage(index);
+    const hit = resolveMessageHit(messageEl);
+    if (hit) {
+        const checkResult = canEditMessage(hit.index);
         if (!checkResult.canEdit) {
             // 不可编辑，已由 message-compat.js 发出通知
             return;
@@ -716,6 +657,133 @@ eventBus.on('message:delete-requested', ({ messageEl }) => {
 eventBus.on('message:retry-requested', () => {
     handleRetry();
 });
+
+// 监听复制全文请求：用 getTextContent 抽出新格式 parts 的 TEXT 合并文本（旧格式有兜底）
+eventBus.on('message:copy-requested', async ({ messageEl }) => {
+    const hit = resolveMessageHit(messageEl);
+    if (!hit) {
+        eventBus.emit('ui:notification', { message: '消息不存在', type: 'error' });
+        return;
+    }
+    const msg = hit.msg;
+    if (!msg) return;
+    const { getTextContent } = await import('./schema.js');
+    const text = getTextContent(msg);
+    if (!text) {
+        eventBus.emit('ui:notification', { message: '消息无可复制的文本内容', type: 'warning' });
+        return;
+    }
+    try {
+        await navigator.clipboard.writeText(text);
+        eventBus.emit('ui:notification', { message: '已复制全文', type: 'success' });
+    } catch (err) {
+        logger.error('[Editor] 复制失败:', err);
+        eventBus.emit('ui:notification', { message: '复制失败，请手动选中', type: 'error' });
+    }
+});
+
+/**
+ * 按 thinking/text/media/tool_call/file 原相对位置重建 parts，保留 tool_call/file 原顺序
+ * 不再把保留 part 一律塞末尾（避免破坏 Claude/OpenAI Responses 重发顺序）
+ *
+ * @param {Array} oldParts - 原 parts 数组
+ * @param {Object} replacement - { newThinking?, newText, newImages? }
+ * @returns {Array} 重建后的 parts 数组
+ * @internal 仅供测试 import；运行时使用方仍在本模块内
+ */
+export function preserveStructuralParts(oldParts, replacement) {
+    const { newThinking, newText, newImages } = replacement;
+    const out = [];
+    let thinkingInserted = false;
+    let textInserted = false;
+    let imagesInserted = false;
+
+    for (const p of oldParts) {
+        if (p.type === PartType.THINKING) {
+            if (!thinkingInserted && newThinking) {
+                out.push({ type: PartType.THINKING, text: newThinking, _edited: true });
+                thinkingInserted = true;
+            }
+            continue;
+        }
+        if (p.type === PartType.TEXT) {
+            if (!textInserted) {
+                out.push({ type: PartType.TEXT, text: newText });
+                textInserted = true;
+            }
+            continue;
+        }
+        if (p.type === PartType.MEDIA) {
+            if (!imagesInserted && newImages && newImages.length > 0) {
+                for (const n of newImages) {
+                    out.push({
+                        type: PartType.MEDIA,
+                        media: MediaKind.IMAGE,
+                        url: n.dataUrl,
+                        mime: n.mimeType
+                    });
+                }
+                imagesInserted = true;
+            }
+            continue;
+        }
+        out.push(p);
+    }
+
+    const prefix = [];
+    if (!thinkingInserted && newThinking) {
+        prefix.push({ type: PartType.THINKING, text: newThinking, _edited: true });
+    }
+    if (!textInserted) {
+        prefix.push({ type: PartType.TEXT, text: newText });
+    }
+    if (!imagesInserted && newImages && newImages.length > 0) {
+        for (const n of newImages) {
+            prefix.push({
+                type: PartType.MEDIA,
+                media: MediaKind.IMAGE,
+                url: n.dataUrl,
+                mime: n.mimeType
+            });
+        }
+    }
+    return prefix.length > 0 ? [...prefix, ...out] : out;
+}
+
+/**
+ * 跨 family 编辑守卫：Claude/openclaw 清 _turn 防 'thinking blocks must match' 400
+ * OpenAI Responses 不清（reasoningItems 与 _turn 一一对应）但发出 warning 提示风险
+ * @returns {{ok:boolean, warning?:string}}
+ * @internal 仅供测试 import；运行时使用方仍在本模块内
+ */
+export function ensureTurnConsistency(msg, currentFormat) {
+    const parts = msg.parts || [];
+    const hasMultiTurn = parts.some((p) => p._turn !== undefined && p._turn > 0);
+    if (!hasMultiTurn) return { ok: true };
+
+    const isClaudeFamily = currentFormat === 'claude' || currentFormat === 'openclaw';
+    const isResponses = currentFormat === 'openai-responses';
+
+    if (isClaudeFamily) {
+        for (const p of parts) {
+            if (p._turn !== undefined) delete p._turn;
+        }
+        if (msg.meta?.raw?.openai?.reasoningItems) {
+            for (const item of msg.meta.raw.openai.reasoningItems) {
+                if (item && typeof item === 'object' && item._turn !== undefined) {
+                    delete item._turn;
+                }
+            }
+        }
+        return { ok: true };
+    }
+
+    if (isResponses) {
+        return { ok: true, warning: 'reasoning_chain_at_risk' };
+    }
+
+    return { ok: true };
+}
 
 /**
  * 从任意格式的图片对象中提取 {mimeType, data} 结构
@@ -776,6 +844,22 @@ function updateAndCleanup(index, cleanupKeys, updates) {
     if (msg) {
         for (const key of cleanupKeys) delete msg[key];
     }
+}
+
+/**
+ * 编辑后异步校验跨消息 tool_call 配对（fire-and-forget，不阻塞主流程）
+ */
+function runPostEditValidation() {
+    import('./schema.js')
+        .then(({ validateToolPairings }) => {
+            const v = validateToolPairings(state.messages);
+            if (!v.valid) {
+                logger.warn('[editor] 编辑后检测到 tool_call 孤儿:', v.orphans);
+            }
+        })
+        .catch((e) => {
+            logger.warn('[editor] validateToolPairings 调用失败:', e);
+        });
 }
 
 /**
@@ -887,24 +971,22 @@ export function updateMessageWithThinking(index, newText, newThinking, images, _
 
     // 新格式 parts
     if (msg.parts && Array.isArray(msg.parts)) {
-        const preservedParts = msg.parts.filter(
-            (p) => p.type === PartType.TOOL_CALL || p.type === PartType.FILE
-        );
-        const newParts = [];
-        if (newThinking) newParts.push(buildEditedThinking(newThinking));
-        newParts.push({ type: PartType.TEXT, text: newText });
-        if (hasImages) {
-            for (const n of normalized) {
-                newParts.push({
-                    type: PartType.MEDIA,
-                    media: MediaKind.IMAGE,
-                    url: n.dataUrl,
-                    mime: n.mimeType
-                });
-            }
+        // 跨 family 编辑守卫：Claude/openclaw 走严格 'thinking blocks must match' 校验需清 _turn；
+        // OpenAI Responses 依赖 _turn 配对 reasoningItems，清掉会触发 reasoning_id_not_found，仅警告
+        const turnCheck = ensureTurnConsistency(msg, state.apiFormat || '');
+        if (turnCheck.warning === 'reasoning_chain_at_risk') {
+            eventBus.emit('ui:notification', {
+                message:
+                    '当前消息含多轮 reasoning 链，编辑后下次重发可能触发 reasoning_id_not_found',
+                type: 'warning',
+                duration: 5000
+            });
         }
-        newParts.push(...preservedParts);
-        updates.parts = newParts;
+        updates.parts = preserveStructuralParts(msg.parts, {
+            newThinking,
+            newText,
+            newImages: hasImages ? normalized : null
+        });
     } else {
         // 旧格式回退：创建 parts
         const newParts = [];
@@ -925,6 +1007,7 @@ export function updateMessageWithThinking(index, newText, newThinking, images, _
 
     updateAndCleanup(index, [...getEditCleanupKeys(msg, true), ...signatureKeys], updates);
     clearSubsequentSignatures(index);
+    runPostEditValidation();
 
     eventBus.emit('messages:changed', { action: 'updated', index });
 }

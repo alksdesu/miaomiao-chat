@@ -1,21 +1,29 @@
 /**
- * 流式多回复处理模块
- * 并行处理多个流式响应
+ * 流式多回复处理模块 — 并行发起 N 个请求，复用 adapter.streamParser + BufferedSink 解析。
+ *
+ * 每个并发流注入独立 BufferedSink（第一个 reply showRealtime=true 走全局 UI 进度，
+ * 其余完全后台不触发 DOM mutation）。所有 reply 收集后由本模块统一 saveAssistantMessage
+ * + renderReplyWithSelector 渲染回复选择器。多回复模式不支持工具调用（BufferedSink
+ * triggerToolCalls 仅记 warn）。
  */
 
 import { logger } from '../utils/logger.js';
 import { state } from '../core/state.js';
-import { setSelectedReplyIndex, setCurrentReplies } from '../core/state-mutations.js';
-import { StreamStats, appendStreamStats } from './stats.js';
-import { updateStreamingMessage } from './helpers.js';
+import { appendStreamStats } from './stats.js';
 import { saveAssistantMessage } from '../messages/sync.js';
-import { setCurrentMessageIndex } from '../messages/dom-sync.js'; // Bug 2 导入索引设置函数
+import {
+    buildPartsFromStreamingState,
+    buildMetaFromStreamingState
+} from '../messages/parts-builder.js';
+import { setCurrentMessageIndex } from '../messages/dom-sync.js';
 import { renderReplyWithSelector } from '../messages/renderer.js';
 import { renderHumanizedError } from '../utils/errors.js';
 import { saveErrorMessage } from '../messages/sync.js';
 import { getSendFunction } from '../api/factory.js';
-import { getCurrentProvider } from '../providers/manager.js';
-import { isVideoMimeType, isAudioMimeType } from '../utils/media.js';
+import { getAdapter } from '../api/adapters/index.js';
+import { getCurrentProvider } from '../api/current.js';
+import { executeRequest } from '../api/request-pipeline.js';
+import { BufferedSink } from './sink.js';
 
 /**
  * 处理多个流式响应（并行）
@@ -36,20 +44,35 @@ export async function handleMultiStreamResponses(
 ) {
     const replyCount = state.replyCount || 1;
 
-    // 显示进度
-    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
-    state.currentAssistantMessage.innerHTML = `<div class="multi-reply-progress">正在并行生成 ${replyCount} 个回复...</div>`;
+    // 显示进度 —— 用独立 DOM 节点（class:multi-reply-progress-bar）不覆盖整个 message-content，
+    // 后续 BufferedSink showRealtime 的 updateStreamingMessage 可与进度条共存，避免 loading
+    // 文案在首流首 token 前换 3 次的视觉抖动
+    const progressEl = document.createElement('div');
+    progressEl.className = 'multi-reply-progress multi-reply-progress-bar';
+    progressEl.textContent = `正在并行生成 ${replyCount} 个回复...`;
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：清空 children，无注入
+    state.currentAssistantMessage.innerHTML = '';
+    state.currentAssistantMessage.appendChild(progressEl);
 
     // 并行发送所有请求
-    const promises = [];
-
-    // 使用提供商的原始 apiFormat
     const provider = getCurrentProvider();
     const requestFormat = provider?.apiFormat || 'openai';
     const sendFn = getSendFunction(requestFormat);
+    const adapter = getAdapter(requestFormat);
 
+    // sendFn 内部（openai.js）会再次 getCurrentProvider 读 apiFormat — 多回复并发期间
+    // 用户切到不同 apiFormat 的 provider 会让第 N 个请求用新 adapter + 旧 endpoint 错配。
+    // 用闭包绑定快照 adapter 走 executeRequest 跳过 sendFn 重读 provider 的问题
+    // （openclaw 走 WS 不在 executeRequest 流程，回退 sendFn 单流路径已规避）
+    const boundSendFn =
+        requestFormat === 'openclaw'
+            ? sendFn
+            : (ep, key, mdl, sig) =>
+                  executeRequest(adapter, { endpoint: ep, apiKey: key, model: mdl, signal: sig });
+
+    const promises = [];
     for (let i = 0; i < replyCount; i++) {
-        promises.push(sendFn(endpoint, apiKey, model, abortController.signal));
+        promises.push(boundSendFn(endpoint, apiKey, model, abortController.signal));
     }
 
     // 等待所有请求返回响应对象
@@ -62,51 +85,46 @@ export async function handleMultiStreamResponses(
         const result = responseResults[i];
         if (result.status === 'fulfilled' && result.value.ok) {
             validResponses.push({ index: i, response: result.value });
+        } else if (result.status === 'rejected') {
+            errorDetails.push({ index: i + 1, type: 'network', error: result.reason });
+            logger.error(`Response ${i + 1} failed:`, result.reason);
         } else {
-            // 收集错误详情
-            if (result.status === 'rejected') {
-                errorDetails.push({ index: i + 1, type: 'network', error: result.reason });
-                logger.error(`Response ${i + 1} failed:`, result.reason);
-            } else {
-                // 尝试解析响应体中的错误信息
-                const response = result.value;
-                try {
-                    const errorData = await response.clone().json();
-                    errorDetails.push({
-                        index: i + 1,
-                        type: 'api',
-                        status: response.status,
-                        error: errorData
-                    });
-                } catch (_error) {
-                    errorDetails.push({
-                        index: i + 1,
-                        type: 'http',
-                        status: response.status,
-                        error: { message: `HTTP ${response.status}` }
-                    });
-                }
-                logger.error(`Response ${i + 1} not ok:`, response.status);
+            const response = result.value;
+            try {
+                const errorData = await response.clone().json();
+                errorDetails.push({
+                    index: i + 1,
+                    type: 'api',
+                    status: response.status,
+                    error: errorData
+                });
+            } catch (_error) {
+                errorDetails.push({
+                    index: i + 1,
+                    type: 'http',
+                    status: response.status,
+                    error: { message: `HTTP ${response.status}` }
+                });
             }
+            logger.error(`Response ${i + 1} not ok:`, response.status);
         }
     }
 
     if (validResponses.length === 0) {
-        // 构建包含详细错误信息的错误对象
         const firstError = errorDetails[0];
-        const errorObj = firstError?.error || { message: '未知错误' };
+        // 浅拷贝 firstError.error 后再挂 allErrors：直接复用引用会污染 errorDetails[0].error
+        // 原对象，下游若再次读取 errorDetails 会拿到带 allErrors 的污染版本
+        const errorObj = firstError?.error ? { ...firstError.error } : { message: '未知错误' };
         const statusCode = firstError?.status || 0;
 
-        // 添加所有错误的汇总信息（保留完整错误对象）
         if (errorDetails.length > 1) {
             errorObj.allErrors = errorDetails.map((e) => ({
                 request: e.index,
                 status: e.status || (e.type === 'network' ? 'Network Error' : 'Unknown'),
                 message: e.error?.error?.message || e.error?.message || String(e.error),
-                // 保留完整的错误对象以便技术详情显示
                 type: e.error?.error?.type || e.error?.type,
                 code: e.error?.error?.code || e.error?.code,
-                fullError: e.error // 完整错误对象
+                fullError: e.error
             }));
         }
 
@@ -116,16 +134,29 @@ export async function handleMultiStreamResponses(
         return;
     }
 
-    // 更新进度
-    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
-    state.currentAssistantMessage.innerHTML = `<div class="multi-reply-progress">正在接收 ${validResponses.length} 个回复的流式数据...</div>`;
+    // 更新进度文本（仅替换文本，DOM 节点保留），首流首 token 到来后会被 updateStreamingMessage
+    // 覆盖渲染流式内容；progress bar 在所有流完成后由 renderReplyWithSelector 清理
+    const existingProgress = state.currentAssistantMessage.querySelector('.multi-reply-progress');
+    if (existingProgress) {
+        existingProgress.textContent = `正在接收 ${validResponses.length} 个回复的流式数据...`;
+    }
 
-    // 并行处理所有流，第一个流实时显示，其他流后台处理
-    const streamPromises = validResponses.map((item, idx) => {
-        return parseStreamToReply(item.response, idx === 0, requestFormat);
-    });
-
+    // 并行解析所有流，第一个流 showRealtime 走全局 UI 进度，其余后台
+    // abortController.signal 透传到每个 parser，用户点"停止"时同时取消所有并发流
+    const streamPromises = validResponses.map((item, idx) =>
+        parseReplyStream(adapter, item.response, idx === 0, abortController?.signal || null)
+    );
     const streamResults = await Promise.allSettled(streamPromises);
+
+    // 全部失败且全是 AbortError → 用户主动取消，整条 throw 让 handler.handleSendError
+    // 走"已取消"路径而非持久化为 N 条错误回复污染会话
+    const allRejected = streamResults.every((r) => r.status === 'rejected');
+    const allAborted = allRejected && streamResults.every((r) => r.reason?.name === 'AbortError');
+    if (allAborted) {
+        const abortErr = new Error('Multi-stream aborted by user');
+        abortErr.name = 'AbortError';
+        throw abortErr;
+    }
 
     // 收集所有回复（成功或失败）
     const allReplies = []; // 运行时变量，非旧格式字段
@@ -135,12 +166,15 @@ export async function handleMultiStreamResponses(
         if (result.status === 'fulfilled' && result.value) {
             allReplies.push(result.value);
         } else if (result.status === 'rejected') {
-            // 解析错误信息
+            // 单个流被 abort（其他流仍在跑）：不落库为错误，跳过即可
+            if (result.reason?.name === 'AbortError') {
+                logger.debug(`Stream ${i + 1} aborted, 跳过持久化`);
+                continue;
+            }
             const errorMessage = result.reason?.message || String(result.reason);
             const [errorType, ...messageParts] = errorMessage.split(':');
             const cleanMessage = messageParts.join(':').trim() || errorMessage;
 
-            // 为失败的流创建错误回复对象
             allReplies.push({
                 content: '',
                 isError: true,
@@ -148,41 +182,61 @@ export async function handleMultiStreamResponses(
                 errorMessage: cleanMessage
             });
 
-            streamErrors.push({
-                index: i + 1,
-                error: result.reason
-            });
+            streamErrors.push({ index: i + 1, error: result.reason });
             logger.error(`Stream ${i + 1} failed:`, result.reason);
         }
     }
 
     if (allReplies.length > 0) {
-        setCurrentReplies(allReplies);
-        setSelectedReplyIndex(0);
+        state.currentReplies = allReplies;
+        state.selectedReplyIndex = 0;
 
         const reply0 = allReplies[0];
 
         // 同步第一个回复的统计到全局（供 DOM 渲染）
         if (reply0.stats) reply0.stats.syncToGlobal();
 
-        // 保存消息并获取索引
-        const messageIndex = saveAssistantMessage({
-            textContent: reply0.content || '',
-            thinkingContent: reply0.thinkingContent,
-            thoughtSignature: reply0.thoughtSignature || reply0.thinkingSignature,
-            thinkingBlocks: reply0.thinkingBlocks,
-            thinkingSignatures: reply0.thinkingSignatures,
-            thinkingItems: reply0.thinkingItems,
-            encryptedContent: reply0.encryptedContent,
-            reasoningItemId: reply0.reasoningItemId,
-            groundingMetadata: reply0.groundingMetadata,
-            streamStats: reply0.stats ? reply0.stats.getData() : null,
-            allReplies: allReplies,
-            selectedReplyIndex: 0,
-            sessionId: sessionId
-        });
+        // 多回复模式下被 BufferedSink 拦截的工具调用：标 'skipped' 状态。
+        // adapter.partsToAPIMessages 看到 ToolState.SKIPPED 整条 tool_call 跳过不下发
+        // （既不输出 tool_use 也不需要配对 tool_result，避免 'failed' 路径需要伪造 tool_result）；
+        // UI 用 tool-display 'skipped' 灰色分支提示用户「未执行（多回复模式不支持工具）」
+        const skippedToolCalls = reply0.toolCalls
+            ? reply0.toolCalls.map((tc) => ({
+                  ...tc,
+                  status: 'skipped',
+                  error: '多回复模式不支持工具调用，已跳过执行'
+              }))
+            : undefined;
 
-        // Bug 2 立即设置 dataset.messageIndex
+        const messageIndex = saveAssistantMessage(
+            buildPartsFromStreamingState({
+                textContent: reply0.content || '',
+                thinkingContent: reply0.thinkingContent,
+                thoughtSignature: reply0.thoughtSignature || reply0.thinkingSignature,
+                thinkingBlocks: reply0.thinkingBlocks,
+                thinkingSignatures: reply0.thinkingSignatures,
+                thinkingItems: reply0.thinkingItems,
+                // 透传 contentParts 让图片/视频/音频媒体不被丢失（reply0.contentParts 含
+                // 图像生成与多模态结果，仅靠 textContent 走 TEXT part 兜底会丢媒体）
+                contentParts: reply0.contentParts,
+                toolCalls: skippedToolCalls,
+                signatureFormat: reply0.signatureFormat
+            }),
+            buildMetaFromStreamingState({
+                thoughtSignature: reply0.thoughtSignature || reply0.thinkingSignature,
+                encryptedContent: reply0.encryptedContent,
+                reasoningItemId: reply0.reasoningItemId,
+                reasoningItems: reply0.reasoningItems,
+                groundingMetadata: reply0.groundingMetadata,
+                streamStats: reply0.stats ? reply0.stats.getData() : null
+            }),
+            {
+                sessionId,
+                allReplies,
+                selectedReplyIndex: 0
+            }
+        );
+
         setCurrentMessageIndex(messageIndex);
 
         // 渲染回复选择器
@@ -194,11 +248,8 @@ export async function handleMultiStreamResponses(
         // 所有流都失败了，显示详细错误信息
         let errorObj;
         if (streamErrors.length > 0) {
-            // 使用第一个错误作为主错误
             const firstError = streamErrors[0].error;
             const errorMessage = firstError?.message || String(firstError);
-
-            // 解析错误类型和消息
             const [errorType, ...messageParts] = errorMessage.split(':');
             const cleanMessage = messageParts.join(':').trim() || errorMessage;
 
@@ -209,18 +260,16 @@ export async function handleMultiStreamResponses(
                 }
             };
 
-            // 如果有多个错误，添加到allErrors数组（保留完整错误对象）
             if (streamErrors.length > 1) {
                 errorObj.error.allErrors = streamErrors.map((e) => {
-                    const errorMessage = e.error?.message || String(e.error);
-                    // 尝试从错误消息中提取类型和代码
-                    const [errorType, ...messageParts] = errorMessage.split(':');
+                    const msg = e.error?.message || String(e.error);
+                    const [eType, ...mParts] = msg.split(':');
                     return {
                         stream: e.index,
-                        message: messageParts.join(':').trim() || errorMessage,
-                        type: errorType || e.error?.type,
+                        message: mParts.join(':').trim() || msg,
+                        type: eType || e.error?.type,
                         code: e.error?.code,
-                        fullError: e.error // 完整错误对象
+                        fullError: e.error
                     };
                 });
             }
@@ -235,347 +284,43 @@ export async function handleMultiStreamResponses(
 }
 
 /**
- * 解析单个流并返回回复对象
- * @param {Response} response - Fetch Response
- * @param {boolean} showRealtime - 是否实时显示
- * @returns {Promise<Object>} 回复对象
+ * 单个流的解析：复用 adapter.streamParser + BufferedSink 隔离副作用，
+ * 流完成后从 parser 实例提取 reply（含格式特有字段如 thoughtSignature / thinkingBlocks 等）。
+ *
+ * @param {import('../api/adapters/format-adapter-types.js').FormatAdapter} adapter
+ * @param {Response} response - fetch Response
+ * @param {boolean} showRealtime - true 时本流走全局 UI 进度（多流第一个）
+ * @param {AbortSignal|null} signal - 透传给 parser.parse，abort 时主动 cancel reader
+ * @returns {Promise<Object>} reply 对象（content/thinkingContent/stats/格式特有字段）
  */
-async function parseStreamToReply(response, showRealtime = false, apiFormat = 'openai') {
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    const stats = new StreamStats();
-    let buffer = '';
-    let textContent = '';
-    let thinkingContent = '';
-    let thoughtSignature = null;
-    let groundingMetadata = null;
-    const contentParts = []; // 运行时变量，非旧格式字段
-
-    switch (apiFormat) {
-        case 'gemini':
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop() || '';
-
-                for (const line of lines) {
-                    if (!line.trim() || line.startsWith(':')) continue;
-
-                    try {
-                        let jsonStr = line;
-                        if (line.startsWith('data: ')) {
-                            jsonStr = line.slice(6).trim();
-                            if (jsonStr === '[DONE]') continue;
-                        }
-
-                        const parsed = JSON.parse(jsonStr);
-
-                        // 检测Gemini错误响应
-                        if (parsed.error) {
-                            const errorCode = parsed.error.code || 'unknown';
-                            const errorMessage = parsed.error.message || 'Unknown error';
-                            logger.error(`❌ Gemini API error in multi-stream:`, parsed.error);
-
-                            // 抛出错误，让外层Promise.allSettled捕获
-                            throw new Error(`${errorCode}: ${errorMessage}`);
-                        }
-
-                        const parts = parsed.candidates?.[0]?.content?.parts || [];
-
-                        for (const part of parts) {
-                            if (part.thoughtSignature) {
-                                thoughtSignature = part.thoughtSignature;
-                            }
-                            if (part.thought) {
-                                stats.recordFirstToken();
-                                stats.recordTokens(part.text);
-                                thinkingContent += part.text || '';
-                            } else if (part.text) {
-                                stats.recordFirstToken();
-                                stats.recordTokens(part.text);
-                                textContent += part.text;
-                            } else if (part.inlineData || part.inline_data) {
-                                const inlineData = part.inlineData || part.inline_data;
-                                const mimeType = inlineData.mimeType || inlineData.mime_type;
-                                const dataUrl = `data:${mimeType};base64,${inlineData.data}`;
-                                const mediaType = isVideoMimeType(mimeType)
-                                    ? 'video_url'
-                                    : isAudioMimeType(mimeType)
-                                      ? 'audio_url'
-                                      : 'image_url';
-                                contentParts.push({
-                                    type: mediaType,
-                                    url: dataUrl,
-                                    complete: true,
-                                    mimeType,
-                                    inlineData
-                                });
-                            }
-                        }
-
-                        if (parsed.candidates?.[0]?.groundingMetadata) {
-                            groundingMetadata = parsed.candidates[0].groundingMetadata;
-                        }
-
-                        // 实时显示第一个流
-                        if (showRealtime) {
-                            updateStreamingMessage(textContent, thinkingContent);
-                        }
-                    } catch (e) {
-                        logger.warn('Gemini stream parse error:', e);
-                        // 如果是API错误，重新抛出
-                        if (e.message.includes(':')) {
-                            throw e;
-                        }
-                    }
-                }
-            }
-
-            stats.finalize();
-            return {
-                content: textContent,
-                parts: buildGeminiReplyParts(textContent, contentParts),
-                thinkingContent: thinkingContent || null,
-                thoughtSignature: thoughtSignature,
-                groundingMetadata: groundingMetadata,
-                stats
-            };
-
-        case 'claude': {
-            // 完整事件机制：block_start / block_delta / block_stop，保留多 thinking block 边界
-            // 同时维护 thinkingItems 顺序数组，含 thinking 和 redacted_thinking（API 多轮校验必需）
-            let currentBlockType = null;
-            let currentThinking = '';
-            let currentSignature = '';
-            let currentRedactedData = '';
-            const thinkingBlocks = [];
-            const thinkingSignatures = [];
-            const thinkingItems = [];
-            const SEP = '\n\n---\n\n';
-            const composeThinking = () =>
-                [...thinkingBlocks, currentThinking].filter(Boolean).join(SEP);
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop() || '';
-
-                for (const line of lines) {
-                    if (!line.startsWith('data: ')) continue;
-                    const data = line.slice(6).trim();
-                    if (data === '[DONE]') continue;
-
-                    try {
-                        const parsed = JSON.parse(data);
-
-                        // 检测错误事件
-                        if (parsed.type === 'error') {
-                            const errorCode = parsed.error?.type || 'unknown';
-                            const errorMessage = parsed.error?.message || 'Unknown error';
-                            logger.error('❌ Claude API error in multi-stream:', parsed.error);
-                            throw new Error(`${errorCode}: ${errorMessage}`);
-                        }
-
-                        if (parsed.type === 'content_block_start') {
-                            currentBlockType = parsed.content_block?.type;
-                            if (currentBlockType === 'thinking') {
-                                currentThinking = '';
-                                currentSignature = '';
-                            } else if (currentBlockType === 'redacted_thinking') {
-                                currentRedactedData = parsed.content_block?.data || '';
-                            }
-                        } else if (parsed.type === 'content_block_delta') {
-                            const delta = parsed.delta;
-                            if (delta?.type === 'text_delta') {
-                                stats.recordFirstToken();
-                                stats.recordTokens(delta.text);
-                                textContent += delta.text;
-                                if (showRealtime)
-                                    updateStreamingMessage(textContent, thinkingContent);
-                            } else if (delta?.type === 'thinking_delta') {
-                                stats.recordFirstToken();
-                                stats.recordTokens(delta.thinking);
-                                currentThinking += delta.thinking;
-                                thinkingContent = composeThinking();
-                                if (showRealtime)
-                                    updateStreamingMessage(textContent, thinkingContent);
-                            } else if (delta?.type === 'signature_delta') {
-                                currentSignature += delta.signature;
-                            } else if (delta?.type === 'redacted_thinking_delta') {
-                                currentRedactedData += delta.data || '';
-                            }
-                        } else if (parsed.type === 'content_block_stop') {
-                            // display:"omitted" 下 thinking 字段为空但 signature 有效，
-                            // 必须以 signature 为准保留 block 才能通过下一轮校验
-                            if (
-                                currentBlockType === 'thinking' &&
-                                (currentThinking || currentSignature)
-                            ) {
-                                thinkingBlocks.push(currentThinking);
-                                thinkingSignatures.push(currentSignature);
-                                thinkingItems.push({
-                                    type: 'thinking',
-                                    text: currentThinking,
-                                    signature: currentSignature
-                                });
-                                currentThinking = '';
-                                currentSignature = '';
-                                thinkingContent = composeThinking();
-                            } else if (
-                                currentBlockType === 'redacted_thinking' &&
-                                currentRedactedData
-                            ) {
-                                thinkingItems.push({
-                                    type: 'redacted_thinking',
-                                    data: currentRedactedData
-                                });
-                                currentRedactedData = '';
-                            }
-                            currentBlockType = null;
-                        }
-                    } catch (e) {
-                        logger.warn('Claude stream parse error:', e);
-                        if (e.message.includes(':')) throw e;
-                    }
-                }
-            }
-
-            // 兜底：流被截断时仍未触发 block_stop 的剩余内容
-            if (currentThinking) {
-                thinkingBlocks.push(currentThinking);
-                thinkingSignatures.push(currentSignature);
-                thinkingItems.push({
-                    type: 'thinking',
-                    text: currentThinking,
-                    signature: currentSignature
-                });
-                thinkingContent = composeThinking();
-            }
-
-            stats.finalize();
-            return {
-                content: textContent,
-                thinkingContent: thinkingContent || null,
-                thinkingSignature: thinkingSignatures.length === 1 ? thinkingSignatures[0] : null,
-                thinkingBlocks: thinkingBlocks.length > 0 ? thinkingBlocks : null,
-                thinkingSignatures: thinkingSignatures.length > 0 ? thinkingSignatures : null,
-                thinkingItems: thinkingItems.length > 0 ? thinkingItems : null,
-                stats
-            };
-        }
-
-        case 'openai':
-        default: {
-            let openaiEncrypted = null;
-            let openaiReasoningId = null;
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop() || '';
-
-                for (const line of lines) {
-                    if (!line.startsWith('data: ')) continue;
-                    const data = line.slice(6).trim();
-                    if (data === '[DONE]') break;
-
-                    try {
-                        const parsed = JSON.parse(data);
-
-                        // 检测 OpenAI 错误响应
-                        if (parsed.error) {
-                            const errorCode = parsed.error.code || parsed.error.type || 'unknown';
-                            const errorMessage = parsed.error.message || 'Unknown error';
-                            logger.error('❌ OpenAI API error in multi-stream:', parsed.error);
-
-                            // 抛出错误，让外层 Promise.allSettled 捕获
-                            throw new Error(`${errorCode}: ${errorMessage}`);
-                        }
-
-                        const delta = parsed.choices?.[0]?.delta;
-
-                        if (delta) {
-                            if (typeof delta.content === 'string') {
-                                stats.recordFirstToken();
-                                stats.recordTokens(delta.content);
-                                textContent += delta.content;
-                                if (showRealtime)
-                                    updateStreamingMessage(textContent, thinkingContent);
-                            }
-                            if (delta.reasoning_content) {
-                                stats.recordFirstToken();
-                                stats.recordTokens(delta.reasoning_content);
-                                thinkingContent += delta.reasoning_content;
-                                if (showRealtime)
-                                    updateStreamingMessage(textContent, thinkingContent);
-                            }
-                        }
-
-                        // Responses API: reasoning delta
-                        if (parsed.type === 'response.reasoning.delta' && parsed.delta) {
-                            stats.recordFirstToken();
-                            stats.recordTokens(parsed.delta);
-                            thinkingContent += parsed.delta;
-                            if (showRealtime) updateStreamingMessage(textContent, thinkingContent);
-                        }
-                        // Responses API: text delta
-                        if (parsed.type === 'response.output_text.delta' && parsed.delta) {
-                            stats.recordFirstToken();
-                            stats.recordTokens(parsed.delta);
-                            textContent += parsed.delta;
-                            if (showRealtime) updateStreamingMessage(textContent, thinkingContent);
-                        }
-                        // Responses API: encrypted_content 提取
-                        if (parsed.type === 'response.completed' && parsed.response?.output) {
-                            for (const item of parsed.response.output) {
-                                if (item.type === 'reasoning' && item.encrypted_content) {
-                                    openaiEncrypted = item.encrypted_content;
-                                    openaiReasoningId = item.id || null;
-                                }
-                            }
-                        }
-                    } catch (e) {
-                        logger.warn('OpenAI stream parse error:', e);
-                        // 如果是 API 错误，重新抛出
-                        if (e.message.includes(':')) {
-                            throw e;
-                        }
-                    }
-                }
-            }
-
-            stats.finalize();
-            return {
-                content: textContent,
-                thinkingContent: thinkingContent || null,
-                encryptedContent: openaiEncrypted,
-                reasoningItemId: openaiReasoningId,
-                stats
-            };
-        }
+async function parseReplyStream(adapter, response, showRealtime, signal = null) {
+    if (!response.body) {
+        throw new Error('响应体为空（代理可能返回了空响应）');
     }
-}
+    const reader = response.body.getReader();
+    const sink = new BufferedSink({ showRealtime });
 
-/**
- * 构建 Gemini 回复的 parts
- * @param {string} textContent - 文本内容
- * @param {Array} contentParts - 内容部分
- * @returns {Array} Gemini parts 数组
- */
-function buildGeminiReplyParts(textContent, contentParts) {
-    const parts = [];
-    if (textContent) parts.push({ text: textContent });
-    contentParts.forEach((p) => {
-        if (p.inlineData) parts.push({ inlineData: p.inlineData });
-    });
-    return parts;
+    // sessionId=null：BufferedSink.commit 是 no-op，无需会话归属
+    const parser = await adapter.streamParser(reader, null, sink, signal);
+
+    if (sink.errorInfo) {
+        // 流内 API 错误：抛出让外层 Promise.allSettled 收集
+        throw new Error(
+            `${sink.errorInfo.errorCode || 'stream_error'}: ${sink.errorInfo.errorMessage}`
+        );
+    }
+
+    if (sink.skippedToolCalls) {
+        // 多回复模式工具调用被忽略；reply 仍含部分文本
+        logger.warn(
+            '[multi-stream] reply 含被忽略的工具调用（多回复模式不支持）:',
+            sink.skippedToolCalls.length
+        );
+    }
+
+    // 从 parser 实例提取 reply（子类 collectReply 提供格式特有字段）
+    if (!parser || typeof parser.collectReply !== 'function') {
+        throw new Error('adapter.streamParser 未返回 parser 实例（缺 collectReply 方法）');
+    }
+    return parser.collectReply();
 }

@@ -8,6 +8,9 @@
  */
 
 import { eventBus } from '../core/events.js';
+import { elements } from '../core/elements.js';
+import { state } from '../core/state.js';
+import { undo, canUndoNow } from '../tools/undo.js';
 import { getIcon } from '../utils/icons.js';
 import { showConfirmDialog } from '../utils/dialogs.js';
 import { bindTopmostEscape } from '../utils/modal-stack.js';
@@ -67,6 +70,7 @@ function getOrCreateGroup(targetContainer) {
         tools: [], // { id, name, args, status, result, error, startTime, duration }
         completedCount: 0,
         failedCount: 0,
+        skippedCount: 0,
         totalCount: 0
     });
 
@@ -81,7 +85,6 @@ function getOrCreateGroup(targetContainer) {
  * 第一个工具创建 group + 按钮，后续只更新计数
  */
 export async function createToolCallUI(toolCall, targetContainer = null) {
-    const { state } = await import('../core/state.js');
     const target =
         targetContainer ||
         state.currentAssistantMessage ||
@@ -122,8 +125,8 @@ export async function createToolCallUI(toolCall, targetContainer = null) {
     // 更新按钮文本
     updateSummaryButton(group, data);
 
-    // 滚动到底部
-    const chatArea = document.getElementById('chat');
+    // 滚动到底部（容器 id 与 index.html '#messages' 对齐，旧 'chat' 死链）
+    const chatArea = elements.messagesArea;
     if (chatArea) chatArea.scrollTop = chatArea.scrollHeight;
 
     return group;
@@ -176,6 +179,16 @@ export function updateToolCallStatus(toolId, status, data = {}) {
         eventBus.emit('tool:status:changed', { toolId, status: 'failed', error: data.error });
     }
 
+    // 多回复模式 BufferedSink 拦截的工具调用：灰色「未执行」UI，不计 failed 避免误导
+    if (status === 'skipped') {
+        toolInfo.status = 'skipped';
+        toolInfo.error = data.error || '多回复模式未执行此工具';
+        toolInfo.duration = ((Date.now() - toolInfo.startTime) / 1000).toFixed(1);
+        gData.skippedCount++;
+
+        eventBus.emit('tool:status:changed', { toolId, status: 'skipped', error: data.error });
+    }
+
     if (status === 'executing') {
         toolInfo.status = 'executing';
         eventBus.emit('tool:status:changed', {
@@ -188,8 +201,9 @@ export function updateToolCallStatus(toolId, status, data = {}) {
     // 更新按钮状态
     updateSummaryButton(group, gData);
 
-    // 全部完成时停止计时
-    const allDone = gData.completedCount + gData.failedCount >= gData.totalCount;
+    // 全部完成时停止计时（skipped 也视为完成态）
+    const allDone =
+        gData.completedCount + gData.failedCount + gData.skippedCount >= gData.totalCount;
     if (allDone) {
         stopGroupTimer(group);
     }
@@ -205,17 +219,25 @@ function updateSummaryButton(group, data) {
     const statusEl = btn.querySelector('.summary-status');
 
     const total = data.totalCount;
-    const done = data.completedCount + data.failedCount;
+    const skipped = data.skippedCount || 0;
+    const done = data.completedCount + data.failedCount + skipped;
     const allDone = done >= total;
 
     // 文本
     textEl.textContent = `${total} 个工具调用`;
 
-    // 状态
+    // 状态：失败优先 > 全跳过 > 全部完成 > 进行中
     if (allDone) {
         if (data.failedCount > 0) {
             statusEl.textContent = `${data.failedCount} 个失败`;
             btn.setAttribute('data-status', 'failed');
+        } else if (skipped === total && total > 0) {
+            // 全部被多回复模式跳过：灰色独立状态，避免显示「全部完成」误导
+            statusEl.textContent = `${skipped} 个未执行`;
+            btn.setAttribute('data-status', 'skipped');
+        } else if (skipped > 0) {
+            statusEl.textContent = `${data.completedCount} 完成 / ${skipped} 跳过`;
+            btn.setAttribute('data-status', 'completed');
         } else {
             statusEl.textContent = '全部完成';
             btn.setAttribute('data-status', 'completed');
@@ -447,7 +469,6 @@ function openToolDetailModal(group) {
 
         try {
             undoBtn.disabled = true;
-            const { undo, canUndoNow } = await import('../tools/undo.js');
             if (!canUndoNow()) {
                 eventBus.emit('ui:notification', { message: '没有可撤销的操作', type: 'warning' });
                 return;
@@ -510,6 +531,10 @@ function createToolDetailItem(tool) {
     } else if (tool.status === 'failed') {
         // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
         statusIcon.innerHTML = getIcon('xCircle', { size: 16 });
+    } else if (tool.status === 'skipped') {
+        // 多回复模式跳过：用 minus 图标视觉区别于 loading
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
+        statusIcon.innerHTML = getIcon('minusCircle', { size: 16 });
     } else {
         // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
         statusIcon.innerHTML = getIcon('loader', { size: 16 });
@@ -567,6 +592,18 @@ function createToolDetailItem(tool) {
         errorMsg.textContent = tool.error;
         errorSection.appendChild(errorMsg);
         details.appendChild(errorSection);
+    }
+
+    if (tool.status === 'skipped') {
+        const skipSection = document.createElement('div');
+        skipSection.className = 'tool-detail-section tool-detail-skipped';
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
+        skipSection.innerHTML = `<div class="tool-detail-section-label">未执行原因</div>`;
+        const skipMsg = document.createElement('div');
+        skipMsg.className = 'tool-detail-skipped-msg';
+        skipMsg.textContent = tool.error || '多回复模式不支持工具调用';
+        skipSection.appendChild(skipMsg);
+        details.appendChild(skipSection);
     }
 
     item.append(header, details);
@@ -730,23 +767,31 @@ export async function restoreToolCallsGroup(toolCalls, contentDiv) {
         tools: [],
         completedCount: 0,
         failedCount: 0,
+        skippedCount: 0,
         totalCount: toolCalls.length
     };
 
     for (const tc of toolCalls) {
+        // 'skipped' result 含 skipped:true 标记或顶层 status='skipped'，提取友好错误文案
+        const isSkipped = tc.status === 'skipped' || tc.result?.skipped === true;
         const toolInfo = {
             id: tc.id,
             name: tc.name,
             args: tc.arguments || tc.input || {},
-            status: tc.status || 'completed',
+            status: isSkipped ? 'skipped' : tc.status || 'completed',
             result: tc.result || null,
-            error: tc.error ? tc.error.message || tc.error : null,
+            error: isSkipped
+                ? tc.error || tc.result?.content || '多回复模式未执行此工具'
+                : tc.error
+                  ? tc.error.message || tc.error
+                  : null,
             startTime: 0,
             duration: tc.duration || null
         };
 
         if (toolInfo.status === 'completed') data.completedCount++;
         if (toolInfo.status === 'failed') data.failedCount++;
+        if (toolInfo.status === 'skipped') data.skippedCount++;
 
         data.tools.push(toolInfo);
 
@@ -769,16 +814,23 @@ export async function restoreToolCallsGroup(toolCalls, contentDiv) {
 
     toolCallsDataMap.set(group, data);
 
-    // 设置按钮状态
-    const allDone = data.completedCount + data.failedCount >= data.totalCount;
+    // 设置按钮状态：与 updateSummaryButton 行为对齐（失败优先 > 全跳过 > 部分跳过 > 全完成）
+    const done = data.completedCount + data.failedCount + data.skippedCount;
+    const allDone = done >= data.totalCount;
     let statusText = '全部完成';
     let statusAttr = 'completed';
     if (!allDone) {
-        statusText = `执行中 ${data.completedCount + data.failedCount}/${data.totalCount}`;
+        statusText = `执行中 ${done}/${data.totalCount}`;
         statusAttr = 'executing';
     } else if (data.failedCount > 0) {
         statusText = `${data.failedCount} 个失败`;
         statusAttr = 'failed';
+    } else if (data.skippedCount === data.totalCount && data.totalCount > 0) {
+        statusText = `${data.skippedCount} 个未执行`;
+        statusAttr = 'skipped';
+    } else if (data.skippedCount > 0) {
+        statusText = `${data.completedCount} 完成 / ${data.skippedCount} 跳过`;
+        statusAttr = 'completed';
     }
 
     btn.setAttribute('data-status', statusAttr);

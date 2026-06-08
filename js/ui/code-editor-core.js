@@ -6,6 +6,7 @@
 import { escapeHtml } from '../utils/helpers.js';
 import { getIcon } from '../utils/icons.js';
 import { logger } from '../utils/logger.js';
+import { safeMarkedParse } from '../utils/markdown.js';
 
 /**
  * 生成语言选项
@@ -218,7 +219,8 @@ function buildPreviewHTML(code, language) {
     }
 
     if (language === 'markdown' || language === 'md') {
-        const htmlContent = typeof marked !== 'undefined' ? marked.parse(code) : escapeHtml(code);
+        // 走 safeMarkedParse 经 DOMPurify，避免裸 marked.parse 把恶意 link/style 注入到 iframe srcdoc
+        const htmlContent = safeMarkedParse(code);
         return `
             <!DOCTYPE html>
             <html>

@@ -9,21 +9,10 @@ import { eventBus } from '../core/events.js';
 import { buildModelParams, buildThinkingConfig } from './params.js';
 import { getToolsForAPI } from '../tools/manager.js';
 import { PartType } from '../messages/schema.js';
-
-// 延迟引用，避免 openclaw -> current -> manager -> openclaw 静态循环依赖
-let _getCurrentModel;
-
-/**
- * 获取当前模型（懒加载 current.js）
- * sendMessage 在用户交互时调用，此时所有模块已加载完毕
- */
-async function resolveGetCurrentModel() {
-    if (!_getCurrentModel) {
-        const mod = await import('./current.js');
-        _getCurrentModel = mod.getCurrentModel;
-    }
-    return _getCurrentModel();
-}
+import { WS_HEARTBEAT_TIMEOUT_RATIO } from '../utils/constants.js';
+// 静态 import current 安全：current → manager → fetchModelsFromAPI 内 openclaw 仍是 lazy，
+// 顶层 openclaw → current → manager 单向无环
+import { getCurrentModel, getCurrentProvider } from './current.js';
 
 // 请求 ID 计数器
 let requestIdCounter = 0;
@@ -65,10 +54,17 @@ class OpenClawClient {
 
     /**
      * 连接到 OpenClaw Gateway
+     *
+     * 复用 connecting promise 避免重连退避期间并发请求各自走 sendMessage 路径
+     * 立即 reject 'WebSocket 未连接'。第二个 connect 调用会 await 第一个握手结果，
+     * 完成后再继续 sendMessage，相当于排队等握手
      */
     async connect(url, token) {
-        if (this.connected || this.connecting) {
+        if (this.connected) {
             return { success: true };
+        }
+        if (this.connecting && this._connectPromise) {
+            return this._connectPromise;
         }
 
         this.connecting = true;
@@ -77,22 +73,27 @@ class OpenClawClient {
         this.shouldReconnect = true;
         this.instanceId = `oc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-        try {
-            await this._establishConnection();
-            this.connecting = false;
-            this.connected = true;
-            this.reconnectAttempts = 0;
+        this._connectPromise = (async () => {
+            try {
+                await this._establishConnection();
+                this.connecting = false;
+                this.connected = true;
+                this.reconnectAttempts = 0;
 
-            eventBus.emit('openclaw:connected', { url });
-            logger.debug('[OpenClaw] 已连接到 Gateway:', url);
+                eventBus.emit('openclaw:connected', { url });
+                logger.debug('[OpenClaw] 已连接到 Gateway:', url);
 
-            return { success: true };
-        } catch (error) {
-            this.connecting = false;
-            this.connected = false;
-            logger.error('[OpenClaw] 连接失败:', error.message);
-            return { success: false, error: error.message };
-        }
+                return { success: true };
+            } catch (error) {
+                this.connecting = false;
+                this.connected = false;
+                logger.error('[OpenClaw] 连接失败:', error.message);
+                return { success: false, error: error.message };
+            } finally {
+                this._connectPromise = null;
+            }
+        })();
+        return this._connectPromise;
     }
 
     /**
@@ -184,6 +185,8 @@ class OpenClawClient {
         if (!this.ws) return;
 
         this.ws.onmessage = (event) => {
+            // 跟踪最后服务端消息时间，假死检测（_startHeartbeat 定期检查）
+            this.lastServerMessageAt = Date.now();
             try {
                 const msg = JSON.parse(event.data);
                 this._routeMessage(msg);
@@ -303,7 +306,36 @@ class OpenClawClient {
      * @returns {Promise<void>} - 当 chat.done 收到时 resolve
      */
     async sendMessage(message, sessionKey, options = {}) {
-        const model = await resolveGetCurrentModel();
+        const model = getCurrentModel();
+
+        // 切 provider 后 this.url 仍是旧值：重连退避期 sendMessage 会用旧 url 连旧 gateway，
+        // 即使新 provider 有新 url。比对当前 provider 的 url 与 this.url 不一致时强制 disconnect
+        // 让下面的重连分支用 caller 传入的端点重新建连
+        const provider = getCurrentProvider();
+        const desiredUrl = provider?.endpoint || provider?.url || null;
+        if (desiredUrl && this.url && desiredUrl !== this.url) {
+            logger.warn(
+                `[OpenClaw] 检测到 provider url 变更 (${this.url} → ${desiredUrl})，强制重连`
+            );
+            this.disconnect();
+            this.url = desiredUrl;
+        }
+
+        // ws 未连接（重连退避期或被代理掐线后）主动 await connect 复用，避免在
+        // 5-60s 退避窗口里所有 sendMessage 立即 reject 'WebSocket 未连接'
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+            if (this.url && this.token) {
+                try {
+                    const result = await this.connect(this.url, this.token);
+                    if (!result.success) {
+                        throw new Error(`WebSocket 重连失败: ${result.error}`);
+                    }
+                } catch (e) {
+                    throw new Error(`WebSocket 未连接且重连失败: ${e.message}`);
+                }
+            }
+        }
+
         return new Promise((resolve, reject) => {
             if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
                 reject(new Error('WebSocket 未连接'));
@@ -335,6 +367,18 @@ class OpenClawClient {
                 const tools = getToolsForAPI('openclaw');
                 if (tools.length > 0) {
                     params.tools = tools;
+                    // OpenClaw Gateway 协议设计为 server-side 工具执行（chat.run 通过
+                    // agent.event stream 推送 tool_call 给客户端，但协议无对应 chat 工具结果
+                    // 回传方法 —— talk.session.submitToolResult 仅用于 Talk realtime session）。
+                    // 注入 params.tools 后客户端工具会被调用但结果无法回传，模型下一轮看不到结果
+                    // 会重复 call / 幻觉回答 —— 显式告知用户此协议限制
+                    eventBus.emit('ui:notification', {
+                        message:
+                            'OpenClaw 协议下客户端工具结果无法回传给模型（agent 服务端执行模式）。' +
+                            '建议改用 OpenClaw 服务端内置工具，或切到 OpenAI/Claude/Gemini 提供商使用客户端工具',
+                        type: 'warning',
+                        duration: 8000
+                    });
                 }
             }
 
@@ -406,9 +450,25 @@ class OpenClawClient {
 
     _startHeartbeat() {
         this._stopHeartbeat();
+        this.lastServerMessageAt = Date.now();
         this.tickInterval = setInterval(() => {
-            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                this._sendRaw({ type: 'tick' });
+            if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+            this._sendRaw({ type: 'tick' });
+            // tick 是单向发送（不期望 pong），代理 silent drop 让 ws 卡在 OPEN 假死。
+            // 超过 2.5 * tickIntervalMs 无任何服务端消息 → 主动 close 触发 onclose
+            // 走 _attemptReconnect 重连退避；不依赖 readyState（中间代理掐线 readyState 仍 OPEN）
+            if (
+                Date.now() - this.lastServerMessageAt >
+                this.tickIntervalMs * WS_HEARTBEAT_TIMEOUT_RATIO
+            ) {
+                logger.warn(
+                    `[OpenClaw] ${this.tickIntervalMs * WS_HEARTBEAT_TIMEOUT_RATIO}ms 无服务端消息，疑似假死，主动 close 触发重连`
+                );
+                try {
+                    this.ws.close(4000, 'idle timeout');
+                } catch {
+                    /* ignore */
+                }
             }
         }, this.tickIntervalMs);
     }
@@ -432,7 +492,11 @@ class OpenClawClient {
             `[OpenClaw] ${delay}ms 后尝试重连 (${this.reconnectAttempts}/${this.maxReconnectAttempts})`
         );
 
-        setTimeout(async () => {
+        // 保存 timer 句柄到 this._reconnectTimer，让 disconnect() 能取消挂起的重连。
+        // 之前 setTimeout 不保句柄 → disconnect 后用户立即 connect() 把 shouldReconnect
+        // 设回 true → 旧 timer fire 触发额外 connect() 与新连接 race 让两路 ws 同存
+        this._reconnectTimer = setTimeout(async () => {
+            this._reconnectTimer = null;
             if (!this.shouldReconnect || this.connected) return;
             const result = await this.connect(this.url, this.token);
             if (!result.success) {
@@ -444,6 +508,12 @@ class OpenClawClient {
     disconnect() {
         this.shouldReconnect = false;
         this._stopHeartbeat();
+
+        // 取消挂起的重连退避 timer，避免 disconnect 后旧 timer fire 与新 connect race
+        if (this._reconnectTimer) {
+            clearTimeout(this._reconnectTimer);
+            this._reconnectTimer = null;
+        }
 
         for (const [, pending] of this.pendingRequests) {
             clearTimeout(pending.timeout);
@@ -517,22 +587,31 @@ export async function sendOpenClawRequest(endpoint, apiKey, model, signal = null
         }
     }
 
-    // 监听取消信号
+    // 监听取消信号 — 在 chat.done / chat.error 收到后由 parser-openclaw 触发的
+    // openclaw:disconnected 事件路径同时 cleanup listener，避免连续多次 abort 在
+    // signal 上堆积冗余 listener（once:true 仅保证单次触发，不保证生命周期解绑）
+    let abortListener = null;
+    const detachAbortListener = () => {
+        if (abortListener && signal) {
+            signal.removeEventListener('abort', abortListener);
+            abortListener = null;
+        }
+    };
     if (signal) {
-        signal.addEventListener(
-            'abort',
-            () => {
-                openclawClient.abortRun();
-            },
-            { once: true }
-        );
+        abortListener = () => {
+            openclawClient.abortRun();
+            detachAbortListener();
+        };
+        signal.addEventListener('abort', abortListener, { once: true });
     }
 
     // 发送 WS 消息（side effect）
-    openclawClient.sendMessage(messageText, state.currentSessionId, {
-        model,
-        useRun: true
-    });
+    openclawClient
+        .sendMessage(messageText, state.currentSessionId, { model, useRun: true })
+        .catch(() => {
+            /* abortRun / 失败已由其它路径 reject，这里只确保不堆积 listener */
+        })
+        .finally(detachAbortListener);
 
     // 返回 sentinel，handler.js 检测到 openclaw 时不使用 response.body
     return { ok: true, status: 200, body: null };

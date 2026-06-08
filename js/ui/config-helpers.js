@@ -12,29 +12,12 @@ import {
     applyConfigToState,
     buildConfigObject
 } from '../state/config.js';
+import { populateModelSelect } from './models.js';
+import { getToolStats, setToolEnabled } from '../tools/manager.js';
 import { eventBus } from '../core/events.js';
-import {
-    setThinkingEnabled,
-    setThinkingBudget,
-    setThinkingStrength,
-    setClaudeAdaptiveThinking,
-    setClaudeEffortLevel,
-    setClaudeShowThinking,
-    setCurrentConfigName,
-    setImageSize,
-    setGeminiApiKeyInHeader,
-    setStreamEnabled,
-    setWebSearchEnabled,
-    setXmlToolCallingEnabled,
-    setReplyCount,
-    setThinkingNoneMode,
-    setVerbosityEnabled,
-    setOutputVerbosity
-} from '../core/state-mutations.js';
 import { syncQuickToggles } from './quick-toggles.js';
 import { showNotification } from './notifications.js';
 import { showInputDialog, showConfirmDialog } from '../utils/dialogs.js';
-import { getIcon } from '../utils/icons.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -69,11 +52,11 @@ export function initEndpointInputListeners() {
 
                 // 新逻辑：直接刷新模型列表（从提供商聚合）
                 if (format === state.apiFormat) {
-                    import('../ui/models.js')
-                        .then(({ populateModelSelect }) => {
-                            populateModelSelect();
-                        })
-                        .catch((err) => logger.warn('Failed to refresh model list:', err));
+                    try {
+                        populateModelSelect();
+                    } catch (err) {
+                        logger.warn('Failed to refresh model list:', err);
+                    }
                 }
 
                 saveCurrentConfig();
@@ -254,7 +237,7 @@ export function initThinkingControls() {
         updateBudgetInputVisibility();
 
         thinkingEnabled.addEventListener('change', (e) => {
-            setThinkingEnabled(e.target.checked);
+            state.thinkingEnabled = !!e.target.checked;
             if (thinkingStrengthGroup) {
                 thinkingStrengthGroup.style.display = e.target.checked ? 'flex' : 'none';
             }
@@ -273,7 +256,7 @@ export function initThinkingControls() {
         budgetInput.addEventListener('change', (e) => {
             const value = parseInt(e.target.value, 10);
             if (value >= 1024 && value <= 131072) {
-                setThinkingBudget(value);
+                state.thinkingBudget = value;
                 saveCurrentConfig();
             } else {
                 e.target.value = state.thinkingBudget;
@@ -293,7 +276,7 @@ export function initThinkingControls() {
         }
 
         btn.addEventListener('click', () => {
-            setThinkingStrength(btn.dataset.strength);
+            state.thinkingStrength = btn.dataset.strength;
             strengthBtns.forEach((b) => {
                 if (!b.classList.contains('claude-effort-btn')) {
                     b.classList.remove('active');
@@ -328,7 +311,7 @@ export function initThinkingControls() {
         updateClaudeAdaptiveVisibility();
 
         claudeAdaptiveCheckbox.addEventListener('change', (e) => {
-            setClaudeAdaptiveThinking(e.target.checked);
+            state.claudeAdaptiveThinking = !!e.target.checked;
             updateClaudeAdaptiveVisibility();
             saveCurrentConfig();
         });
@@ -342,7 +325,7 @@ export function initThinkingControls() {
         }
 
         btn.addEventListener('click', () => {
-            setClaudeEffortLevel(btn.dataset.effort);
+            state.claudeEffortLevel = btn.dataset.effort;
             claudeEffortBtns.forEach((b) => b.classList.remove('active'));
             btn.classList.add('active');
             saveCurrentConfig();
@@ -354,7 +337,7 @@ export function initThinkingControls() {
     if (claudeShowThinkingCheckbox) {
         claudeShowThinkingCheckbox.checked = state.claudeShowThinking;
         claudeShowThinkingCheckbox.addEventListener('change', (e) => {
-            setClaudeShowThinking(e.target.checked);
+            state.claudeShowThinking = !!e.target.checked;
             saveCurrentConfig();
         });
     }
@@ -370,7 +353,7 @@ function handleConfigSelect() {
     const config = state.savedConfigs[parseInt(index)];
     if (!config) return;
 
-    setCurrentConfigName(config.name);
+    state.currentConfigName = config.name;
     applyConfigToState(config);
 
     saveCurrentConfig();
@@ -403,7 +386,7 @@ async function handleSaveConfig() {
         state.savedConfigs.push(config);
     }
 
-    setCurrentConfigName(name);
+    state.currentConfigName = name;
     saveCurrentConfig();
     await saveSavedConfigs(); // 保存配置列表到持久化存储
     updateConfigSelect();
@@ -428,7 +411,7 @@ async function handleDeleteConfig() {
 
     state.savedConfigs.splice(parseInt(index), 1);
     if (state.currentConfigName === config.name) {
-        setCurrentConfigName('');
+        state.currentConfigName = '';
     }
 
     saveCurrentConfig();
@@ -477,13 +460,13 @@ export function initConfigManagement() {
 export function initOtherConfigInputs() {
     // Gemini 图片大小
     elements.imageSizeSelect?.addEventListener('change', (e) => {
-        setImageSize(e.target.value);
+        state.imageSize = e.target.value;
         saveCurrentConfig();
     });
 
     // Gemini API Key 传递方式
     elements.geminiApiKeyInHeaderToggle?.addEventListener('change', (e) => {
-        setGeminiApiKeyInHeader(e.target.checked);
+        state.geminiApiKeyInHeader = !!e.target.checked;
         saveCurrentConfig();
     });
 
@@ -492,7 +475,7 @@ export function initOtherConfigInputs() {
     if (streamEnabled) {
         streamEnabled.checked = state.streamEnabled;
         streamEnabled.addEventListener('change', (e) => {
-            setStreamEnabled(e.target.checked);
+            state.streamEnabled = !!e.target.checked;
             syncQuickToggles();
             saveCurrentConfig();
         });
@@ -503,7 +486,7 @@ export function initOtherConfigInputs() {
     if (webSearchEnabled) {
         webSearchEnabled.checked = state.webSearchEnabled;
         webSearchEnabled.addEventListener('change', (e) => {
-            setWebSearchEnabled(e.target.checked);
+            state.webSearchEnabled = !!e.target.checked;
             syncQuickToggles();
             saveCurrentConfig();
         });
@@ -514,12 +497,28 @@ export function initOtherConfigInputs() {
     if (xmlToolCalling) {
         xmlToolCalling.checked = state.xmlToolCallingEnabled || false;
         xmlToolCalling.addEventListener('change', (e) => {
-            setXmlToolCallingEnabled(e.target.checked);
+            const enabled = e.target.checked;
+            state.xmlToolCallingEnabled = !!enabled;
             saveCurrentConfig();
 
-            // 提示用户
-            if (e.target.checked) {
+            if (enabled) {
                 logger.debug('[Config] XML 工具调用兜底已启用，将在 system prompt 中注入工具描述');
+            }
+
+            // 历史消息已有 tool_call part 时提示切换语义：
+            // 历史消息保留各自原模式，toggle 仅决定后续新对话走哪条协议
+            const hasHistoricalToolCall = (state.messages || []).some((m) =>
+                Array.isArray(m?.parts) ? m.parts.some((p) => p?.type === 'tool_call') : false
+            );
+            if (hasHistoricalToolCall) {
+                const msg = enabled
+                    ? '已启用 XML 工具调用模式。历史 native 工具调用消息保留原模式，仅新对话生效'
+                    : '已切换回原生工具调用模式。历史 XML 工具调用消息保留原模式，仅新对话生效';
+                eventBus.emit('ui:notification', {
+                    message: msg,
+                    type: 'info',
+                    duration: 5000
+                });
             }
         });
     }
@@ -531,13 +530,13 @@ export function initOtherConfigInputs() {
         // ⭐ 检测多回复与工具调用互斥
         if (newCount > 1) {
             try {
-                const { getToolStats } = await import('../tools/manager.js');
                 const stats = getToolStats();
 
                 if (stats.enabled > 0) {
                     // 有启用的工具，阻止设置多回复
+                    // ui:notification 经 textContent 纯文本渲染，禁止拼接 getIcon 等 HTML 字符串
                     eventBus.emit('ui:notification', {
-                        message: `${getIcon('xCircle', { size: 14 })} 多回复模式与工具调用功能互斥\n\n当前有 ${stats.enabled} 个工具已启用，请先禁用所有工具后再开启多回复模式。`,
+                        message: `多回复模式与工具调用功能互斥\n\n当前有 ${stats.enabled} 个工具已启用，请先禁用所有工具后再开启多回复模式。`,
                         type: 'error',
                         duration: 6000
                     });
@@ -551,7 +550,7 @@ export function initOtherConfigInputs() {
             }
         }
 
-        setReplyCount(newCount);
+        state.replyCount = newCount;
         saveCurrentConfig();
     });
 
@@ -559,7 +558,7 @@ export function initOtherConfigInputs() {
     if (elements.thinkingNoneMode) {
         elements.thinkingNoneMode.checked = state.thinkingNoneMode || false;
         elements.thinkingNoneMode.addEventListener('change', (e) => {
-            setThinkingNoneMode(e.target.checked);
+            state.thinkingNoneMode = !!e.target.checked;
             saveCurrentConfig();
         });
     }
@@ -577,14 +576,14 @@ export function initOtherConfigInputs() {
 
         // 开关监听
         verbosityEnabled.addEventListener('change', (e) => {
-            setVerbosityEnabled(e.target.checked);
+            state.verbosityEnabled = !!e.target.checked;
             verbositySelectGroup.style.display = e.target.checked ? 'block' : 'none';
             saveCurrentConfig();
         });
 
         // 选择器监听
         outputVerbosity.addEventListener('change', (e) => {
-            setOutputVerbosity(e.target.value);
+            state.outputVerbosity = e.target.value;
             saveCurrentConfig();
         });
     }
@@ -594,19 +593,17 @@ export function initOtherConfigInputs() {
         if (enabled && state.replyCount > 1) {
             // 尝试启用工具时发现多回复模式已开启
             eventBus.emit('ui:notification', {
-                message: `${getIcon('xCircle', { size: 14 })} 多回复模式与工具调用功能互斥\n\n当前多回复数量为 ${state.replyCount}，请先将其设为 1 后再启用工具。\n\n工具 "${toolId}" 已自动禁用。`,
+                message: `多回复模式与工具调用功能互斥\n\n当前多回复数量为 ${state.replyCount}，请先将其设为 1 后再启用工具。\n\n工具 "${toolId}" 已自动禁用。`,
                 type: 'error',
                 duration: 6000
             });
 
             // 自动禁用该工具
-            import('../tools/manager.js')
-                .then(({ setToolEnabled }) => {
-                    setToolEnabled(toolId, false);
-                })
-                .catch((err) => {
-                    logger.error('[ConfigHelpers] 禁用工具失败:', err);
-                });
+            try {
+                setToolEnabled(toolId, false);
+            } catch (err) {
+                logger.error('[ConfigHelpers] 禁用工具失败:', err);
+            }
         }
     });
 

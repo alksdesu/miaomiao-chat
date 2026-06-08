@@ -69,23 +69,24 @@
         max-height: 35vh;
     }
 
+    /* WCAG 2.5.5 触摸目标 ≥ 44×44 */
     .send-btn,
     .cancel-btn {
-        width: 36px;
-        height: 36px;
+        width: 44px;
+        height: 44px;
     }
 
     .send-btn svg,
     .cancel-btn svg {
-        width: 18px;
-        height: 18px;
+        width: 20px;
+        height: 20px;
     }
 
     .input-icon-btn {
-        width: 32px;
-        height: 32px;
-        min-width: 40px;
-        min-height: 40px;
+        width: 44px;
+        height: 44px;
+        min-width: 44px;
+        min-height: 44px;
         padding: 4px;
     }
 
@@ -200,10 +201,22 @@
         -webkit-tap-highlight-color: rgba(var(--color-bg-surface-rgb), 0.1);
     }
 
+    /* close-* 按钮保持 32px 视觉（紧贴 header 边缘）但用 ::before 伪元素把命中区
+     * 扩到 44px，触摸目标达 WCAG 2.5.5 标准而不破坏布局 */
     .close-settings-btn,
     .close-sidebar-btn {
         width: 32px;
         height: 32px;
+        position: relative;
+    }
+
+    .close-settings-btn::before,
+    .close-sidebar-btn::before {
+        content: '';
+        position: absolute;
+        inset: -6px;
+        min-width: 44px;
+        min-height: 44px;
     }
 
     .remove-image {
@@ -213,19 +226,19 @@
 
     /* ---- 消息操作按钮 ---- */
     .msg-action-btn {
-        min-width: 36px;
-        min-height: 32px;
+        min-width: 44px;
+        min-height: 44px;
         padding: 6px;
     }
 
     .scroll-to-bottom-btn {
-        width: 36px;
-        height: 36px;
+        width: 44px;
+        height: 44px;
     }
 
     .scroll-to-bottom-btn svg {
-        width: 16px;
-        height: 16px;
+        width: 18px;
+        height: 18px;
     }
 
     .retry-button,
@@ -881,9 +894,9 @@
 @media (max-width: 480px) {
     .settings-panel,
     .sidebar {
-        width: 100% !important;
-        max-width: none !important;
-        min-width: unset !important;
+        width: 100%;
+        max-width: none;
+        min-width: unset;
     }
 
     .message {

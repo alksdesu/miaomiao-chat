@@ -77,52 +77,10 @@ export class MCPClient {
         }
 
         try {
-            if (connection.shouldReconnect !== undefined) {
-                connection.shouldReconnect = false;
-            }
-
-            if (connection.type === 'local' && this.platform === 'electron') {
-                await window.electron.ipcRenderer.invoke('mcp:disconnect', { serverId });
-            } else {
-                if (connection.pingTimer) clearInterval(connection.pingTimer);
-                if (connection.healthCheckTimer) clearInterval(connection.healthCheckTimer);
-
-                if (connection.ws) {
-                    connection.ws.close();
-                }
-
-                if (connection.sseAbortController) {
-                    connection.sseAbortController.abort();
-                }
-
-                if (connection.sseReader) {
-                    try {
-                        await connection.sseReader.cancel();
-                    } catch {
-                        /* ignore */
-                    }
-                }
-
-                if (
-                    connection.pendingRequests &&
-                    typeof connection.pendingRequests.clear === 'function'
-                ) {
-                    for (const pending of connection.pendingRequests.values()) {
-                        if (pending?.timeoutId) clearTimeout(pending.timeoutId);
-                        if (pending?.reject) pending.reject(new Error('Disconnected'));
-                    }
-                    connection.pendingRequests.clear();
-                }
-            }
+            await this._teardownConnection(connection, serverId);
 
             this._clearToolsForServer(serverId);
             this.connections.delete(serverId);
-
-            try {
-                sessionStorage.removeItem(`mcp-session-${serverId}`);
-            } catch {
-                /* ignore */
-            }
 
             logger.debug(`[MCP] 已断开 MCP 服务器: ${serverId}`);
 
@@ -131,6 +89,48 @@ export class MCPClient {
             }
         } catch (error) {
             logger.error(`[MCP] 断开连接失败:`, error);
+        }
+    }
+
+    /**
+     * 释放连接持有的物理资源（定时器/socket/流/挂起请求）
+     * @private
+     */
+    async _teardownConnection(connection, serverId) {
+        if (connection.shouldReconnect !== undefined) {
+            connection.shouldReconnect = false;
+        }
+
+        if (connection.type === 'local' && this.platform === 'electron') {
+            await window.electron.ipcRenderer.invoke('mcp:disconnect', { serverId });
+            return;
+        }
+
+        if (connection.pingTimer) clearInterval(connection.pingTimer);
+        if (connection.healthCheckTimer) clearInterval(connection.healthCheckTimer);
+
+        if (connection.ws) {
+            connection.ws.close();
+        }
+
+        if (connection.sseAbortController) {
+            connection.sseAbortController.abort();
+        }
+
+        if (connection.sseReader) {
+            try {
+                await connection.sseReader.cancel();
+            } catch {
+                /* ignore */
+            }
+        }
+
+        if (connection.pendingRequests && typeof connection.pendingRequests.clear === 'function') {
+            for (const pending of connection.pendingRequests.values()) {
+                if (pending?.timeoutId) clearTimeout(pending.timeoutId);
+                if (pending?.reject) pending.reject(new Error('Disconnected'));
+            }
+            connection.pendingRequests.clear();
         }
     }
 
@@ -366,7 +366,8 @@ export class MCPClient {
                 lastError = error;
 
                 try {
-                    await this.disconnect(id);
+                    // 重连场景 onclose/readLoop 已 emit 过 mcp:disconnected，此处仅做资源清理
+                    await this.disconnect(id, { silent: true });
                 } catch {
                     /* ignore */
                 }
@@ -380,7 +381,8 @@ export class MCPClient {
                         success: false,
                         error: error.message,
                         errorType: errorInfo.type,
-                        retryable: false
+                        retryable: false,
+                        attempts: attempt
                     };
                 }
 
@@ -400,18 +402,40 @@ export class MCPClient {
             error: lastError.message,
             errorType: classifyError(lastError).type,
             retriesExhausted: true,
-            retryable: false
+            retryable: false,
+            attempts: maxRetries
         };
     }
 
     /** @private */
     async _connectWithTimeout(connectFn, timeout) {
-        return Promise.race([
-            connectFn(),
-            new Promise((_, reject) =>
-                setTimeout(() => reject(new Error(`连接超时 (${timeout}ms)`)), timeout)
-            )
-        ]);
+        const connectPromise = connectFn();
+        let timeoutId;
+        try {
+            return await Promise.race([
+                connectPromise,
+                new Promise((_, reject) => {
+                    timeoutId = setTimeout(
+                        () => reject(new Error(`连接超时 (${timeout}ms)`)),
+                        timeout
+                    );
+                })
+            ]);
+        } catch (error) {
+            // race 输了的底层连接稍后可能仍建立成功，必须回收防止幽灵连接（如双 SSE 流）
+            connectPromise
+                .then((conn) => {
+                    if (conn) {
+                        return this._teardownConnection(conn, conn.serverId);
+                    }
+                })
+                .catch(() => {
+                    /* 底层连接自身失败，无资源可回收 */
+                });
+            throw error;
+        } finally {
+            clearTimeout(timeoutId);
+        }
     }
 
     /**

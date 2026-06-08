@@ -2,7 +2,9 @@
  * DevTools 网络工具 — 读取网络请求记录
  */
 
+import { state } from '../../core/state.js';
 import { buildToolFromLegacy } from '../../tools/build-tool.js';
+import { getRecords, sanitizeHeaderValue } from '../../network/store.js';
 
 export const readNetworkTool = {
     name: 'devtools_read_network',
@@ -20,10 +22,8 @@ export const readNetworkTool = {
 };
 
 export async function readNetworkHandler(args) {
-    const { state } = await import('../../core/state.js');
     const sessionId = state.currentSessionId;
 
-    const { getRecords, sanitizeHeaderValue } = await import('../../network/store.js');
     const records = getRecords();
 
     if (args.recordId != null) {

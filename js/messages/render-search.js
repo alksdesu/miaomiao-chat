@@ -4,6 +4,7 @@
  */
 
 import { escapeHtml } from '../utils/helpers.js';
+import { safeHref } from '../utils/uri.js';
 import { getIcon } from '../utils/icons.js';
 
 /**
@@ -17,10 +18,12 @@ export function renderSearchGrounding(groundingMetadata) {
     const chunks = groundingMetadata.groundingChunks || [];
     const sources = chunks
         .filter((chunk) => chunk.web)
-        .map(
-            (chunk) =>
-                `<li><a href="${escapeHtml(chunk.web.uri)}" target="_blank" rel="noopener noreferrer">${escapeHtml(chunk.web.title || chunk.web.uri)}</a></li>`
-        )
+        .map((chunk) => {
+            // safeHref 拦截 javascript:/vbscript:/data:text/html，escapeHtml 防属性注入；title 用 textContent 安全
+            const href = escapeHtml(safeHref(chunk.web.uri));
+            const label = escapeHtml(chunk.web.title || chunk.web.uri);
+            return `<li><a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a></li>`;
+        })
         .join('');
 
     if (!sources) return '';

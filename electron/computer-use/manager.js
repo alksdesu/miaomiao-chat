@@ -14,21 +14,25 @@ const audit = require('./audit');
 
 class ComputerUseManager {
     constructor() {
+        // 默认全部拒绝（screenshot 例外，截图为只读无副作用），首次启动等待渲染进程通过 IPC 推送 settings.toolPermissions
         this.permissions = {
-            mouse: true,
-            keyboard: true,
+            mouse: false,
+            keyboard: false,
             screenshot: true,
-            bash: true,
-            textEditor: true
+            bash: false,
+            textEditor: false
         };
 
+        // requireConfirmation 已迁移到渲染进程 state.toolPermissions/bashConfig，主进程无法弹窗，此字段保留接收但不消费
         this.bashConfig = {
             workingDirectory: process.cwd(),
-            timeout: 30,
-            requireConfirmation: false
+            timeout: 30
         };
 
-        logger.info('Manager', 'Manager initialized');
+        logger.info(
+            'Manager',
+            'Manager initialized (默认仅 screenshot 开启，其它工具需 settings 推 IPC 后才可用)'
+        );
     }
 
     /**
@@ -43,7 +47,16 @@ class ComputerUseManager {
      * 更新 Bash 配置
      */
     updateBashConfig(newConfig) {
-        this.bashConfig = { ...this.bashConfig, ...newConfig };
+        if (newConfig && Object.prototype.hasOwnProperty.call(newConfig, 'requireConfirmation')) {
+            logger.warn(
+                'Manager',
+                'requireConfirmation 字段已迁移到渲染进程 state.toolPermissions/bashConfig，主进程忽略'
+            );
+            const { requireConfirmation: _ignored, ...rest } = newConfig;
+            this.bashConfig = { ...this.bashConfig, ...rest };
+        } else {
+            this.bashConfig = { ...this.bashConfig, ...newConfig };
+        }
         logger.info('Manager', 'Bash config updated', this.bashConfig);
     }
 
@@ -72,7 +85,11 @@ class ComputerUseManager {
             await audit.log('screenshot', {}, { success: true, duration: Date.now() - startTime });
             return result;
         } catch (error) {
-            await audit.log('screenshot', {}, { success: false, error: error.message, duration: Date.now() - startTime });
+            await audit.log(
+                'screenshot',
+                {},
+                { success: false, error: error.message, duration: Date.now() - startTime }
+            );
             throw error;
         }
     }
@@ -84,14 +101,26 @@ class ComputerUseManager {
         const startTime = Date.now();
         try {
             if (!this.checkPermission('screenshot')) {
-                await audit.log('zoom', { x1, y1, x2, y2 }, { success: false, error: 'Permission denied' });
+                await audit.log(
+                    'zoom',
+                    { x1, y1, x2, y2 },
+                    { success: false, error: 'Permission denied' }
+                );
                 throw new Error('Screenshot permission denied');
             }
             const result = await screenshot.captureRegion(x1, y1, x2, y2);
-            await audit.log('zoom', { x1, y1, x2, y2 }, { success: true, duration: Date.now() - startTime });
+            await audit.log(
+                'zoom',
+                { x1, y1, x2, y2 },
+                { success: true, duration: Date.now() - startTime }
+            );
             return result;
         } catch (error) {
-            await audit.log('zoom', { x1, y1, x2, y2 }, { success: false, error: error.message, duration: Date.now() - startTime });
+            await audit.log(
+                'zoom',
+                { x1, y1, x2, y2 },
+                { success: false, error: error.message, duration: Date.now() - startTime }
+            );
             throw error;
         }
     }
@@ -103,14 +132,26 @@ class ComputerUseManager {
         const startTime = Date.now();
         try {
             if (!this.checkPermission('mouse')) {
-                await audit.log('mouse_move', { x, y }, { success: false, error: 'Permission denied' });
+                await audit.log(
+                    'mouse_move',
+                    { x, y },
+                    { success: false, error: 'Permission denied' }
+                );
                 throw new Error('Mouse permission denied');
             }
             const result = await mouse.move(x, y);
-            await audit.log('mouse_move', { x, y }, { success: true, duration: Date.now() - startTime });
+            await audit.log(
+                'mouse_move',
+                { x, y },
+                { success: true, duration: Date.now() - startTime }
+            );
             return result;
         } catch (error) {
-            await audit.log('mouse_move', { x, y }, { success: false, error: error.message, duration: Date.now() - startTime });
+            await audit.log(
+                'mouse_move',
+                { x, y },
+                { success: false, error: error.message, duration: Date.now() - startTime }
+            );
             throw error;
         }
     }
@@ -246,14 +287,29 @@ class ComputerUseManager {
         const startTime = Date.now();
         try {
             if (!this.checkPermission('bash')) {
-                await audit.log('bash', { command }, { success: false, error: 'Permission denied' });
+                await audit.log(
+                    'bash',
+                    { command },
+                    { success: false, error: 'Permission denied' }
+                );
                 throw new Error('Bash permission denied');
             }
-            const result = await bash.execute(command, this.bashConfig);
-            await audit.log('bash', { command }, { success: result.success, duration: Date.now() - startTime });
+            const result = await bash.execute(command, {
+                ...this.bashConfig,
+                permissions: this.permissions
+            });
+            await audit.log(
+                'bash',
+                { command },
+                { success: result.success, duration: Date.now() - startTime }
+            );
             return result;
         } catch (error) {
-            await audit.log('bash', { command }, { success: false, error: error.message, duration: Date.now() - startTime });
+            await audit.log(
+                'bash',
+                { command },
+                { success: false, error: error.message, duration: Date.now() - startTime }
+            );
             throw error;
         }
     }

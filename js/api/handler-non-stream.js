@@ -1,0 +1,346 @@
+/**
+ * 非流式响应处理
+ *
+ * 从 handler.js 整段迁出 ~280 行，承担：
+ *   - 多回复并发（replyCount > 1）的并行请求 + 错误聚合
+ *   - 工具调用早期返回（reply.hasToolCalls 时落库 + handleToolCallStream）
+ *   - 单回复 / 多回复的渲染分发 + saveAssistantMessage 落库
+ *   - Claude pause_turn 触发 continuation
+ */
+
+import { state } from '../core/state.js';
+import {
+    getCurrentProvider,
+    getCurrentEndpoint,
+    getCurrentApiKey,
+    getCurrentModel
+} from './current.js';
+import { getAdapter } from './adapters/index.js';
+import { getSendFunction } from './factory.js';
+import {
+    finalizeStreamStats,
+    getCurrentStreamStatsData,
+    appendStreamStats
+} from '../stream/stats.js';
+import { saveAssistantMessage } from '../messages/sync.js';
+import {
+    buildPartsFromStreamingState,
+    buildMetaFromStreamingState
+} from '../messages/parts-builder.js';
+import { setCurrentMessageIndex } from '../messages/dom-sync.js';
+import { renderHumanizedError } from '../utils/errors.js';
+import { renderFinalTextWithThinking, renderFinalContentWithThinking } from '../stream/helpers.js';
+import { renderReplyWithSelector } from '../messages/renderer.js';
+import { handleToolCallStream, startPauseTurnContinuation } from '../tools/orchestrator.js';
+import { safeSetHTML } from '../utils/helpers.js';
+import { logger } from '../utils/logger.js';
+
+/**
+ * 把响应或 throw 出的 error 归一为 `{message, type, code?, fullError?}` 结构
+ */
+function normalizeRequestError(err) {
+    return {
+        message: err?.message || String(err),
+        type: err?.type || err?.name || 'network_error',
+        code: err?.code,
+        fullError: err
+    };
+}
+
+/**
+ * 把失败回复包成统一的 reply 对象（与正常 reply 形状对齐）
+ */
+function buildErrorReply(err) {
+    return {
+        content: '',
+        isError: true,
+        errorType: err.type || err.code || 'request_error',
+        errorMessage: err.message || 'Unknown error'
+    };
+}
+
+/**
+ * 处理工具调用早期返回：落库 + 触发 orchestrator
+ * @returns {boolean} 是否触发了工具调用（true 表示调用方应直接 return）
+ */
+function tryHandleToolCalls(reply, adapter, sessionId, assistantMessageEl, responseModel) {
+    if (!(reply?.hasToolCalls && reply?.toolCalls)) return false;
+
+    logger.info('[NonStream] 检测到工具调用:', reply.toolCalls);
+
+    const messageIndex = saveAssistantMessage(
+        buildPartsFromStreamingState({
+            textContent: reply.content || '(调用工具)',
+            thinkingContent: reply.thinkingContent,
+            thinkingBlocks: reply.thinkingBlocks,
+            thinkingSignatures: reply.thinkingSignatures,
+            thinkingItems: reply.thinkingItems,
+            contentParts: reply.contentParts,
+            toolCalls: reply.toolCalls,
+            signatureFormat: adapter.signatureFormat || null
+        }),
+        buildMetaFromStreamingState({
+            encryptedContent: reply.encryptedContent,
+            reasoningItemId: reply.reasoningItemId,
+            reasoningItems: reply.reasoningItems,
+            streamStats: getCurrentStreamStatsData(),
+            // 代理可能改写 model（如 OpenRouter 'auto' → 真实路由模型），
+            // 优先用响应侧 model 让用户看到实际执行路径 + 统计计费准确
+            responseModel: responseModel || null
+        }),
+        { sessionId, toolCalls: reply.toolCalls }
+    );
+    setCurrentMessageIndex(messageIndex);
+
+    handleToolCallStream(reply.toolCalls, {
+        assistantMessageEl,
+        sourceSessionId: sessionId
+    });
+
+    return true;
+}
+
+/**
+ * 多回复并发：发起 N-1 个额外请求并收集结果
+ *
+ * AbortError 不落库为错误回复 —— 用户主动取消时把"已取消"持久化成 N-1 条错回复会污染会话；
+ * 与 multi-stream.js 的 allAborted 守卫语义对齐
+ */
+async function fetchAdditionalReplies(replyCount, responseFormat, adapter, signal) {
+    const endpoint = getCurrentEndpoint();
+    const apiKey = getCurrentApiKey();
+    const model = getCurrentModel();
+    const sendFn = getSendFunction(responseFormat);
+
+    const promises = [];
+    for (let i = 1; i < replyCount; i++) {
+        promises.push(
+            sendFn(endpoint, apiKey, model, signal)
+                .then((res) => res.json())
+                .catch((err) => {
+                    if (err?.name !== 'AbortError') {
+                        logger.error(`Request ${i + 1} failed:`, err);
+                    }
+                    return { error: normalizeRequestError(err) };
+                })
+        );
+    }
+
+    const results = await Promise.allSettled(promises);
+    const replies = [];
+    const errors = [];
+    let abortedCount = 0;
+
+    results.forEach((result, idx) => {
+        const requestIndex = idx + 2;
+        if (result.status === 'fulfilled' && result.value) {
+            if (result.value.error) {
+                // AbortError 静默跳过：用户取消语义，不落库为错回复
+                if (result.value.error.type === 'AbortError') {
+                    abortedCount++;
+                    return;
+                }
+                errors.push({ index: requestIndex, error: result.value.error });
+                replies.push(buildErrorReply(result.value.error));
+            } else {
+                const reply = adapter.parseResponse(result.value);
+                if (reply) replies.push(reply);
+            }
+        } else if (result.status === 'rejected') {
+            if (result.reason?.name === 'AbortError') {
+                abortedCount++;
+                return;
+            }
+            const err = normalizeRequestError(result.reason);
+            errors.push({ index: requestIndex, error: err });
+            replies.push(buildErrorReply(err));
+        }
+    });
+
+    return { replies, errors, abortedCount };
+}
+
+/**
+ * 单回复渲染：错误回复走 humanized error；contentParts 含媒体走 renderFinalContentWithThinking
+ */
+function renderSingleReply(reply0) {
+    if (reply0.isError) {
+        const errorObj = {
+            error: {
+                type: reply0.errorType,
+                message: reply0.errorMessage
+            }
+        };
+        const errorHtml = renderHumanizedError(errorObj, null, true);
+        if (state.currentAssistantMessage) {
+            safeSetHTML(state.currentAssistantMessage, errorHtml);
+        }
+        return;
+    }
+
+    if (reply0.contentParts && reply0.contentParts.length > 0) {
+        renderFinalContentWithThinking(
+            reply0.contentParts,
+            reply0.thinkingContent,
+            reply0.groundingMetadata
+        );
+    } else {
+        renderFinalTextWithThinking(
+            reply0.content || '',
+            reply0.thinkingContent,
+            reply0.groundingMetadata
+        );
+    }
+}
+
+/**
+ * 把多请求错误聚合成单个 throw payload
+ */
+function aggregateErrorsAndThrow(requestErrors) {
+    if (requestErrors.length === 0) {
+        throw new Error('No valid replies received');
+    }
+
+    const firstError = requestErrors[0].error;
+    const errorObj = {
+        error: {
+            type: firstError.type || 'request_failed',
+            message: firstError.message || 'All requests failed'
+        }
+    };
+
+    if (requestErrors.length > 1) {
+        errorObj.error.allErrors = requestErrors.map((e) => ({
+            request: e.index,
+            message: e.error.message || String(e.error),
+            type: e.error.type,
+            code: e.error.code,
+            fullError: e.error.fullError || e.error
+        }));
+    }
+
+    throw errorObj;
+}
+
+/**
+ * 处理非流式响应（支持多回复）
+ *
+ * @param {Response} response - Fetch Response
+ * @param {HTMLElement} assistantMessageEl - 助手消息元素
+ * @param {string} sessionId - 请求发起时的会话ID
+ * @param {AbortSignal|null} signal - sendToAPI 透传的 abort signal（来自 ctx.abortController）；
+ *   N-1 个并发请求必须共用同一 signal，否则用户点取消时只停首个请求，其余继续吃 token
+ */
+export async function handleNonStreamResponse(
+    response,
+    assistantMessageEl,
+    sessionId,
+    signal = null
+) {
+    const replyCount = state.replyCount || 1;
+    const requestErrors = [];
+
+    // 多回复模式显示进度提示
+    if (replyCount > 1 && state.currentAssistantMessage) {
+        safeSetHTML(
+            state.currentAssistantMessage,
+            `<div class="multi-reply-progress">正在生成 ${replyCount} 个回复中...</div>`
+        );
+    }
+
+    const provider = getCurrentProvider();
+    const responseFormat = provider?.apiFormat || 'openai';
+    const adapter = getAdapter(responseFormat);
+
+    try {
+        const data = await response.json();
+        logger.debug('API Response 1:', data);
+
+        const allReplies = [];
+
+        // 处理第一个响应
+        if (data.error) {
+            requestErrors.push({ index: 1, error: data.error });
+            allReplies.push(buildErrorReply(data.error));
+        } else {
+            const reply = adapter.parseResponse(data);
+            if (reply) {
+                if (tryHandleToolCalls(reply, adapter, sessionId, assistantMessageEl, data.model)) {
+                    return; // 工具调用早期返回，由 orchestrator 接管
+                }
+                allReplies.push(reply);
+            }
+        }
+
+        // 多回复并发
+        if (replyCount > 1) {
+            const { replies, errors, abortedCount } = await fetchAdditionalReplies(
+                replyCount,
+                responseFormat,
+                adapter,
+                signal
+            );
+            allReplies.push(...replies);
+            requestErrors.push(...errors);
+
+            // 全部并发请求都被用户取消 + 第一个请求也没产出 reply → 整条 throw AbortError，
+            // 让 handler.handleSendError 走"已取消"路径而非把"已取消"持久化为错回复污染会话
+            // （与 multi-stream.js allAborted 守卫语义对齐）
+            if (allReplies.length === 0 && requestErrors.length === 0 && abortedCount > 0) {
+                const abortErr = new Error('Multi-reply non-stream aborted by user');
+                abortErr.name = 'AbortError';
+                throw abortErr;
+            }
+        }
+
+        if (allReplies.length === 0) {
+            aggregateErrorsAndThrow(requestErrors);
+        }
+
+        state.currentReplies = allReplies;
+        state.selectedReplyIndex = 0;
+        finalizeStreamStats();
+
+        const reply0 = allReplies[0];
+        const messageIndex = saveAssistantMessage(
+            buildPartsFromStreamingState({
+                textContent: reply0.content || '',
+                thinkingContent: reply0.thinkingContent,
+                thinkingBlocks: reply0.thinkingBlocks,
+                thinkingSignatures: reply0.thinkingSignatures,
+                thinkingItems: reply0.thinkingItems,
+                contentParts: reply0.contentParts,
+                signatureFormat: adapter.signatureFormat || null
+            }),
+            buildMetaFromStreamingState({
+                thoughtSignature: reply0.thoughtSignature,
+                encryptedContent: reply0.encryptedContent,
+                reasoningItemId: reply0.reasoningItemId,
+                reasoningItems: reply0.reasoningItems,
+                // 透传 Gemini webSearch groundingMetadata 到 meta.raw.gemini，
+                // 否则刷新会话时 restore.js 拿不到引用，搜索来源卡片消失
+                groundingMetadata: reply0.groundingMetadata,
+                streamStats: getCurrentStreamStatsData()
+            }),
+            { sessionId, allReplies, selectedReplyIndex: 0 }
+        );
+        setCurrentMessageIndex(messageIndex);
+
+        if (allReplies.length > 1) {
+            renderReplyWithSelector(allReplies, 0, assistantMessageEl);
+        } else {
+            renderSingleReply(reply0);
+        }
+
+        appendStreamStats();
+
+        // Claude pause_turn：服务端工具执行后需要 continuation
+        if (reply0.pauseTurn) {
+            logger.debug('[Handler] 非流式 pause_turn，发起 continuation');
+            startPauseTurnContinuation(assistantMessageEl, state.currentSessionId);
+        }
+    } catch (error) {
+        logger.error('Non-stream response parsing error:', error);
+        throw error;
+    }
+}

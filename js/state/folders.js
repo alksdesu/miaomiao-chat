@@ -3,7 +3,6 @@
  */
 
 import { state } from '../core/state.js';
-import { setFolders } from '../core/state-mutations.js';
 import { eventBus } from '../core/events.js';
 import { logger } from '../utils/logger.js';
 import { generateId } from '../utils/helpers.js';
@@ -55,11 +54,11 @@ export async function loadFolders() {
     try {
         const folders = await loadAllFoldersFromDB();
         folders.sort((a, b) => a.order - b.order);
-        setFolders(folders);
+        state.folders = folders;
         logger.debug(`加载了 ${folders.length} 个文件夹`);
     } catch (e) {
         logger.error('加载文件夹失败:', e);
-        setFolders([]);
+        state.folders = [];
     }
 }
 
@@ -73,7 +72,7 @@ export async function createFolder(name) {
     };
 
     await saveFolderToDB(folder);
-    setFolders([...state.folders, folder]);
+    state.folders = [...state.folders, folder];
     eventBus.emit('folders:changed');
     logger.debug(`创建文件夹: ${name}`);
     return folder;
@@ -87,7 +86,7 @@ export async function renameFolder(id, newName) {
     await saveFolderToDB(updated);
     const folders = [...state.folders];
     folders[idx] = updated;
-    setFolders(folders);
+    state.folders = folders;
     eventBus.emit('folders:changed');
 }
 
@@ -104,7 +103,7 @@ export async function deleteFolder(id) {
         }
     }
 
-    setFolders(state.folders.filter((f) => f.id !== id));
+    state.folders = state.folders.filter((f) => f.id !== id);
     eventBus.emit('folders:changed');
     if (affected.length > 0) {
         eventBus.emit('sessions:updated');
@@ -124,7 +123,7 @@ export async function reorderFolders(orderedIds) {
         }
     }
 
-    setFolders(reordered);
+    state.folders = reordered;
     eventBus.emit('folders:changed');
 }
 
@@ -136,7 +135,7 @@ export async function toggleFolderCollapse(id) {
     await saveFolderToDB(updated);
     const folders = [...state.folders];
     folders[idx] = updated;
-    setFolders(folders);
+    state.folders = folders;
     eventBus.emit('folders:changed');
 }
 

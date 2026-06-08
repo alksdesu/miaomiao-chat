@@ -5,9 +5,9 @@
 
 import { state } from '../core/state.js';
 import { elements } from '../core/elements.js';
+import { eventBus } from '../core/events.js';
 import { saveCurrentConfig } from '../state/config.js';
 import { populateModelSelect } from './models.js';
-import { rebuildMessageIdMap, setApiFormat as setStateApiFormat } from '../core/state-mutations.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -23,7 +23,7 @@ export function setApiFormat(format, shouldFetchModels = true) {
     }
 
     const oldFormat = state.apiFormat;
-    setStateApiFormat(format);
+    state.apiFormat = format;
 
     // 更新配置面板显示：只显示当前格式对应的配置面板
     document.querySelectorAll('.api-config').forEach((panel) => {
@@ -37,15 +37,6 @@ export function setApiFormat(format, shouldFetchModels = true) {
     // 如果格式相同，无需转换消息，直接返回
     if (oldFormat === format) {
         return;
-    }
-
-    // 检查是否有对话历史
-    const hasHistory = state.messages.length > 0;
-
-    // 如果有历史消息，从旧格式转换到新格式
-    if (hasHistory) {
-        rebuildMessageIdMap();
-        logger.debug(`消息已从 ${oldFormat} 格式转换`);
     }
 
     // 显示/隐藏 Gemini 图片配置 (兼容旧 UI)
@@ -80,11 +71,9 @@ export function setApiFormat(format, shouldFetchModels = true) {
 export function initFormatSwitcher() {
     // 旧的格式按钮已移除，现在通过提供商管理切换格式
 
-    // 监听配置加载时的格式切换请求（避免循环依赖）
-    import('../core/events.js').then(({ eventBus }) => {
-        eventBus.on('config:format-change-requested', ({ format, shouldFetchModels }) => {
-            setApiFormat(format, shouldFetchModels);
-        });
+    // 监听配置加载时的格式切换请求
+    eventBus.on('config:format-change-requested', ({ format, shouldFetchModels }) => {
+        setApiFormat(format, shouldFetchModels);
     });
 
     logger.debug('Format switcher initialized');

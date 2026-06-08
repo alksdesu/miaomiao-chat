@@ -1,7 +1,12 @@
 /**
- * 状态变更辅助函数（统一消息格式版）
+ * 状态变更入口（仅保留有语义的复合 / message-store mutator）
  *
- * state.messages 是唯一数据源（新 parts[] 格式）。
+ * 一行透传 / boolean 强转 setter 已废除——state.js 的 Proxy 拦截赋值并自动 emit `state:xxx`，
+ * 直接 `state.xxx = value` 等价于过去的 setXxx(value) 但零调用开销且更易读。
+ *
+ * 本模块仅保留两类不可下放到调用方的入口：
+ *   1. message-store mutator：依赖 state.messageStore 内部 splice 原地改 + 同步 sessionDirty + 发事件
+ *   2. 复合 setter：多 flag + DOM 引用必须同步设置/清空（continuation / image-retry）
  */
 
 import { state } from './state.js';
@@ -10,26 +15,19 @@ import { generateMessageId } from '../utils/helpers.js';
 import { PartType, hasParts } from '../messages/schema.js';
 import { normalizeAllMessages } from '../messages/legacy-adapter.js';
 
-function rebuildMessageIdMapFromIndex(fromIndex) {
-    if (!state.messageIdMap) return;
-    for (let i = fromIndex; i < state.messages.length; i++) {
-        const id = state.messages[i]?.id;
-        if (id) state.messageIdMap.set(id, i);
-    }
+/**
+ * 内部 helper：拿到当前 messageStore（state.js 初始化时挂载）
+ * 所有 mutator 经此转发，store 内部 splice 原地改保持数组引用稳定
+ */
+function _store() {
+    return state.messageStore;
 }
 
-/**
- * 重建消息 ID → 索引的完整映射
- */
+// ========== Message store mutator ==========
+
+/** 重建消息 ID → 索引的完整映射 */
 export function rebuildMessageIdMap() {
-    if (!state.messageIdMap) {
-        state.messageIdMap = new Map();
-    } else {
-        state.messageIdMap.clear();
-    }
-    state.messages.forEach((msg, i) => {
-        if (msg.id) state.messageIdMap.set(msg.id, i);
-    });
+    _store().rebuildIdMap();
 }
 
 /**
@@ -38,14 +36,7 @@ export function rebuildMessageIdMap() {
  * @returns {number} 新消息的索引
  */
 export function pushMessage(msg) {
-    state.messages.push(msg);
-
-    const index = state.messages.length - 1;
-
-    if (msg.id && state.messageIdMap) {
-        state.messageIdMap.set(msg.id, index);
-    }
-
+    const index = _store().push(msg);
     state.sessionDirty = true;
     return index;
 }
@@ -56,15 +47,7 @@ export function pushMessage(msg) {
  */
 export function removeMessageAt(index) {
     if (index < 0 || index >= state.messages.length) return;
-
-    const removed = state.messages[index];
-    if (removed.id && state.messageIdMap) {
-        state.messageIdMap.delete(removed.id);
-    }
-
-    state.messages.splice(index, 1);
-
-    if (state.messageIdMap) rebuildMessageIdMapFromIndex(index);
+    _store().splice(index, 1);
     state.sessionDirty = true;
 }
 
@@ -74,19 +57,11 @@ export function removeMessageAt(index) {
  */
 export function removeMessagesAfter(fromIndex) {
     if (fromIndex < 0) return;
-    const removeCount = Math.max(0, state.messages.length - fromIndex - 1);
-    if (removeCount === 0) return;
-
-    if (state.messageIdMap) {
-        for (let i = fromIndex + 1; i < state.messages.length; i++) {
-            const id = state.messages[i]?.id;
-            if (id) state.messageIdMap.delete(id);
-        }
-    }
-
-    state.messages = state.messages.slice(0, fromIndex + 1);
-
+    const before = state.messages.length;
+    _store().removeRangeAfter(fromIndex);
+    if (state.messages.length === before) return;
     state.sessionDirty = true;
+    eventBus.emit('state:messages-replaced', { newLength: state.messages.length });
 }
 
 /**
@@ -97,22 +72,11 @@ export function removeMessagesAfter(fromIndex) {
  */
 export function updateMessageAt(index, updates, replace = false) {
     if (index < 0 || index >= state.messages.length) return;
-
-    const old = state.messages[index];
-
-    // replace 模式下维护 messageIdMap
-    if (replace && old.id && state.messageIdMap) {
-        state.messageIdMap.delete(old.id);
+    if (replace) {
+        _store().replaceAt(index, updates);
+    } else {
+        _store().updateAt(index, updates);
     }
-
-    state.messages[index] = replace ? updates : { ...old, ...updates };
-
-    // 确保新消息的 ID 在 map 中
-    const newMsg = state.messages[index];
-    if (newMsg.id && state.messageIdMap) {
-        state.messageIdMap.set(newMsg.id, index);
-    }
-
     state.sessionDirty = true;
 }
 
@@ -127,11 +91,10 @@ export function updateMessageAt(index, updates, replace = false) {
  */
 export function replaceAllMessages(messages) {
     const copy = [...messages];
-    const upgraded = normalizeAllMessages(copy); // in-place 升级旧格式
+    const upgraded = normalizeAllMessages(copy);
 
-    state.messages = copy;
-    state.sessionDirty = upgraded > 0; // 有升级才标脏，避免空写入
-    rebuildMessageIdMap();
+    _store().replaceAll(copy);
+    state.sessionDirty = upgraded > 0;
     eventBus.emit('state:messages-replaced', { newLength: state.messages.length });
 }
 
@@ -143,41 +106,12 @@ export function popLastAssistantMessage() {
     const len = state.messages.length;
     if (len === 0) return null;
 
-    const msg = state.messages[len - 1];
-    if (msg.role !== 'assistant') return null;
+    const last = state.messages[len - 1];
+    if (last.role !== 'assistant') return null;
 
-    state.messages.pop();
-
-    if (msg.id && state.messageIdMap) state.messageIdMap.delete(msg.id);
+    const msg = _store().pop();
     state.sessionDirty = true;
     return msg;
-}
-
-/**
- * 临时扩展消息数组（工具调用 continuation）
- * 原地追加，恢复时只删除临时消息，保留续写产生的新消息
- * @param {Array} extraMessages - 要追加的额外消息
- * @returns {Object} 备份信息（插入位置和数量）
- */
-export function extendMessagesTemporarily(extraMessages) {
-    const backup = {
-        insertIndex: state.messages.length,
-        count: extraMessages.length
-    };
-    state.messages.push(...extraMessages);
-    return backup;
-}
-
-/**
- * 恢复被 extendMessagesTemporarily 临时扩展的消息数组
- * 只移除临时追加的工具结果消息，保留续写期间产生的合并/新增
- * @param {Object} backup - extendMessagesTemporarily 返回的备份对象
- */
-export function restoreMessages(backup) {
-    if (backup?.count > 0 && backup.insertIndex != null) {
-        state.messages.splice(backup.insertIndex, backup.count);
-        rebuildMessageIdMapFromIndex(backup.insertIndex);
-    }
 }
 
 /**
@@ -188,7 +122,6 @@ export function updateMessageTextAt(index, newText) {
 
     const msg = state.messages[index];
 
-    // 新格式：修改 parts 中的第一个 text part
     if (hasParts(msg)) {
         const textPart = msg.parts.find((p) => p.type === PartType.TEXT);
         if (textPart) {
@@ -197,7 +130,6 @@ export function updateMessageTextAt(index, newText) {
             msg.parts.push({ type: PartType.TEXT, text: newText });
         }
     } else {
-        // 旧格式兜底：创建 parts 而非写 content
         if (!msg.parts) msg.parts = [];
         msg.parts.push({ type: PartType.TEXT, text: newText });
     }
@@ -224,140 +156,62 @@ export function ensureMessageIds() {
 }
 
 /**
- * 通用状态设置（任意属性）
- * @param {string} key - 状态属性名
- * @param {*} value - 新值
+ * 通用状态设置（任意属性，键名动态决定时用）
+ * 通常直接 `state[key] = value` 即可；本函数仅在键名运行时拼接的场景保留
+ * @param {string} key
+ * @param {*} value
  */
 export function setState(key, value) {
     state[key] = value;
 }
 
-// ========== Setter 工厂 ==========
-
-function createSetter(key) {
-    return (value) => {
-        state[key] = value;
-    };
-}
-
-function createBoolSetter(key) {
-    return (value) => {
-        state[key] = !!value;
-    };
-}
-
-// ========== 布尔 setter（!!value 强转）==========
-
-export const setIsLoading = createBoolSetter('isLoading');
-export const setIsSending = createBoolSetter('isSending');
-export const setSessionDirty = createBoolSetter('sessionDirty');
-export const setIsToolCallPending = createBoolSetter('isToolCallPending');
-export const setIsToolCallContinuation = createBoolSetter('isToolCallContinuation');
-export const setIsSavingContinuation = createBoolSetter('isSavingContinuation');
-export const setIsImageCompressionRetry = createBoolSetter('isImageCompressionRetry');
-export const setGeminiApiKeyInHeader = createBoolSetter('geminiApiKeyInHeader');
-export const setStreamEnabled = createBoolSetter('streamEnabled');
-export const setThinkingEnabled = createBoolSetter('thinkingEnabled');
-export const setWebSearchEnabled = createBoolSetter('webSearchEnabled');
-export const setXmlToolCallingEnabled = createBoolSetter('xmlToolCallingEnabled');
-export const setThinkingNoneMode = createBoolSetter('thinkingNoneMode');
-export const setClaudeAdaptiveThinking = createBoolSetter('claudeAdaptiveThinking');
-export const setClaudeShowThinking = createBoolSetter('claudeShowThinking');
-export const setMonitorEnabled = createBoolSetter('monitorEnabled');
-export const setVerbosityEnabled = createBoolSetter('verbosityEnabled');
-export const setPrefillEnabled = createBoolSetter('prefillEnabled');
-export const setGeminiSystemPartsEnabled = createBoolSetter('geminiSystemPartsEnabled');
-export const setToolHistoryEnabled = createBoolSetter('toolHistoryEnabled');
-export const setIsSwitchingSession = createBoolSetter('isSwitchingSession');
-export const setFastImageCompression = createBoolSetter('fastImageCompression');
-export const setCodeExecutionEnabled = createBoolSetter('codeExecutionEnabled');
-export const setComputerUseEnabled = createBoolSetter('computerUseEnabled');
-
-// ========== 透传 setter ==========
-
-export const setCurrentAssistantMessage = createSetter('currentAssistantMessage');
-export const setCurrentAbortController = createSetter('currentAbortController');
-export const setSelectedReplyIndex = createSetter('selectedReplyIndex');
-export const setEditingIndex = createSetter('editingIndex');
-export const setEditingElement = createSetter('editingElement');
-export const setCurrentSessionId = createSetter('currentSessionId');
-export const setApiFormat = createSetter('apiFormat');
-export const setCurrentReplies = createSetter('currentReplies');
-export const setUploadedImages = createSetter('uploadedImages');
-export const setCurrentProviderId = createSetter('currentProviderId');
-export const setLastUserMessage = createSetter('lastUserMessage');
-export const setToolCallContinuationElement = createSetter('toolCallContinuationElement');
-export const setImageRetryMessageElement = createSetter('imageRetryMessageElement');
-export const setSelectedModel = createSetter('selectedModel');
-export const setPrefillPresets = createSetter('prefillPresets');
-export const setActivePrefillPresetId = createSetter('activePrefillPresetId');
-export const setThinkingBudget = createSetter('thinkingBudget');
-export const setThinkingStrength = createSetter('thinkingStrength');
-export const setSystemPrompt = createSetter('systemPrompt');
-export const setCurrentConfigName = createSetter('currentConfigName');
-export const setImageSize = createSetter('imageSize');
-export const setReplyCount = createSetter('replyCount');
-export const setClaudeEffortLevel = createSetter('claudeEffortLevel');
-export const setOutputVerbosity = createSetter('outputVerbosity');
-export const setCurrentPrefillPresetName = createSetter('currentPrefillPresetName');
-export const setCurrentSystemPrefillPresetName = createSetter('currentSystemPrefillPresetName');
-export const setCurrentGeminiPartsPresetName = createSetter('currentGeminiPartsPresetName');
-export const setFolders = createSetter('folders');
-export const setCharName = createSetter('charName');
-export const setUserName = createSetter('userName');
-export const setPrefillMessages = createSetter('prefillMessages');
-export const setSystemPrefillMessages = createSetter('systemPrefillMessages');
-export const setGeminiSystemParts = createSetter('geminiSystemParts');
-export const setToolCallHistory = createSetter('toolCallHistory');
-export const setMaxToolHistorySize = createSetter('maxToolHistorySize');
-export const setMcpServers = createSetter('mcpServers');
-export const setQuickMessages = createSetter('quickMessages');
-export const setSessions = createSetter('sessions');
-export const setStorageMode = createSetter('storageMode');
-export const setMessageHistory = createSetter('messageHistory');
-export const setPdfMode = createSetter('pdfMode');
-export const setStreamStats = createSetter('streamStats');
-export const setSavedConfigs = createSetter('savedConfigs');
-export const setSavedPrefillPresets = createSetter('savedPrefillPresets');
-export const setSavedSystemPrefillPresets = createSetter('savedSystemPrefillPresets');
-export const setSavedGeminiPartsPresets = createSetter('savedGeminiPartsPresets');
-export const setToolPermissions = createSetter('toolPermissions');
-export const setPendingModelSelection = createSetter('pendingModelSelection');
-
-// ========== 语义化复合 setter ==========
-// 工具调用 continuation 和图片重试涉及多个相关 flag，单独 setter 调用容易遗漏一个导致状态不一致。
-// 通过 set/clear 配对入口保证 flag 和对应 DOM 引用同时设置/清空。
+// ========== 复合 setter（多 flag + DOM 引用必须同步） ==========
 
 /**
- * 标记进入工具调用 continuation：设置 flag 并保存要复用的助手消息元素
+ * 标记进入工具调用 continuation：设置 flag、保存复用的助手消息元素与发起会话 ID
+ *
+ * sourceSessionId 用于跨会话守卫：resendWithToolResults 触发时若 currentSessionId
+ * 已切换到别处，handler 据此判断丢弃 continuation 改走 background save，避免
+ * 工具结果污染新切到的会话
+ *
  * @param {HTMLElement} messageEl - 要复用的助手消息根元素
+ * @param {string|null} [sourceSessionId] - 发起 continuation 时的会话 ID
  */
-export function setToolCallContinuation(messageEl) {
+export function setToolCallContinuation(messageEl, sourceSessionId = null) {
     state.isToolCallContinuation = true;
     state.toolCallContinuationElement = messageEl;
+    state.toolCallContinuationSessionId = sourceSessionId;
 }
 
 /**
- * 清除工具调用 continuation 标记和 DOM 引用
+ * 清除工具调用 continuation 标记、DOM 引用与发起会话 ID
  */
 export function clearToolCallContinuation() {
     state.isToolCallContinuation = false;
     state.toolCallContinuationElement = null;
+    state.toolCallContinuationSessionId = null;
 }
 
 /**
- * 标记进入图片压缩重试：设置 flag 并保存要复用的助手消息元素
+ * 标记进入图片压缩重试：设置 flag、保存要复用的助手消息元素与发起会话 ID
+ *
+ * sourceSessionId 用于跨会话守卫：resolvePlaceholder 触发时若 currentSessionId
+ * 已切换，丢弃 retry 元素走 resolveNew 而非复用脱离 DOM 的旧元素
+ *
  * @param {HTMLElement} messageEl - 要复用的助手消息根元素
+ * @param {string|null} [sourceSessionId] - 发起 retry 时的会话 ID
  */
-export function setImageRetry(messageEl) {
+export function setImageRetry(messageEl, sourceSessionId = null) {
     state.isImageCompressionRetry = true;
     state.imageRetryMessageElement = messageEl;
+    state.imageRetrySessionId = sourceSessionId;
 }
 
 /**
- * 清除图片压缩重试标记和 DOM 引用（不包含 _imageCompressionRetried 防循环锁）
+ * 清除图片压缩重试标记、DOM 引用与发起会话 ID（不包含 _imageCompressionRetried 防循环锁）
  */
 export function clearImageRetry() {
     state.isImageCompressionRetry = false;
     state.imageRetryMessageElement = null;
+    state.imageRetrySessionId = null;
 }

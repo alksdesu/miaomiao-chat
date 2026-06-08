@@ -8,9 +8,13 @@ import { saveMCPServer } from '../state/storage.js';
 import { showNotification } from './notifications.js';
 import { detectPlatform } from '../utils/platform.js';
 import { renderServerList, connectToServer } from './mcp-server-list.js';
+import { generateServerId } from '../tools/mcp/config-converter.js';
 import { logger } from '../utils/logger.js';
 
 const platform = detectPlatform();
+
+// async 保存期间表单仍可点击，双击会同毫秒生成两条记录
+let isSaving = false;
 
 /**
  * 显示添加服务器表单
@@ -116,6 +120,8 @@ export function hideServerForm(modal, setFormOpen) {
  * @param {Function} setFormOpen - 设置表单开启状态的回调
  */
 export async function handleSaveServer(modal, setFormOpen) {
+    if (isSaving) return;
+
     const type = modal.querySelector('#mcp-server-type').value;
     const nameInput = modal.querySelector('#mcp-server-name');
     const name = nameInput.value.trim();
@@ -127,7 +133,7 @@ export async function handleSaveServer(modal, setFormOpen) {
     }
 
     const config = {
-        id: `mcp_${Date.now()}`,
+        id: generateServerId(),
         name,
         type,
         enabled: true
@@ -167,6 +173,7 @@ export async function handleSaveServer(modal, setFormOpen) {
         }
     }
 
+    isSaving = true;
     try {
         await saveMCPServer(config);
         state.mcpServers.push(config);
@@ -177,6 +184,8 @@ export async function handleSaveServer(modal, setFormOpen) {
     } catch (error) {
         logger.error('[MCP Settings] 保存服务器失败:', error);
         showNotification('保存失败，请重试', 'error');
+    } finally {
+        isSaving = false;
     }
 }
 

@@ -299,12 +299,17 @@
     display: block;
 }
 
+/* 默认显示 eye-open，隐藏 eye-closed；visible 状态翻转 */
+.password-toggle .eye-closed {
+    display: none;
+}
+
 .password-toggle.visible .eye-open {
     display: none;
 }
 
 .password-toggle.visible .eye-closed {
-    display: block !important;
+    display: block;
 }
 
 /* 错误消息 */
@@ -500,6 +505,8 @@
         transition: max-height var(--duration-slow) var(--ease);
     }
 
+    /* settings.js:338/349/355 给 body 写 inline maxHeight，class 必须用 !important 覆盖
+     * inline 才能强制折叠到 0。优雅做法是 JS 改成纯 class toggle，留作后续重构 */
     .settings-group-body.collapsed {
         max-height: 0 !important;
     }

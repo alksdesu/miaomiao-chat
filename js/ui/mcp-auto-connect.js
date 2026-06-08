@@ -5,6 +5,7 @@
 
 import { state } from '../core/state.js';
 import { mcpClient } from '../tools/mcp/client.js';
+import { loadToolStates } from '../tools/manager.js';
 import { showNotification } from './notifications.js';
 import { logger } from '../utils/logger.js';
 
@@ -103,7 +104,6 @@ export async function autoConnectMCPServers(options = {}) {
     if (results.connected > 0) {
         logger.debug('[MCP AutoConnect] 重新加载工具状态...');
         try {
-            const { loadToolStates } = await import('../tools/manager.js');
             // 传入 true 确保加载所有工具状态（包括尚未注册的 MCP 工具）
             await loadToolStates(true);
             logger.debug('[MCP AutoConnect] 工具状态加载完成');

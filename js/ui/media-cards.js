@@ -1,6 +1,7 @@
 /**
  * 媒体卡片渲染函数（图片/视频/音频）
  * 统一 renderer.js / stream/helpers.js / reply-selector.js 三处重复实现
+ * 交互绑定由 viewer.js 的事件委托统一处理（data-action 派发）
  */
 
 import { getMediaExtension } from '../utils/media.js';
@@ -14,23 +15,22 @@ export function renderDownloadIcon() {
     `;
 }
 
-function encodeInlineUrl(url) {
-    return encodeURIComponent(url || '');
-}
-
 /**
  * 渲染图片卡片
  * @param {string} url - 图片 URL
  * @returns {string}
  */
 export function renderImageCard(url) {
-    const encodedUrl = encodeInlineUrl(url);
     const safeUrl = escapeHtml(url);
     const ext = getMediaExtension(url, '', 'png');
 
     return `<div class="image-wrapper">
-        <img src="${safeUrl}" alt="Generated image" title="点击查看大图" onclick="openImageViewer(decodeURIComponent('${encodedUrl}'))" style="cursor:pointer;">
-        <button type="button" class="download-image-btn" onclick="event.stopPropagation();downloadImage(decodeURIComponent('${encodedUrl}'), 'image-${Date.now()}.${ext}')" title="下载原图">
+        <img src="${safeUrl}" alt="Generated image" title="点击查看大图"
+             data-action="open-viewer" data-url="${safeUrl}" style="cursor:pointer;">
+        <button type="button" class="download-image-btn"
+                data-action="download-media" data-url="${safeUrl}"
+                data-media-kind="image" data-ext="${escapeHtml(ext)}"
+                title="下载原图">
             ${renderDownloadIcon()}
         </button>
     </div>`;
@@ -43,13 +43,15 @@ export function renderImageCard(url) {
  * @returns {string}
  */
 export function renderVideoCard(url, mimeType = '') {
-    const encodedUrl = encodeInlineUrl(url);
     const safeUrl = escapeHtml(url);
     const ext = getMediaExtension(url, mimeType, 'mp4');
 
     return `<div class="image-wrapper video-wrapper">
         <video src="${safeUrl}" controls playsinline muted preload="metadata" title="AI 生成视频"></video>
-        <button type="button" class="download-image-btn" onclick="event.stopPropagation();downloadMedia(decodeURIComponent('${encodedUrl}'), 'video-${Date.now()}.${ext}')" title="下载视频">
+        <button type="button" class="download-image-btn"
+                data-action="download-media" data-url="${safeUrl}"
+                data-media-kind="video" data-ext="${escapeHtml(ext)}"
+                title="下载视频">
             ${renderDownloadIcon()}
         </button>
     </div>`;
@@ -62,13 +64,15 @@ export function renderVideoCard(url, mimeType = '') {
  * @returns {string}
  */
 export function renderAudioCard(url, mimeType = '') {
-    const encodedUrl = encodeInlineUrl(url);
     const safeUrl = escapeHtml(url);
     const ext = getMediaExtension(url, mimeType, 'mp3');
 
     return `<div class="audio-wrapper">
         <audio src="${safeUrl}" controls preload="metadata" title="AI 生成音频"></audio>
-        <button type="button" class="download-image-btn" onclick="event.stopPropagation();downloadMedia(decodeURIComponent('${encodedUrl}'), 'audio-${Date.now()}.${ext}')" title="下载音频">
+        <button type="button" class="download-image-btn"
+                data-action="download-media" data-url="${safeUrl}"
+                data-media-kind="audio" data-ext="${escapeHtml(ext)}"
+                title="下载音频">
             ${renderDownloadIcon()}
         </button>
     </div>`;

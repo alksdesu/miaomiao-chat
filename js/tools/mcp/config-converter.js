@@ -33,11 +33,14 @@ export function standardToInternal(standardConfig) {
 // ID 生成计数器（避免短时间内重复）
 let idCounter = 0;
 
+// 与 mcp-server-form.js 表单校验保持同一规则
+const REMOTE_URL_PATTERN = /^(https?|wss?):\/\/.+/i;
+
 /**
  * 生成唯一的服务器 ID
  * @returns {string} 唯一 ID
  */
-function generateServerId() {
+export function generateServerId() {
     // 使用时间戳 + 计数器 + 随机数三重保障
     const timestamp = Date.now();
     const counter = (idCounter++ % 10000).toString().padStart(4, '0');
@@ -81,6 +84,13 @@ function convertSingleServer(serverName, config) {
         if (!config.command) {
             throw new Error('本地服务器缺少 command 字段');
         }
+        if (typeof config.command !== 'string') {
+            throw new Error('command 必须是字符串');
+        }
+        // 非数组 args 一旦持久化会让 renderServerList 永久崩溃
+        if (config.args !== undefined && !Array.isArray(config.args)) {
+            throw new Error('args 必须是数组（如 ["-y", "package-name"]）');
+        }
 
         internalServer.command = config.command;
         internalServer.args = config.args || [];
@@ -90,6 +100,9 @@ function convertSingleServer(serverName, config) {
         // 远程服务器
         if (!config.url) {
             throw new Error('远程服务器缺少 url 字段');
+        }
+        if (typeof config.url !== 'string' || !REMOTE_URL_PATTERN.test(config.url)) {
+            throw new Error('url 无效（需以 http(s):// 或 ws(s):// 开头）');
         }
 
         internalServer.url = config.url;
@@ -160,10 +173,22 @@ export function internalToStandard(internalServers) {
     }
 
     for (const server of internalServers) {
-        const serverName = server.name || server.id;
+        let serverName = server.name || server.id;
 
         try {
             const standardServer = convertToStandardFormat(server);
+
+            // 标准格式以 name 为 key，同名直接赋值会静默覆盖丢数据
+            if (standardConfig.mcpServers[serverName]) {
+                let suffix = 2;
+                while (standardConfig.mcpServers[`${serverName}-${suffix}`]) suffix++;
+                const renamed = `${serverName}-${suffix}`;
+                logger.warn(
+                    `[MCP Config] 导出存在同名服务器 "${serverName}"，已重命名为 "${renamed}"`
+                );
+                serverName = renamed;
+            }
+
             standardConfig.mcpServers[serverName] = standardServer;
         } catch (error) {
             logger.warn(`[MCP Config] 跳过无效服务器 "${serverName}": ${error.message}`);
@@ -279,13 +304,31 @@ export function validateStandardConfig(config) {
         }
 
         // 本地服务器验证
-        if (isLocal && !serverConfig.command) {
-            errors.push(`本地服务器 "${serverName}" 缺少 command 字段`);
+        if (isLocal) {
+            if (!serverConfig.command) {
+                errors.push(`本地服务器 "${serverName}" 缺少 command 字段`);
+            } else if (typeof serverConfig.command !== 'string') {
+                errors.push(`本地服务器 "${serverName}" 的 command 必须是字符串`);
+            }
+            if (serverConfig.args !== undefined && !Array.isArray(serverConfig.args)) {
+                errors.push(
+                    `本地服务器 "${serverName}" 的 args 必须是数组（如 ["-y", "package-name"]）`
+                );
+            }
         }
 
-        // 远程服务器验证
-        if (isRemote && !serverConfig.url) {
-            errors.push(`远程服务器 "${serverName}" 缺少 url 字段`);
+        // 远程服务器验证（与表单 URL 规则一致）
+        if (isRemote) {
+            if (!serverConfig.url) {
+                errors.push(`远程服务器 "${serverName}" 缺少 url 字段`);
+            } else if (
+                typeof serverConfig.url !== 'string' ||
+                !REMOTE_URL_PATTERN.test(serverConfig.url)
+            ) {
+                errors.push(
+                    `远程服务器 "${serverName}" 的 url 无效（需以 http(s):// 或 ws(s):// 开头）`
+                );
+            }
         }
 
         // 传输类型验证（兼容 streamableHttp / http / websocket 命名）
@@ -407,8 +450,8 @@ export function generateTemplate(templateName) {
  * @returns {Array} 模板信息数组
  */
 export function getAvailableTemplates() {
+    // empty 模板转换后得 0 个服务器，放进创建列表点击必报错，仅供 generateTemplate 兜底
     return [
-        { id: 'empty', name: '空模板', description: '创建一个空的配置文件' },
         { id: 'filesystem', name: 'Filesystem (NPX)', description: '文件系统访问服务器' },
         { id: 'memory', name: 'Memory (NPX)', description: '记忆存储服务器' },
         { id: 'fetch', name: 'Fetch (UVX)', description: 'Web 抓取服务器' },

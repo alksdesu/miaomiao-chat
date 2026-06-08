@@ -8,19 +8,29 @@
  * - 单层 Proxy（非递归），避免 Map/Set/Array 内部操作误触发
  * - 事件名：state:{key}（如 state:isLoading）
  * - batch() 支持批量更新合并事件
+ *
+ * Map/Set 字段的响应式语义：
+ *   下方 _rawState 中 backgroundTasks/imageBuffers/_imageCompressionRetriedSessions/
+ *   _lastKnownSessionUpdatedAt 等 Map/Set 实例的 .set/.add/.delete/.clear **不会**触发
+ *   state:xxx 事件（Proxy 仅拦截顶层赋值，未代理内部集合方法）。
+ *   依赖订阅这些集合变更的消费方必须由业务侧显式 emit 关联事件（如 sessions:updated）。
  */
 
 import { eventBus } from './events.js';
+import { MessageStore } from './message-store.js';
 
 // ========== 内部原始状态对象 ==========
 
 const _rawState = {
-    // 消息存储
-    messages: [], // OpenAI 格式消息
+    // 消息存储（由 messageStore 持有同一引用 + 维护 idMap，外部禁止整体替换）
+    messages: [],
 
-    // 消息 ID 映射（解决索引不一致问题）
-    // messageId -> 数组索引，用于快速查找和防止删除错位
-    messageIdMap: new Map(), // Map<messageId, number>
+    // messageStore 旁路封装，提供 O(1) findById/findIndexById/findByEl
+    // 与 _rawState.messages 共享同一数组引用，所有写路径走 store API
+    messageStore: null, // 在 _rawState 声明完后立即初始化（见下方）
+
+    // 消息 ID 映射（双轨 alias 指向 messageStore.idMap，迁移期保留兼容旧消费方）
+    messageIdMap: null, // 在 messageStore 初始化后赋值为 store.idMap
 
     // 会话脏标记（消息变更追踪，避免无变更时冗余保存）
     sessionDirty: false,
@@ -28,14 +38,21 @@ const _rawState = {
     // UI 状态
     isLoading: false,
     currentAssistantMessage: null,
-    currentAbortController: null, // 用于取消当前请求
     requestTimeout: 300000, // 请求超时时间（毫秒），默认 5 分钟
+    // 流式响应空闲超时：两次 chunk 之间允许的最长无数据间隔。requestTimeout 只保护
+    // 连接+headers 阶段（fetch abort），token 阶段慢/卡死/代理 silent drop 由此守门。
+    // reasoning 模型（含 extended thinking）内部推理时可能持续 1-5 分钟无 SSE
+    // chunk，120s 默认会误杀；用户可在偏好设置中调高
+    streamIdleTimeout: 120000,
 
     // 工具调用续传状态
     isToolCallPending: false, // 工具正在执行中
     isSavingContinuation: false, // 正在保存 continuation 消息
     isToolCallContinuation: false, // 下次 sendToAPI 复用消息元素
     toolCallContinuationElement: null, // 要复用的消息 DOM 元素
+    // sourceSessionId 锁住发起 continuation 时的会话；resendWithToolResults 时若
+    // currentSessionId 已切换，丢弃 continuation 改走 background save，避免新会话被污染
+    toolCallContinuationSessionId: null,
 
     // 图片处理
     imageBuffers: new Map(), // 存储正在接收的图片分块数据
@@ -50,7 +67,12 @@ const _rawState = {
     // 图片压缩重试状态
     isImageCompressionRetry: false, // 下次 sendToAPI 以重试模式运行
     imageRetryMessageElement: null, // 重试时复用的消息 DOM 元素
-    _imageCompressionRetried: false, // 防止无限重试的标记
+    // sourceSessionId 锁住发起 retry 时的会话；resolvePlaceholder 时若 currentSessionId
+    // 已切换，丢弃 retry 元素走 resolveNew，避免复用脱离 DOM 的旧元素
+    imageRetrySessionId: null,
+    // 已尝试压缩重试的会话 ID 集合（per-sessionId 锁）— 全局 boolean 在跨会话场景下
+    // 会让前一会话的 retried=true 误锁住后一会话的首次重试机会
+    _imageCompressionRetriedSessions: new Set(),
 
     // 消息编辑
     lastUserMessage: null,
@@ -158,6 +180,9 @@ const _rawState = {
     currentSessionId: null,
     isSwitchingSession: false, // 防止会话切换竞态条件
     backgroundTasks: new Map(),
+    // 乐观锁：跟踪每个 session 本 tab 已知的最新 IDB updatedAt。saveSessionAtomic 写入前对比，
+    // 不匹配说明另一 tab 已抢先写入，本次写入退避并触发 storage:conflict 让 UI 提示用户
+    _lastKnownSessionUpdatedAt: new Map(), // Map<sessionId, number>
 
     // 多回复生成
     replyCount: 1,
@@ -223,6 +248,12 @@ const _rawState = {
     tools: [] // 工具列表（内置 + MCP + 自定义）
 };
 
+// 立即初始化 messageStore，让其持有 _rawState.messages 的引用
+// state-mutations 12 mutator 内部全部走 store API，store 内部 splice 原地改保持引用稳定
+_rawState.messageStore = new MessageStore(_rawState.messages);
+// messageIdMap 暴露 store 的私有 idMap 作为只读 alias（双轨期兼容旧消费方）
+_rawState.messageIdMap = _rawState.messageStore.idMap;
+
 // ========== Proxy 响应式包装 ==========
 
 let _batchDepth = 0;
@@ -248,6 +279,19 @@ export const state = new Proxy(_rawState, {
         // 同值跳过（先检查再赋值，避免冗余写入）
         if (Object.is(old, value)) return true;
 
+        // messages 数组禁止整体替换：会让 messageStore 持有的旧引用悬空
+        // 旧代码 state.messages = newArr 自动转走 store.replaceAll 保持引用稳定
+        if (prop === 'messages' && target.messageStore && Array.isArray(value)) {
+            target.messageStore.replaceAll(value);
+            // store.replaceAll 内部 splice 原地改，target.messages 引用未变，emit 通知消费方
+            if (_batchDepth > 0) {
+                _batchedChanges.push({ key: prop, oldValue: old, newValue: target.messages });
+            } else {
+                _emitChange(prop, old, target.messages);
+            }
+            return true;
+        }
+
         target[prop] = value;
 
         if (_batchDepth > 0) {
@@ -265,8 +309,13 @@ export const state = new Proxy(_rawState, {
 
     deleteProperty(target, prop) {
         const old = target[prop];
+        if (!(prop in target)) return true; // 不存在的属性 delete 不发事件
         delete target[prop];
-        if (_batchDepth === 0) {
+        // 与 set 路径对称：batch 内收集到 _batchedChanges，batch 结束统一 emit；
+        // 否则订阅者收不到 `batch(() => delete state.x)` 内的删除通知
+        if (_batchDepth > 0) {
+            _batchedChanges.push({ key: prop, oldValue: old, newValue: undefined });
+        } else {
             _emitChange(prop, old, undefined);
         }
         return true;

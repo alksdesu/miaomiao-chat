@@ -2,6 +2,7 @@
  * DevTools 存储工具 — 读写 localStorage/sessionStorage/cookie
  */
 
+import { state } from '../../core/state.js';
 import { buildToolFromLegacy } from '../../tools/build-tool.js';
 
 // ========== devtools_read_storage ==========
@@ -27,7 +28,6 @@ export const readStorageTool = {
 };
 
 export async function readStorageHandler(args) {
-    const { state } = await import('../../core/state.js');
     const sessionId = state.currentSessionId;
 
     let result;
@@ -114,7 +114,6 @@ function isBlockedKey(key) {
 }
 
 export async function writeStorageHandler(args) {
-    const { state } = await import('../../core/state.js');
     const sessionId = state.currentSessionId;
 
     if (isBlockedKey(args.key)) {

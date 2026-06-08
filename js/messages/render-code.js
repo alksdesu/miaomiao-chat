@@ -8,6 +8,7 @@ import { eventBus } from '../core/events.js';
 import { updateMessageTextAt } from '../core/state-mutations.js';
 import { state } from '../core/state.js';
 import { escapeHtml } from '../utils/helpers.js';
+import { downloadImage } from '../utils/images.js';
 import {
     getCurrentMermaidTheme,
     renderMermaidBlock,
@@ -71,6 +72,13 @@ export function enhanceCodeBlocks(container = null) {
             return;
         }
 
+        // 流式态跳过 hljs/collapsible/复制按钮：避免每个 token 重建 DOM 与重跑高亮
+        // 走 escapeHtml 占位样式，待 finalize 经 highlightWithIdleScheduler 分块升级
+        if (isStreamingContext(pre)) {
+            pre.classList.add('streaming-code-placeholder');
+            return;
+        }
+
         const detectedLang = detectCodeLanguage(codeText, hintedLang);
         const defaultCollapsed = lineCount > 20;
         createCollapsibleCodeBlock(
@@ -88,6 +96,85 @@ export function enhanceCodeBlocks(container = null) {
     enhanceThinkingBlocks(target, enhanceCodeBlocks);
     enhanceTables(target);
     bindImageClickEvents(target);
+}
+
+/**
+ * 检测 target 是否处于流式上下文
+ * 条件：自身或祖先含 .generating class，或包含 .typing-cursor 节点
+ * @param {HTMLElement} target - 待检测元素
+ * @returns {boolean}
+ */
+function isStreamingContext(target) {
+    if (!target) return false;
+    if (target.closest?.('.generating')) return true;
+    return target.closest?.('.message-content')?.querySelector('.typing-cursor') != null;
+}
+
+/**
+ * finalize 路径专用：分块高亮所有未增强的 pre 代码块
+ * 用 requestIdleCallback 切片（每 idle slot 处理 1-2 个 pre），避免单帧 200-500ms 卡顿
+ * 不支持 requestIdleCallback 的环境降级为 setTimeout(0)
+ * @param {HTMLElement} container - 容器元素
+ */
+export function highlightWithIdleScheduler(container = null) {
+    const target = container || elements.messagesArea;
+    if (!target) return;
+
+    const queue = Array.from(target.querySelectorAll('pre.streaming-code-placeholder')).filter(
+        (pre) => pre.isConnected && !pre.classList.contains('code-block-enhanced')
+    );
+    if (queue.length === 0) return;
+
+    const schedule =
+        typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function'
+            ? (cb) => window.requestIdleCallback(cb, { timeout: 200 })
+            : (cb) => setTimeout(cb, 0);
+
+    const processSlot = () => {
+        // 每个 idle slot 处理至多 2 个，保留预算给其他 idle 任务
+        const SLOT_SIZE = 2;
+        let processed = 0;
+        while (queue.length > 0 && processed < SLOT_SIZE) {
+            const pre = queue.shift();
+            if (!pre.isConnected || pre.classList.contains('code-block-enhanced')) {
+                continue;
+            }
+            processed += 1;
+            try {
+                upgradeStreamingPlaceholder(pre);
+            } catch (err) {
+                logger.error('[highlightWithIdleScheduler] 升级占位代码块失败:', err);
+            }
+        }
+        if (queue.length > 0) {
+            schedule(processSlot);
+        }
+    };
+
+    schedule(processSlot);
+}
+
+/**
+ * 把流式占位 pre 升级为 collapsible 代码块（finalize 阶段调用）
+ * @param {HTMLElement} pre - 占位 pre 元素
+ */
+function upgradeStreamingPlaceholder(pre) {
+    const codeBlock = pre.querySelector('code');
+    if (!codeBlock) return;
+
+    pre.classList.remove('streaming-code-placeholder');
+
+    const codeText = codeBlock.textContent;
+    const lineCount = codeText.split('\n').length;
+    const languageClass = Array.from(codeBlock.classList).find((cls) =>
+        cls.startsWith('language-')
+    );
+    const hintedLang = languageClass ? languageClass.replace('language-', '') : null;
+    const detectedLang = detectCodeLanguage(codeText, hintedLang);
+    const defaultCollapsed = lineCount > 20;
+
+    createCollapsibleCodeBlock(pre, codeBlock, detectedLang, codeText, lineCount, defaultCollapsed);
+    pre.classList.add('code-block-enhanced');
 }
 
 /**
@@ -110,11 +197,9 @@ export function bindImageClickEvents(container) {
         if (img) {
             btn.onclick = (e) => {
                 e.stopPropagation();
-                if (window.downloadImage) {
-                    const match = img.src.match(/^data:image\/(\w+);/);
-                    const ext = match ? match[1] : 'png';
-                    window.downloadImage(img.src, `image-${Date.now()}.${ext}`);
-                }
+                const match = img.src.match(/^data:image\/(\w+);/);
+                const ext = match ? match[1] : 'png';
+                downloadImage(img.src, `image-${Date.now()}.${ext}`);
             };
         }
     });

@@ -3,16 +3,18 @@
  */
 
 import { state } from '../core/state.js';
-import { setMonitorEnabled } from '../core/state-mutations.js';
+import { setDevToolsToolsEnabled } from './tools/index.js';
+// side-effect import：让 monitor-state 注册 session:switched 事件 listener
+import './monitor-state.js';
+import { setMonitorEnabled } from './monitor-state.js';
 import { logger } from '../utils/logger.js';
 
 /**
  * 恢复当前会话的 monitor 状态（在 tools/init.js 注册完工具后调用）
  */
-export async function restoreMonitorState() {
+export function restoreMonitorState() {
     const session = state.sessions.find((s) => s.id === state.currentSessionId);
     if (session?.monitorEnabled) {
-        const { setDevToolsToolsEnabled } = await import('./tools/index.js');
         setDevToolsToolsEnabled(true);
         setMonitorEnabled(true);
     }

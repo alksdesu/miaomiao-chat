@@ -6,6 +6,8 @@
 import { logger } from './logger.js';
 import { escapeHtml, extractBase64Images, restoreBase64Images } from './helpers.js';
 import { MAX_MARKDOWN_LENGTH } from './constants.js';
+import { ALLOWED_URI_REGEXP } from './uri.js';
+import remend from '../vendor/remend.js';
 
 // 性能优化：DOMPurify 配置常量（避免每次创建对象）
 const DOMPURIFY_CONFIG = {
@@ -96,7 +98,6 @@ const DOMPURIFY_CONFIG = {
         'alt',
         'title',
         'class',
-        'style',
         'id',
         'data-*',
         'aria-*',
@@ -144,10 +145,14 @@ const DOMPURIFY_CONFIG = {
         'offset',
         'stop-color'
     ],
-    ALLOWED_URI_REGEXP:
-        /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|data):|[^a-z]|[a-z+.-]+(?:[^a-z+.-:]|$))/i,
+    // URI 协议白名单：只放行 http/https/mailto/tel/callto + 锚点/相对路径；data: 由独立 hook 仅放图片
+    // 拒绝 javascript:/vbscript:/data:text/html 等任意脚本协议
+    // 与 utils/uri.js 共享同一份正则，确保 DOMPurify sanitize 与运行时 isSafeHref 校验一致
+    ALLOWED_URI_REGEXP,
     FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'style', 'form', 'input', 'button'],
+    // 禁掉所有事件处理器（on*）和 style 属性，style 可承载 background:url(javascript:...) 注入
     FORBID_ATTR: [
+        'style',
         'onerror',
         'onclick',
         'onload',
@@ -155,11 +160,40 @@ const DOMPURIFY_CONFIG = {
         'onfocus',
         'onblur',
         'oninput',
-        'onchange'
+        'onchange',
+        'onmouseenter',
+        'onmouseleave',
+        'onkeydown',
+        'onkeyup',
+        'onkeypress',
+        'onsubmit',
+        'onreset',
+        'onscroll',
+        'ondrag',
+        'ondrop',
+        'onanimationend',
+        'onanimationstart',
+        'ontransitionend'
     ],
     ALLOW_DATA_ATTR: true,
     ALLOW_ARIA_ATTR: true
 };
+
+// data: URI 仅在 <img src> 上限定为 image/* MIME，禁止 data:text/html 跨 frame XSS
+// 必须在 DOMPurify 加载完成后注册（main.js 启动早期检查），重复注册无害（DOMPurify 内部 dedup hook）
+let _dompurifyHookRegistered = false;
+function ensureDOMPurifyImageDataUriHook() {
+    if (_dompurifyHookRegistered) return;
+    if (typeof DOMPurify === 'undefined' || typeof DOMPurify.addHook !== 'function') return;
+    _dompurifyHookRegistered = true;
+    DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
+        if (data.attrName === 'src' && /^data:/i.test(data.attrValue)) {
+            if (!/^data:image\/(png|jpe?g|gif|webp|svg\+xml|bmp);/i.test(data.attrValue)) {
+                data.keepAttr = false;
+            }
+        }
+    });
+}
 
 // 性能优化：简单的 LRU 缓存（缓存最近解析的结果）
 class MarkdownCache {
@@ -224,16 +258,23 @@ function generateCacheKey(text) {
  * 安全地解析 Markdown
  * 支持 LaTeX 数学公式渲染
  * @param {string} text - Markdown 文本
+ * @param {Object} [options] - 解析选项
+ * @param {boolean} [options.isStreaming=false] - 是否流式态（流式态走预补全 + 单块 + 不污染稳定缓存）
  * @returns {string} HTML 字符串
  */
-export function safeMarkedParse(text) {
+export function safeMarkedParse(text, options = {}) {
+    // 防 null：options 可能被显式传 null
+    const { isStreaming = false } = options || {};
+
     // 如果 marked 未加载，降级为纯文本
     if (typeof marked === 'undefined') {
         return escapeHtml(text).replace(/\n/g, '<br>');
     }
 
     // 性能优化：检查缓存
-    const cacheKey = generateCacheKey(text);
+    // 流式态加 __s 后缀隔离，防止半成品 HTML 污染稳定态 LRU
+    const baseKey = generateCacheKey(text);
+    const cacheKey = isStreaming ? baseKey + '__s' : baseKey + '__f';
     const cached = markdownCache.get(cacheKey);
     if (cached) {
         return cached;
@@ -244,12 +285,19 @@ export function safeMarkedParse(text) {
         const { text: textWithoutLatex, formulas } = extractLatexFormulas(text);
 
         // 2. 然后提取 base64 图片
-        const { text: cleanText, images } = extractBase64Images(textWithoutLatex);
+        const { text: extractedText, images } = extractBase64Images(textWithoutLatex);
+        let cleanText = extractedText;
+
+        // 3. 流式态：在 marked.parse 之前用 remend 预补全未闭合的 markdown 标记
+        // htmlTags:false 保护 <think>/<tool_use> 这类业务自定义标签，images:false 避免 base64 占位符被处理
+        if (isStreaming) {
+            cleanText = remend(cleanText, { htmlTags: false, images: false });
+        }
 
         let html;
 
-        // 如果内容过大，分块处理
-        if (cleanText.length > MAX_MARKDOWN_LENGTH) {
+        // 如果内容过大，分块处理；但流式态强制走单块，分块会破坏跨边界的 $$..$$ 公式
+        if (cleanText.length > MAX_MARKDOWN_LENGTH && !isStreaming) {
             logger.warn(`内容过大 (${cleanText.length} 字符)，分块解析 Markdown`);
             const chunks = [];
             let remaining = cleanText;
@@ -283,7 +331,18 @@ export function safeMarkedParse(text) {
         // ⚠️ 关键安全措施：使用 DOMPurify 净化 HTML，防止 XSS 攻击
         // 性能优化：使用预定义的配置常量
         if (typeof DOMPurify !== 'undefined') {
+            ensureDOMPurifyImageDataUriHook();
             html = DOMPurify.sanitize(html, DOMPURIFY_CONFIG);
+            // 快照第 1 次 sanitize 移除的节点：流式态半成品移除属正常，记 debug；
+            // 非流式态出现移除意味着 LLM 真在尝试输出危险节点，记 warn 便于上报
+            const removedFirst = (DOMPurify.removed || []).slice();
+            if (removedFirst.length > 0) {
+                if (isStreaming) {
+                    logger.debug('DOMPurify 移除节点（流式）:', removedFirst.length, removedFirst);
+                } else {
+                    logger.warn('DOMPurify 移除节点（稳定态）:', removedFirst.length, removedFirst);
+                }
+            }
         } else {
             // DOMPurify 不可用时降级为纯文本，防止未净化的 HTML 导致 XSS
             logger.warn('DOMPurify 未加载，降级为纯文本输出');
@@ -303,11 +362,15 @@ export function safeMarkedParse(text) {
         // 二次净化：restore 操作可能引入未经净化的 HTML（如 KaTeX 输出、img 标签）
         // 移除潜在的事件处理器属性，防止通过 alt/formula 注入 XSS
         if (typeof DOMPurify !== 'undefined') {
+            ensureDOMPurifyImageDataUriHook();
             html = DOMPurify.sanitize(html, DOMPURIFY_CONFIG);
         }
 
         // 性能优化：将结果存入缓存
-        markdownCache.set(cacheKey, html);
+        // 流式态半成品不写 LRU，防止挤掉稳定态条目；稳定态结束帧重新走分支才落缓存
+        if (!isStreaming) {
+            markdownCache.set(cacheKey, html);
+        }
 
         return html;
     } catch (e) {

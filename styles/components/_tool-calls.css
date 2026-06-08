@@ -87,6 +87,11 @@
     color: var(--md-coral);
 }
 
+/* 多回复模式跳过的工具调用：灰色避免与「failed」红色混淆 */
+.tool-calls-summary-btn[data-status='skipped'] .summary-status {
+    color: var(--color-text-secondary);
+}
+
 @keyframes pulse-dot {
     0%,
     100% {
@@ -179,7 +184,7 @@
 
 .tool-detail-panel {
     position: relative;
-    z-index: 1;
+    z-index: var(--z-base);
     width: 90%;
     max-width: 600px;
     height: 80vh;
@@ -268,6 +273,11 @@
     border-left: 3px solid var(--md-yellow);
 }
 
+.tool-detail-item[data-status='skipped'] {
+    border-left: 3px solid var(--color-text-secondary);
+    opacity: 0.7;
+}
+
 .tool-detail-header {
     display: flex;
     align-items: center;
@@ -292,6 +302,15 @@
 
 .tool-detail-item[data-status='executing'] .tool-detail-status-icon {
     color: var(--md-yellow);
+}
+
+.tool-detail-item[data-status='skipped'] .tool-detail-status-icon {
+    color: var(--color-text-secondary);
+}
+
+.tool-detail-skipped .tool-detail-skipped-msg {
+    color: var(--color-text-secondary);
+    font-style: italic;
 }
 
 .tool-detail-name {

@@ -8,40 +8,31 @@
 
 import { state } from '../core/state.js';
 import { eventBus } from '../core/events.js';
-import {
-    pushMessage,
-    updateMessageAt,
-    setIsSavingContinuation,
-    setSessionDirty
-} from '../core/state-mutations.js';
-import { getCurrentProvider, getModelDisplayName } from '../providers/manager.js';
+import { pushMessage, updateMessageAt } from '../core/state-mutations.js';
 import {
     createMessage,
     createMeta,
     Role,
     PartType,
-    MediaKind,
     ToolState,
-    textPart,
-    thinkingPart,
-    mediaPart,
-    toolCallPart,
     filterParts,
     isNewFormat
 } from './schema.js';
-import { isVideoMimeType } from '../utils/media.js';
+import { buildPartsFromReply, buildMetaFromReply } from './parts-builder.js';
+import { isSessionDeleted, debouncedSaveSession } from '../state/sessions.js';
+import { loadSessionMessages, saveSessionAtomic, SessionConflictError } from '../state/storage.js';
+import { broadcastEvent } from '../state/tab-sync.js';
 import { logger } from '../utils/logger.js';
 
 // ========== 辅助函数 ==========
 
 /**
- * 简单的字符串 hash（用于媒体去重）
- * 对长字符串只取前后片段 + 长度作为指纹
+ * 字符串 hash + 媒体 parts 去重
+ * mergeContinuation 在合并新旧 parts 时需要按 url 去重
  */
 function simpleHash(str) {
     if (!str) return '0';
     const len = str.length;
-    // 长 URL（data URL）只取前后各 64 字符 + 长度
     const sample = len > 256 ? str.slice(0, 64) + str.slice(-64) + len : str;
     let hash = 0;
     for (let i = 0; i < sample.length; i++) {
@@ -52,47 +43,6 @@ function simpleHash(str) {
     return hash.toString(36);
 }
 
-/**
- * 从旧格式 contentParts 构建新格式 parts 数组（双写桥接必须保留）
- * contentParts 是流式解析器输出的中间格式（type: 'text'|'image_url'|'video_url'|'thinking'）
- */
-function convertOldContentParts(contentParts) {
-    const parts = [];
-    if (!Array.isArray(contentParts)) return parts;
-
-    for (const p of contentParts) {
-        if (p.type === 'thinking' && p.text) {
-            parts.push(thinkingPart(p.text, p.signature || null));
-        } else if (p.type === 'text' && p.text && p.text !== '(调用工具)') {
-            parts.push(textPart(p.text));
-        } else if (p.type === 'image_url' && p.complete && p.url) {
-            const mime = p.mimeType || p.mime_type || '';
-            if (isVideoMimeType(mime)) {
-                parts.push(mediaPart(MediaKind.VIDEO, p.url, mime));
-            } else {
-                parts.push(mediaPart(MediaKind.IMAGE, p.url, mime));
-            }
-        } else if (p.type === 'video_url' && p.complete && p.url) {
-            parts.push(mediaPart(MediaKind.VIDEO, p.url, p.mimeType || p.mime_type || ''));
-        } else if (p.type === 'audio_url' && p.complete && p.url) {
-            parts.push(mediaPart(MediaKind.AUDIO, p.url, p.mimeType || p.mime_type || ''));
-        } else if (p.type === 'server_tool_use') {
-            // 服务端工具调用（web_search, code_execution 等）
-            const tc = toolCallPart(p.id, p.name, p.input || {});
-            tc.server = true;
-            tc.state = ToolState.DONE;
-            if (p.result) {
-                tc.result = { type: p.result.type, content: p.result.content };
-            }
-            parts.push(tc);
-        }
-    }
-    return parts;
-}
-
-/**
- * 对媒体 parts 去重（基于 url hash）
- */
 function deduplicateMediaParts(parts) {
     const seen = new Set();
     return parts.filter((p) => {
@@ -106,168 +56,14 @@ function deduplicateMediaParts(parts) {
 }
 
 /**
- * 从旧参数构建完整的 parts 数组
- */
-function buildPartsFromOldParams(opts) {
-    const {
-        textContent,
-        thinkingContent, // 双写桥接
-        thinkingSignature,
-        thoughtSignature,
-        contentParts, // 双写桥接
-        toolCalls,
-        thinkingBlocks,
-        thinkingSignatures,
-        thinkingItems // 新顺序数组（含 redacted_thinking），优先于 thinkingBlocks
-    } = opts;
-
-    let parts = [];
-
-    // 检查 contentParts 中是否已包含 thinking
-    const contentPartsHasThinking =
-        Array.isArray(contentParts) && contentParts.some((p) => p.type === 'thinking' && p.text);
-
-    // 1. 思维链（仅当 contentParts 中没有 thinking 时从独立参数添加）
-    if (!contentPartsHasThinking) {
-        if (thinkingItems && thinkingItems.length > 0) {
-            // 顺序数组路径：保留 thinking 和 redacted_thinking 的原响应顺序
-            // Claude API 要求所有 thinking-类 blocks 原样回传，缺一不可
-            for (const item of thinkingItems) {
-                if (item.type === 'redacted_thinking' && item.data) {
-                    parts.push({
-                        type: PartType.THINKING,
-                        text: '',
-                        redacted: true,
-                        data: item.data
-                    });
-                } else if (item.text) {
-                    parts.push(thinkingPart(item.text, item.signature || null));
-                }
-            }
-        } else if (thinkingBlocks && thinkingBlocks.length > 0) {
-            // 兼容路径：仅普通 thinking blocks（无 redacted）
-            for (let i = 0; i < thinkingBlocks.length; i++) {
-                if (thinkingBlocks[i]) {
-                    const sig = thinkingSignatures?.[i] || null;
-                    parts.push(thinkingPart(thinkingBlocks[i], sig));
-                }
-            }
-        } else if (thinkingContent) {
-            const sig = thinkingSignature || thoughtSignature || null;
-            parts.push(thinkingPart(thinkingContent, sig));
-        }
-    }
-
-    // 2. 从 contentParts 构建（优先），否则从 textContent 构建
-    if (contentParts && contentParts.length > 0) {
-        parts = parts.concat(convertOldContentParts(contentParts));
-    } else if (textContent && textContent !== '(调用工具)') {
-        parts.push(textPart(textContent));
-    }
-
-    // 3. 工具调用
-    if (toolCalls && toolCalls.length > 0) {
-        for (const tc of toolCalls) {
-            const func = tc.function || tc;
-            const name = func.name || 'unknown';
-            let args = func.arguments || {};
-            if (typeof args === 'string') {
-                try {
-                    args = JSON.parse(args);
-                } catch {
-                    /* keep string */
-                }
-            }
-            const tcPart = toolCallPart(tc.id || `tc_${Date.now()}`, name, args);
-            if (tc.call_id) tcPart.call_id = tc.call_id;
-            if (tc.responseItemId || tc.itemId || tc.fcId) {
-                tcPart.responseItemId = tc.responseItemId || tc.itemId || tc.fcId;
-            }
-
-            // 如果工具有结果，附加到 part
-            if (tc.status === 'completed' && tc.result != null) {
-                tcPart.state = ToolState.DONE;
-                tcPart.result = {
-                    content: typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result)
-                };
-            } else if (tc.status === 'failed') {
-                tcPart.state = ToolState.ERROR;
-                tcPart.result = { error: tc.error || 'unknown error' };
-            }
-            parts.push(tcPart);
-        }
-    }
-
-    // 4. 去重媒体
-    parts = deduplicateMediaParts(parts);
-
-    // 5. 如果完全为空（只有工具调用占位），至少添加空文本
-    if (parts.length === 0 && textContent) {
-        parts.push(textPart(textContent));
-    }
-
-    return parts;
-}
-
-/**
- * 构建 meta 对象
- */
-function buildMeta(opts) {
-    const {
-        streamStats,
-        encryptedContent,
-        reasoningItemId,
-        reasoningItems,
-        thoughtSignature,
-        thinkingSignature,
-        groundingMetadata
-    } = opts;
-
-    const provider = getCurrentProvider();
-    const modelId = state.selectedModel || '';
-    const modelName = getModelDisplayName(modelId, provider);
-    const providerName = provider?.name || 'Unknown';
-
-    const raw = {};
-    if (Array.isArray(reasoningItems) && reasoningItems.length > 0) {
-        raw.openai = {
-            reasoningItems: reasoningItems.map((item) => ({
-                id: item.id || null,
-                summary: Array.isArray(item.summary) ? item.summary : [],
-                encrypted_content: item.encrypted_content || item.encryptedContent || null,
-                _turn: item._turn,
-                status: item.status || null
-            }))
-        };
-    } else if (encryptedContent || reasoningItemId) {
-        raw.openai = {};
-        if (encryptedContent) raw.openai.encryptedContent = encryptedContent;
-        if (reasoningItemId) raw.openai.reasoningItemId = reasoningItemId;
-    }
-    if (thoughtSignature) raw.gemini = { thoughtSignature };
-    if (thinkingSignature) raw.claude = { thinkingSignature };
-    if (groundingMetadata) {
-        raw.gemini = raw.gemini || {};
-        raw.gemini.groundingMetadata = groundingMetadata;
-    }
-
-    return createMeta({
-        model: modelName,
-        provider: providerName,
-        stats: streamStats || null,
-        raw
-    });
-}
-
-/**
- * 构建 replies 对象（双写桥接必须保留：接收旧格式 allReplies 参数）
+ * 多回复对象数组 → schema 形态的 replies
+ * reply 可能是新格式（含 parts）或旧格式（thinkingContent / contentParts / content）
  */
 function buildReplies(parts, meta, allReplies, selectedReplyIndex, ts) {
     if (allReplies && allReplies.length > 0) {
-        // 将旧格式 allReplies 转换为新格式
         const newAll = allReplies.map((r) => ({
-            parts: r.parts || convertReplyToNewParts(r),
-            meta: r.meta || extractReplyMeta(r),
+            parts: r.parts || buildPartsFromReply(r),
+            meta: r.meta || buildMetaFromReply(r),
             ts: r.timestamp || ts,
             isOriginal: r.isOriginal,
             isError: r.isError,
@@ -281,123 +77,44 @@ function buildReplies(parts, meta, allReplies, selectedReplyIndex, ts) {
     return null;
 }
 
-/**
- * 旧格式回复 → 新格式 parts（用于 replies.all 转换）
- */
-function convertReplyToNewParts(reply) {
-    const parts = [];
-    // 优先使用 thinkingItems 顺序数组（含 redacted_thinking），缺失才退回 thinkingContent
-    if (Array.isArray(reply.thinkingItems) && reply.thinkingItems.length > 0) {
-        for (const item of reply.thinkingItems) {
-            if (item.type === 'redacted_thinking' && item.data) {
-                parts.push({
-                    type: PartType.THINKING,
-                    text: '',
-                    redacted: true,
-                    data: item.data
-                });
-            } else if (item.text) {
-                parts.push(thinkingPart(item.text, item.signature || null));
-            }
-        }
-    } else if (reply.thinkingContent) {
-        // 双写桥接
-        parts.push(
-            thinkingPart(
-                reply.thinkingContent,
-                reply.thinkingSignature || reply.thoughtSignature || null
-            )
-        );
-    }
-    if (reply.contentParts && reply.contentParts.length > 0) {
-        // 双写桥接
-        parts.push(...convertOldContentParts(reply.contentParts)); // 双写桥接
-    } else if (reply.content) {
-        parts.push(textPart(typeof reply.content === 'string' ? reply.content : ''));
-    }
-    return parts;
-}
-
-/**
- * 从旧格式回复中提取 meta
- */
-function extractReplyMeta(reply) {
-    const raw = {};
-    if (reply.encryptedContent) raw.openai = { encryptedContent: reply.encryptedContent };
-    if (reply.thoughtSignature) raw.gemini = { thoughtSignature: reply.thoughtSignature };
-    if (reply.thinkingSignature) raw.claude = { thinkingSignature: reply.thinkingSignature };
-    return createMeta({ raw });
-}
-
 // ========== 主要导出函数 ==========
 
 /**
- * 统一的助手消息保存函数
- * 接收流式解析器的旧参数，转换为新格式后保存
+ * 核心保存逻辑（共享给新旧两个公开签名）
+ * 输入 parts + meta 已是 schema 形态
  */
-export function saveAssistantMessage(options) {
+function _saveCore(parts, meta, opts) {
     const {
-        textContent = '',
-        thinkingContent = null, // 双写桥接
-        thinkingSignature = null,
-        thoughtSignature = null,
-        groundingMetadata = null,
-        streamStats = null,
-        allReplies = null, // 双写桥接
-        selectedReplyIndex = 0,
-        contentParts = [], // 双写桥接
         sessionId = null,
         isContinuation = false,
-        toolCalls = null,
-        encryptedContent = null,
-        reasoningItemId = null,
-        reasoningItems = null,
+        toolCalls = null, // 仅用于 mergeContinuation 内部 _turn 标记
         isError = false,
         errorData = null,
         errorHtml = null,
-        thinkingBlocks = null,
-        thinkingSignatures = null,
-        thinkingItems = null
-    } = options;
+        allReplies = null,
+        selectedReplyIndex = 0,
+        ts = Date.now()
+    } = opts;
 
-    const ts = Date.now();
-
-    // 构建新格式 parts
-    const parts = buildPartsFromOldParams({
-        textContent,
-        thinkingContent,
-        thinkingSignature,
-        thoughtSignature,
-        contentParts,
-        toolCalls,
-        thinkingBlocks,
-        thinkingSignatures,
-        thinkingItems
-    });
-
-    // 构建 meta
-    const meta = buildMeta({
-        streamStats,
-        encryptedContent,
-        reasoningItemId,
-        reasoningItems,
-        thoughtSignature,
-        thinkingSignature,
-        groundingMetadata
-    });
-
-    // 会话切换检查
+    // 会话切换检查 — 走 background 路径并透传 continuation/error opts，避免新切到的
+    // 会话被原会话的消息污染，同时让 background 路径能正确合并 continuation 或落错误
     if (sessionId && sessionId !== state.currentSessionId) {
         logger.warn(
             `[sync] 会话已切换（${sessionId} → ${state.currentSessionId}），将消息保存到原会话`
         );
-        saveToBackgroundSession(sessionId, parts, meta, allReplies, selectedReplyIndex, ts);
+        saveToBackgroundSession(sessionId, parts, meta, allReplies, selectedReplyIndex, ts, {
+            isContinuation: isContinuation || state.isSavingContinuation,
+            isError,
+            errorData,
+            errorHtml
+        });
+        if (state.isSavingContinuation) state.isSavingContinuation = false;
         return;
     }
 
     // Continuation 模式
     const shouldMerge = isContinuation || state.isSavingContinuation;
-    if (state.isSavingContinuation) setIsSavingContinuation(false);
+    if (state.isSavingContinuation) state.isSavingContinuation = false;
 
     if (shouldMerge) {
         const mergeIndex = findMergeTarget();
@@ -422,17 +139,26 @@ export function saveAssistantMessage(options) {
     }
 
     // 推入状态
-    pushMessage(msg);
-    const messageIndex = state.messages.length - 1;
+    const messageIndex = pushMessage(msg);
 
-    // 模型标签 DOM 注入
+    // 模型标签 DOM 注入：在 push 时就锁定目标消息索引，避免 setTimeout 触发时
+    // 期间又有新 assistant 消息渲染（multi-stream / tool-call continuation）导致 badge 错挂
     if (meta.model || meta.provider) {
-        setTimeout(() => addModelBadge(meta.model, meta.provider), 0);
+        const targetIndex = messageIndex;
+        setTimeout(() => addModelBadge(meta.model, meta.provider, targetIndex), 0);
     }
 
     eventBus.emit('messages:changed', { action: 'assistant_added', index: messageIndex });
 
     return messageIndex;
+}
+
+/**
+ * 主签名：直接接收 schema 形态的 parts[] 与 meta
+ * 所有生产消息入口的目标接口
+ */
+export function saveAssistantMessage(parts, meta, opts = {}) {
+    return _saveCore(parts, meta, opts);
 }
 
 // ========== Continuation 合并逻辑 ==========
@@ -528,16 +254,16 @@ function mergeOpenAIRaw(prevOpenAI = {}, newOpenAI = {}, nextTurn = 1) {
 }
 
 /**
- * 合并 continuation 到现有消息
+ * 纯函数：合并 prev 消息与 newParts/newMeta，返回 { mergedParts, mergedMeta }
  *
- * 给新轮 parts 打上 `_turn` 标记（递增数字），让 api-adapters 在转 Claude API 时
+ * 给新轮 parts 打上 `_turn` 标记（递增数字），让 claude-adapter 在转 Claude API 时
  * 能按轮拆回独立的 assistant 消息——Claude 要求 latest assistant message 的 thinking
  * blocks 必须与原响应一致，多轮 thinking 合并到一条消息会触发严格校验失败。
+ *
+ * 同时供 mergeContinuation（state.messages 路径）和 saveToBackgroundSession
+ * （已切换会话的 IDB 路径）复用，避免两条路径合并逻辑漂移
  */
-function mergeContinuation(index, newParts, newMeta, _toolCalls) {
-    const prev = state.messages[index];
-    logger.debug(`[saveAssistantMessage] Continuation 模式：更新消息 #${index}`);
-
+export function mergeContinuationParts(prev, newParts, newMeta) {
     // 旧 schema 消息可能没有 parts 数组；filterParts 也假设 parts 是数组，统一兜底
     if (!Array.isArray(prev.parts)) {
         prev.parts = [];
@@ -561,8 +287,29 @@ function mergeContinuation(index, newParts, newMeta, _toolCalls) {
     const prevMediaParts = filterParts(prev.parts, PartType.MEDIA);
     const newMediaParts = newParts.filter((p) => p.type === PartType.MEDIA).map(tagTurn);
 
-    const prevToolParts = filterParts(prev.parts, PartType.TOOL_CALL);
+    // 新轮 tool_call 优先：同一逻辑工具调用在跨格式 continuation 中 part.id 会不同
+    // （Claude 轮 toolu_xxx → OpenAI 轮 call_yyy），但 part.idMap 三槽共享同一逻辑 id 集合。
+    // 仅按 part.id 去重会让两轮各保留一份导致后续 partsToAPIMessages 输出两条 tool_use，
+    // LLM 上下文重复 + tool_result 配对错位。收集 part.id ∪ idMap.{openai,claude,gemini}
+    // 作为去重 Set，prev 任一槽位命中即视为同一调用淘汰
+    const collectAllIds = (p) => {
+        const ids = [p.id];
+        if (p.idMap) {
+            for (const fmt of ['openai', 'claude', 'gemini']) {
+                const id = p.idMap[fmt];
+                if (id) ids.push(id);
+            }
+        }
+        return ids;
+    };
     const newToolParts = newParts.filter((p) => p.type === PartType.TOOL_CALL).map(tagTurn);
+    const newToolIds = new Set();
+    for (const p of newToolParts) {
+        for (const id of collectAllIds(p)) newToolIds.add(id);
+    }
+    const prevToolParts = filterParts(prev.parts, PartType.TOOL_CALL).filter(
+        (p) => !collectAllIds(p).some((id) => newToolIds.has(id))
+    );
 
     const mergedParts = [
         ...prevThinkingParts,
@@ -590,7 +337,8 @@ function mergeContinuation(index, newParts, newMeta, _toolCalls) {
         if (prevStats?.isPartial) {
             const prevTokens = parseInt(prevStats.tokens, 10) || 0;
             const currentTokens = parseInt(newMeta.stats.tokens, 10) || 0;
-            if (currentTokens < prevTokens) {
+            // <= 让两轮 token 数恰好相等的情形也走累加分支（短回复 / 截断尾流常见）
+            if (currentTokens <= prevTokens) {
                 const totalTokens = prevTokens + currentTokens;
                 const ttft =
                     prevStats.ttft && prevStats.ttft !== '-' ? prevStats.ttft : newMeta.stats.ttft;
@@ -624,6 +372,18 @@ function mergeContinuation(index, newParts, newMeta, _toolCalls) {
         if (mergedMeta.stats?.isPartial) delete mergedMeta.stats.isPartial;
     }
 
+    return { mergedParts, mergedMeta };
+}
+
+/**
+ * 合并 continuation 到 state.messages 中现有消息（state.messages 路径）
+ */
+function mergeContinuation(index, newParts, newMeta, _toolCalls) {
+    const prev = state.messages[index];
+    logger.debug(`[saveAssistantMessage] Continuation 模式：更新消息 #${index}`);
+
+    const { mergedParts, mergedMeta } = mergeContinuationParts(prev, newParts, newMeta);
+
     // 一次性通过 updateMessageAt 更新
     const updates = {
         parts: mergedParts,
@@ -638,50 +398,312 @@ function mergeContinuation(index, newParts, newMeta, _toolCalls) {
 
 // ========== 后台会话保存 ==========
 
-function saveToBackgroundSession(sessionId, parts, meta, allReplies, selectedReplyIndex, ts) {
+/**
+ * 把消息保存到后台会话（非当前激活会话）
+ *
+ * 此函数 async 化让调用方能 await 完成或 catch 异常；前置 isSessionDeleted
+ * 检查阻断「会话刚被删 / 异步保存到来」的竞态写回；continuation 模式下复用
+ * mergeContinuationParts 合并到最后一条 assistant，与主路径 mergeContinuation 对称
+ *
+ * @param {string} sessionId
+ * @param {Array} parts
+ * @param {Object} meta
+ * @param {Array|null} allReplies
+ * @param {number} selectedReplyIndex
+ * @param {number} ts
+ * @param {Object} [opts] - { isContinuation, isError, errorData, errorHtml }
+ */
+async function saveToBackgroundSession(
+    sessionId,
+    parts,
+    meta,
+    allReplies,
+    selectedReplyIndex,
+    ts,
+    opts = {}
+) {
+    const { isContinuation = false, isError = false, errorData = null, errorHtml = null } = opts;
+
+    // 已删除会话的异步保存请求一律丢弃，防止 IDB 中重建死会话
+    if (isSessionDeleted(sessionId)) {
+        logger.warn(`[sync] 跳过已删除会话的后台保存: ${sessionId}`);
+        return;
+    }
+
     const targetSession = state.sessions.find((s) => s.id === sessionId);
+    if (!targetSession) {
+        logger.warn(`[sync] 后台保存目标会话不存在: ${sessionId}`);
+        return;
+    }
 
-    const msg = createMessage(Role.ASSISTANT, parts, {
-        ts,
-        meta,
-        replies: buildReplies(parts, meta, allReplies, selectedReplyIndex, ts)
-    });
+    try {
+        const existing = (await loadSessionMessages(sessionId)) || { messages: [] };
 
-    import('../state/storage.js').then(
-        async ({ loadSessionMessages, saveSessionMessages, saveSessionToDB }) => {
-            try {
-                const existing = (await loadSessionMessages(sessionId)) || { messages: [] };
-                existing.messages.push(msg);
-                await saveSessionMessages(sessionId, existing);
+        let mergedIntoExisting = false;
+        if (isContinuation && !isError) {
+            // 倒序找最后一条「真实」assistant 消息合并新轮 parts，复用主路径同款 _turn 标记
+            for (let i = existing.messages.length - 1; i >= 0; i--) {
+                const m = existing.messages[i];
+                if (!m || m.role !== 'assistant') continue;
+                if (!Array.isArray(m.parts)) continue;
+                const hasContent = m.parts.some(
+                    (p) =>
+                        p.type === PartType.TEXT ||
+                        p.type === PartType.THINKING ||
+                        p.type === PartType.MEDIA
+                );
+                if (!hasContent) continue;
 
-                if (targetSession) {
-                    targetSession.messageCount = existing.messages.length;
-                    targetSession.updatedAt = Date.now();
-                    await saveSessionToDB(targetSession);
-                }
-
-                const sessionName = targetSession?.name || '会话';
-                logger.debug(`[sync] 消息已保存到后台会话: ${sessionName}`);
-                eventBus.emit('ui:notification', {
-                    message: `消息已保存到会话"${sessionName}"`,
-                    type: 'info'
-                });
-            } catch (e) {
-                logger.error('[sync] 保存后台会话消息失败:', e);
-                eventBus.emit('ui:notification', {
-                    message: '消息保存失败，请检查存储空间',
-                    type: 'error'
-                });
+                const { mergedParts, mergedMeta } = mergeContinuationParts(m, parts, meta);
+                existing.messages[i] = { ...m, parts: mergedParts, meta: mergedMeta };
+                mergedIntoExisting = true;
+                logger.debug(`[sync] background continuation 合并到消息 #${i} (${sessionId})`);
+                break;
             }
         }
+
+        if (!mergedIntoExisting) {
+            const msg = createMessage(Role.ASSISTANT, parts, {
+                ts,
+                meta,
+                replies: buildReplies(parts, meta, allReplies, selectedReplyIndex, ts)
+            });
+
+            if (isError && errorData) {
+                msg.error = {
+                    type: errorData.code || errorData.error?.type || 'unknown',
+                    message: errorData.message || errorData.error?.message || 'Unknown error'
+                };
+                if (errorHtml) msg.errorHtml = errorHtml;
+            }
+
+            existing.messages.push(msg);
+        }
+
+        // 走 saveSessionAtomic 乐观锁，与 writeToolResultsToBackgroundSession 路径对齐
+        // 跨 tab/同 tab 并发后台保存场景下避免静默覆盖另一 tab 已写入的消息
+        const newUpdatedAt = Date.now();
+        const newMeta = {
+            ...targetSession,
+            updatedAt: newUpdatedAt,
+            messageCount: existing.messages.length
+        };
+        const baseline = state._lastKnownSessionUpdatedAt?.get(sessionId) ?? null;
+        try {
+            await saveSessionAtomic(
+                newMeta,
+                { messages: existing.messages, searchIndex: null },
+                { expectedUpdatedAt: baseline }
+            );
+        } catch (saveErr) {
+            if (saveErr instanceof SessionConflictError) {
+                // 另一 tab 抢先写入：reload-merge-retry 一次（不无限重试，避免循环冲突）
+                logger.warn(
+                    `[sync] 后台保存冲突 ${sessionId}: baseline=${baseline}, actual=${saveErr.actualUpdatedAt}，reload 重试`
+                );
+                const fresh = (await loadSessionMessages(sessionId)) || { messages: [] };
+                const lastAssistant = existing.messages[existing.messages.length - 1];
+                fresh.messages.push(lastAssistant);
+                const retryMeta = {
+                    ...targetSession,
+                    updatedAt: Date.now(),
+                    messageCount: fresh.messages.length
+                };
+                await saveSessionAtomic(
+                    retryMeta,
+                    { messages: fresh.messages, searchIndex: null },
+                    { expectedUpdatedAt: saveErr.actualUpdatedAt }
+                );
+                existing.messages = fresh.messages;
+                newMeta.updatedAt = retryMeta.updatedAt;
+                newMeta.messageCount = retryMeta.messageCount;
+            } else {
+                throw saveErr;
+            }
+        }
+
+        targetSession.messageCount = newMeta.messageCount;
+        targetSession.updatedAt = newMeta.updatedAt;
+        state._lastKnownSessionUpdatedAt?.set(sessionId, newMeta.updatedAt);
+
+        // 广播给其他 tab 同步元数据
+        broadcastEvent('session-updated', {
+            sessionId,
+            updatedAt: newMeta.updatedAt,
+            messageCount: newMeta.messageCount
+        });
+
+        const sessionName = targetSession.name || '会话';
+        logger.debug(`[sync] 消息已保存到后台会话: ${sessionName}`);
+        eventBus.emit('ui:notification', {
+            message: `消息已保存到会话"${sessionName}"`,
+            type: 'info'
+        });
+    } catch (e) {
+        logger.error('[sync] 保存后台会话消息失败:', e);
+        eventBus.emit('ui:notification', {
+            message: '消息保存失败，请检查存储空间',
+            type: 'error'
+        });
+    }
+}
+
+/**
+ * 显式暴露 background save 给 handler.js 等跨会话场景使用
+ * （error 消息 / continuation 消息走背景路径时直接调用，避开 _saveCore 主路径）
+ */
+export function saveAssistantMessageToBackground(sessionId, parts, meta, opts = {}) {
+    const ts = opts.ts || Date.now();
+    return saveToBackgroundSession(
+        sessionId,
+        parts,
+        meta,
+        opts.allReplies || null,
+        opts.selectedReplyIndex || 0,
+        ts,
+        opts
     );
+}
+
+/**
+ * 把工具执行结果写回已切换走的源会话（跨会话工具完成场景）。
+ *
+ * 用户在工具执行期间切走会话：工具不打断、继续跑完，
+ * 但 state.messages 已被新会话替换、不能 writeToolResultsBackToState。改走 IDB：
+ * 加载 sourceSessionId 的消息 → 遍历所有含 tool_call 的 assistant 全量配对
+ * （适配多轮 continuation 在后台跑完的场景）→ 按 part.id 匹配写 result + state
+ * → 持久化。让用户切回原会话能看到完成状态而非永久 pending。
+ *
+ * @param {string} sessionId - 源会话 ID
+ * @param {Array<{id:string,name:string,result:*,isError:boolean}>} toolResults
+ * @returns {Promise<number>} 匹配并写入的 part 数量
+ */
+export async function writeToolResultsToBackgroundSession(sessionId, toolResults) {
+    if (!sessionId || !Array.isArray(toolResults) || toolResults.length === 0) return 0;
+
+    if (isSessionDeleted(sessionId)) {
+        logger.warn(`[sync] 跳过已删除会话的 tool result 写入: ${sessionId}`);
+        return 0;
+    }
+
+    const targetSession = state.sessions.find((s) => s.id === sessionId);
+    if (!targetSession) {
+        logger.warn(`[sync] 跨会话 tool result 写入：源会话不存在: ${sessionId}`);
+        return 0;
+    }
+
+    try {
+        const existing = (await loadSessionMessages(sessionId)) || { messages: [] };
+
+        let matched = 0;
+        // 全量遍历所有含 tool_call 的 assistant 消息：多轮 continuation 在后台跑完时
+        // 同一会话会沉淀多条 assistant 都带 tool_call，按 part.id 全量配对避免漏写
+        // 改 immutable 写法：与 orchestrator.writeToolResultsBackToState 路径对齐
+        for (let i = existing.messages.length - 1; i >= 0; i--) {
+            const msg = existing.messages[i];
+            if (msg.role !== 'assistant' || !Array.isArray(msg.parts)) continue;
+            const hasToolCall = msg.parts.some((p) => p.type === PartType.TOOL_CALL);
+            if (!hasToolCall) continue;
+
+            const newParts = msg.parts.map((part) => {
+                if (part.type !== PartType.TOOL_CALL || !part.id) return part;
+                const r = toolResults.find((x) => x.id && x.id === part.id);
+                if (!r) return part;
+                // 老化为 ERROR 的占位 result 残留 is_error/interrupted 字段需先清，
+                // 否则真实工具结果覆盖时 UI 渲染会混合新旧两套语义字段
+                matched++;
+                return {
+                    ...part,
+                    result: r.result,
+                    state: r.isError ? 'error' : 'done'
+                };
+            });
+
+            if (newParts !== msg.parts) {
+                existing.messages[i] = { ...msg, parts: newParts };
+            }
+        }
+
+        if (matched === 0) {
+            logger.warn(
+                `[sync] 跨会话 tool result 写入：未匹配任何 part (${sessionId}, results=${toolResults.length})`
+            );
+            return 0;
+        }
+
+        // 走 saveSessionAtomic 乐观锁：用本 tab baseline（同 tab 切走后可能已观察过 broadcast），
+        // 没有 baseline 时从 targetSession.updatedAt fallback（state.sessions 里的元数据），
+        // 不再 null bypass 让 silent 覆盖另一 tab 的写入
+        const baseline =
+            state._lastKnownSessionUpdatedAt?.get(sessionId) ?? targetSession.updatedAt ?? null;
+        const newUpdatedAt = Date.now();
+        const newMeta = {
+            ...targetSession,
+            updatedAt: newUpdatedAt,
+            messageCount: existing.messages.length
+        };
+        try {
+            await saveSessionAtomic(
+                newMeta,
+                { messages: existing.messages, searchIndex: null },
+                { expectedUpdatedAt: baseline }
+            );
+        } catch (saveErr) {
+            if (saveErr instanceof SessionConflictError) {
+                // 另一 tab 抢先写入：放弃本次写入，让用户切回时通过 reload 拉取最新内容
+                logger.warn(
+                    `[sync] 跨会话 tool result 写入冲突 ${sessionId}: baseline=${baseline}, actual=${saveErr.actualUpdatedAt}`
+                );
+                return 0;
+            }
+            throw saveErr;
+        }
+
+        // 同步更新 state.sessions 与本 tab baseline，避免后续切回再次假冲突
+        targetSession.updatedAt = newUpdatedAt;
+        targetSession.messageCount = existing.messages.length;
+        state._lastKnownSessionUpdatedAt?.set(sessionId, newUpdatedAt);
+
+        // 广播给其他 tab 让它们同步元数据并触发 storage:remote-updated
+        broadcastEvent('session-updated', {
+            sessionId,
+            updatedAt: newUpdatedAt,
+            messageCount: existing.messages.length
+        });
+
+        const sessionName = targetSession.name || '会话';
+        logger.debug(
+            `[sync] 跨会话 tool result 写入: ${sessionName} matched=${matched}/${toolResults.length}`
+        );
+        // 仅当真正写入跨会话（非当前会话）时才通知，避免当前会话场景下噪音
+        if (sessionId !== state.currentSessionId) {
+            eventBus.emit('ui:notification', {
+                message: `${matched} 个工具结果已写回会话"${sessionName}"`,
+                type: 'info',
+                duration: 5000
+            });
+        }
+        return matched;
+    } catch (e) {
+        logger.error('[sync] 跨会话 tool result 写入失败:', e);
+        return 0;
+    }
 }
 
 // ========== 模型标签 ==========
 
-function addModelBadge(modelName, providerName) {
-    const assistantMessages = document.querySelectorAll('.message.assistant');
-    const lastMsg = assistantMessages[assistantMessages.length - 1];
+function addModelBadge(modelName, providerName, messageIndex) {
+    // 按消息索引精确定位（multi-stream / continuation 期间 .message.assistant 数量会变）
+    const targetEl =
+        typeof messageIndex === 'number'
+            ? document.querySelector(`.message.assistant[data-message-index="${messageIndex}"]`)
+            : null;
+    const lastMsg =
+        targetEl ||
+        (() => {
+            const list = document.querySelectorAll('.message.assistant');
+            return list[list.length - 1];
+        })();
     if (!lastMsg) return;
 
     const wrapper = lastMsg.querySelector('.message-content-wrapper');
@@ -711,8 +733,7 @@ export function saveErrorMessage(errorData, httpStatus = null, renderHumanizedEr
     };
     msg.errorHtml = errorHtml;
 
-    pushMessage(msg);
-    const messageIndex = state.messages.length - 1;
+    const messageIndex = pushMessage(msg);
 
     eventBus.emit('messages:changed', { action: 'error_added', index: messageIndex });
 
@@ -771,53 +792,36 @@ export function updateToolCallResult(toolId, status, result) {
 
     for (let i = state.messages.length - 1; i >= 0; i--) {
         const msg = state.messages[i];
+        if (!msg.parts) continue;
+        const tcPart = msg.parts.find((p) => p.type === PartType.TOOL_CALL && p.id === toolId);
+        if (!tcPart) continue;
 
-        // 新格式：查找 parts 中的 tool_call
-        if (msg.parts) {
-            const tcPart = msg.parts.find((p) => p.type === PartType.TOOL_CALL && p.id === toolId);
-            if (tcPart) {
-                tcPart.state = status === 'completed' ? ToolState.DONE : ToolState.ERROR;
-                tcPart.result =
-                    status === 'completed'
-                        ? { content: typeof result === 'string' ? result : JSON.stringify(result) }
-                        : {
-                              error:
-                                  typeof result === 'string'
-                                      ? result
-                                      : result?.message || 'unknown error'
-                          };
-                setSessionDirty(true);
-                logger.debug('[Sync] 工具调用结果已保存到消息 #' + i + ' (parts)');
-                triggerSave();
-                return;
-            }
-        }
+        const newState = status === 'completed' ? ToolState.DONE : ToolState.ERROR;
+        const newResult =
+            status === 'completed'
+                ? { content: typeof result === 'string' ? result : JSON.stringify(result) }
+                : {
+                      error:
+                          typeof result === 'string' ? result : result?.message || 'unknown error'
+                  };
 
-        // 旧格式兼容（旧格式兜底，未迁移数据需要；迁移后不应触发）
-        if (msg.toolCalls && Array.isArray(msg.toolCalls)) {
-            logger.warn('[Sync] updateToolCallResult 命中旧格式 toolCalls[]，消息未迁移:', i);
-            const tcIdx = msg.toolCalls.findIndex((tc) => tc.id === toolId);
-            if (tcIdx !== -1) {
-                msg.toolCalls[tcIdx] = {
-                    ...msg.toolCalls[tcIdx],
-                    status,
-                    result: status === 'completed' ? result : null,
-                    error: status === 'failed' ? result : null,
-                    completedAt: Date.now()
-                };
-                setSessionDirty(true);
-                logger.debug('[Sync] 工具调用结果已保存到消息 #' + i + ' (toolCalls)');
-                triggerSave();
-                return;
-            }
-        }
+        const newParts = msg.parts.map((p) =>
+            p.type === PartType.TOOL_CALL && p.id === toolId
+                ? { ...p, state: newState, result: newResult }
+                : p
+        );
+        updateMessageAt(i, { parts: newParts });
+        eventBus.emit('messages:changed', { action: 'tool_call_updated', index: i });
+        logger.debug('[Sync] 工具调用结果已保存到消息 #' + i + ' (parts)');
+        triggerSave();
+        return;
     }
 }
 
 function triggerSave() {
-    import('../state/sessions.js')
-        .then(({ debouncedSaveSession }) => {
-            debouncedSaveSession();
-        })
-        .catch((err) => logger.error('[Sync] 加载会话保存模块失败:', err));
+    try {
+        debouncedSaveSession();
+    } catch (err) {
+        logger.error('[Sync] 触发会话保存失败:', err);
+    }
 }

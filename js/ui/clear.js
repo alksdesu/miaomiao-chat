@@ -7,18 +7,9 @@ import { state } from '../core/state.js';
 import { elements } from '../core/elements.js';
 import { saveCurrentSessionMessages } from '../state/sessions.js';
 import { showConfirmDialog } from '../utils/dialogs.js';
-import { clearIdMappings } from '../api/format-converter.js';
-import {
-    replaceAllMessages,
-    setLastUserMessage,
-    setEditingIndex,
-    setCurrentReplies,
-    setSelectedReplyIndex,
-    setCurrentAssistantMessage,
-    setEditingElement,
-    setSessionDirty
-} from '../core/state-mutations.js';
+import { replaceAllMessages } from '../core/state-mutations.js';
 import { clearUndoStack } from '../tools/undo.js';
+import { escapeHtml } from '../utils/helpers.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -34,23 +25,20 @@ export async function handleClear() {
     // 通过安全函数清空三种格式的消息
     replaceAllMessages([]);
 
-    // 清理工具调用 ID 映射表（防止内存泄漏）
-    clearIdMappings();
-
     // 清空撤销栈
     clearUndoStack();
 
     // 重置相关状态
-    setLastUserMessage(null);
-    setEditingIndex(null);
-    setCurrentReplies([]);
-    setSelectedReplyIndex(0);
-    setCurrentAssistantMessage(null);
+    state.lastUserMessage = null;
+    state.editingIndex = null;
+    state.currentReplies = [];
+    state.selectedReplyIndex = 0;
+    state.currentAssistantMessage = null;
 
     // 清除编辑状态
     if (state.editingElement) {
         state.editingElement.classList.remove('editing');
-        setEditingElement(null);
+        state.editingElement = null;
     }
 
     // 清空消息区域
@@ -72,12 +60,12 @@ export async function handleClear() {
                     <circle cx="32" cy="32" r="28" fill="url(#gemini-gradient)"/>
                 </svg>
             </div>
-            <h2>你好，我是 ${state.charName || 'AI'}</h2>
+            <h2>你好，我是 ${escapeHtml(state.charName || 'AI')}</h2>
         </div>
     `;
 
     // 标记脏并立即保存（force=true 确保空消息写入 DB）
-    setSessionDirty(true);
+    state.sessionDirty = true;
     await saveCurrentSessionMessages(true);
 }
 

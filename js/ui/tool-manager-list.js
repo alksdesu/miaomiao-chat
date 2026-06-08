@@ -35,12 +35,18 @@ export function renderToolsList(modal, selectedToolId, onSelectTool) {
 
     const toolItems = listContainer.querySelectorAll('.tool-item');
     const enableSwitches = listContainer.querySelectorAll('.tool-enable-switch');
+    const switchContainers = listContainer.querySelectorAll('.tool-enable-switch-container');
 
     // 绑定工具项点击事件
     toolItems.forEach((item) => {
         item.addEventListener('click', () => {
             onSelectTool(item.dataset.toolId);
         });
+    });
+
+    // 启用开关的 label 容器：点击不冒泡到外层 tool-item，避免触发工具选中
+    switchContainers.forEach((label) => {
+        label.addEventListener('click', (e) => e.stopPropagation());
     });
 
     // 绑定启用开关
@@ -73,7 +79,7 @@ function renderToolGroup(title, tools, type, selectedToolId) {
                     <span class="tool-icon">${icon}</span>
                     <span class="tool-name">${escapeHtml(tool.name)}</span>
                 </div>
-                <label class="tool-enable-switch-container" onclick="event.stopPropagation()">
+                <label class="tool-enable-switch-container">
                     <input type="checkbox"
                            class="tool-enable-switch"
                            data-tool-id="${escapeHtml(tool.id)}"

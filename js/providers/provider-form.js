@@ -15,6 +15,7 @@ import {
     removeModelFromProvider,
     getActiveApiKey
 } from './manager.js';
+import { openclawClient } from '../api/openclaw.js';
 import { escapeHtml } from '../utils/helpers.js';
 import { showNotification } from '../ui/notifications.js';
 import { showConfirmDialog } from '../utils/dialogs.js';
@@ -452,10 +453,7 @@ function bindOpenClawConnectionEvents(providerId) {
     _openclawStatusUnsubs.forEach((unsub) => unsub());
     _openclawStatusUnsubs = [];
 
-    const getClient = async () => {
-        const { openclawClient } = await import('../api/openclaw.js');
-        return openclawClient;
-    };
+    const getClient = () => openclawClient;
 
     const updateStatus = async () => {
         const dot = document.getElementById('openclaw-status-dot');

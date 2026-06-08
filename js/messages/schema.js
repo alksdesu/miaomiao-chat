@@ -2,10 +2,11 @@
  * 统一消息格式定义 + 工厂函数 + 校验
  *
  * 所有消息以 parts[] 数组承载内容，运行时只维护一份数据，
- * API 请求时由 api-adapters.js 实时转换为 OpenAI/Claude/Gemini 格式。
+ * API 请求时由 js/api/adapters/*.js 的 adapter.partsToAPIMessages 转换为 OpenAI/Claude/Gemini 格式。
  */
 
 import { generateMessageId } from '../utils/helpers.js';
+import { TOOL_INTERRUPTED_MESSAGE, TOOL_AGE_THRESHOLD_MS } from '../utils/constants.js';
 
 export const SCHEMA_VERSION = 1;
 
@@ -33,7 +34,27 @@ export const ToolState = Object.freeze({
     PENDING: 'pending',
     RUNNING: 'running',
     DONE: 'done',
-    ERROR: 'error'
+    ERROR: 'error',
+    // 多回复模式 BufferedSink 拦截但未执行的工具调用 —— 落库保留会话历史让用户能看到模型尝试了什么工具，
+    // 但 adapter.partsToAPIMessages 跳过下发（既不输出 tool_use 也不输出 tool_result，避免孤儿 tool_use 触发 API 400）
+    SKIPPED: 'skipped'
+});
+
+// 工具调用的来源模式：native 走原生 tool_use/function_call 协议，
+// xml 走 system prompt 注入 + 文本 <tool_use> 解析的兜底协议。
+// 持久化到 tool_call part 上，避免运行时切换 toggle 导致历史消息 mode 错乱。
+export const ToolMode = Object.freeze({
+    NATIVE: 'native',
+    XML: 'xml'
+});
+
+// thinking part 的 signature 来源标识：Claude/Gemini/OpenAI 的 thinking 签名互不兼容
+// （Claude HMAC vs Gemini thoughtSignature vs OpenAI encrypted_content），下发到非原产
+// 家 API 会触发 invalid_signature 400。落 part 时记录原始格式，adapter 输出时校验匹配。
+export const SignatureFormat = Object.freeze({
+    CLAUDE: 'claude',
+    GEMINI: 'gemini',
+    OPENAI: 'openai'
 });
 
 // ========== 工厂函数 ==========
@@ -68,19 +89,44 @@ export function createMeta(overrides = {}) {
     };
 }
 
-export function textPart(text) {
-    return { type: PartType.TEXT, text };
-}
+// opts 通用字段：_turn / _edited （continuation 与编辑追踪）
+// opts 类型独有字段见各工厂函数说明
 
-export function thinkingPart(text, signature = null) {
-    const part = { type: PartType.THINKING, text };
-    if (signature) part.signature = signature;
+export function textPart(text, opts = {}) {
+    const part = { type: PartType.TEXT, text };
+    applyPartOpts(part, opts);
     return part;
 }
 
-export function mediaPart(kind, url, mime = '', name = '') {
+/**
+ * @param {string} text - 思维链文本（redacted 时为空字符串）
+ * @param {string|null} signature - thinking 签名
+ * @param {Object} [opts] - { redacted?, data?, signatureFormat?, _turn?, _edited? }
+ *   redacted/data：Claude redacted_thinking block（text 为空，data 不可省）
+ *   signatureFormat：'claude'|'gemini'|'openai' 标记 signature 来源，adapter 据此守门
+ *     跨格式继承；signature 非空但 signatureFormat 缺失时视为旧数据，adapter 走宽容模式
+ */
+export function thinkingPart(text, signature = null, opts = {}) {
+    const part = { type: PartType.THINKING, text };
+    if (signature) {
+        part.signature = signature;
+        if (opts.signatureFormat) part.signatureFormat = opts.signatureFormat;
+    }
+    if (opts.redacted) {
+        part.redacted = true;
+        if (opts.data) part.data = opts.data;
+    }
+    applyPartOpts(part, opts);
+    return part;
+}
+
+/**
+ * @param {Object} [opts] - { name?, _turn?, _edited? }
+ */
+export function mediaPart(kind, url, mime = '', opts = {}) {
     const part = { type: PartType.MEDIA, media: kind, url, mime };
-    if (name) part.name = name;
+    if (opts.name) part.name = opts.name;
+    applyPartOpts(part, opts);
     return part;
 }
 
@@ -88,22 +134,58 @@ export function mediaPart(kind, url, mime = '', name = '') {
  * @param {string} id - 工具调用 ID
  * @param {string} name - 工具名称
  * @param {Object} args - 调用参数
- * @returns {{ type, id, name, args, state, result }}
+ * @param {Object} [opts] - { state?, result?, mode?, idMap?, server?, call_id?, responseItemId?,
+ *                            thoughtSignature?, error?, duration?, _turn?, _edited? }
+ *   state 默认 PENDING；mode 默认 NATIVE（兼容 Stage 1 前历史消息）；
+ *   idMap 缺省时由 parts-builder/migration 用 generateIdSet(id) 兜底；
+ *   call_id/responseItemId 用于 OpenAI Responses；
+ *   thoughtSignature 用于 Gemini functionCall；server=true 标记服务端工具调用
+ * @returns {{ type, id, name, args, state, result, mode, idMap? }}
  *   result 完成后为 any（字符串、对象、MCP content 数组等），由消费方自行解释
  */
-export function toolCallPart(id, name, args = {}) {
-    return {
+export function toolCallPart(id, name, args = {}, opts = {}) {
+    const part = {
         type: PartType.TOOL_CALL,
         id,
         name,
         args,
-        state: ToolState.PENDING,
-        result: null
+        state: opts.state || ToolState.PENDING,
+        result: opts.result ?? null,
+        mode: opts.mode || ToolMode.NATIVE
     };
+    if (opts.idMap) part.idMap = opts.idMap;
+    if (opts.server) part.server = true;
+    if (opts.call_id) part.call_id = opts.call_id;
+    if (opts.responseItemId) part.responseItemId = opts.responseItemId;
+    if (opts.thoughtSignature) part.thoughtSignature = opts.thoughtSignature;
+    if (opts.error !== undefined) part.error = opts.error;
+    if (opts.duration !== undefined) part.duration = opts.duration;
+    applyPartOpts(part, opts);
+    return part;
 }
 
-export function filePart(name, mime, url, encoding = 'base64') {
-    return { type: PartType.FILE, name, mime, url, encoding };
+/**
+ * @param {Object} [opts] - { encoding?, _turn?, _edited? }
+ *   encoding 默认 'base64'，文本文件传 'text'
+ */
+export function filePart(name, mime, url, opts = {}) {
+    const part = {
+        type: PartType.FILE,
+        name,
+        mime,
+        url,
+        encoding: opts.encoding || 'base64'
+    };
+    applyPartOpts(part, opts);
+    return part;
+}
+
+/**
+ * 把通用 opts 字段（_turn / _edited）挂到 part 上（仅当显式传入）
+ */
+function applyPartOpts(part, opts) {
+    if (opts._turn !== undefined) part._turn = opts._turn;
+    if (opts._edited !== undefined) part._edited = opts._edited;
 }
 
 // ========== 读取辅助 ==========
@@ -216,6 +298,8 @@ const VALID_ROLES = new Set(Object.values(Role));
 const VALID_PART_TYPES = new Set(Object.values(PartType));
 const VALID_MEDIA_KINDS = new Set(Object.values(MediaKind));
 const VALID_TOOL_STATES = new Set(Object.values(ToolState));
+const VALID_TOOL_MODES = new Set(Object.values(ToolMode));
+const VALID_SIGNATURE_FORMATS = new Set(Object.values(SignatureFormat));
 
 /**
  * 校验单条消息，返回错误列表（空数组 = 合法）
@@ -261,6 +345,13 @@ export function validateMessage(msg) {
                 if (typeof p.text !== 'string') errors.push(`parts[${i}] thinking.text 不是字符串`);
                 else if (!p.text && !(p.redacted && p.data))
                     errors.push(`parts[${i}] thinking.text 为空且无 redacted data`);
+                if (
+                    p.signatureFormat !== undefined &&
+                    p.signatureFormat !== null &&
+                    !VALID_SIGNATURE_FORMATS.has(p.signatureFormat)
+                ) {
+                    errors.push(`parts[${i}] 无效的 signatureFormat: ${p.signatureFormat}`);
+                }
                 break;
             case PartType.MEDIA:
                 if (!VALID_MEDIA_KINDS.has(p.media))
@@ -272,6 +363,16 @@ export function validateMessage(msg) {
                 if (!p.name) errors.push(`parts[${i}] 缺少 tool_call name`);
                 if (!VALID_TOOL_STATES.has(p.state))
                     errors.push(`parts[${i}] 无效的 state: ${p.state}`);
+                // mode 字段缺失视为合法（兼容 Stage 1 前历史消息，消费端按 NATIVE 兜底）
+                if (p.mode !== undefined && p.mode !== null && !VALID_TOOL_MODES.has(p.mode)) {
+                    errors.push(`parts[${i}] 无效的 mode: ${p.mode}`);
+                }
+                // idMap 字段缺失视为合法（旧数据待 migration 补齐，adapter 用 getMappedId lazy 补齐）
+                if (p.idMap !== undefined && p.idMap !== null) {
+                    if (typeof p.idMap !== 'object' || Array.isArray(p.idMap)) {
+                        errors.push(`parts[${i}] idMap 不是对象`);
+                    }
+                }
                 break;
             case PartType.FILE:
                 if (!p.name) errors.push(`parts[${i}] 缺少 file name`);
@@ -321,4 +422,173 @@ export function validateMessages(messages) {
     }
 
     return result;
+}
+
+// ========== 工具调用配对校验 / 老化 ==========
+
+/**
+ * 跨消息工具调用配对校验
+ *
+ * 检测 assistant 消息 parts 中的孤儿 tool_call：超时未完成的 pending/running、
+ * 已完成但无 result、native 模式缺 idMap。SKIPPED 状态跳过（adapter 设计如此）。
+ *
+ * @param {Array} messages
+ * @param {Object} [opts]
+ * @param {boolean} [opts.treatSkippedAsValid=true] - SKIPPED 是否视为合法
+ * @param {number} [opts.ageThresholdMs] - 超时阈值；不传则不做时间判定
+ * @param {number} [opts.nowMs] - 当前时间戳；不传则不做时间判定
+ * @returns {{ valid: boolean, orphans: Array<{msgIndex:number, partIndex:number, partId:any, reason:string, age?:number}> }}
+ *   reason 枚举：'orphan_pending' | 'orphan_running' | 'missing_result' | 'idmap_missing'
+ */
+export function validateToolPairings(messages, opts = {}) {
+    const { treatSkippedAsValid = true, ageThresholdMs, nowMs } = opts;
+    const orphans = [];
+
+    if (!Array.isArray(messages)) {
+        return { valid: true, orphans };
+    }
+
+    const canAge =
+        typeof ageThresholdMs === 'number' &&
+        ageThresholdMs > 0 &&
+        typeof nowMs === 'number' &&
+        nowMs > 0;
+
+    for (let mi = 0; mi < messages.length; mi++) {
+        const msg = messages[mi];
+        if (!msg || msg.role !== Role.ASSISTANT || !Array.isArray(msg.parts)) continue;
+
+        for (let pi = 0; pi < msg.parts.length; pi++) {
+            const part = msg.parts[pi];
+            if (!part || part.type !== PartType.TOOL_CALL) continue;
+
+            if (part.state === ToolState.SKIPPED) {
+                if (treatSkippedAsValid) continue;
+            }
+
+            if (part.state === ToolState.PENDING || part.state === ToolState.RUNNING) {
+                if (!canAge) continue;
+                const ts = part.ts || msg.ts;
+                if (typeof ts !== 'number' || ts <= 0) {
+                    // ts 缺失：保守视为孤儿
+                    orphans.push({
+                        msgIndex: mi,
+                        partIndex: pi,
+                        partId: part.id,
+                        reason:
+                            part.state === ToolState.PENDING ? 'orphan_pending' : 'orphan_running'
+                    });
+                    continue;
+                }
+                const age = nowMs - ts;
+                if (age >= ageThresholdMs) {
+                    orphans.push({
+                        msgIndex: mi,
+                        partIndex: pi,
+                        partId: part.id,
+                        reason:
+                            part.state === ToolState.PENDING ? 'orphan_pending' : 'orphan_running',
+                        age
+                    });
+                }
+                continue;
+            }
+
+            if (part.state === ToolState.DONE || part.state === ToolState.ERROR) {
+                if (part.result === null || part.result === undefined) {
+                    orphans.push({
+                        msgIndex: mi,
+                        partIndex: pi,
+                        partId: part.id,
+                        reason: 'missing_result'
+                    });
+                    continue;
+                }
+            }
+
+            // native 模式 DONE 状态缺 idMap：warn 级，adapter 用 generateFormatId 兜底
+            const mode = part.mode || ToolMode.NATIVE;
+            if (
+                part.state === ToolState.DONE &&
+                mode === ToolMode.NATIVE &&
+                (!part.idMap || typeof part.idMap !== 'object')
+            ) {
+                orphans.push({
+                    msgIndex: mi,
+                    partIndex: pi,
+                    partId: part.id,
+                    reason: 'idmap_missing'
+                });
+            }
+        }
+    }
+
+    return { valid: orphans.length === 0, orphans };
+}
+
+/**
+ * 老化超时的 pending/running tool_call（in-place 修改）
+ *
+ * 把超过 ageThresholdMs 的 pending/running 工具调用强制翻成 ERROR，避免下次发送时
+ * 出现孤儿 tool_use 触发 API 400。schema.js 是纯函数模块，nowMs 必须由调用方传入。
+ *
+ * @param {Array} messages - 会被原地修改
+ * @param {Object} [opts]
+ * @param {number} [opts.ageThresholdMs=TOOL_AGE_THRESHOLD_MS]
+ * @param {number} [opts.nowMs] - 必传：当前时间戳；缺失时一律老化（保守）
+ * @param {string} [opts.errorMessage=TOOL_INTERRUPTED_MESSAGE]
+ * @returns {number} 老化的 part 数
+ */
+export function agePendingToolCallsInPlace(messages, opts = {}) {
+    if (!Array.isArray(messages)) return 0;
+
+    // ageThresholdMs:0 是合法的"强制全部老化"语义（导出剥离 pending 态用），不能 fallback 到 default
+    const ageThresholdMs =
+        typeof opts.ageThresholdMs === 'number' && opts.ageThresholdMs >= 0
+            ? opts.ageThresholdMs
+            : TOOL_AGE_THRESHOLD_MS;
+    const nowMs = typeof opts.nowMs === 'number' && opts.nowMs > 0 ? opts.nowMs : null;
+    const errorMessage =
+        typeof opts.errorMessage === 'string' && opts.errorMessage
+            ? opts.errorMessage
+            : TOOL_INTERRUPTED_MESSAGE;
+
+    let aged = 0;
+
+    for (const msg of messages) {
+        if (!msg || msg.role !== Role.ASSISTANT || !Array.isArray(msg.parts)) continue;
+
+        for (const part of msg.parts) {
+            if (!part || part.type !== PartType.TOOL_CALL) continue;
+            if (part.state !== ToolState.PENDING && part.state !== ToolState.RUNNING) continue;
+
+            const ts = part.ts || msg.ts;
+            const hasTs = typeof ts === 'number' && ts > 0;
+
+            let shouldAge = false;
+            if (nowMs === null) {
+                // nowMs 未传：跳过（保持纯函数语义，不调 Date.now）
+                continue;
+            }
+            if (!hasTs) {
+                // ts 缺失且 nowMs 给定：保守一律老化
+                shouldAge = true;
+            } else if (nowMs - ts >= ageThresholdMs) {
+                shouldAge = true;
+            }
+
+            if (!shouldAge) continue;
+
+            part.state = ToolState.ERROR;
+            part.result = {
+                error: errorMessage,
+                is_error: true,
+                interrupted: true,
+                content: ''
+            };
+            aged++;
+        }
+    }
+
+    return aged;
 }

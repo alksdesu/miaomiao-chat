@@ -5,7 +5,7 @@
 
 import { state, elements } from '../core/state.js';
 import { eventBus } from '../core/events.js';
-import { updateMessageAt, setSelectedReplyIndex } from '../core/state-mutations.js';
+import { updateMessageAt } from '../core/state-mutations.js';
 import { debouncedSaveSession } from '../state/sessions.js';
 import { safeMarkedParse } from '../utils/markdown.js';
 import { escapeHtml } from '../utils/helpers.js';
@@ -25,8 +25,8 @@ import {
     renderContentParts,
     restoreToolCallsFromMessage
 } from './renderer.js';
+import { renderSearchGrounding } from './render-search.js';
 import { renderHumanizedError } from '../utils/errors.js';
-import { getIcon } from '../utils/icons.js';
 import { isVideoMimeType } from '../utils/media.js';
 import {
     renderImageCard as renderImageBlock,
@@ -90,7 +90,7 @@ export function selectReply(replyIndex, messageIndex = null) {
 
         debouncedSaveSession();
     } else {
-        setSelectedReplyIndex(replyIndex);
+        state.selectedReplyIndex = replyIndex;
         updateMessageHistoryWithSelectedReply();
     }
 
@@ -252,12 +252,12 @@ function applyReplyToMessage(index, reply, textContent, extraOpenai = {}) {
         }
     }
 
-    // 保留原始消息中的 tool_call 和 file parts
+    // 保留原始消息中的 tool_call 和 file parts（深拷贝避免 reply.parts 与 state.messages[i].parts 共享引用）
     const existingMsg = state.messages[index];
     if (existingMsg?.parts && Array.isArray(existingMsg.parts)) {
         for (const p of existingMsg.parts) {
             if (p.type === PartType.TOOL_CALL || p.type === PartType.FILE) {
-                parts.push(p);
+                parts.push(structuredClone(p));
             }
         }
     }
@@ -306,33 +306,6 @@ function updateMessageHistoryWithSelectedReply() {
     applyReplyToMessage(lastIndex, reply, textContent, shared);
 
     debouncedSaveSession();
-}
-
-/**
- * 渲染搜索引用（Gemini Web Search）
- */
-function renderSearchGrounding(groundingMetadata) {
-    if (!groundingMetadata?.groundingChunks && !groundingMetadata?.webSearchQueries) return '';
-
-    const chunks = groundingMetadata.groundingChunks || [];
-    const sources = chunks
-        .filter((chunk) => chunk.web)
-        .map(
-            (chunk) => `
-            <a href="${escapeHtml(chunk.web.uri)}" target="_blank" rel="noopener" class="search-source">
-                ${escapeHtml(chunk.web.title || new URL(chunk.web.uri).hostname)}
-            </a>
-        `
-        );
-
-    if (sources.length === 0) return '';
-
-    return `
-        <div class="search-sources">
-            <span class="sources-label">${getIcon('search', { size: 14 })} 来源:</span>
-            ${sources.join('')}
-        </div>
-    `;
 }
 
 /**

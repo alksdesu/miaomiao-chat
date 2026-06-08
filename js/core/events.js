@@ -13,6 +13,42 @@ export class EventBus {
         this._warnedUnknown = new Set();
         // 是否启用 typo 检测（开发期默认开，生产可关）
         this._validate = true;
+        // 死事件检测：记录 emit 过的事件名（与 _listeners 的 keys 比对）
+        this._emittedEvents = new Set();
+        // 已报告的死事件（避免日志爆炸）
+        this._warnedDead = new Set();
+    }
+
+    /**
+     * 扫描死事件（emit 过但无任何 on 监听者），开发期诊断用
+     * @returns {string[]} 死事件名列表
+     */
+    findDeadEvents() {
+        const dead = [];
+        for (const event of this._emittedEvents) {
+            const listeners = this._listeners.get(event);
+            if (!listeners || listeners.size === 0) dead.push(event);
+        }
+        return dead;
+    }
+
+    /**
+     * 启动周期性死事件扫描，发现新死事件 warn 一次
+     * @param {number} intervalMs - 扫描间隔（ms），默认 30s
+     * @returns {() => void} 停止函数
+     */
+    startDeadEventScanner(intervalMs = 30_000) {
+        const timer = setInterval(() => {
+            for (const event of this.findDeadEvents()) {
+                if (this._warnedDead.has(event)) continue;
+                this._warnedDead.add(event);
+                logger.warn(
+                    `[EventBus] 死事件检测：事件 "${event}" 已 emit 但无任何 on() 监听者，` +
+                        '请检查是否应删除 emit 或补 listener。'
+                );
+            }
+        }, intervalMs);
+        return () => clearInterval(timer);
     }
 
     /**
@@ -73,6 +109,9 @@ export class EventBus {
      */
     emit(event, data) {
         this._validateEventName(event, 'emit');
+        if (typeof event === 'string' && !event.startsWith('state:')) {
+            this._emittedEvents.add(event);
+        }
         const listeners = this._listeners.get(event);
         if (!listeners) return;
 

@@ -10,6 +10,7 @@
  */
 
 import { state } from '../core/state.js';
+import { elements } from '../core/elements.js';
 import { eventBus } from '../core/events.js';
 import { removeMessageAt } from '../core/state-mutations.js';
 import { PartType } from '../messages/schema.js';
@@ -223,6 +224,21 @@ export function canEditMessage(index) {
         };
     }
 
+    // 全面检查 part.state PENDING：continuation flag 只覆盖前台单流路径，多回复 /
+    // background 工具执行中的 PENDING tool_call 漏判会让用户编辑后 part.result 被流式
+    // 异步赋值导致新旧 args 混乱
+    if (Array.isArray(message.parts)) {
+        const hasPending = message.parts.some(
+            (p) => p.type === 'tool_call' && (p.state === 'pending' || p.state === 'running')
+        );
+        if (hasPending) {
+            return {
+                canEdit: false,
+                reason: '消息中有正在执行的工具调用，请等待完成后再编辑'
+            };
+        }
+    }
+
     if (message.role === 'user' || message.role === 'assistant') {
         return { canEdit: true };
     }
@@ -280,31 +296,13 @@ export function getRenderableMessages(messages) {
 // ========== 辅助函数 ==========
 
 /**
- * 从消息元素解析消息索引
+ * 从消息元素解析消息 hit
+ * 委托 store.findByEl 统一入口，与 editor.js 自动一致
  * @param {HTMLElement} messageEl - 消息DOM元素
- * @returns {number} 消息索引
+ * @returns {{msg: Object, index: number} | null}
  */
-function resolveMessageIndex(messageEl) {
-    // 方法1: 使用消息ID查找
-    const messageId = messageEl.dataset?.messageId;
-    if (messageId && state.messageIdMap && state.messageIdMap.has(messageId)) {
-        return state.messageIdMap.get(messageId);
-    }
-
-    // 方法2: 使用 dataset.messageIndex
-    const indexAttr = messageEl.dataset?.messageIndex;
-    if (indexAttr !== undefined) {
-        return parseInt(indexAttr, 10);
-    }
-
-    // 方法3: 使用 DOM 位置
-    const messagesArea = document.getElementById('chat');
-    if (messagesArea) {
-        const nodes = Array.from(messagesArea.querySelectorAll('.message'));
-        return nodes.indexOf(messageEl);
-    }
-
-    return -1;
+function resolveMessageHit(messageEl) {
+    return state.messageStore.findByEl(messageEl, { messagesArea: elements.messagesArea });
 }
 
 // ========== 事件监听 ==========
@@ -329,10 +327,10 @@ export function initMessageCompat() {
 
     // 监听删除消息事件（提供警告）
     eventBus.on('message:delete-requested', ({ messageEl }) => {
-        const index = resolveMessageIndex(messageEl);
-        if (index === -1) return;
+        const hit = resolveMessageHit(messageEl);
+        if (!hit) return;
 
-        const message = state.messages[index];
+        const { msg: message, index } = hit;
         if (!message) return;
 
         // 检查是否有关联的工具调用或工具结果
@@ -373,10 +371,10 @@ export function initMessageCompat() {
 
     // 监听编辑消息事件（检查是否可编辑）
     eventBus.on('message:edit-requested', ({ messageEl }) => {
-        const index = resolveMessageIndex(messageEl);
-        if (index === -1) return;
+        const hit = resolveMessageHit(messageEl);
+        if (!hit) return;
 
-        const checkResult = canEditMessage(index);
+        const checkResult = canEditMessage(hit.index);
 
         if (!checkResult.canEdit) {
             logger.warn('[MessageCompat] 消息不可编辑:', checkResult.reason);

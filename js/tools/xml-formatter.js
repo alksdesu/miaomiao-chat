@@ -26,6 +26,64 @@ function generateToolCallId() {
 }
 
 /**
+ * 构建 XML 模式的工具结果消息（保留以兼容历史调用方）
+ *
+ * Stage 3 之后 adapter 不再调用本函数（XML 模式经 appendXmlToolResults 下沉到
+ * partsToAPIMessages 内部）。本函数仅供测试与潜在第三方扩展使用。
+ *
+ * @param {Array} toolCalls   [{ id, name, arguments }, ...]
+ * @param {Array} toolResults [{ id, name, result, isError }, ...]
+ * @returns {Array} [{ role:'assistant', content:<xml> }, { role:'user', content:<xml> }]
+ */
+export function buildXmlToolMessages(toolCalls, toolResults) {
+    let toolCallXML = '';
+    for (const tc of toolCalls) {
+        toolCallXML += `<tool_use>\n  <name>${escapeXML(tc.name)}</name>\n  <arguments>${escapeXML(JSON.stringify(tc.arguments))}</arguments>\n</tool_use>\n`;
+    }
+    let toolResultXML = '';
+    for (const r of toolResults) {
+        toolResultXML += `<tool_use_result>\n  <name>${escapeXML(r.name)}</name>\n  <result>${escapeXML(JSON.stringify(r.result))}</result>\n</tool_use_result>\n`;
+    }
+    return [
+        { role: 'assistant', content: toolCallXML.trim() },
+        { role: 'user', content: toolResultXML.trim() }
+    ];
+}
+
+/**
+ * 把单条 assistant 消息中的 XML 模式 tool_call 配对追加 <tool_use> + <tool_use_result>
+ * 作为一条 user 消息 push 到 adapter 输出末尾（在对应 assistant 紧后位置）
+ *
+ * base-parser.processXmlDetection 把原始 <tool_use> 块从 textContent 剥离，重发时
+ * 前序 assistant TEXT part 已不含 tool_use；只追加 result 一侧会破坏 XML 协议对称性
+ * 让 LLM 看到孤立的 tool_use_result。这里从 part.name/args/result 重建配对块。
+ *
+ * 5 个 adapter 的 partsToAPIMessages 在每条 assistant msg 输出之后调用一次（per-turn 内嵌），
+ * 而非全量遍历后末尾合并——保证多轮工具调用与对应 assistant 的相邻关系。
+ *
+ * @param {Array}  out adapter 输出的 API 消息数组（原地修改）
+ * @param {Object} msg 单条 assistant 消息
+ */
+export function appendXmlToolResultsForMessage(out, msg) {
+    if (!Array.isArray(out) || !msg || !Array.isArray(msg.parts)) return;
+
+    let xml = '';
+    for (const p of msg.parts) {
+        if (p.type !== 'tool_call') continue;
+        if (p.mode !== 'xml') continue;
+        if (p.result == null) continue;
+        const argsText = typeof p.args === 'string' ? p.args : JSON.stringify(p.args ?? {});
+        const resultText = typeof p.result === 'string' ? p.result : JSON.stringify(p.result);
+        xml += `<tool_use>\n  <name>${escapeXML(p.name)}</name>\n  <arguments>${escapeXML(argsText)}</arguments>\n</tool_use>\n`;
+        xml += `<tool_use_result>\n  <name>${escapeXML(p.name)}</name>\n  <result>${escapeXML(resultText)}</result>\n</tool_use_result>\n`;
+    }
+
+    if (xml.trim()) {
+        out.push({ role: 'user', content: xml.trim() });
+    }
+}
+
+/**
  * 转义 XML 特殊字符
  */
 export function escapeXML(str) {
@@ -43,6 +101,64 @@ export function escapeXML(str) {
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&apos;')
         .replace(/\r/g, '&#xD;'); // 修复3: 转义回车符
+}
+
+/**
+ * 反转 escapeXML（& 必须最后处理，与转义顺序镜像对称）
+ */
+export function unescapeXML(str) {
+    if (typeof str !== 'string') return '';
+    return str
+        .replace(/&#xD;/g, '\r')
+        .replace(/&apos;/g, "'")
+        .replace(/&quot;/g, '"')
+        .replace(/&gt;/g, '>')
+        .replace(/&lt;/g, '<')
+        .replace(/&amp;/g, '&');
+}
+
+/**
+ * 解析工具调用 arguments JSON
+ * 回灌历史经 escapeXML 转义，模型可能模仿输出 &quot; 实体格式，失败时反转义重试
+ * @param {string} argsText
+ * @returns {Object}
+ */
+function parseToolArguments(argsText) {
+    try {
+        return JSON.parse(argsText);
+    } catch (error) {
+        const unescaped = unescapeXML(argsText);
+        if (unescaped !== argsText) {
+            return JSON.parse(unescaped);
+        }
+        throw error;
+    }
+}
+
+/**
+ * 收集 markdown 代码块的位置区间（fenced + inline code）
+ * 物理删除文本会误伤工具 arguments JSON 内的反引号内容，只能按区间跳过
+ * @param {string} text
+ * @returns {Array<[number, number]>} [start, end) 区间数组
+ */
+function findCodeBlockRanges(text) {
+    const ranges = [];
+    const re = /```[\s\S]*?```|`[^`\n]*`/g;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+        ranges.push([m.index, m.index + m[0].length]);
+    }
+    return ranges;
+}
+
+/**
+ * 判断索引是否落在任一代码块区间内
+ * @param {Array<[number, number]>} ranges
+ * @param {number} index
+ * @returns {boolean}
+ */
+function isInsideCodeBlock(ranges, index) {
+    return ranges.some(([start, end]) => index >= start && index < end);
 }
 
 /**
@@ -153,6 +269,9 @@ export function convertToolsToXML(tools) {
 export function extractXMLToolCalls(text) {
     if (!text || typeof text !== 'string') return [];
 
+    // 代码块内的 XML 是示例展示不是真实调用，按起点区间跳过
+    const codeBlockRanges = findCodeBlockRanges(text);
+
     const toolCalls = [];
 
     // 格式 1: tool_use 格式 (CherryStudio 风格)
@@ -160,6 +279,7 @@ export function extractXMLToolCalls(text) {
     const toolUseBlockRegex = /<tool_use>([\s\S]*?)<\/tool_use>/gi;
     let match;
     while ((match = toolUseBlockRegex.exec(text)) !== null) {
+        if (isInsideCodeBlock(codeBlockRanges, match.index)) continue;
         const block = match[1];
         // 在块内解析 name 和 arguments（简单正则，无回溯风险）
         const nameMatch = /<name>([^<]+)<\/name>/.exec(block);
@@ -169,7 +289,7 @@ export function extractXMLToolCalls(text) {
             const name = nameMatch[1].trim();
             const argsText = argsMatch[1].trim();
             try {
-                const args = JSON.parse(argsText);
+                const args = parseToolArguments(argsText);
                 toolCalls.push({
                     id: generateToolCallId(),
                     name,
@@ -198,6 +318,7 @@ export function extractXMLToolCalls(text) {
     // 修复 ReDoS: 使用两步解析避免灾难性回溯
     const functionCallBlockRegex = /<function_call>([\s\S]*?)<\/function_call>/gi;
     while ((match = functionCallBlockRegex.exec(text)) !== null) {
+        if (isInsideCodeBlock(codeBlockRanges, match.index)) continue;
         const block = match[1];
         // 在块内解析 name 和 arguments（简单正则，无回溯风险）
         const nameMatch = /<name>([^<]+)<\/name>/.exec(block);
@@ -207,7 +328,7 @@ export function extractXMLToolCalls(text) {
             const name = nameMatch[1].trim();
             const argsText = argsMatch[1].trim();
             try {
-                const args = JSON.parse(argsText);
+                const args = parseToolArguments(argsText);
                 toolCalls.push({
                     id: generateToolCallId(),
                     name,
@@ -236,6 +357,7 @@ export function extractXMLToolCalls(text) {
     // 匹配: <invoke name="xxx"> 或 <invoke name="xxx">
     const invokeRegex = /<(?:antml:)?invoke\s+name="([^"]+)">([\s\S]*?)<\/(?:antml:)?invoke>/gi;
     while ((match = invokeRegex.exec(text)) !== null) {
+        if (isInsideCodeBlock(codeBlockRanges, match.index)) continue;
         const name = match[1].trim();
         const paramsContent = match[2];
         const args = {};
@@ -274,6 +396,62 @@ export function extractXMLToolCalls(text) {
     return toolCalls;
 }
 
+// 与状态机正则 (?:NS)?invoke 的命名空间支持保持镜像
+const XML_TAG_NS = ['ant', 'ml:'].join('');
+
+// 流式标签前缀候选：chunk 边界可能把标签切成两半，buffer 尾部命中前缀时保留待续拼
+const OPEN_TAG_PREFIXES = ['<thinking>', '<tool_use', '<invoke ', `<${XML_TAG_NS}invoke `];
+const THINKING_CLOSE_PREFIXES = ['</thinking>'];
+const TOOL_CLOSE_PREFIXES = ['</tool_use>', '</invoke>', `</${XML_TAG_NS}invoke>`];
+
+/**
+ * 查找 buffer 尾部被 chunk 边界切断的候选标签前缀起点
+ * @param {string} buffer
+ * @param {Array<string>} candidates - 候选标签列表
+ * @returns {number} 前缀起点索引，无则 -1
+ */
+function findPartialTagStart(buffer, candidates) {
+    const lt = buffer.lastIndexOf('<');
+    if (lt === -1) return -1;
+    const tail = buffer.slice(lt);
+    // 含 '>' 的尾部已是完整标签，完整候选早被状态机消费，到这里说明不是目标标签
+    if (tail.includes('>')) return -1;
+    for (const candidate of candidates) {
+        if (candidate.startsWith(tail) || tail.startsWith(candidate)) return lt;
+    }
+    return -1;
+}
+
+/**
+ * buffer 尾部疑似被切断的代码块围栏（'`' 或 '``'）长度
+ * @param {string} buffer
+ * @returns {number}
+ */
+function partialFenceLength(buffer) {
+    if (buffer.endsWith('``') && !buffer.endsWith('```')) return 2;
+    if (buffer.endsWith('`') && !buffer.endsWith('``')) return 1;
+    return 0;
+}
+
+/**
+ * 查找行首代码围栏：CommonMark 要求 fence 在行首，行内三反引号是 code span，
+ * 误入 fence 态会把后续所有工具调用当代码内容直通不执行
+ * @param {string} buffer
+ * @param {string} displayText - 判定 buffer[0] 是否处于行首
+ * @returns {number}
+ */
+function findFenceIndex(buffer, displayText) {
+    let from = 0;
+    let idx;
+    while ((idx = buffer.indexOf('```', from)) !== -1) {
+        const atLineStart =
+            idx === 0 ? displayText === '' || displayText.endsWith('\n') : buffer[idx - 1] === '\n';
+        if (atLineStart) return idx;
+        from = idx + 3;
+    }
+    return -1;
+}
+
 /**
  * XML 流式累积器（流式解析）
  * 处理流式响应中可能截断的 XML 标签
@@ -281,14 +459,17 @@ export function extractXMLToolCalls(text) {
  */
 export class XMLStreamAccumulator {
     constructor() {
-        this.buffer = ''; // 累积的文本
+        this.buffer = ''; // 待消费的文本
         this.displayText = ''; // 展示给用户的文本（不含 XML 标签）
         this.inToolUse = false; // 是否在 tool_use/invoke 标签内
         this.inThinking = false; // 是否在 thinking 标签内
+        this.inCodeFence = false; // 是否在 markdown 代码块内（块内 XML 是示例，不触发工具检测）
         this.currentToolXML = ''; // 当前工具的 XML
         this.currentThinking = ''; // 当前思考的内容
         this.completedCalls = []; // 已完成的工具调用
         this.thinkingBlocks = []; // 已完成的思考块
+        // getCompletedCalls 会清空 completedCalls，流结束 flush 判定需要不被清的事实记录
+        this.hasEverCompleted = false;
     }
 
     /**
@@ -315,150 +496,12 @@ export class XMLStreamAccumulator {
                 };
             }
 
-            // 检测 thinking 开始
-            const thinkingStartMatch = this.buffer.match(/<thinking>/);
-            if (thinkingStartMatch && !this.inThinking && !this.inToolUse) {
-                this.inThinking = true;
-                const beforeTag = this.buffer.substring(0, thinkingStartMatch.index);
-                this.displayText += beforeTag;
-                // 保留开始标签到 currentThinking
-                this.currentThinking = this.buffer.substring(thinkingStartMatch.index);
-                this.buffer = '';
-                // 首次检测到标签，内容已转移到 currentThinking，直接返回
-                return {
-                    hasToolCalls: this.completedCalls.length > 0,
-                    displayText: this.displayText,
-                    error: null
-                };
-            }
-
-            // 检测 tool_use 或 invoke/antml:invoke 开始
-            const toolStartMatch = this.buffer.match(
-                /<(tool_use|(?:antml:)?invoke\s+name="[^"]+")/
-            );
-            if (toolStartMatch && !this.inToolUse && !this.inThinking) {
-                this.inToolUse = true;
-                const beforeTag = this.buffer.substring(0, toolStartMatch.index);
-                this.displayText += beforeTag;
-                // 保留开始标签到 currentToolXML
-                this.currentToolXML = this.buffer.substring(toolStartMatch.index);
-                this.buffer = '';
-                // 首次检测到标签，内容已转移到 currentToolXML，直接返回
-                return {
-                    hasToolCalls: this.completedCalls.length > 0,
-                    displayText: this.displayText,
-                    error: null
-                };
-            }
-
-            // 累积思考内容
-            if (this.inThinking) {
-                this.currentThinking += deltaText;
-
-                if (this.currentThinking.length > 20000) {
-                    logger.error('[XMLStreamAccumulator] 单个思考块过长，跳过');
-                    this.inThinking = false;
-                    this.currentThinking = '';
-                    this.buffer = '';
-                    return {
-                        hasToolCalls: this.completedCalls.length > 0,
-                        displayText: this.displayText,
-                        error: 'Single thinking block too large'
-                    };
-                }
-
-                // 检测 thinking 结束
-                const thinkingEndMatch = this.currentThinking.match(/<\/thinking>/);
-                if (thinkingEndMatch) {
-                    this.inThinking = false;
-                    const thinkingContent = this.currentThinking // 运行时变量，非旧格式字段
-                        .replace(/<thinking>/, '')
-                        .replace(/<\/thinking>/, '')
-                        .trim();
-
-                    if (thinkingContent) {
-                        this.thinkingBlocks.push(thinkingContent);
-                        logger.debug(
-                            '[XMLStreamAccumulator] 检测到思考块:',
-                            thinkingContent.substring(0, 50) + '...'
-                        );
-                    }
-
-                    const afterTag = this.currentThinking.substring(
-                        thinkingEndMatch.index + '</thinking>'.length
-                    );
-
-                    // 立即将思考块后的文本添加到 displayText
-                    // 如果思考块后 Claude 停止输出，afterTag 会丢失
-                    this.displayText += afterTag;
-                    this.buffer = ''; // 清空 buffer（已添加到 displayText）
-                    this.currentThinking = '';
-                }
-            }
-            // 累积工具 XML
-            else if (this.inToolUse) {
-                this.currentToolXML += deltaText;
-
-                if (this.currentToolXML.length > XML_MAX_TOOL_CONTENT_LENGTH) {
-                    logger.error('[XMLStreamAccumulator] 单个工具调用过长，跳过');
-                    this.inToolUse = false;
-                    this.currentToolXML = '';
-                    this.buffer = '';
-                    return {
-                        hasToolCalls: this.completedCalls.length > 0,
-                        displayText: this.displayText,
-                        error: 'Single tool call too large'
-                    };
-                }
-
-                // 检测 tool_use 或 invoke/antml:invoke 结束
-                const endMatch = this.currentToolXML.match(/<\/(?:tool_use|(?:antml:)?invoke)>/);
-                if (endMatch) {
-                    this.inToolUse = false;
-
-                    try {
-                        // 调试日志：显示原始 XML 内容
-                        logger.debug('[XMLStreamAccumulator] 原始 XML 内容:', this.currentToolXML);
-
-                        const toolCalls = extractXMLToolCalls(this.currentToolXML);
-                        if (toolCalls.length > 0) {
-                            this.completedCalls.push(...toolCalls);
-                        } else {
-                            logger.warn(
-                                '[XMLStreamAccumulator] 解析 XML 未提取到工具调用，XML:',
-                                this.currentToolXML.substring(0, 500)
-                            );
-                        }
-                    } catch (parseError) {
-                        logger.error(
-                            '[XMLStreamAccumulator] 解析 XML 失败:',
-                            parseError,
-                            'XML:',
-                            this.currentToolXML.substring(0, 500)
-                        );
-                    }
-
-                    const closingTag = endMatch[0];
-                    const afterTag = this.currentToolXML.substring(
-                        endMatch.index + closingTag.length
-                    );
-
-                    // 立即将工具调用后的文本添加到 displayText
-                    // 如果工具调用后 Claude 停止输出，afterTag 会丢失
-                    this.displayText += afterTag;
-                    this.buffer = ''; // 清空 buffer（已添加到 displayText）
-                    this.currentToolXML = '';
-                }
-            } else {
-                // 不在标签内，累积为展示文本
-                this.displayText += deltaText;
-                this.buffer = '';
-            }
+            const error = this._consumeBuffer();
 
             return {
                 hasToolCalls: this.completedCalls.length > 0,
                 displayText: this.displayText,
-                error: null
+                error
             };
         } catch (error) {
             logger.error('[XMLStreamAccumulator] processDelta 异常:', error);
@@ -471,6 +514,181 @@ export class XMLStreamAccumulator {
                 error: error.message
             };
         }
+    }
+
+    /**
+     * 循环消费 buffer 直到无可推进内容
+     * 单个 delta 可能携带多个完整标签块，块后文本也可能内嵌下一个开始标签，
+     * 必须重扫而非直接进 displayText；尾部疑似被切断的标签前缀保留待下轮续拼
+     * @returns {string|null} 错误信息
+     * @private
+     */
+    _consumeBuffer() {
+        let progressed = true;
+        while (progressed && this.buffer) {
+            progressed = false;
+
+            if (this.inThinking) {
+                const endMatch = this.buffer.match(/<\/thinking>/);
+                if (endMatch) {
+                    this.inThinking = false;
+                    const inner = this.buffer.substring(0, endMatch.index);
+                    const thinkingContent = (this.currentThinking + inner)
+                        .replace(/<thinking>/, '')
+                        .trim();
+
+                    if (thinkingContent) {
+                        this.thinkingBlocks.push(thinkingContent);
+                        logger.debug(
+                            '[XMLStreamAccumulator] 检测到思考块:',
+                            thinkingContent.substring(0, 50) + '...'
+                        );
+                    }
+
+                    this.currentThinking = '';
+                    this.buffer = this.buffer.substring(endMatch.index + '</thinking>'.length);
+                    progressed = true;
+                } else {
+                    const partialStart = findPartialTagStart(this.buffer, THINKING_CLOSE_PREFIXES);
+                    const safeEnd = partialStart === -1 ? this.buffer.length : partialStart;
+                    this.currentThinking += this.buffer.substring(0, safeEnd);
+                    this.buffer = this.buffer.substring(safeEnd);
+
+                    if (this.currentThinking.length > 20000) {
+                        logger.error('[XMLStreamAccumulator] 单个思考块过长，跳过');
+                        this.inThinking = false;
+                        this.currentThinking = '';
+                        this.buffer = '';
+                        return 'Single thinking block too large';
+                    }
+                }
+            } else if (this.inToolUse) {
+                const endMatch = this.buffer.match(/<\/(?:tool_use|(?:antml:)?invoke)>/);
+                if (endMatch) {
+                    this.inToolUse = false;
+                    const closingEnd = endMatch.index + endMatch[0].length;
+                    const toolXML = this.currentToolXML + this.buffer.substring(0, closingEnd);
+                    this.currentToolXML = '';
+                    this.buffer = this.buffer.substring(closingEnd);
+                    progressed = true;
+
+                    try {
+                        logger.debug('[XMLStreamAccumulator] 原始 XML 内容:', toolXML);
+                        const toolCalls = extractXMLToolCalls(toolXML);
+                        if (toolCalls.length > 0) {
+                            this.completedCalls.push(...toolCalls);
+                            this.hasEverCompleted = true;
+                        } else {
+                            logger.warn(
+                                '[XMLStreamAccumulator] 解析 XML 未提取到工具调用，XML:',
+                                toolXML.substring(0, 500)
+                            );
+                        }
+                    } catch (parseError) {
+                        logger.error(
+                            '[XMLStreamAccumulator] 解析 XML 失败:',
+                            parseError,
+                            'XML:',
+                            toolXML.substring(0, 500)
+                        );
+                    }
+                } else {
+                    const partialStart = findPartialTagStart(this.buffer, TOOL_CLOSE_PREFIXES);
+                    const safeEnd = partialStart === -1 ? this.buffer.length : partialStart;
+                    this.currentToolXML += this.buffer.substring(0, safeEnd);
+                    this.buffer = this.buffer.substring(safeEnd);
+
+                    if (this.currentToolXML.length > XML_MAX_TOOL_CONTENT_LENGTH) {
+                        logger.error('[XMLStreamAccumulator] 单个工具调用过长，跳过');
+                        this.inToolUse = false;
+                        this.currentToolXML = '';
+                        this.buffer = '';
+                        return 'Single tool call too large';
+                    }
+                }
+            } else if (this.inCodeFence) {
+                const fenceEnd = findFenceIndex(this.buffer, this.displayText);
+                if (fenceEnd !== -1) {
+                    this.inCodeFence = false;
+                    this.displayText += this.buffer.substring(0, fenceEnd + 3);
+                    this.buffer = this.buffer.substring(fenceEnd + 3);
+                    progressed = true;
+                } else {
+                    const keep = partialFenceLength(this.buffer);
+                    const safeEnd = this.buffer.length - keep;
+                    this.displayText += this.buffer.substring(0, safeEnd);
+                    this.buffer = this.buffer.substring(safeEnd);
+                }
+            } else {
+                const thinkingStartMatch = this.buffer.match(/<thinking>/);
+                const toolStartMatch = this.buffer.match(
+                    /<(tool_use|(?:antml:)?invoke\s+name="[^"]+")/
+                );
+                const fenceIndex = findFenceIndex(this.buffer, this.displayText);
+
+                // 三类标记都可能命中，取最靠前者决定状态转移
+                const candidates = [
+                    thinkingStartMatch && { index: thinkingStartMatch.index, kind: 'thinking' },
+                    toolStartMatch && { index: toolStartMatch.index, kind: 'tool' },
+                    fenceIndex !== -1 && { index: fenceIndex, kind: 'fence' }
+                ].filter(Boolean);
+
+                if (candidates.length > 0) {
+                    candidates.sort((a, b) => a.index - b.index);
+                    const first = candidates[0];
+                    this.displayText += this.buffer.substring(0, first.index);
+
+                    if (first.kind === 'fence') {
+                        this.inCodeFence = true;
+                        this.displayText += '```';
+                        this.buffer = this.buffer.substring(first.index + 3);
+                    } else if (first.kind === 'thinking') {
+                        this.inThinking = true;
+                        this.currentThinking = '';
+                        this.buffer = this.buffer.substring(first.index);
+                    } else {
+                        this.inToolUse = true;
+                        this.currentToolXML = '';
+                        this.buffer = this.buffer.substring(first.index);
+                    }
+                    progressed = true;
+                } else {
+                    let keepFrom = this.buffer.length;
+                    const tagStart = findPartialTagStart(this.buffer, OPEN_TAG_PREFIXES);
+                    if (tagStart !== -1) keepFrom = tagStart;
+                    const fenceKeep = partialFenceLength(this.buffer);
+                    if (fenceKeep > 0) {
+                        keepFrom = Math.min(keepFrom, this.buffer.length - fenceKeep);
+                    }
+                    this.displayText += this.buffer.substring(0, keepFrom);
+                    this.buffer = this.buffer.substring(keepFrom);
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 流结束时排空残留
+     * 未闭合的标签内容按原文回吐到 displayText，否则被
+     * partial-tag 保留逻辑截留的尾部文本会在流结束时丢失
+     * @returns {string} 最终 displayText
+     */
+    flush() {
+        if (this.inThinking) {
+            this.displayText += this.currentThinking + this.buffer;
+        } else if (this.inToolUse) {
+            this.displayText += this.currentToolXML + this.buffer;
+        } else {
+            this.displayText += this.buffer;
+        }
+        this.buffer = '';
+        this.currentThinking = '';
+        this.currentToolXML = '';
+        this.inThinking = false;
+        this.inToolUse = false;
+        this.inCodeFence = false;
+        return this.displayText;
     }
 
     /**
@@ -500,9 +718,11 @@ export class XMLStreamAccumulator {
         this.displayText = '';
         this.inToolUse = false;
         this.inThinking = false;
+        this.inCodeFence = false;
         this.currentToolXML = '';
         this.currentThinking = '';
         this.completedCalls = [];
         this.thinkingBlocks = [];
+        this.hasEverCompleted = false;
     }
 }

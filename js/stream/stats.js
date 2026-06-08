@@ -4,7 +4,6 @@
  */
 
 import { state } from '../core/state.js';
-import { setStreamStats } from '../core/state-mutations.js';
 
 /**
  * 每个解析器实例持有独立统计，避免全局单例在高并发下数据污染
@@ -80,13 +79,13 @@ export class StreamStats {
     }
 
     syncToGlobal() {
-        setStreamStats({
+        state.streamStats = {
             requestStartTime: this.requestStartTime,
             firstTokenTime: this.firstTokenTime,
             endTime: this.endTime,
             tokenCount: this.tokenCount,
             isFirstToken: this.isFirstToken
-        });
+        };
     }
 }
 
@@ -107,13 +106,13 @@ export function estimateTokenCount(text) {
  * 重置流统计
  */
 export function resetStreamStats() {
-    setStreamStats({
+    state.streamStats = {
         requestStartTime: Date.now(),
         firstTokenTime: 0,
         endTime: 0,
         tokenCount: 0,
         isFirstToken: true
-    });
+    };
 }
 
 /**
@@ -221,6 +220,7 @@ export function appendStreamStats() {
         // 移除旧的统计（如果有）
         const oldStats = wrapper.querySelector('.stream-stats');
         if (oldStats) oldStats.remove();
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：statsHTML 由 renderStreamStatsFromData 生成，静态 SVG + 数值字段
         wrapper.insertAdjacentHTML('beforeend', statsHTML);
     }
 }

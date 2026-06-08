@@ -8,7 +8,9 @@
     grid-template: 1fr / 1fr; /* 单行单列网格 */
     padding: 10px 40px 10px 16px;
     background: var(--md-teal);
-    color: var(--color-text-primary);
+    /* 通知背景为饱和品牌色（teal/coral/yellow/blue），不论亮暗主题都需深色文本保证对比度。
+       --color-text-on-accent 是品牌色上的固定文本色（应在 _design-tokens.css 定义为深色） */
+    color: var(--color-text-on-accent, #1a1a1a);
     border: var(--border);
     box-shadow: var(--shadow-md);
     z-index: var(--z-notification);
@@ -32,15 +34,22 @@
 
 .notification-error {
     background: var(--md-coral);
+    color: var(--color-text-on-accent, #1a1a1a);
 }
 
 .notification-success {
     background: var(--md-teal);
+    color: var(--color-text-on-accent, #1a1a1a);
 }
 
 .notification-warning {
     background: var(--md-yellow);
-    color: var(--color-text-primary);
+    color: var(--color-text-on-accent, #1a1a1a);
+}
+
+.notification-info {
+    background: var(--md-blue);
+    color: var(--color-text-on-accent, #1a1a1a);
 }
 
 .notification-close {

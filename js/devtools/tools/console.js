@@ -2,7 +2,9 @@
  * DevTools 控制台工具 — 读取/清除控制台日志
  */
 
+import { state } from '../../core/state.js';
 import { buildToolFromLegacy } from '../../tools/build-tool.js';
+import { getConsoleEntries, clearConsoleEntries } from '../console-interceptor.js';
 
 // ========== devtools_read_console ==========
 
@@ -23,10 +25,8 @@ export const readConsoleTool = {
 };
 
 export async function readConsoleHandler(args) {
-    const { state } = await import('../../core/state.js');
     const sessionId = state.currentSessionId;
 
-    const { getConsoleEntries } = await import('../console-interceptor.js');
     const filter = args.level && args.level !== 'all' ? { level: args.level } : undefined;
     const entries = getConsoleEntries(filter);
 
@@ -48,10 +48,8 @@ export const clearConsoleTool = {
 };
 
 export async function clearConsoleHandler() {
-    const { state } = await import('../../core/state.js');
     const sessionId = state.currentSessionId;
 
-    const { clearConsoleEntries } = await import('../console-interceptor.js');
     const cleared = clearConsoleEntries();
 
     if (state.currentSessionId !== sessionId) {

@@ -6,18 +6,21 @@
 import { logger } from '../utils/logger.js';
 import { BaseStreamParser } from './base-parser.js';
 
-import { updateStreamingMessage, handleContentArray } from './helpers.js';
-import { state } from '../core/state.js';
+import { handleContentArray } from './helpers.js';
 import { eventBus } from '../core/events.js';
-import { createToolCallAccumulator } from './tool-call-handler.js';
+import { createToolCallAccumulator } from './openai-tool-accumulator.js';
+import { ToolMode } from '../messages/schema.js';
+import { generateIdSet } from '../api/format-converter.js';
+import { STREAM_IDLE_TIMEOUT_RESPONSES_MIN } from '../utils/constants.js';
 
 /**
  * OpenAI 流解析器
  */
-class OpenAIStreamParser extends BaseStreamParser {
-    constructor(format, sessionId) {
-        super(sessionId);
+export class OpenAIStreamParser extends BaseStreamParser {
+    constructor(format, sessionId, sink = null) {
+        super(sessionId, sink);
         this.isResponsesFormat = format === 'openai-responses';
+        this.signatureFormat = 'openai';
         this.reader = null;
 
         // 原生工具调用累积器（Chat Completions）
@@ -34,9 +37,22 @@ class OpenAIStreamParser extends BaseStreamParser {
         this.responsesReasoningItems = new Map();
     }
 
-    async parse(reader) {
+    /**
+     * Responses API 走 reasoning 模型时，模型内部推理阶段可能持续数分钟
+     * 不下发任何 SSE chunk，必须比 base 默认空闲超时更宽容；用户偏好优先
+     */
+    get idleTimeout() {
+        if (this.isResponsesFormat) {
+            // Responses 默认 5 分钟，给 reasoning 模型留余地；用户偏好若 > 5 分钟则采用更长
+            const base = super.idleTimeout;
+            return Math.max(base, STREAM_IDLE_TIMEOUT_RESPONSES_MIN);
+        }
+        return super.idleTimeout;
+    }
+
+    async parse(reader, signal = null) {
         this.reader = reader;
-        return super.parse(reader);
+        return super.parse(reader, signal);
     }
 
     async processLine(line) {
@@ -101,7 +117,7 @@ class OpenAIStreamParser extends BaseStreamParser {
                     this.textContent += parsed.delta;
                     this.totalReceived += parsed.delta.length;
                     this.mergeContentPart('text', parsed.delta);
-                    updateStreamingMessage(this.textContent, this.thinkingContent);
+                    this.notifyStreaming(this.textContent, this.thinkingContent);
                 }
                 break;
 
@@ -113,7 +129,7 @@ class OpenAIStreamParser extends BaseStreamParser {
                     this.thinkingContent += parsed.delta;
                     this.totalReceived += parsed.delta.length;
                     this.mergeContentPart('thinking', parsed.delta);
-                    updateStreamingMessage(this.textContent, this.thinkingContent);
+                    this.notifyStreaming(this.textContent, this.thinkingContent);
                 }
                 break;
 
@@ -192,7 +208,7 @@ class OpenAIStreamParser extends BaseStreamParser {
                     this.stats.recordFirstToken();
                     this.stats.recordTokens(this.textContent);
                     this.contentParts.push({ type: 'text', text: this.textContent });
-                    updateStreamingMessage(this.textContent, this.thinkingContent);
+                    this.notifyStreaming(this.textContent, this.thinkingContent);
                 }
                 if (parsed.response?.output) {
                     for (const item of parsed.response.output) {
@@ -234,7 +250,7 @@ class OpenAIStreamParser extends BaseStreamParser {
                     this.thinkingContent += item.content;
                     this.totalReceived += item.content.length;
                     this.mergeContentPart('thinking', item.content);
-                    updateStreamingMessage(this.textContent, this.thinkingContent);
+                    this.notifyStreaming(this.textContent, this.thinkingContent);
                 }
             } else if (item.type === 'message') {
                 const messageText = item.text || item.content?.[0]?.text || '';
@@ -244,7 +260,7 @@ class OpenAIStreamParser extends BaseStreamParser {
                     this.textContent += messageText;
                     this.totalReceived += messageText.length;
                     this.mergeContentPart('text', messageText);
-                    updateStreamingMessage(this.textContent, this.thinkingContent);
+                    this.notifyStreaming(this.textContent, this.thinkingContent);
                 } else if (Array.isArray(item.content)) {
                     this.stats.recordFirstToken();
                     const textFromParts = item.content
@@ -254,7 +270,7 @@ class OpenAIStreamParser extends BaseStreamParser {
                     if (textFromParts) {
                         this.stats.recordTokens(textFromParts);
                         this.textContent += textFromParts;
-                        updateStreamingMessage(this.textContent, this.thinkingContent);
+                        this.notifyStreaming(this.textContent, this.thinkingContent);
                     }
                     const addedLength = await handleContentArray(item.content, this.contentParts);
                     this.totalReceived += addedLength;
@@ -289,14 +305,14 @@ class OpenAIStreamParser extends BaseStreamParser {
         const finishReason = parsed.choices?.[0]?.finish_reason;
 
         // 原生 tool_calls
-        if (delta?.tool_calls && !state.xmlToolCallingEnabled) {
+        if (delta?.tool_calls && !this.xmlMode) {
             this.hasToolCalls = true;
             this.toolCallAccumulator.processDelta(delta.tool_calls);
         }
 
         // XML 工具调用检测
         let xmlParseResult = null;
-        if (delta && typeof delta.content === 'string' && state.xmlToolCallingEnabled) {
+        if (delta && typeof delta.content === 'string' && this.xmlMode) {
             try {
                 xmlParseResult = this.xmlToolCallAccumulator.processDelta(delta.content);
                 if (xmlParseResult.error) {
@@ -314,26 +330,37 @@ class OpenAIStreamParser extends BaseStreamParser {
         // 工具调用完成
         if (finishReason === 'tool_calls' || (finishReason === 'stop' && this.hasToolCalls)) {
             let toolCalls;
-            if (state.xmlToolCallingEnabled && !this.xmlParsingDisabled) {
+            if (this.xmlMode && !this.xmlParsingDisabled) {
                 toolCalls = this.xmlToolCallAccumulator.getCompletedCalls();
             } else {
                 toolCalls = this.toolCallAccumulator.getCompletedCalls();
             }
             if (toolCalls.length > 0) {
+                // 显式打 mode，便于后续 saveAssistantMessage / handleToolCallStream 透传
+                const mode = this.xmlMode ? ToolMode.XML : ToolMode.NATIVE;
+                // 落 part 时显式标记 originalFormat=openai 写入 idMap.openai 槽，
+                // 即使 OpenAI 服务端返回不带 call_ 前缀的短 id（某些代理/网关）也能正确归位
+                toolCalls = toolCalls
+                    .filter((tc) => tc && tc.name)
+                    .map((tc) => ({
+                        ...tc,
+                        mode,
+                        idMap: tc.idMap || generateIdSet(tc.id || '', 'openai')
+                    }));
                 this.executeToolCalls(toolCalls);
                 return true;
             }
         }
 
         if (delta) {
-            // reasoning_content（OpenAI o1/o3/o4 思维链）
+            // reasoning_content（OpenAI 思维链）
             if (delta.reasoning_content) {
                 this.stats.recordFirstToken();
                 this.stats.recordTokens(delta.reasoning_content);
                 this.thinkingContent += delta.reasoning_content;
                 this.totalReceived += delta.reasoning_content.length;
                 this.mergeContentPart('thinking', delta.reasoning_content);
-                updateStreamingMessage(this.textContent, this.thinkingContent);
+                this.notifyStreaming(this.textContent, this.thinkingContent);
             }
 
             // 文本内容
@@ -342,14 +369,14 @@ class OpenAIStreamParser extends BaseStreamParser {
                 this.stats.recordTokens(delta.content);
 
                 let contentToProcess = delta.content;
-                if (state.xmlToolCallingEnabled && !this.xmlParsingDisabled && xmlParseResult) {
+                if (this.xmlMode && !this.xmlParsingDisabled && xmlParseResult) {
                     contentToProcess = xmlParseResult.displayText.substring(
                         this.textContent.length
                     );
                 }
 
                 this.processThinkAndMarkdown(contentToProcess);
-                updateStreamingMessage(this.textContent, this.thinkingContent);
+                this.notifyStreaming(this.textContent, this.thinkingContent);
             }
             // content 数组（图片等）
             else if (Array.isArray(delta.content)) {
@@ -379,7 +406,7 @@ class OpenAIStreamParser extends BaseStreamParser {
         if (!hasTextPart && text) {
             this.contentParts.push({ type: 'text', text });
         }
-        updateStreamingMessage(this.textContent, this.thinkingContent);
+        this.notifyStreaming(this.textContent, this.thinkingContent);
     }
 
     _getReasoningKey(itemOrId, outputIndex = null) {
@@ -460,12 +487,16 @@ class OpenAIStreamParser extends BaseStreamParser {
             } catch (_e) {
                 args = {};
             }
+            // Responses API function_call 永远是原生协议，
+            // 显式标 NATIVE 覆盖 base.executeToolCalls 按 xmlMode 的兜底
             completedCalls.push({
                 id: tc.id,
                 call_id: tc.call_id || tc.id,
                 responseItemId: tc.responseItemId || null,
                 name: tc.name,
-                arguments: args
+                arguments: args,
+                mode: ToolMode.NATIVE,
+                idMap: generateIdSet(tc.id, 'openai')
             });
         }
 
@@ -491,42 +522,96 @@ class OpenAIStreamParser extends BaseStreamParser {
         const errorMessage = error.message || 'Unknown error';
         logger.error(`OpenAI API 错误 (流式响应):`, error);
 
-        let userMessage = '';
-        if (errorCode === 429 || errorCode === 'rate_limit_exceeded') {
-            userMessage = `请求过多 (429)：${errorMessage}\n请稍后再试`;
-        } else if (errorCode === 503) {
-            userMessage = `服务暂时不可用 (503)：${errorMessage}`;
-        } else if (errorCode === 500 || errorCode === 'server_error') {
-            userMessage = `服务器内部错误：${errorMessage}`;
-        } else {
-            userMessage = `API 错误: ${errorMessage}`;
-        }
-
+        const userMessage = this.buildStreamErrorUserMessage(errorCode, errorMessage);
         eventBus.emit('ui:notification', { message: userMessage, type: 'error', duration: 8000 });
         await this.reader.cancel();
 
         if (this.textContent || this.thinkingContent || this.contentParts.length > 0) {
-            this.finalizeStreamWithError(errorCode, errorMessage, {
-                encryptedContent: this.encryptedContent,
-                reasoningItemId: this.reasoningItemId,
-                reasoningItems: this._getReasoningItemsForSave()
-            });
+            this.finalizeStreamWithError(errorCode, errorMessage, this.getStreamErrorExtraFields());
         }
     }
 
     _finalize() {
-        this.finalizeStream({
+        this.finalizeStream(this.collectExtraSaveFields());
+    }
+
+    // ───── Hook overrides ─────
+
+    hasOngoingToolStream() {
+        return (
+            super.hasOngoingToolStream() ||
+            this.hasToolCalls === true ||
+            this.hasResponsesToolCalls === true ||
+            (this.toolCallAccumulator?.calls?.size ?? 0) > 0 ||
+            (this.responsesToolCalls?.size ?? 0) > 0
+        );
+    }
+
+    collectExtraSaveFields() {
+        const extra = { ...super.collectExtraSaveFields() };
+        if (this.isResponsesFormat) {
+            // Responses API：reasoningItems 通过 _getReasoningItemsForSave() 从 Map 转 Array
+            // 修复 base 旧版嗅探 this.reasoningItems 永远 falsy 的死代码（实际字段是 responsesReasoningItems Map）
+            const reasoningItems = this._getReasoningItemsForSave();
+            if (reasoningItems.length > 0) {
+                extra.reasoningItems = reasoningItems;
+            }
+            if (typeof this.encryptedContent === 'string' && this.encryptedContent) {
+                extra.encryptedContent = this.encryptedContent;
+            }
+            if (typeof this.reasoningItemId === 'string' && this.reasoningItemId) {
+                extra.reasoningItemId = this.reasoningItemId;
+            }
+        }
+        return extra;
+    }
+
+    buildStreamErrorUserMessage(errorCode, errorMessage) {
+        if (errorCode === 429 || errorCode === 'rate_limit_exceeded') {
+            return `请求过多 (429)：${errorMessage}\n请稍后再试`;
+        }
+        if (errorCode === 503) {
+            return `服务暂时不可用 (503)：${errorMessage}`;
+        }
+        if (errorCode === 500 || errorCode === 'server_error') {
+            return `服务器内部错误：${errorMessage}`;
+        }
+        if (errorCode === 'context_length_exceeded') {
+            return `上下文超长 (${errorCode}): ${errorMessage}`;
+        }
+        return super.buildStreamErrorUserMessage(errorCode, errorMessage);
+    }
+
+    /**
+     * OpenAI reply：含 encryptedContent / reasoningItemId / reasoningItems（Responses）
+     */
+    collectReply() {
+        return {
+            ...super.collectReply(),
             encryptedContent: this.encryptedContent,
             reasoningItemId: this.reasoningItemId,
             reasoningItems: this._getReasoningItemsForSave()
-        });
+        };
     }
 }
 
 /**
  * 解析 OpenAI 流式响应（保持原有导出签名）
+ * @param {ReadableStreamDefaultReader} reader
+ * @param {string} [format]
+ * @param {string|null} [sessionId]
+ * @param {import('./sink.js').StreamSink} [sink] - 可选 sink，缺省 DefaultSink(sessionId)
+ * @param {AbortSignal|null} [signal]
+ * @returns {Promise<OpenAIStreamParser>} 完成后的 parser 实例（multi-stream 从实例字段构建 reply）
  */
-export async function parseOpenAIStream(reader, format = 'openai', sessionId = null) {
-    const parser = new OpenAIStreamParser(format, sessionId);
-    await parser.parse(reader);
+export async function parseOpenAIStream(
+    reader,
+    format = 'openai',
+    sessionId = null,
+    sink = null,
+    signal = null
+) {
+    const parser = new OpenAIStreamParser(format, sessionId, sink);
+    await parser.parse(reader, signal);
+    return parser;
 }

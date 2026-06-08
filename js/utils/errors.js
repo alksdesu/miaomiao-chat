@@ -37,7 +37,21 @@ const ERROR_MESSAGES = {
     NetworkError: { title: '网络连接失败', hint: '请检查网络连接' },
     TypeError: { title: '请求失败', hint: '可能是跨域或网络问题' },
     AbortError: { title: '请求已取消', hint: '请求被手动中断' },
-    TimeoutError: { title: '请求超时', hint: '服务响应太慢，请重试' }
+    TimeoutError: { title: '请求超时', hint: '服务响应太慢，请重试' },
+
+    // 流式专用错误码（base-parser._handleStreamReadError 抛出）
+    idle_timeout: {
+        title: '流式响应空闲超时',
+        hint: '服务端长时间未推送新数据，可重试或在设置中调高空闲超时'
+    },
+    network_error: {
+        title: '流式响应中断',
+        hint: '网络或代理异常，已保存收到的部分内容'
+    },
+    empty_response: {
+        title: '响应内容为空',
+        hint: '代理可能返回了 HTML 错误页，请检查代理配置或端点地址'
+    }
 };
 
 /**

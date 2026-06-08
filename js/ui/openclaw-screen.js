@@ -63,6 +63,7 @@ function handleScreenCapture(data) {
     if (badge) {
         badge.classList.remove('ended');
         badge.textContent = '';
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：纯静态字符串字面量
         badge.insertAdjacentHTML('afterbegin', '<span></span>实时画面');
     }
 

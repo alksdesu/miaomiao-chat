@@ -6,12 +6,20 @@
             name="viewport"
             content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover, interactive-widget=resizes-content"
         />
-        <!-- CSP：connect-src 需要 https/http/wss/ws 通配因为用户可配置任意 API 端点 -->
+        <!--
+            CSP 收紧边界：
+            - script-src 去掉 'unsafe-inline'：全部内联事件处理器已迁移到 addEventListener，无 <script>...</script> 内联块
+            - script-src 去掉 cdn.jsdelivr.net：所有第三方库已本地化到 libs/
+            - script-src 保留 'unsafe-eval'：pdfjs 解析 PDF Type 4 函数走 new Function 编译（fallback 解释器性能差），chii DevTools console 求值依赖 eval
+            - style-src 保留 'unsafe-inline'：项目存在大量内联 style 属性 + 主题热切换运行时改 :root CSS 变量
+            - connect-src 通配 https/http/wss/ws：用户可配置任意 LLM 端点，无法预测域名
+            - frame-ancestors 指令在 meta 标签中无效，需在服务器 HTTP 响应头设置（Electron onHeadersReceived 已设）
+        -->
         <meta
             http-equiv="Content-Security-Policy"
             content="
         default-src 'self';
-        script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net http://127.0.0.1:*;
+        script-src 'self' 'unsafe-eval' http://127.0.0.1:*;
         style-src 'self' 'unsafe-inline' http://127.0.0.1:*;
         img-src 'self' data: blob: https: http:;
         font-src 'self' data:;
@@ -23,12 +31,6 @@
         form-action 'self';
     "
         />
-        <!--
-        注意事项：
-        1. frame-ancestors 指令在 meta 标签中无效，需要在服务器 HTTP 响应头中设置
-        2. 'unsafe-inline' 允许内联脚本和样式，但增加 XSS 风险（当前项目使用了大量内联事件处理器）
-        3. connect-src 包含 https: wss: ws: 允许所有 HTTPS/WebSocket 连接（用于用户自定义API端点）
-    -->
 
         <!-- 第三方库统一 defer 加载（浏览器并行下载，按顺序执行，不阻塞 HTML 解析） -->
         <script src="libs/marked/marked.min.js" defer></script>
@@ -1887,7 +1889,6 @@
                         class="save-edit-btn"
                         title="保存编辑"
                         aria-label="保存编辑的消息"
-                        onclick="saveEdit()"
                     >
                         <svg
                             aria-hidden="true"
@@ -1910,7 +1911,6 @@
                         class="cancel-edit-btn"
                         title="取消编辑 (ESC)"
                         aria-label="取消编辑消息"
-                        onclick="cancelEdit()"
                     >
                         <svg
                             aria-hidden="true"
@@ -2154,7 +2154,6 @@
                 type="button"
                 class="image-viewer-close"
                 aria-label="关闭图片查看器"
-                onclick="closeImageViewer()"
             >&times;</button>
             <img id="image-viewer-img" src="" alt="查看大图" />
         </div>
