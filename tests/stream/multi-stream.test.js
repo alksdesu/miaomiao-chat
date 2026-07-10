@@ -131,6 +131,21 @@ import { renderReplyWithSelector } from '../../js/messages/renderer.js';
 import { renderHumanizedError } from '../../js/utils/errors.js';
 import { appendStreamStats } from '../../js/stream/stats.js';
 import { executeRequest } from '../../js/api/request-pipeline.js';
+import { getAdapter } from '../../js/api/adapters/index.js';
+
+function makeCtx(overrides = {}) {
+    return {
+        endpoint: 'http://api.test',
+        apiKey: 'key',
+        model: 'model',
+        requestFormat: 'openai',
+        adapter: getAdapter('openai'),
+        abortController: new AbortController(),
+        assistantMessageEl: document.createElement('div'),
+        sessionId: 'session-1',
+        ...overrides
+    };
+}
 
 beforeEach(() => {
     vi.clearAllMocks();
@@ -151,14 +166,7 @@ describe('handleMultiStreamResponses - 成功流', () => {
             body: { getReader: () => createSimpleMockReader() }
         }));
 
-        await handleMultiStreamResponses(
-            'http://api.test',
-            'key',
-            'model',
-            new AbortController(),
-            document.createElement('div'),
-            'session-1'
-        );
+        await handleMultiStreamResponses(makeCtx());
 
         expect(executeRequest).toHaveBeenCalledTimes(2);
         expect(appendStreamStats).toHaveBeenCalled();
@@ -175,14 +183,7 @@ describe('handleMultiStreamResponses - 成功流', () => {
             body: { getReader: () => createSimpleMockReader() }
         }));
 
-        await handleMultiStreamResponses(
-            'http://api.test',
-            'key',
-            'model',
-            new AbortController(),
-            document.createElement('div'),
-            'session-1'
-        );
+        await handleMultiStreamResponses(makeCtx());
 
         expect(executeRequest).toHaveBeenCalledTimes(1);
         expect(saveAssistantMessage).toHaveBeenCalled();
@@ -199,14 +200,7 @@ describe('handleMultiStreamResponses - 所有请求失败', () => {
             })
         }));
 
-        await handleMultiStreamResponses(
-            'http://api.test',
-            'key',
-            'model',
-            new AbortController(),
-            document.createElement('div'),
-            'session-1'
-        );
+        await handleMultiStreamResponses(makeCtx());
 
         expect(renderHumanizedError).toHaveBeenCalled();
         expect(saveErrorMessage).toHaveBeenCalled();
@@ -217,14 +211,7 @@ describe('handleMultiStreamResponses - 所有请求失败', () => {
             throw new Error('Network error');
         });
 
-        await handleMultiStreamResponses(
-            'http://api.test',
-            'key',
-            'model',
-            new AbortController(),
-            document.createElement('div'),
-            'session-1'
-        );
+        await handleMultiStreamResponses(makeCtx());
 
         expect(renderHumanizedError).toHaveBeenCalled();
     });
@@ -250,14 +237,7 @@ describe('handleMultiStreamResponses - 部分成功', () => {
             };
         });
 
-        await handleMultiStreamResponses(
-            'http://api.test',
-            'key',
-            'model',
-            new AbortController(),
-            document.createElement('div'),
-            'session-1'
-        );
+        await handleMultiStreamResponses(makeCtx());
 
         // 仍然应保存成功的回复
         expect(saveAssistantMessage).toHaveBeenCalled();

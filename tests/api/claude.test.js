@@ -25,7 +25,7 @@ vi.mock('../../js/utils/logger.js', () => ({
 }));
 
 vi.mock('../../js/api/params.js', () => ({
-    buildModelParams: vi.fn(() => ({ max_tokens: 8192 })),
+    buildModelParams: vi.fn(() => ({ max_tokens: 4096 })),
     buildThinkingConfig: vi.fn(() => null),
     buildVerbosityConfig: vi.fn(() => null),
     getCustomHeadersObject: vi.fn(() => ({}))
@@ -98,7 +98,7 @@ describe('claude API', () => {
         expect(body.model).toBe('claude-3-opus');
         expect(body.stream).toBe(true);
         expect(body.messages).toBeDefined();
-        expect(body.max_tokens).toBe(8192);
+        expect(body.max_tokens).toBe(4096);
     });
 
     it('包含 x-api-key header', async () => {

@@ -14,8 +14,8 @@ const getFilesystem = () => window.Capacitor?.Plugins?.Filesystem;
 // Java 端用 @CapacitorPlugin 注册的插件会自动暴露在 Plugins 中
 const getAndroidInstaller = () => window.Capacitor?.Plugins?.AndroidInstaller;
 
-// 直接访问 GitHub Release API 拉取更新信息（公开仓库）
-const UPDATE_CHECK_URL = 'https://api.github.com/repos/alksdesu/miaomiao-chat/releases/latest';
+// 使用代理 API 拉取更新信息
+const UPDATE_CHECK_URL = 'https://dawn-feather-d2e6.alks2636777.workers.dev';
 
 // 当前应用版本（运行时从 Capacitor 获取）
 const CURRENT_VERSION = '1.1.18'; // 默认值
@@ -135,7 +135,7 @@ export async function downloadAndInstallAPK(downloadUrl, fileName, onProgress = 
             if (Http && Http.downloadFile) {
                 logger.debug('[APK Updater] 使用 Capacitor HTTP 原生下载');
 
-                const fileName = `miaomiao-update-${Date.now()}.apk`;
+                const fileName = `webchat-update-${Date.now()}.apk`;
                 const result = await Http.downloadFile({
                     url: downloadUrl,
                     filePath: fileName,
@@ -156,12 +156,15 @@ export async function downloadAndInstallAPK(downloadUrl, fileName, onProgress = 
             logger.warn('[APK Updater] Capacitor HTTP 不可用，降级到代理下载:', httpError);
         }
 
-        // 方案2：fetch 直连 GitHub Releases 下载 URL
-        // 在 Capacitor Android 中通常不会触发 CORS（fetch 由 WebView 发起，但 Android 上的 GitHub 直链一般可达）
-        // 如果 CORS 拦截，请优先确保方案1（Capacitor HTTP 原生下载）可用
-        logger.debug('[APK Updater] fetch 直连 GitHub:', downloadUrl);
+        // 方案2：使用代理下载（绕过 CORS 限制）
+        // GitHub Releases 的直接下载会遇到 CORS 问题
+        // Worker 支持格式: /download/{filename}
+        // 使用传入的 fileName（从 GitHub API 获取的真实文件名）
+        const proxyUrl = `https://dawn-feather-d2e6.alks2636777.workers.dev/download/${fileName}`;
 
-        const response = await fetch(downloadUrl, {
+        logger.debug('[APK Updater] 使用代理下载 APK:', proxyUrl);
+
+        const response = await fetch(proxyUrl, {
             method: 'GET'
         });
 
@@ -179,7 +182,7 @@ export async function downloadAndInstallAPK(downloadUrl, fileName, onProgress = 
             try {
                 const base64Data = reader.result.split(',')[1];
 
-                const fileName = `miaomiao-update-${Date.now()}.apk`;
+                const fileName = `webchat-update-${Date.now()}.apk`;
                 const fileResult = await Filesystem.writeFile({
                     path: fileName,
                     data: base64Data,

@@ -9,14 +9,7 @@
  */
 
 import { state } from '../core/state.js';
-import {
-    getCurrentProvider,
-    getCurrentEndpoint,
-    getCurrentApiKey,
-    getCurrentModel
-} from './current.js';
-import { getAdapter } from './adapters/index.js';
-import { getSendFunction } from './factory.js';
+import { executeRequest } from './request-pipeline.js';
 import {
     finalizeStreamStats,
     getCurrentStreamStatsData,
@@ -104,18 +97,18 @@ function tryHandleToolCalls(reply, adapter, sessionId, assistantMessageEl, respo
  * 多回复并发：发起 N-1 个额外请求并收集结果
  *
  * AbortError 不落库为错误回复 —— 用户主动取消时把"已取消"持久化成 N-1 条错回复会污染会话；
- * 与 multi-stream.js 的 allAborted 守卫语义对齐
+ * 与 multi-stream.js 的 allAborted 守卫语义对齐。
+ * 用 ctx 快照的 endpoint/apiKey/model/adapter 走 executeRequest，避免请求往返期间用户切
+ * provider 后额外请求打到新端点或用错 adapter。
  */
-async function fetchAdditionalReplies(replyCount, responseFormat, adapter, signal) {
-    const endpoint = getCurrentEndpoint();
-    const apiKey = getCurrentApiKey();
-    const model = getCurrentModel();
-    const sendFn = getSendFunction(responseFormat);
+async function fetchAdditionalReplies(ctx, replyCount) {
+    const { adapter, endpoint, apiKey, model } = ctx;
+    const signal = ctx.abortController?.signal || null;
 
     const promises = [];
     for (let i = 1; i < replyCount; i++) {
         promises.push(
-            sendFn(endpoint, apiKey, model, signal)
+            executeRequest(adapter, { endpoint, apiKey, model, signal })
                 .then((res) => res.json())
                 .catch((err) => {
                     if (err?.name !== 'AbortError') {
@@ -226,17 +219,12 @@ function aggregateErrorsAndThrow(requestErrors) {
  * 处理非流式响应（支持多回复）
  *
  * @param {Response} response - Fetch Response
- * @param {HTMLElement} assistantMessageEl - 助手消息元素
- * @param {string} sessionId - 请求发起时的会话ID
- * @param {AbortSignal|null} signal - sendToAPI 透传的 abort signal（来自 ctx.abortController）；
- *   N-1 个并发请求必须共用同一 signal，否则用户点取消时只停首个请求，其余继续吃 token
+ * @param {import('./handler-context.js').HandlerContext} ctx - sendToAPI 的不可变快照
+ *   （adapter/endpoint/apiKey/model/sessionId/assistantMessageEl/abortController 均取自此，
+ *   N-1 个并发请求共用 ctx.abortController.signal，用户点取消时一并停止不再吃 token）
  */
-export async function handleNonStreamResponse(
-    response,
-    assistantMessageEl,
-    sessionId,
-    signal = null
-) {
+export async function handleNonStreamResponse(response, ctx) {
+    const { assistantMessageEl, sessionId, adapter } = ctx;
     const replyCount = state.replyCount || 1;
     const requestErrors = [];
 
@@ -247,10 +235,6 @@ export async function handleNonStreamResponse(
             `<div class="multi-reply-progress">正在生成 ${replyCount} 个回复中...</div>`
         );
     }
-
-    const provider = getCurrentProvider();
-    const responseFormat = provider?.apiFormat || 'openai';
-    const adapter = getAdapter(responseFormat);
 
     try {
         const data = await response.json();
@@ -274,12 +258,7 @@ export async function handleNonStreamResponse(
 
         // 多回复并发
         if (replyCount > 1) {
-            const { replies, errors, abortedCount } = await fetchAdditionalReplies(
-                replyCount,
-                responseFormat,
-                adapter,
-                signal
-            );
+            const { replies, errors, abortedCount } = await fetchAdditionalReplies(ctx, replyCount);
             allReplies.push(...replies);
             requestErrors.push(...errors);
 

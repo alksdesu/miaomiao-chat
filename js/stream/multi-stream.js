@@ -20,28 +20,24 @@ import { renderReplyWithSelector } from '../messages/renderer.js';
 import { renderHumanizedError } from '../utils/errors.js';
 import { saveErrorMessage } from '../messages/sync.js';
 import { getSendFunction } from '../api/factory.js';
-import { getAdapter } from '../api/adapters/index.js';
-import { getCurrentProvider } from '../api/current.js';
 import { executeRequest } from '../api/request-pipeline.js';
 import { BufferedSink } from './sink.js';
 
 /**
  * 处理多个流式响应（并行）
- * @param {string} endpoint - API端点
- * @param {string} apiKey - API密钥
- * @param {string} model - 模型名称
- * @param {AbortController} abortController - 取消控制器
- * @param {HTMLElement} assistantMessageEl - 助手消息元素
- * @param {string} sessionId - 会话ID
+ * @param {import('../api/handler-context.js').HandlerContext} ctx - sendToAPI 的不可变快照
  */
-export async function handleMultiStreamResponses(
-    endpoint,
-    apiKey,
-    model,
-    abortController,
-    assistantMessageEl,
-    sessionId
-) {
+export async function handleMultiStreamResponses(ctx) {
+    const {
+        endpoint,
+        apiKey,
+        model,
+        abortController,
+        assistantMessageEl,
+        sessionId,
+        adapter,
+        requestFormat
+    } = ctx;
     const replyCount = state.replyCount || 1;
 
     // 显示进度 —— 用独立 DOM 节点（class:multi-reply-progress-bar）不覆盖整个 message-content，
@@ -54,19 +50,12 @@ export async function handleMultiStreamResponses(
     state.currentAssistantMessage.innerHTML = '';
     state.currentAssistantMessage.appendChild(progressEl);
 
-    // 并行发送所有请求
-    const provider = getCurrentProvider();
-    const requestFormat = provider?.apiFormat || 'openai';
-    const sendFn = getSendFunction(requestFormat);
-    const adapter = getAdapter(requestFormat);
-
-    // sendFn 内部（openai.js）会再次 getCurrentProvider 读 apiFormat — 多回复并发期间
-    // 用户切到不同 apiFormat 的 provider 会让第 N 个请求用新 adapter + 旧 endpoint 错配。
-    // 用闭包绑定快照 adapter 走 executeRequest 跳过 sendFn 重读 provider 的问题
-    // （openclaw 走 WS 不在 executeRequest 流程，回退 sendFn 单流路径已规避）
+    // 用 ctx 快照 adapter 走 executeRequest：请求往返期间用户切 provider 也不会让并发流
+    // 用错 adapter 或打到新端点。openclaw supportsMultiStream:false 不进本路径（handler 已
+    // 拦截降级单流），保留 getSendFunction 分支仅作防御
     const boundSendFn =
         requestFormat === 'openclaw'
-            ? sendFn
+            ? getSendFunction(requestFormat)
             : (ep, key, mdl, sig) =>
                   executeRequest(adapter, { endpoint: ep, apiKey: key, model: mdl, signal: sig });
 

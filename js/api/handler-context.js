@@ -13,13 +13,21 @@
  */
 
 import { state } from '../core/state.js';
-import { getCurrentEndpoint, getCurrentApiKey, getCurrentModel } from './current.js';
+import {
+    getCurrentEndpoint,
+    getCurrentApiKey,
+    getCurrentModel,
+    getCurrentProvider
+} from './current.js';
+import { getAdapter } from './adapters/index.js';
 
 /**
  * @typedef {Object} HandlerContext
  * @property {string} endpoint                - 锁定的端点
  * @property {string} apiKey                  - 锁定的 API 密钥
  * @property {string} model                   - 锁定的模型
+ * @property {string} requestFormat           - 锁定的 apiFormat（决定 parser 分支与 openclaw 特判）
+ * @property {object} adapter                 - 锁定的 FormatAdapter（决定请求体格式 + streamParser）
  * @property {AbortController} abortController- 本次请求的 AbortController
  * @property {string} sessionId               - 锁定的发起会话 ID
  * @property {number} timeoutMs               - 锁定的请求超时（生成 timeout 错误提示文案用）
@@ -33,10 +41,15 @@ import { getCurrentEndpoint, getCurrentApiKey, getCurrentModel } from './current
  * @returns {HandlerContext}
  */
 export function createHandlerContext() {
+    // requestFormat/adapter 与 endpoint/apiKey/model 一同快照：请求往返期间用户切 provider 时，
+    // 响应侧仍用发起时锁定的 adapter 解析，避免 Claude 流被 OpenAI parser 解成空流
+    const requestFormat = getCurrentProvider()?.apiFormat || 'openai';
     return {
         endpoint: getCurrentEndpoint(),
         apiKey: getCurrentApiKey(),
         model: getCurrentModel(),
+        requestFormat,
+        adapter: getAdapter(requestFormat),
         abortController: new AbortController(),
         sessionId: state.currentSessionId,
         timeoutMs: state.requestTimeout,

@@ -33,17 +33,23 @@ export function buildModelParams(format) {
             break;
 
         case 'gemini':
-            // Gemini：所有参数都包含，使用默认值
+            // Gemini：采样参数保留默认值；maxOutputTokens 仅在用户显式设置时传，
+            // 缺省交给模型自身上限，避免固定 8192 截断长输出
             result.temperature = params.temperature !== null ? params.temperature : 1;
             result.topK = params.topK !== null ? params.topK : 40;
             result.topP = params.topP !== null ? params.topP : 0.95;
-            result.maxOutputTokens =
-                params.maxOutputTokens !== null ? params.maxOutputTokens : 8192;
+            if (params.maxOutputTokens !== null) {
+                result.maxOutputTokens = params.maxOutputTokens;
+            }
             break;
 
-        case 'claude':
-            // Claude：max_tokens 有默认值，其他仅非空时添加
-            result.max_tokens = params.max_tokens !== null ? params.max_tokens : 8192;
+        case 'claude': {
+            // adaptive thinking 下由模型按 effort 自决输出长度，传 max_tokens 会挤占思考预算导致截断，故一律不传；
+            // 非 adaptive 时仅在用户显式设置时传（beta Messages API 已将 max_tokens 改为可选）
+            const claudeAdaptive = state.thinkingEnabled && state.claudeAdaptiveThinking;
+            if (!claudeAdaptive && params.max_tokens !== null) {
+                result.max_tokens = params.max_tokens;
+            }
             if (params.temperature !== null) result.temperature = params.temperature;
             if (params.top_p !== null) result.top_p = params.top_p;
             // Extended Thinking 要求 temperature 必须为 1
@@ -57,6 +63,7 @@ export function buildModelParams(format) {
             }
             if (params.top_k !== null) result.top_k = params.top_k;
             break;
+        }
     }
 
     return result;

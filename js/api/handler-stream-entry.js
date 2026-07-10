@@ -5,18 +5,12 @@
  * 其他家校验 body 非 null 后取 reader）从 handler.js 主体抽出。
  */
 
-import { getCurrentProvider } from './current.js';
-import { getAdapter } from './adapters/index.js';
-
 /**
  * @param {Response} response
- * @param {AbortController} abortController
- * @param {string} sessionId
+ * @param {import('./handler-context.js').HandlerContext} ctx
  */
-export async function handleStreamResponse(response, abortController, sessionId) {
-    const provider = getCurrentProvider();
-    const responseFormat = provider?.apiFormat || 'openai';
-    const adapter = getAdapter(responseFormat);
+export async function handleStreamResponse(response, ctx) {
+    const { adapter, requestFormat: responseFormat, abortController, sessionId } = ctx;
 
     // OpenClaw 走 WebSocket 无 reader；其他家校验 body 非 null
     // （代理 200 + Content-Length:0 / HEAD / 204 时 body 为 null，

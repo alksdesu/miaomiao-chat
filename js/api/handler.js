@@ -24,8 +24,6 @@ import { state } from '../core/state.js';
 import { eventBus } from '../core/events.js';
 import { requestStateMachine, RequestState } from '../core/request-state-machine.js';
 import { getSendFunction } from './factory.js';
-import { getCurrentProvider } from './current.js';
-import { getAdapter } from './adapters/index.js';
 import { resetStreamStats } from '../stream/stats.js';
 import { handleMultiStreamResponses } from '../stream/multi-stream.js';
 import { logger } from '../utils/logger.js';
@@ -83,23 +81,14 @@ export async function sendToAPI() {
 
     let requestSucceeded = false;
     try {
-        const provider = getCurrentProvider();
-        const requestFormat = provider?.apiFormat || 'openai';
-        const adapter = getAdapter(requestFormat);
+        const { requestFormat, adapter } = ctx;
         const canMultiStream = adapter?.supportsMultiStream !== false;
 
         // 流式多回复路径
         if (state.streamEnabled && state.replyCount > 1 && canMultiStream) {
             clearTimeout(ctx.timeoutId);
             ctx.timeoutId = null;
-            await handleMultiStreamResponses(
-                ctx.endpoint,
-                ctx.apiKey,
-                ctx.model,
-                ctx.abortController,
-                ctx.assistantMessageEl,
-                ctx.sessionId
-            );
+            await handleMultiStreamResponses(ctx);
             requestSucceeded = true;
             if (!state.isToolCallPending) {
                 requestStateMachine.transition(RequestState.COMPLETED);
@@ -121,11 +110,13 @@ export async function sendToAPI() {
         // 单回复（流式或非流式）
         logger.debug('[sendToAPI] 使用提供商原始格式:', requestFormat);
         const sendFn = getSendFunction(requestFormat);
+        // 传 ctx.adapter 让薄壳用快照 adapter，而非请求往返期间重查 provider
         const response = await sendFn(
             ctx.endpoint,
             ctx.apiKey,
             ctx.model,
-            ctx.abortController.signal
+            ctx.abortController.signal,
+            ctx.adapter
         );
 
         clearTimeout(ctx.timeoutId);
@@ -143,14 +134,9 @@ export async function sendToAPI() {
             assistantMessageEl: ctx.assistantMessageEl
         });
         if (state.streamEnabled || forceStream) {
-            await handleStreamResponse(response, ctx.abortController, ctx.sessionId);
+            await handleStreamResponse(response, ctx);
         } else {
-            await handleNonStreamResponse(
-                response,
-                ctx.assistantMessageEl,
-                ctx.sessionId,
-                ctx.abortController.signal
-            );
+            await handleNonStreamResponse(response, ctx);
         }
 
         // 请求成功完成（工具调用进行中由 continuation 流程管理状态机，跳过此处转换）

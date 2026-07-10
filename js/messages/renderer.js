@@ -486,6 +486,25 @@ function syncCurrentAssistantMessageReference() {
         latestAssistantMessage?.querySelector('.message-content') || null;
 }
 
+// 文件附件卡片 HTML（pdf / 文本类），与 createMessageElement 的附件渲染保持一致
+function renderFilePartCard(name, mime) {
+    const isPdf = mime === 'application/pdf';
+    const isMarkdown = mime === 'text/markdown' || (name || '').endsWith('.md');
+    const cls = isPdf ? 'pdf' : isMarkdown ? 'md' : 'txt';
+    const lines = isPdf
+        ? '<path d="M10 12h4"/><path d="M10 16h4"/>'
+        : '<line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>';
+    const safeName = escapeHtml(name || '文件');
+    return (
+        `<div class="message-file-item ${cls}">` +
+        `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">` +
+        `<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>` +
+        `<polyline points="14 2 14 8 20 8"/>${lines}</svg>` +
+        `<span class="file-name" title="${safeName}">${escapeHtml(truncateFileName(name || '文件', 20))}</span>` +
+        `</div>`
+    );
+}
+
 function buildMessageHtml(message, role) {
     if (!message) {
         return '';
@@ -500,13 +519,21 @@ function buildMessageHtml(message, role) {
                 htmlContent +=
                     role === 'assistant' ? safeMarkedParse(part.text) : escapeHtml(part.text);
             } else if (part.type === PartType.MEDIA && part.url) {
-                const mediaType =
-                    part.media === MediaKind.VIDEO
-                        ? 'video'
-                        : part.media === MediaKind.AUDIO
-                          ? 'audio'
-                          : 'image';
-                htmlContent += renderMediaBlock(part.url, mediaType, part.mime);
+                // 旧数据兜底：MEDIA 但 mime 不是可视媒体（如被错存的 txt）→ 当文件卡片渲染，避免破图占位块
+                const cat = categorizeFile(part.mime);
+                if (cat === 'text' || cat === 'pdf') {
+                    htmlContent += renderFilePartCard(part.name, part.mime);
+                } else {
+                    const mediaType =
+                        part.media === MediaKind.VIDEO
+                            ? 'video'
+                            : part.media === MediaKind.AUDIO
+                              ? 'audio'
+                              : 'image';
+                    htmlContent += renderMediaBlock(part.url, mediaType, part.mime);
+                }
+            } else if (part.type === PartType.FILE) {
+                htmlContent += renderFilePartCard(part.name, part.mime);
             }
         }
 

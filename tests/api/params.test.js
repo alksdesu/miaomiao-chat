@@ -130,37 +130,50 @@ describe('buildModelParams', () => {
     });
 
     describe('gemini 格式', () => {
-        it('所有参数为 null 时使用默认值', () => {
+        it('所有参数为 null 时采样参数用默认值，maxOutputTokens 不传', () => {
             const result = buildModelParams('gemini');
             expect(result).toEqual({
                 temperature: 1,
                 topK: 40,
-                topP: 0.95,
-                maxOutputTokens: 8192
+                topP: 0.95
             });
         });
 
-        it('非 null 参数覆盖默认值', () => {
+        it('maxOutputTokens 显式设置时传，否则不传', () => {
             state.modelParams.gemini = {
                 temperature: 0.3,
                 topK: 20,
                 topP: null,
-                maxOutputTokens: null
+                maxOutputTokens: 4096
             };
             const result = buildModelParams('gemini');
             expect(result).toEqual({
                 temperature: 0.3,
                 topK: 20,
                 topP: 0.95,
-                maxOutputTokens: 8192
+                maxOutputTokens: 4096
             });
         });
     });
 
     describe('claude 格式', () => {
-        it('max_tokens 有默认值 8192', () => {
+        it('max_tokens 未设置时不传', () => {
             const result = buildModelParams('claude');
-            expect(result).toEqual({ max_tokens: 8192 });
+            expect(result).toEqual({});
+        });
+
+        it('max_tokens 显式设置且非 adaptive 时传', () => {
+            state.modelParams.claude.max_tokens = 4096;
+            const result = buildModelParams('claude');
+            expect(result.max_tokens).toBe(4096);
+        });
+
+        it('adaptive thinking 开启时一律不传 max_tokens（即使用户设置了）', () => {
+            state.thinkingEnabled = true;
+            state.claudeAdaptiveThinking = true;
+            state.modelParams.claude.max_tokens = 4096;
+            const result = buildModelParams('claude');
+            expect(result.max_tokens).toBeUndefined();
         });
 
         it('temperature 非 null 时包含', () => {

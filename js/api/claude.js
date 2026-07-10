@@ -10,8 +10,9 @@ import { executeRequest } from './request-pipeline.js';
 
 /**
  * 发送 Claude Messages API 请求
+ *
+ * 优先用调用方传入的快照 adapter，缺省回退固定 claude adapter（保留 factory 直调兼容）
  */
-export async function sendClaudeRequest(endpoint, apiKey, model, signal = null) {
-    const adapter = getAdapter('claude');
-    return executeRequest(adapter, { endpoint, apiKey, model, signal });
+export async function sendClaudeRequest(endpoint, apiKey, model, signal = null, adapter = null) {
+    return executeRequest(adapter || getAdapter('claude'), { endpoint, apiKey, model, signal });
 }

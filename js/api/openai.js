@@ -11,10 +11,15 @@ import { executeRequest } from './request-pipeline.js';
 
 /**
  * 发送 OpenAI 格式的请求（Chat Completions / Responses API 自动派发）
+ *
+ * 优先用调用方传入的快照 adapter（sendToAPI 锁定），避免请求往返期间切 provider 后
+ * 重查 provider 选到错误 adapter；缺省时才回退自查（保留 factory 直调兼容）
  */
-export async function sendOpenAIRequest(endpoint, apiKey, model, signal = null) {
-    const provider = getCurrentProvider();
-    const apiFormat = provider?.apiFormat === 'openai-responses' ? 'openai-responses' : 'openai';
-    const adapter = getAdapter(apiFormat);
-    return executeRequest(adapter, { endpoint, apiKey, model, signal });
+export async function sendOpenAIRequest(endpoint, apiKey, model, signal = null, adapter = null) {
+    const resolved =
+        adapter ||
+        getAdapter(
+            getCurrentProvider()?.apiFormat === 'openai-responses' ? 'openai-responses' : 'openai'
+        );
+    return executeRequest(resolved, { endpoint, apiKey, model, signal });
 }
