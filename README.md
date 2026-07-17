@@ -2,167 +2,111 @@
 
 <img src="assets/banner.jpg" alt="Miaomiao Chat" width="600">
 
-</div>
-
-<div align="center">
-
 # Miaomiao Chat
 
-**The most configurable AI chat client.**
-
-64+ settings. Three-layer prefill. Three platforms. Zero backend.
+A cross-platform AI chat client with fine-grained control over every request.
 
 [![Release](https://img.shields.io/github/v/release/alksdesu/miaomiao-chat?style=flat-square)][release-link]
-[![License](https://img.shields.io/github/license/alksdesu/miaomiao-chat?style=flat-square)][license-link]
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Android%20%7C%20Web-blue?style=flat-square)](#downloads)
+[![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)][license-link]
+[![Platform](https://img.shields.io/badge/platform-Windows%20|%20macOS%20|%20Linux%20|%20Android%20|%20Web-blue?style=flat-square)](#download)
 [![Stars](https://img.shields.io/github/stars/alksdesu/miaomiao-chat?style=flat-square)][repo-link]
 
-**English** | [简体中文](#简体中文)
+English | [简体中文](#简体中文)
 
 </div>
 
----
+## Overview
 
-<!-- SCREENSHOT_PLACEHOLDER: Add 1-2 screenshots here (light + dark theme) -->
+Miaomiao Chat runs on Windows, macOS, Linux, Android, and the browser from a single codebase. There is no backend: it is pure frontend ES6 modules talking directly to your API provider.
 
-## What is this
-
-A cross-platform AI chat client that gives you full control over every API parameter, message injection, and tool integration. Runs on desktop, Android, and browser — no server needed.
-
-Most chat clients give you a text box and a temperature slider. This one gives you 64+ configurable options, a three-layer message prefill system, MCP tool support, Computer Use, and the ability to fine-tune every request down to custom HTTP headers.
-
----
+It targets users who want more than a text box and a temperature slider. Five API formats, a three-layer message prefill system, MCP tool support, Computer Use, and per-request tuning down to custom HTTP headers.
 
 ## Features
 
-### Full Control Over Your AI
+### API and parameters
 
-Other clients give you temperature and max tokens. Miaomiao Chat gives you everything.
+- Five API formats in one client: OpenAI Chat Completions, OpenAI Responses, Gemini, Claude, and OpenClaw
+- Cross-format parameter sync: adjust a value in one format and it carries over to the others
+- Thinking chain across all formats, including Claude adaptive thinking with effort levels and Gemini thinking budget
+- Output verbosity control and a thinking None mode for the Responses API
+- Custom HTTP headers for proxy auth or custom routing
+- XML tool-calling fallback that injects tool descriptions into the system prompt when a backend lacks native tool support
+- Named config profiles you can save, switch, and delete
 
-- **64+ configurable options** across 17 setting categories
-- **6-level thinking intensity** — minimal / low / medium / high / extreme / custom budget (1024–131072 tokens)
-- **Cross-format parameter sync** — change temperature in one format, it syncs to all three automatically
-- **Output verbosity control** — low / medium / high
-- **PDF compatibility mode** — send PDFs as images for APIs that don't support file objects
-- **Custom HTTP headers** — add any headers for proxy auth or custom routing
-- **XML tool calling fallback** — inject tool descriptions into system prompt when the backend doesn't support native tools
-- **Thinking None mode** — explicitly send `reasoning.effort=none` for Responses API
-- **Config profiles** — save, switch, and delete named configuration sets including all settings
+### Prefill system
 
-### Prefill System
-
-The feature no other general-purpose chat client has. Three layers of message injection, each with independent presets.
+Three independent layers of message injection, each with its own presets.
 
 ```
-[System Prompt]                     ← Layer 1: system instructions
-[Opening Message #1]                ← Layer 2: simulated conversation history
-[Opening Message #2]                   (inserted before real messages)
+[System Prompt]              Layer 1: system instructions
+[Opening Message #1]         Layer 2: simulated conversation history
+[Opening Message #2]                  inserted before real messages
 ...
 [Real conversation history]
 ...
 [User's latest input]
-[Prefill Message #1]                ← Layer 3: steering instructions
-[Prefill Message #2]                   (inserted after user input, before AI reply)
+[Prefill Message #1]         Layer 3: steering instructions
+[Prefill Message #2]                  inserted after user input, before the reply
 ...
-[AI generates response]
+[Assistant reply]
 ```
 
-- **Layer 1 — System Prompt**: with template variables `{{char}}` `{{user}}` `{{date}}` `{{time}}`
-- **Layer 2 — Opening Messages**: fake conversation history to establish interaction patterns
-- **Layer 3 — Prefill Messages**: per-turn steering appended after user input
-- **Preset management** for each layer independently
-- **Gemini System Parts**: multi-segment system instructions specific to Gemini API
+- System Prompt with template variables: `{{char}}`, `{{user}}`, `{{date}}`, `{{time}}`
+- Opening messages to establish an interaction pattern
+- Per-turn prefill messages appended after the user input
+- Gemini multi-segment system instructions
 
-### Three Platforms, One Codebase
+### Tools and MCP
 
-| | Windows | macOS | Linux | Android | Web |
-|---|:---:|:---:|:---:|:---:|:---:|
-| **Supported** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Install method** | NSIS / Portable | DMG / ZIP | AppImage / DEB | APK | Static deploy |
-| **Auto-update** | ✅ | ✅ | ✅ | ✅ (APK hot update) | N/A |
+- Six built-in tools: calculator, datetime, unit converter, text formatter, random generator, Computer Use
+- Full MCP client: remote over HTTP and WebSocket on every platform, plus local stdio through IPC on the desktop build
+- MCP auto-connect: saved servers reconnect on startup with state persistence
+- Custom tools you register yourself, persisted to IndexedDB
 
-Zero backend. Pure frontend ES6 modules. Deploy to Cloudflare Pages, Vercel, Nginx, or open `index.html` locally.
+### Computer Use (desktop only)
 
-### Tools & MCP
+- Bash execution with configurable working directory, timeout, and confirmation prompts
+- Text file editor: view, create, str_replace, insert
+- Per-capability permissions, enabled or disabled independently
+- Works with Claude native Computer Use and with OpenAI or Gemini through the built-in tool
 
-- **6 built-in tools**: calculator, datetime, unit converter, text formatter, random generator, computer use
-- **Full MCP client**: remote (HTTP/WebSocket) on all platforms + local (stdio via IPC) on Electron
-- **MCP auto-connect**: saved servers reconnect on startup with state persistence
-- **XML tool calling fallback**: for backends that don't support native `tools` parameter
-- **Custom tools**: register your own, persisted to IndexedDB
+### Attachments
 
-### Computer Use <sup>Electron only</sup>
+- Images: JPEG, PNG, GIF, WebP, auto-compressed with 2K, 4K, and fast modes
+- PDF: standard file object, or compatibility mode that sends pages as images
+- Text files: TXT and MD, decoded and injected as document tags
+- Video: MP4, WebM, MOV, MKV, stored locally on desktop and as a data URL on the web
+- Formats are converted between the API protocols automatically
 
-- Bash command execution with configurable working directory, timeout, and confirmation prompts
-- Text file editor (view / create / str_replace / insert)
-- Per-capability permissions: enable/disable bash, file editing independently
-- Works with Claude native Computer Use (beta header) and OpenAI/Gemini via built-in tool
+### Everything else
 
-### Rich Attachments
+- Multi-reply selector: generate one to five replies per request and pick the best
+- Streaming stats: live time to first token, tokens per second, total tokens
+- Full-text session search
+- Markdown export to clipboard
+- Multiple providers with independent endpoints, keys, and model lists
+- Multi-key rotation: round-robin, random, least-used, or smart, with automatic switching on error
+- Code editor with syntax highlighting for 20+ languages
+- Dark and light themes
+- Granular data backup: config only, sessions only, or everything
 
-- **Images**: JPEG, PNG, GIF, WebP — auto-compressed, 2K/4K/fast modes
-- **PDF**: standard mode (file object) or compatibility mode (image_url)
-- **Text files**: TXT, MD — decoded and injected as document tags
-- **Video**: MP4, WebM, MOV, MKV — stored locally on Electron (256MB limit), Data URL on Web
-- All formats auto-converted between OpenAI / Gemini / Claude APIs
+## Download
 
-### Everything Else
+| Windows | macOS | Linux | Android |
+|:---:|:---:|:---:|:---:|
+| [Setup .exe][release-latest] | [.dmg][release-latest] | [AppImage][release-latest] | [.apk][release-latest] |
+| [Portable .exe][release-latest] | [.zip][release-latest] | [.deb][release-latest] | |
 
-- **Multi-reply selector** — generate 1–5 replies per request, browse and pick the best one
-- **Streaming stats** — real-time TTFT, token/s, total tokens
-- **Session search** — full-text search across all conversations
-- **Markdown export** — copy any session as Markdown to clipboard
-- **Provider system** — multiple providers with independent endpoints, keys, and model lists
-- **Multi-key rotation** — round-robin / random / least-used / smart strategies with auto error switching
-- **Thinking chain support** — across all four API formats + `<think>` tag parsing for third-party models
-- **Code editor** — analyze, edit, and preview code blocks with 20+ language support
-- **Dark/Light theme** — with smooth transition animations
-- **Data backup** — granular export/import (config only, sessions only, or everything)
+For the web build, download the source and serve it from any static host, or open `index.html` directly.
 
----
+## Getting started
 
-## Downloads
-
-<table>
-<tr>
-<td align="center"><b>Windows</b></td>
-<td align="center"><b>macOS</b></td>
-<td align="center"><b>Linux</b></td>
-<td align="center"><b>Android</b></td>
-</tr>
-<tr>
-<td align="center">
-<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">Setup .exe</a><br>
-<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">Portable .exe</a>
-</td>
-<td align="center">
-<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">.dmg</a><br>
-<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">.zip</a>
-</td>
-<td align="center">
-<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">AppImage</a><br>
-<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">.deb</a>
-</td>
-<td align="center">
-<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">.apk</a>
-</td>
-</tr>
-</table>
-
-**Web**: Download source and deploy to any static host, or just open `index.html`.
-
----
-
-## Quick Start
-
-1. Download from [Releases][release-link] for your platform
+1. Download the build for your platform from [Releases][release-link]
 2. Install and launch
-3. Open Settings → configure your API endpoint and key
+3. Open Settings and configure your API endpoint and key
 4. Start chatting
 
-Supports OpenAI, Gemini, Claude, and OpenAI Responses API formats out of the box.
-
----
+OpenAI, Gemini, Claude, OpenAI Responses, and OpenClaw are supported out of the box.
 
 ## Development
 
@@ -184,42 +128,31 @@ npm run dist:linux    # Linux
 npm run cap:build     # Android APK
 ```
 
-Release: push a git tag → GitHub Actions builds all platforms automatically.
-
----
+Push a git tag and GitHub Actions builds every platform.
 
 <details>
-<summary><b>Tech Stack</b></summary>
+<summary>Tech stack</summary>
 
-**Frontend**: ES6 Modules (90+ files), Marked.js, Highlight.js, KaTeX, DOMPurify
-
-**Storage**: IndexedDB (primary) with localStorage fallback
-
-**Desktop**: Electron ^28, electron-builder, electron-updater
-
-**Mobile**: Capacitor ^8, Android Gradle
-
-**CI/CD**: GitHub Actions, parallel builds for Win/Mac/Linux
-
-**Security**: Context isolation, disabled Node integration, preload API bridge
+- Frontend: native ES6 modules, Marked.js, Highlight.js, KaTeX, DOMPurify
+- Storage: IndexedDB with a localStorage fallback
+- Desktop: Electron 28, electron-builder, electron-updater
+- Mobile: Capacitor 8, Android Gradle
+- CI/CD: GitHub Actions with parallel Windows, macOS, and Linux builds
+- Security: context isolation, disabled Node integration, preload API bridge
 
 </details>
 
----
-
 ## Contributing
 
-Issues and PRs welcome. Development happens on `main`.
+Issues and pull requests are welcome. Development happens on `main`.
 
 ## License
 
-[MIT](LICENSE)
-
----
+MIT
 
 <div align="center">
 
-Made with ❤️ by [alksdesu](https://github.com/alksdesu)
+Made by [alksdesu](https://github.com/alksdesu)
 
 </div>
 
@@ -231,159 +164,109 @@ Made with ❤️ by [alksdesu](https://github.com/alksdesu)
 
 <img src="assets/banner.jpg" alt="Miaomiao Chat" width="600">
 
-</div>
+[English](#miaomiao-chat) | 简体中文
 
-<div align="center">
-
-[English](#miaomiao-chat) | **简体中文**
-
-**最可配置的 AI 聊天客户端。**
-
-64+ 设置项。三层预填充。三端运行。零后端依赖。
+一个跨平台 AI 聊天客户端，可以精细控制每一次请求。
 
 [![Release](https://img.shields.io/github/v/release/alksdesu/miaomiao-chat?style=flat-square)][release-link]
-[![License](https://img.shields.io/github/license/alksdesu/miaomiao-chat?style=flat-square)][license-link]
-[![Platform](https://img.shields.io/badge/平台-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Android%20%7C%20Web-blue?style=flat-square)](#下载安装)
+[![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)][license-link]
+[![Platform](https://img.shields.io/badge/平台-Windows%20|%20macOS%20|%20Linux%20|%20Android%20|%20Web-blue?style=flat-square)](#下载)
 [![Stars](https://img.shields.io/github/stars/alksdesu/miaomiao-chat?style=flat-square)][repo-link]
 
 </div>
 
----
+## 简介
 
-## 这是什么
+Miaomiao Chat 用一套代码在 Windows、macOS、Linux、Android 和浏览器上运行。它没有后端，纯前端 ES6 模块直接和 API 提供商通信。
 
-一个跨平台 AI 聊天客户端，让你完全掌控每一个 API 参数、消息注入和工具集成。在桌面端、Android 和浏览器上运行，不需要任何服务端。
-
-大多数聊天客户端只给你一个输入框和一个温度滑块。这个给你 64+ 可调选项、三层消息预填充系统、MCP 工具支持、Computer Use，还能精确调整每个请求——包括自定义 HTTP 请求头。
-
----
+它面向想要更多控制的用户，而不只是一个输入框加一个温度滑块。五种 API 格式、三层消息预填充、MCP 工具、Computer Use，以及精确到自定义 HTTP 请求头的调参能力。
 
 ## 功能
 
-### 完全掌控你的 AI
+### API 与参数
 
-- **64+ 可调选项**，分布在 17 个设置分类中
-- **6 级思维链强度** — 极简 / 低 / 中 / 高 / 极高 / 自定义预算（1024–131072 tokens）
-- **跨格式参数自动同步** — 在一种格式中改了温度，三种格式自动同步
-- **输出详细度控制** — 低 / 中 / 高
-- **PDF 兼容模式** — 将 PDF 作为图片发送，适配不支持文件对象的 API
-- **自定义 HTTP 请求头** — 添加任意请求头，用于代理认证或自定义路由
-- **XML 工具调用兜底** — 当后端不支持原生 `tools` 参数时，自动将工具描述注入 system prompt
-- **思维链 None 模式** — Responses API 可明确发送 `reasoning.effort=none`
-- **配置档案** — 保存、切换、删除命名配置组合，包含所有设置
+- 一个客户端支持五种 API 格式：OpenAI Chat Completions、OpenAI Responses、Gemini、Claude、OpenClaw
+- 跨格式参数同步：在一种格式里改的值会带到其他格式
+- 覆盖所有格式的思维链，包括 Claude adaptive thinking（按 effort 分级）和 Gemini thinking budget
+- 输出详细度控制，以及 Responses API 的思维链 None 模式
+- 自定义 HTTP 请求头，用于代理认证或自定义路由
+- XML 工具调用兜底：后端不支持原生工具时，把工具描述注入 system prompt
+- 命名配置档案，可保存、切换、删除
 
 ### 预填充系统
 
+三层独立的消息注入，每层都有各自的预设。
+
 ```
-[System Prompt]                     ← 第一层：系统指令
-[开场对话 #1]                       ← 第二层：模拟对话历史
-[开场对话 #2]                          （插入在真实消息之前）
+[System Prompt]        第一层：系统指令
+[开场对话 #1]          第二层：模拟对话历史
+[开场对话 #2]                  插入在真实消息之前
 ...
 [真实对话历史]
 ...
 [用户最新输入]
-[预填充消息 #1]                     ← 第三层：引导指令
-[预填充消息 #2]                        （插入在用户输入之后、AI 回复之前）
+[预填充消息 #1]        第三层：引导指令
+[预填充消息 #2]                插入在用户输入之后、回复之前
 ...
-[AI 开始生成回复]
+[生成回复]
 ```
 
-- **第一层 — System Prompt**：支持模板变量 `{{char}}` `{{user}}` `{{date}}` `{{time}}`
-- **第二层 — 开场对话**：伪造对话历史，建立交互模式
-- **第三层 — 预填充消息**：每轮追加引导指令
-- **每层独立的预设管理**
-- **Gemini System Parts**：Gemini API 专属的多段系统指令
-
-### 三端运行，一套代码
-
-| | Windows | macOS | Linux | Android | Web |
-|---|:---:|:---:|:---:|:---:|:---:|
-| **支持** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **安装方式** | NSIS / 便携版 | DMG / ZIP | AppImage / DEB | APK | 静态部署 |
-| **自动更新** | ✅ | ✅ | ✅ | ✅（APK 热更新） | N/A |
-
-零后端依赖。纯前端 ES6 模块。部署到 Cloudflare Pages、Vercel、Nginx，或者直接打开 `index.html`。
+- System Prompt 支持模板变量：`{{char}}`、`{{user}}`、`{{date}}`、`{{time}}`
+- 开场对话用于建立交互模式
+- 每轮追加的预填充引导指令
+- Gemini 多段系统指令
 
 ### 工具与 MCP
 
-- **6 个内置工具**：计算器、日期时间、单位换算、文本格式化、随机数生成、Computer Use
-- **完整 MCP 客户端**：所有平台支持远程（HTTP/WebSocket），Electron 额外支持本地（stdio via IPC）
-- **MCP 自动连接**：保存的服务器启动时自动重连，工具状态持久化
-- **XML 工具调用兜底**：后端不支持原生 `tools` 参数时的兼容方案
-- **自定义工具**：注册你自己的工具，持久化保存到 IndexedDB
+- 六个内置工具：计算器、日期时间、单位换算、文本格式化、随机数生成、Computer Use
+- 完整 MCP 客户端：所有平台支持远程（HTTP 和 WebSocket），桌面版额外支持本地 stdio（通过 IPC）
+- MCP 自动连接：保存的服务器启动时自动重连并保留状态
+- 自定义工具，注册后持久化到 IndexedDB
 
-### Computer Use <sup>仅 Electron</sup>
+### Computer Use（仅桌面版）
 
-- Bash 命令执行，可配置工作目录、超时时间和执行前确认
-- 文本文件编辑器（查看 / 创建 / 替换 / 插入）
-- 细粒度权限：独立启用/禁用 Bash 和文件编辑
-- 兼容 Claude 原生 Computer Use（beta header）和 OpenAI/Gemini（通过内置工具）
+- Bash 执行，可配置工作目录、超时时间和执行前确认
+- 文本文件编辑器：查看、创建、替换、插入
+- 细粒度权限，Bash 和文件编辑可分别开关
+- 兼容 Claude 原生 Computer Use，也可通过内置工具走 OpenAI 或 Gemini
 
-### 丰富的附件支持
+### 附件
 
-- **图片**：JPEG, PNG, GIF, WebP — 自动压缩，2K/4K/快速模式
-- **PDF**：标准模式（文件对象）或兼容模式（image_url）
-- **文本文件**：TXT, MD — 解码后注入为文档标签
-- **视频**：MP4, WebM, MOV, MKV — Electron 本地存储（256MB 限制），Web 端用 Data URL
-- 所有格式在 OpenAI / Gemini / Claude API 之间自动转换
+- 图片：JPEG、PNG、GIF、WebP，自动压缩，支持 2K、4K、快速三种模式
+- PDF：标准文件对象，或把页面作为图片发送的兼容模式
+- 文本文件：TXT 和 MD，解码后注入为文档标签
+- 视频：MP4、WebM、MOV、MKV，桌面版本地存储，Web 端用 data URL
+- 各种格式在 API 协议之间自动转换
 
-### 其他功能
+### 其他
 
-- **多回复选择器** — 一次生成 1–5 条回复，浏览并选择最佳
-- **流式统计** — 实时首 token 延迟、token/s、总 token 数
-- **会话搜索** — 全文搜索所有对话
-- **Markdown 导出** — 将会话复制为 Markdown
-- **提供商系统** — 多提供商独立配置端点、密钥和模型列表
-- **多密钥轮换** — 轮询 / 随机 / 最少使用 / 智能策略，自动错误切换
-- **思维链支持** — 覆盖四种 API 格式 + `<think>` 标签解析
-- **代码编辑器** — 分析、编辑和预览代码块，支持 20+ 语言
-- **深色/浅色主题** — 平滑切换动画
-- **数据备份** — 细粒度导出/导入（仅配置、仅会话、或全部）
+- 多回复选择器：一次生成一到五条回复，挑选最佳
+- 流式统计：实时首 token 延迟、每秒 token 数、总 token 数
+- 全文会话搜索
+- 会话导出为 Markdown 到剪贴板
+- 多提供商，各自独立的端点、密钥和模型列表
+- 多密钥轮换：轮询、随机、最少使用、智能，出错时自动切换
+- 代码编辑器，20+ 语言语法高亮
+- 深色和浅色主题
+- 细粒度数据备份：仅配置、仅会话、或全部
 
----
+## 下载
 
-## 下载安装
+| Windows | macOS | Linux | Android |
+|:---:|:---:|:---:|:---:|
+| [安装版 .exe][release-latest] | [.dmg][release-latest] | [AppImage][release-latest] | [.apk][release-latest] |
+| [便携版 .exe][release-latest] | [.zip][release-latest] | [.deb][release-latest] | |
 
-<table>
-<tr>
-<td align="center"><b>Windows</b></td>
-<td align="center"><b>macOS</b></td>
-<td align="center"><b>Linux</b></td>
-<td align="center"><b>Android</b></td>
-</tr>
-<tr>
-<td align="center">
-<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">安装版 .exe</a><br>
-<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">便携版 .exe</a>
-</td>
-<td align="center">
-<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">.dmg</a><br>
-<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">.zip</a>
-</td>
-<td align="center">
-<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">AppImage</a><br>
-<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">.deb</a>
-</td>
-<td align="center">
-<a href="https://github.com/alksdesu/miaomiao-chat/releases/latest">.apk</a>
-</td>
-</tr>
-</table>
-
-**Web 版**：下载源码部署到任意静态服务器，或直接打开 `index.html`。
-
----
+Web 版下载源码后部署到任意静态服务器，或直接打开 `index.html`。
 
 ## 快速开始
 
-1. 从 [Releases][release-link] 下载对应平台安装包
+1. 从 [Releases][release-link] 下载对应平台的安装包
 2. 安装并启动
-3. 打开设置 → 配置 API 端点和密钥
+3. 打开设置，配置 API 端点和密钥
 4. 开始对话
 
-开箱即用支持 OpenAI、Gemini、Claude 和 OpenAI Responses API 格式。
-
----
+开箱支持 OpenAI、Gemini、Claude、OpenAI Responses 和 OpenClaw。
 
 ## 开发
 
@@ -405,28 +288,19 @@ npm run dist:linux    # Linux
 npm run cap:build     # Android APK
 ```
 
-发版：推送 git tag → GitHub Actions 自动构建全平台安装包。
-
----
+推送 git tag，GitHub Actions 会自动构建所有平台。
 
 <details>
-<summary><b>技术栈</b></summary>
+<summary>技术栈</summary>
 
-**前端**：ES6 Modules（90+ 文件）、Marked.js、Highlight.js、KaTeX、DOMPurify
-
-**存储**：IndexedDB（主要）+ localStorage 降级方案
-
-**桌面端**：Electron ^28、electron-builder、electron-updater
-
-**移动端**：Capacitor ^8、Android Gradle
-
-**CI/CD**：GitHub Actions，Win/Mac/Linux 并行构建
-
-**安全**：上下文隔离、禁用 Node 集成、preload API 桥接
+- 前端：原生 ES6 模块、Marked.js、Highlight.js、KaTeX、DOMPurify
+- 存储：IndexedDB，localStorage 降级
+- 桌面端：Electron 28、electron-builder、electron-updater
+- 移动端：Capacitor 8、Android Gradle
+- CI/CD：GitHub Actions，Windows、macOS、Linux 并行构建
+- 安全：上下文隔离、禁用 Node 集成、preload API 桥接
 
 </details>
-
----
 
 ## 贡献
 
@@ -434,17 +308,16 @@ npm run cap:build     # Android APK
 
 ## 许可证
 
-[MIT](LICENSE)
-
----
+MIT
 
 <div align="center">
 
-Made with ❤️ by [alksdesu](https://github.com/alksdesu)
+由 [alksdesu](https://github.com/alksdesu) 制作
 
 </div>
 
 <!-- Link references -->
 [release-link]: https://github.com/alksdesu/miaomiao-chat/releases
+[release-latest]: https://github.com/alksdesu/miaomiao-chat/releases/latest
 [license-link]: https://github.com/alksdesu/miaomiao-chat/blob/main/LICENSE
 [repo-link]: https://github.com/alksdesu/miaomiao-chat
