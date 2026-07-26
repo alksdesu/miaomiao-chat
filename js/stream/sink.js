@@ -15,6 +15,7 @@ import {
     renderFinalTextWithThinking
 } from './helpers.js';
 import { appendStreamStats } from './stats.js';
+import { saveStreamSnapshotThrottled, clearStreamSnapshot } from '../state/stream-snapshot.js';
 import { saveAssistantMessage } from '../messages/sync.js';
 import { setCurrentMessageIndex } from '../messages/dom-sync.js';
 import { handleToolCallStream, startPauseTurnContinuation } from '../tools/orchestrator.js';
@@ -44,6 +45,7 @@ import { requestStateMachine, RequestState } from '../core/request-state-machine
 export class DefaultSink {
     constructor(sessionId = null) {
         this.sessionId = sessionId;
+        this._snapshotSessionId = null;
     }
 
     isBackground() {
@@ -51,6 +53,11 @@ export class DefaultSink {
     }
 
     streamingUpdate(text, thinking) {
+        // sessionId 缺省的调用方在首帧锁定当前会话，保证写入与 commit 清理用同一个 key
+        if (!this._snapshotSessionId) {
+            this._snapshotSessionId = this.sessionId || state.currentSessionId;
+        }
+        saveStreamSnapshotThrottled(this._snapshotSessionId, text, thinking);
         if (this.isBackground()) return;
         updateStreamingMessage(text, thinking);
     }
@@ -85,6 +92,7 @@ export class DefaultSink {
     commit(parts, meta, opts = {}) {
         const idx = saveAssistantMessage(parts, meta, { ...opts, sessionId: this.sessionId });
         setCurrentMessageIndex(idx);
+        clearStreamSnapshot(this._snapshotSessionId);
         return idx;
     }
 
@@ -97,6 +105,7 @@ export class DefaultSink {
             errorHtml: errorInfo.errorHtml
         });
         setCurrentMessageIndex(idx);
+        clearStreamSnapshot(this._snapshotSessionId);
         if (!this.isBackground()) {
             eventBus.emit('stream:error', {
                 errorCode: errorInfo.errorCode,

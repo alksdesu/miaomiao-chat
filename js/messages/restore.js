@@ -116,35 +116,21 @@ export function renderSessionMessages() {
             images.length > 0 ? images : null,
             msg.id,
             modelName,
-            providerName
+            providerName,
+            // assistant 内容由下方 enhanceAllAsync 分片渲染，此处只放纯文本占位，
+            // 避免几百条消息在同步 forEach 里重复跑 markdown+DOMPurify 冻结主线程
+            { deferAssistantRender: true }
         );
         messageEl.dataset.messageIndex = index;
 
         fragment.appendChild(messageEl);
 
-        const isError = msg.isError || msg.error;
-        if (msg.role === 'assistant' && !isError) {
-            enhancementQueue.push({ messageEl, msg, openaiMsg: msg });
-        } else if (msg.role === 'assistant' && isError) {
-            const contentDiv = messageEl.querySelector('.message-content');
-            if (contentDiv) {
-                const storedErrorHtml = msg.errorHtml || msg.meta?.raw?.errorHtml;
-                if (storedErrorHtml) {
-                    safeSetHTML(contentDiv, storedErrorHtml);
-                } else if (msg.errorData) {
-                    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
-                    contentDiv.innerHTML = renderHumanizedError(
-                        msg.errorData,
-                        msg.httpStatus || null,
-                        false
-                    );
-                } else {
-                    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
-                    contentDiv.innerHTML =
-                        '<div class="error-humanized"><div class="error-humanized-content"><div class="error-humanized-title">错误消息加载失败</div><div class="error-humanized-hint">请重新发送消息</div></div></div>';
-                }
+        const isError = Boolean(msg.isError || msg.error);
+        if (msg.role === 'assistant') {
+            enhancementQueue.push({ messageEl, msg, openaiMsg: msg, isError });
+            if (isError) {
+                messageEl.dataset.isError = 'true';
             }
-            messageEl.dataset.isError = 'true';
         }
     });
 
@@ -159,9 +145,12 @@ export function renderSessionMessages() {
     const ENHANCE_CHUNK = 10;
     const enhanceAllAsync = async () => {
         for (let idx = 0; idx < enhancementQueue.length; idx++) {
-            const { messageEl, msg, openaiMsg } = enhancementQueue[idx];
+            const { messageEl, msg, openaiMsg, isError } = enhancementQueue[idx];
             try {
-                enhanceAssistantMessage(messageEl, msg, openaiMsg);
+                enhanceAssistantMessage(messageEl, msg, openaiMsg, { isError });
+                if (isError) {
+                    appendStoredErrorBlock(messageEl, msg);
+                }
             } catch (e) {
                 logger.error('[Restore] 消息增强失败 (index:', idx, '):', e);
             }
@@ -196,6 +185,40 @@ export function renderSessionMessages() {
 }
 
 /**
+ * 在已渲染的部分接收内容之后追加错误块
+ * 与流式路径 sink.renderError 的 insertAdjacentHTML('beforeend') 行为对齐，
+ * 不整体覆盖 contentDiv，保住 parts 里已保存的部分接收内容
+ * @param {HTMLElement} messageEl - 消息元素
+ * @param {Object} msg - 消息对象
+ */
+function appendStoredErrorBlock(messageEl, msg) {
+    const contentDiv = messageEl.querySelector('.message-content');
+    if (!contentDiv) return;
+
+    const storedErrorHtml = msg.errorHtml || msg.meta?.raw?.errorHtml;
+    if (storedErrorHtml) {
+        // 历史 errorHtml 需经 DOMPurify 净化后 append，safeSetHTML 只能整体覆盖，借临时容器过渡
+        const holder = document.createElement('div');
+        safeSetHTML(holder, storedErrorHtml);
+        while (holder.firstChild) {
+            contentDiv.appendChild(holder.firstChild);
+        }
+    } else if (msg.errorData) {
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：renderHumanizedError 输出内容已 escapeHtml
+        contentDiv.insertAdjacentHTML(
+            'beforeend',
+            renderHumanizedError(msg.errorData, msg.httpStatus || null, false)
+        );
+    } else {
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态 HTML
+        contentDiv.insertAdjacentHTML(
+            'beforeend',
+            '<div class="error-humanized"><div class="error-humanized-content"><div class="error-humanized-title">错误消息加载失败</div><div class="error-humanized-hint">请重新发送消息</div></div></div>'
+        );
+    }
+}
+
+/**
  * 恢复工具调用UI（紧凑按钮 + 媒体提取模式）
  * @param {Array} toolCalls - 工具调用数组
  * @param {HTMLElement} messageEl - 消息元素
@@ -212,14 +235,20 @@ async function restoreToolCallsUI(toolCalls, messageEl) {
     }
 
     try {
-        // 兼容旧数据：给没有 status 的工具调用补充默认状态
-        const normalized = toolCalls.map((tc) => ({
-            ...tc,
-            status: tc.status || 'completed',
-            result:
-                tc.result ||
-                (tc.status !== 'failed' ? { restored: true, message: '(工具结果未保存)' } : null)
-        }));
+        // 兼容旧数据：给没有 status 的工具调用补充默认状态；
+        // pending/running 是执行流被打断留下的非终态，恢复时收口为 failed，避免卡片永久转圈
+        const normalized = toolCalls.map((tc) => {
+            const interrupted = tc.status === 'pending' || tc.status === 'running';
+            const status = interrupted ? 'failed' : tc.status || 'completed';
+            return {
+                ...tc,
+                status,
+                error: interrupted ? '应用重启，工具执行已中断' : tc.error,
+                result:
+                    tc.result ||
+                    (status !== 'failed' ? { restored: true, message: '(工具结果未保存)' } : null)
+            };
+        });
 
         eventBus.emit('restore:tool-calls', { toolCalls: normalized, contentDiv });
         logger.debug('[Restore] 工具UI恢复完成');
@@ -228,6 +257,10 @@ async function restoreToolCallsUI(toolCalls, messageEl) {
     }
 }
 
+// 与用户附件懒加载共用的灰色占位图（renderer.js / memory-manager.js 同款）
+const LAZY_IMAGE_PLACEHOLDER =
+    'data:image/svg+xml,%3Csvg width="400" height="300" xmlns="http://www.w3.org/2000/svg"%3E%3Crect width="100%25" height="100%25" fill="%23f5f5f5"/%3E%3C/svg%3E';
+
 /**
  * 异步增强 assistant 消息（思维链、统计、多回复、工具UI）
  * 性能优化：使用 requestIdleCallback 避免阻塞 UI
@@ -235,8 +268,10 @@ async function restoreToolCallsUI(toolCalls, messageEl) {
  * @param {HTMLElement} messageEl - 消息元素
  * @param {Object} msg - Gemini 或 OpenAI 消息对象
  * @param {Object} openaiMsg - OpenAI 格式消息对象（用于元数据）
+ * @param {Object} [options]
+ * @param {boolean} [options.isError=false] - 错误消息无正文属正常场景，不打无内容 warn
  */
-function enhanceAssistantMessage(_messageEl, msg, openaiMsg) {
+function enhanceAssistantMessage(_messageEl, msg, openaiMsg, { isError = false } = {}) {
     // 优化：缓存 querySelector 结果
     const contentDiv = _messageEl.querySelector('.message-content');
 
@@ -272,7 +307,8 @@ function enhanceAssistantMessage(_messageEl, msg, openaiMsg) {
                     } else if (p.media === MediaKind.AUDIO) {
                         html += `<div class="audio-wrapper"><audio src="${safeUrl}" controls preload="metadata"></audio></div>`;
                     } else {
-                        html += `<div class="image-wrapper"><img src="${safeUrl}" alt="Generated image" style="cursor:pointer;"></div>`;
+                        // AI 生成图与用户附件同待遇走懒加载，恢复长会话时避免全部图片立即解码
+                        html += `<div class="image-wrapper"><img src="${LAZY_IMAGE_PLACEHOLDER}" data-src="${safeUrl}" alt="Generated image" class="lazy-image" style="cursor:pointer;"></div>`;
                     }
                     contentRendered = true;
                 }
@@ -320,10 +356,15 @@ function enhanceAssistantMessage(_messageEl, msg, openaiMsg) {
         if (html) {
             // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
             contentDiv.innerHTML = html;
+            // 分片增强晚于 renderSessionMessages 的 idle 兜底观察，此处必须自行 observe
+            contentDiv.querySelectorAll('img.lazy-image:not(.observed)').forEach((img) => {
+                lazyImageManager.observe(img);
+                img.classList.add('observed');
+            });
         }
 
         // 日志记录未渲染的情况
-        if (!contentRendered && !thinkingText) {
+        if (!contentRendered && !thinkingText && !isError) {
             logger.warn('[Restore] 消息无法渲染内容:', {
                 index: _messageEl.dataset.messageIndex,
                 contentParts: openaiMsg.contentParts?.length, // 旧格式兜底，调试日志

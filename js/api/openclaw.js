@@ -210,6 +210,11 @@ class OpenClawClient {
 
             // 自动重连
             if (!event.wasClean && this.shouldReconnect) {
+                eventBus.emit('ui:notification', {
+                    message: `OpenClaw 连接断开 (code: ${event.code})，正在自动重连`,
+                    type: 'warning',
+                    duration: 5000
+                });
                 this._attemptReconnect();
             }
         };
@@ -484,6 +489,11 @@ class OpenClawClient {
         this.reconnectAttempts++;
         if (this.reconnectAttempts > this.maxReconnectAttempts) {
             logger.warn('[OpenClaw] 超过最大重连次数，停止重连');
+            eventBus.emit('ui:notification', {
+                message: `OpenClaw 重连失败（已尝试 ${this.maxReconnectAttempts} 次），请检查网络后在设置中手动重连`,
+                type: 'error',
+                duration: 0
+            });
             return;
         }
 
@@ -501,6 +511,9 @@ class OpenClawClient {
             const result = await this.connect(this.url, this.token);
             if (!result.success) {
                 logger.error('[OpenClaw] 重连失败:', result.error);
+                // 连接失败不触发 onclose（握手前 ws 未挂 handler），必须显式续推
+                // 重试链，否则第一次失败后静默停止且耗尽通知永不可达
+                this._attemptReconnect();
             }
         }, delay);
     }

@@ -60,18 +60,18 @@
     background: var(--md-blue);
     transform: translate(2px, -2px);
     box-shadow: none;
-    color: var(--color-text-primary);
+    color: var(--color-text-on-accent);
 }
 
 .msg-action-btn.delete-msg:hover {
     background: var(--md-coral);
-    color: var(--color-text-primary);
+    color: var(--color-text-on-accent);
 }
 
 /* 引用按钮特殊样式 */
 .msg-action-btn.quote-msg:hover {
     background: var(--md-teal);
-    color: var(--color-text-primary);
+    color: var(--color-text-on-accent);
 }
 
 /* 编辑模式 */
@@ -113,7 +113,7 @@
 
 .edit-save-btn {
     background: var(--md-green);
-    color: var(--color-text-primary);
+    color: var(--color-text-on-accent);
 }
 
 .edit-save-btn:hover {
@@ -128,6 +128,7 @@
 
 .edit-cancel-btn:hover {
     background: var(--md-yellow);
+    color: var(--color-text-on-accent);
     transform: translate(2px, -2px);
     box-shadow: none;
 }

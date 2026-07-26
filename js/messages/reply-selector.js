@@ -105,6 +105,11 @@ export function selectReply(replyIndex, messageIndex = null) {
             if (selectorEl) {
                 selectorEl.querySelectorAll('.reply-tab').forEach((tab, i) => {
                     tab.classList.toggle('active', i === replyIndex);
+                    if (i === replyIndex) {
+                        tab.setAttribute('aria-current', 'true');
+                    } else {
+                        tab.removeAttribute('aria-current');
+                    }
                 });
             }
 
@@ -113,13 +118,22 @@ export function selectReply(replyIndex, messageIndex = null) {
 
             // 检查是否是错误回复
             if (reply.isError) {
+                // 错误 reply 可能带流中断前已接收的内容，先渲染内容再附错误提示
+                const errThinking = getThinkingContent(reply);
+                if (errThinking) {
+                    html += renderThinkingBlock(errThinking);
+                }
+                const errText = getTextContent(reply);
+                if (errText) {
+                    html += safeMarkedParse(errText);
+                }
                 const errorObj = {
                     error: {
                         type: reply.errorType || 'unknown',
                         message: reply.errorMessage || 'Unknown error'
                     }
                 };
-                html = renderHumanizedError(errorObj, null, true);
+                html += renderHumanizedError(errorObj, null, true);
             } else {
                 // 新格式 parts[] 优先
                 if (isSchemaFormatParts(reply.parts)) {

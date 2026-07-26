@@ -178,6 +178,12 @@ export function initAPIHandler() {
             return;
         }
 
+        // 用户取消的部分保存 commitError 也发 stream:error；CANCELLED 只允许回 IDLE
+        if (requestStateMachine.getState() === RequestState.CANCELLED) {
+            state.isToolCallPending = false;
+            return;
+        }
+
         requestStateMachine.transition(RequestState.ERROR, {
             error: { code: errorCode, message: errorMessage }
         });

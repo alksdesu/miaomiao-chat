@@ -74,6 +74,9 @@ export function addMessage(role, content, images = null) {
  * @param {string} messageId - 可选的唯一消息ID
  * @param {string} modelName - 可选的模型名称
  * @param {string} providerName - 可选的提供商名称
+ * @param {Object} [options] - 渲染选项
+ * @param {boolean} [options.deferAssistantRender=false] - assistant 内容仅放纯文本占位，
+ *   由调用方稍后整体渲染（会话恢复分片路径专用，避免同一条消息 markdown 双重解析）
  * @returns {HTMLElement} 消息元素
  */
 export function createMessageElement(
@@ -82,8 +85,10 @@ export function createMessageElement(
     images = null,
     messageId = null,
     modelName = null,
-    _providerName = null
+    _providerName = null,
+    options = {}
 ) {
+    const { deferAssistantRender = false } = options;
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${role}`;
 
@@ -117,7 +122,7 @@ export function createMessageElement(
     const contentDiv = document.createElement('div');
     contentDiv.className = 'message-content';
 
-    if (role === 'assistant' && typeof marked !== 'undefined') {
+    if (role === 'assistant' && !deferAssistantRender && typeof marked !== 'undefined') {
         // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
         contentDiv.innerHTML = safeMarkedParse(content);
     } else {
@@ -253,7 +258,8 @@ export function createMessageElement(
     messageDiv.appendChild(avatar);
     messageDiv.appendChild(contentWrapper);
 
-    if (role === 'assistant') {
+    // defer 模式下内容稍后会被整体重渲，此处增强是无效功
+    if (role === 'assistant' && !deferAssistantRender) {
         setTimeout(() => enhanceCodeBlocks(messageDiv), 0);
     }
 
@@ -297,7 +303,12 @@ export function renderReplyWithSelector(replies, selectedIndex, assistantMessage
             if (reply.isError) classList.push('reply-tab-error');
             tab.className = classList.join(' ');
             tab.textContent = index + 1;
-            tab.title = reply.isError ? `回复 ${index + 1}（失败）` : `回复 ${index + 1}`;
+            const tabLabel = reply.isError ? `回复 ${index + 1}（失败）` : `回复 ${index + 1}`;
+            tab.title = tabLabel;
+            tab.setAttribute('aria-label', tabLabel);
+            if (index === selectedIndex) {
+                tab.setAttribute('aria-current', 'true');
+            }
             tab.onclick = () => {
                 eventBus.emit('reply:select-requested', { index, messageIndex: msgIdx });
             };
@@ -310,13 +321,22 @@ export function renderReplyWithSelector(replies, selectedIndex, assistantMessage
     let html = '';
 
     if (reply.isError) {
+        // 错误 reply 可能带流中断前已接收的内容，先渲染内容再附错误提示
+        const errThinking = getThinkingContent(reply);
+        if (errThinking) {
+            html += renderThinkingBlock(errThinking);
+        }
+        const errText = getTextContent(reply);
+        if (errText) {
+            html += safeMarkedParse(errText);
+        }
         const errorObj = {
             error: {
                 type: reply.errorType || 'unknown',
                 message: reply.errorMessage || 'Unknown error'
             }
         };
-        html = renderHumanizedError(errorObj, null, true);
+        html += renderHumanizedError(errorObj, null, true);
     } else if (isSchemaFormatParts(reply.parts)) {
         for (const part of reply.parts) {
             if (part.type === PartType.THINKING) {

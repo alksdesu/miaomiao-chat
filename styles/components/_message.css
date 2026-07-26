@@ -3,11 +3,11 @@
     /* 使用 CSS Grid 代替 flex，支持操作按钮叠加 */
     display: grid;
     grid-template-columns: auto 1fr; /* 头像自动宽度，内容占满剩余空间 */
-    gap: 12px;
-    padding: 16px;
+    gap: var(--sp-6);
+    padding: var(--sp-7);
     border: var(--border);
     border-radius: 4px 16px 16px 4px;
-    box-shadow: var(--shadow-md);
+    box-shadow: var(--shadow-card);
     animation: slideIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
     transition:
         transform var(--duration-base) var(--ease),
@@ -22,11 +22,11 @@
     font-weight: 600;
     color: var(--color-text-primary);
     background: var(--color-bg-primary);
-    padding: 4px 10px;
-    border-radius: 6px;
+    padding: var(--sp-2) var(--sp-5);
+    border-radius: var(--radius-lg);
     border: 1px solid var(--md-border);
     display: inline-block;
-    margin-bottom: 10px;
+    margin-bottom: var(--sp-5);
     cursor: help;
 }
 
@@ -42,8 +42,7 @@
 }
 
 .message:hover {
-    transform: translate(3px, -3px);
-    box-shadow: var(--shadow-lg), var(--glow-blue);
+    box-shadow: var(--shadow-card-hover);
 }
 
 /* 用户消息 - 纯色背景 */
@@ -65,7 +64,7 @@
     }
 }
 
-/* 用户消息箭头 */
+/* 用户消息箭头（颜色与气泡背景绑定） */
 .message.user::after {
     content: '';
     position: absolute;
@@ -74,7 +73,7 @@
     width: 0;
     height: 0;
     border: 9px solid transparent;
-    border-left-color: var(--color-text-primary);
+    border-left-color: var(--color-bg-accent);
     border-right: 0;
 }
 
@@ -95,7 +94,7 @@
     padding-bottom: 48px;
 }
 
-/* AI消息箭头 */
+/* AI消息箭头（颜色与气泡背景绑定） */
 .message.assistant::after {
     content: '';
     position: absolute;
@@ -104,7 +103,7 @@
     width: 0;
     height: 0;
     border: 9px solid transparent;
-    border-right-color: var(--color-text-inverse);
+    border-right-color: var(--color-bg-surface);
     border-left: 0;
 }
 
@@ -212,21 +211,21 @@
 .message-content {
     line-height: 1.8;
     word-wrap: break-word;
-    font-size: var(--fs-lg);
+    font-size: var(--fs-body);
     letter-spacing: 0.01em;
 }
 
 /* ========== 编辑模式 - 图片管理 ========== */
 /* 图片编辑界面样式 */
 .edit-image-manager {
-    margin-bottom: 12px;
+    margin-bottom: var(--sp-6);
 }
 
 .edit-images-container {
     display: flex;
     flex-wrap: wrap;
-    gap: 12px;
-    padding: 12px;
+    gap: var(--sp-6);
+    padding: var(--sp-6);
     background: var(--color-bg-primary);
     border: var(--border);
     border-radius: 4px;
@@ -269,7 +268,7 @@
     /* 使用 justify-self 和 align-self 定位到右上角 */
     justify-self: end; /* 右对齐 */
     align-self: start; /* 上对齐 */
-    margin: 4px; /* 距离边缘的间距 */
+    margin: var(--sp-2); /* 距离边缘的间距 */
     width: 28px;
     height: 28px;
     border: var(--border);
@@ -321,7 +320,7 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 6px;
+    gap: var(--sp-3);
     transition: all var(--duration-fast) var(--ease);
     font-size: var(--fs-base);
     font-family: var(--font-ui-accent);
@@ -343,10 +342,10 @@
 .edit-textarea {
     width: 100%;
     min-height: 120px;
-    padding: 16px;
-    margin-bottom: 16px;
+    padding: var(--sp-7);
+    margin-bottom: var(--sp-7);
     font-family: var(--font-sans);
-    font-size: var(--fs-lg);
+    font-size: var(--fs-body);
     line-height: 1.6;
     color: var(--color-text-primary);
     background: var(--color-bg-surface);
@@ -374,7 +373,7 @@
 /* ========== 编辑模式 - 操作按钮 ========== */
 .edit-actions {
     display: flex;
-    gap: 12px;
+    gap: var(--sp-6);
     justify-content: flex-end;
     align-items: center;
 }
@@ -383,7 +382,7 @@
 .edit-actions .btn-secondary {
     min-width: 80px;
     height: 44px;
-    padding: 0 24px;
+    padding: 0 var(--sp-9);
     font-family: var(--font-ui-accent);
     font-size: var(--fs-lg);
     font-weight: 600;
@@ -437,8 +436,8 @@
 /* ========== LaTeX 数学公式 ========== */
 /* KaTeX 渲染样式增强 */
 .katex-display-wrapper {
-    margin: 16px 0;
-    padding: 16px;
+    margin: var(--sp-7) 0;
+    padding: var(--sp-7);
     background: var(--color-bg-primary);
     border: var(--border);
     border-radius: 4px;
@@ -448,7 +447,7 @@
 
 .katex-inline-wrapper {
     display: inline;
-    padding: 2px 4px;
+    padding: var(--sp-1) var(--sp-2);
     background: var(--color-bg-primary);
     border-radius: 2px;
 }
@@ -456,9 +455,9 @@
 /* 公式渲染失败时的降级样式 */
 .latex-error {
     display: inline-block;
-    padding: 4px 8px;
+    padding: var(--sp-2) var(--sp-4);
     background: var(--md-coral);
-    color: var(--color-text-primary);
+    color: var(--color-text-on-accent);
     font-family: var(--font-mono);
     font-size: var(--fs-md);
     border-radius: 2px;
@@ -467,7 +466,7 @@
 
 .latex-fallback {
     display: inline-block;
-    padding: 2px 6px;
+    padding: var(--sp-1) var(--sp-3);
     background: var(--md-muted);
     color: var(--color-text-inverse);
     font-family: var(--font-mono);
@@ -487,7 +486,7 @@
 /* ========== 表格增强 ========== */
 /* 表格包装器和工具栏 */
 .table-wrapper {
-    margin: 16px 0;
+    margin: var(--sp-7) 0;
     border: var(--border);
     border-radius: 4px;
     overflow: hidden;
@@ -498,18 +497,18 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 8px 12px;
+    padding: var(--sp-4) var(--sp-6);
     background: var(--color-bg-primary);
     border-bottom: var(--border);
-    gap: 8px;
+    gap: var(--sp-4);
 }
 
 .table-export-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
-    padding: 8px 16px;
+    gap: var(--sp-3);
+    padding: var(--sp-4) var(--sp-7);
     min-width: 44px;
     min-height: 44px;
     background: var(--color-bg-surface);
@@ -526,6 +525,7 @@
 
 .table-export-btn:hover {
     background: var(--md-teal);
+    color: var(--color-text-on-accent);
     transform: translate(2px, -2px);
     box-shadow: none;
 }
@@ -548,7 +548,7 @@
 
 .table-wrapper th,
 .table-wrapper td {
-    padding: 8px 12px;
+    padding: var(--sp-4) var(--sp-6);
     border: var(--border);
     text-align: left;
 }
@@ -586,8 +586,8 @@
 
 /* ========== 思维链编辑区域 ========== */
 .edit-thinking-section {
-    margin-bottom: 16px;
-    padding: 12px;
+    margin-bottom: var(--sp-7);
+    padding: var(--sp-6);
     background: var(--color-warning-bg);
     border: 2px dashed var(--md-yellow);
     border-radius: 4px;
@@ -595,7 +595,7 @@
 
 .edit-thinking-section label {
     display: block;
-    margin-bottom: 8px;
+    margin-bottom: var(--sp-4);
     font-family: var(--font-ui-accent);
     font-size: var(--fs-lg);
     font-weight: 600;
@@ -612,9 +612,9 @@
 .edit-thinking-textarea {
     width: 100%;
     min-height: 100px;
-    padding: 12px;
+    padding: var(--sp-6);
     font-family: var(--font-sans);
-    font-size: var(--fs-lg);
+    font-size: var(--fs-body);
     line-height: 1.6;
     color: var(--color-text-primary);
     background: var(--color-bg-surface);
@@ -643,13 +643,13 @@
 /* 编辑界面 label 内的 inline SVG 图标对齐 */
 .edit-label-icon {
     vertical-align: -2px;
-    margin-right: 4px;
+    margin-right: var(--sp-2);
 }
 
 /* 含工具调用 / 多段文本时的编辑提示条 */
 .edit-tool-calls-notice {
-    margin-top: 12px;
-    padding: 8px 12px;
+    margin-top: var(--sp-6);
+    padding: var(--sp-4) var(--sp-6);
     background: var(--color-info-bg);
     border-left: 3px solid var(--color-info);
     font-size: var(--fs-sm);
@@ -659,8 +659,8 @@
 
 /* 编辑期间工具调用节点的只读预览区 */
 .edit-tool-calls-preview {
-    margin-top: 12px;
-    padding: 12px;
+    margin-top: var(--sp-6);
+    padding: var(--sp-6);
     border: 1px dashed var(--md-border);
     border-radius: 4px;
     background: var(--md-bg);
@@ -673,7 +673,7 @@
     position: absolute;
     top: -10px;
     left: 12px;
-    padding: 0 6px;
+    padding: 0 var(--sp-3);
     background: var(--color-bg-surface);
     font-size: var(--fs-xs);
     color: var(--md-muted);
@@ -687,8 +687,8 @@
     font-size: var(--fs-md);
     border: var(--border-thin);
     border-radius: 4px;
-    padding: 12px;
-    margin: 8px 0;
+    padding: var(--sp-6);
+    margin: var(--sp-4) 0;
     transition: opacity var(--duration-base) var(--ease);
 }
 
@@ -696,6 +696,6 @@
     content: '编译中…';
     color: var(--color-text-muted);
     font-size: var(--fs-sm);
-    margin-left: 8px;
+    margin-left: var(--sp-4);
     opacity: 0.7;
 }

@@ -11,7 +11,7 @@ import { savePreference, loadPreference } from '../state/storage.js';
 import { showNotification } from './notifications.js';
 import { isElectron, isAndroid } from '../utils/platform.js';
 import { checkForUpdatesManually } from '../update/apk-updater.js';
-import { trapFocus, removeFocusTrap } from '../utils/focus-trap.js';
+import { trapFocus, removeFocusTrap, acquireInert, releaseInert } from '../utils/focus-trap.js';
 import { logger } from '../utils/logger.js';
 
 let settingsInitialized = false;
@@ -90,12 +90,20 @@ export function toggleSettings() {
         }
     }
 
+    elements.settingsToggle?.setAttribute('aria-expanded', isOpening ? 'true' : 'false');
+
     if (isOpening) {
         trapFocus(elements.settingsPanel);
-        document.querySelector('.app-container')?.setAttribute('inert', '');
+        acquireInert();
+        // 等开合动画启动后再移焦点，避免聚焦尚不可见的元素失败
+        setTimeout(() => {
+            if (elements.settingsPanel?.classList.contains('open')) {
+                elements.closeSettings?.focus();
+            }
+        }, 100);
     } else {
         removeFocusTrap(elements.settingsPanel);
-        document.querySelector('.app-container')?.removeAttribute('inert');
+        releaseInert();
         elements.settingsToggle?.focus();
     }
 }
@@ -322,13 +330,17 @@ function setupMobileSettingsAccordion() {
         group.appendChild(body);
 
         group.classList.add('accordion');
+        label.setAttribute('tabindex', '0');
+        label.setAttribute('role', 'button');
         if (index === 0) {
             group.classList.add('expanded');
+            label.setAttribute('aria-expanded', 'true');
             requestAnimationFrame(() => {
                 body.style.maxHeight = `${body.scrollHeight}px`;
             });
         } else {
             body.classList.add('collapsed');
+            label.setAttribute('aria-expanded', 'false');
         }
 
         const clickHandler = () => {
@@ -337,16 +349,27 @@ function setupMobileSettingsAccordion() {
                 group.classList.remove('expanded');
                 body.classList.add('collapsed');
                 body.style.maxHeight = '0px';
+                label.setAttribute('aria-expanded', 'false');
                 return;
             }
 
             group.classList.add('expanded');
             body.classList.remove('collapsed');
             body.style.maxHeight = `${body.scrollHeight}px`;
+            label.setAttribute('aria-expanded', 'true');
+        };
+
+        const keydownHandler = (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                clickHandler();
+            }
         };
 
         label.addEventListener('click', clickHandler);
+        label.addEventListener('keydown', keydownHandler);
         label._settingsAccordionClickHandler = clickHandler;
+        label._settingsAccordionKeydownHandler = keydownHandler;
     });
 }
 
@@ -365,6 +388,15 @@ function teardownMobileSettingsAccordion() {
         if (label?._settingsAccordionClickHandler) {
             label.removeEventListener('click', label._settingsAccordionClickHandler);
             delete label._settingsAccordionClickHandler;
+        }
+        if (label?._settingsAccordionKeydownHandler) {
+            label.removeEventListener('keydown', label._settingsAccordionKeydownHandler);
+            delete label._settingsAccordionKeydownHandler;
+        }
+        if (label) {
+            label.removeAttribute('tabindex');
+            label.removeAttribute('role');
+            label.removeAttribute('aria-expanded');
         }
 
         const body = group.querySelector('.settings-group-body');

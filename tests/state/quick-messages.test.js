@@ -7,7 +7,8 @@ vi.mock('../../js/core/state.js', () => ({
     state: {
         quickMessages: [],
         storageMode: 'indexeddb'
-    }
+    },
+    elements: {}
 }));
 
 vi.mock('../../js/core/elements.js', () => ({
@@ -17,7 +18,7 @@ vi.mock('../../js/core/elements.js', () => ({
 }));
 
 vi.mock('../../js/core/events.js', () => ({
-    eventBus: { emit: vi.fn() }
+    eventBus: { emit: vi.fn(), on: vi.fn(), off: vi.fn() }
 }));
 
 vi.mock('../../js/ui/notifications.js', () => ({

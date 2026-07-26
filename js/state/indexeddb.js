@@ -8,7 +8,7 @@ import { logger } from '../utils/logger.js';
 
 // IndexedDB 配置
 const DB_NAME = 'GeminiChatDB';
-const DB_VERSION = 7; // 版本 7：新增文件夹存储
+const DB_VERSION = 8; // 版本 8：流式快照存储
 
 // 对象存储名称常量
 export const STORES = {
@@ -20,7 +20,8 @@ export const STORES = {
     MESSAGES: 'messages', // 版本 4：消息独立存储
     SEARCH_INDEXES: 'sessionSearchIndexes', // 版本 5：会话搜索索引
     THEMES: 'themes', // 版本 6：自定义主题
-    FOLDERS: 'folders' // 版本 7：会话文件夹
+    FOLDERS: 'folders', // 版本 7：会话文件夹
+    STREAM_SNAPSHOTS: 'streamSnapshots' // 版本 8：流式生成中断恢复快照
 };
 
 let db = null;
@@ -356,6 +357,14 @@ export function initDB() {
                     });
                     folderStore.createIndex('order', 'order', { unique: false });
                     logger.debug('创建对象存储: folders');
+                }
+            }
+
+            // 版本 8: 流式快照存储（keyPath 'key' 对齐泛型 CRUD，key = sessionId）
+            if (oldVersion < 8) {
+                if (!database.objectStoreNames.contains(STORES.STREAM_SNAPSHOTS)) {
+                    database.createObjectStore(STORES.STREAM_SNAPSHOTS, { keyPath: 'key' });
+                    logger.debug('创建对象存储: streamSnapshots');
                 }
             }
         };

@@ -17,6 +17,10 @@ import {
 import { PartType, filterParts, getTextContent } from './schema.js';
 import { enhanceThinkingBlocks } from './render-thinking.js';
 import { logger } from '../utils/logger.js';
+import { HLJS_MAX_CODE_LENGTH } from '../utils/constants.js';
+
+// 语言检测/标题提取正则只需开头样本即可判定，全文扫描是纯浪费
+const LANG_DETECT_SAMPLE_LENGTH = 4096;
 
 // 语言显示名称映射
 const languageDisplayNames = {
@@ -182,11 +186,14 @@ function upgradeStreamingPlaceholder(pre) {
  * @param {HTMLElement} container - 容器元素
  */
 export function bindImageClickEvents(container) {
+    // 懒加载图片的 src 是占位 SVG，真实 URL 在 data-src
+    const resolveImageUrl = (img) => img.dataset.src || img.src;
+
     const images = container.querySelectorAll('.image-wrapper img');
     images.forEach((img) => {
         img.style.cursor = 'pointer';
         img.onclick = () => {
-            eventBus.emit('ui:open-image-viewer', { url: img.src });
+            eventBus.emit('ui:open-image-viewer', { url: resolveImageUrl(img) });
         };
     });
 
@@ -197,9 +204,10 @@ export function bindImageClickEvents(container) {
         if (img) {
             btn.onclick = (e) => {
                 e.stopPropagation();
-                const match = img.src.match(/^data:image\/(\w+);/);
+                const url = resolveImageUrl(img);
+                const match = url.match(/^data:image\/(\w+);/);
                 const ext = match ? match[1] : 'png';
-                downloadImage(img.src, `image-${Date.now()}.${ext}`);
+                downloadImage(url, `image-${Date.now()}.${ext}`);
             };
         }
     });
@@ -359,11 +367,15 @@ function detectCodeLanguage(code, hintedLang) {
         return hintedLang;
     }
 
-    const trimmed = code.trim();
+    const sample =
+        code.length > LANG_DETECT_SAMPLE_LENGTH ? code.slice(0, LANG_DETECT_SAMPLE_LENGTH) : code;
+    const trimmed = sample.trim();
 
+    // JSON.parse 需要完整文本，超样本长度时截断必失败，直接跳过走正则检测
     if (
-        (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
-        (trimmed.startsWith('[') && trimmed.endsWith(']'))
+        code.length <= LANG_DETECT_SAMPLE_LENGTH &&
+        ((trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+            (trimmed.startsWith('[') && trimmed.endsWith(']')))
     ) {
         try {
             JSON.parse(trimmed);
@@ -373,12 +385,14 @@ function detectCodeLanguage(code, hintedLang) {
         }
     }
 
-    if (/<(!DOCTYPE html|html|head|body|div|span|p|a|img|script|style)/i.test(code)) return 'html';
-    if (/[.#][\w-]+\s*\{[^}]*\}/.test(code) || /@(media|keyframes|import)/.test(code)) return 'css';
-    if (/^(def |class |import |from |if __name__|print\()/m.test(code)) return 'python';
+    if (/<(!DOCTYPE html|html|head|body|div|span|p|a|img|script|style)/i.test(sample))
+        return 'html';
+    if (/[.#][\w-]+\s*\{[^}]*\}/.test(sample) || /@(media|keyframes|import)/.test(sample))
+        return 'css';
+    if (/^(def |class |import |from |if __name__|print\()/m.test(sample)) return 'python';
 
-    if (/\b(function|const|let|var|=>|async|await|class|interface|type)\b/.test(code)) {
-        if (/:\s*(string|number|boolean|any|void|unknown|never)\b|interface |type /.test(code)) {
+    if (/\b(function|const|let|var|=>|async|await|class|interface|type)\b/.test(sample)) {
+        if (/:\s*(string|number|boolean|any|void|unknown|never)\b|interface |type /.test(sample)) {
             return 'typescript';
         }
         return 'javascript';
@@ -386,31 +400,33 @@ function detectCodeLanguage(code, hintedLang) {
 
     if (
         /\b(public |private |protected |class |interface |extends |implements |package |import java\.)/m.test(
-            code
+            sample
         )
     )
         return 'java';
-    if (/#include\s*<|using namespace |std::|cout|cin|vector</.test(code)) return 'cpp';
-    if (/#include\s*<stdio\.h>|#include\s*<stdlib\.h>|int main\(|printf\(|scanf\(/.test(code))
+    if (/#include\s*<|using namespace |std::|cout|cin|vector</.test(sample)) return 'cpp';
+    if (/#include\s*<stdio\.h>|#include\s*<stdlib\.h>|int main\(|printf\(|scanf\(/.test(sample))
         return 'c';
     if (
-        /\b(using System;|namespace |class |public static void Main|Console\.WriteLine)/m.test(code)
+        /\b(using System;|namespace |class |public static void Main|Console\.WriteLine)/m.test(
+            sample
+        )
     )
         return 'csharp';
-    if (/^package |func |import \(|fmt\.Print/.test(code)) return 'go';
-    if (/\b(fn |let mut |impl |use |pub |struct |enum |match )\b/.test(code)) return 'rust';
-    if (/^<\?php|\$[a-zA-Z_]|->|::|echo |function /.test(code)) return 'php';
-    if (/\b(def |end\b|class |module |puts |require )\b/.test(code)) return 'ruby';
+    if (/^package |func |import \(|fmt\.Print/.test(sample)) return 'go';
+    if (/\b(fn |let mut |impl |use |pub |struct |enum |match )\b/.test(sample)) return 'rust';
+    if (/^<\?php|\$[a-zA-Z_]|->|::|echo |function /.test(sample)) return 'php';
+    if (/\b(def |end\b|class |module |puts |require )\b/.test(sample)) return 'ruby';
     if (
         /^#!\/bin\/(bash|sh)|^\s*(if |for |while |case |function |echo |export |cd |ls |grep )/m.test(
-            code
+            sample
         )
     )
         return 'bash';
-    if (/\b(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|FROM|WHERE|JOIN|TABLE)\b/i.test(code))
+    if (/\b(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|FROM|WHERE|JOIN|TABLE)\b/i.test(sample))
         return 'sql';
-    if (/^[\w-]+:\s*$|^ {2}[\w-]+:\s/m.test(code) && !/[{}[\]]/.test(code)) return 'yaml';
-    if (/^#{1,6}\s|^\*\*|^- |^\d+\. |^\[.+\]\(.+\)/.test(code)) return 'markdown';
+    if (/^[\w-]+:\s*$|^ {2}[\w-]+:\s/m.test(sample) && !/[{}[\]]/.test(sample)) return 'yaml';
+    if (/^#{1,6}\s|^\*\*|^- |^\d+\. |^\[.+\]\(.+\)/.test(sample)) return 'markdown';
 
     return 'text';
 }
@@ -421,7 +437,9 @@ function detectCodeLanguage(code, hintedLang) {
  * 智能生成代码块标题
  */
 function generateCodeTitle(code, language) {
-    const firstLine = code.trim().split('\n')[0].trim();
+    const sample =
+        code.length > LANG_DETECT_SAMPLE_LENGTH ? code.slice(0, LANG_DETECT_SAMPLE_LENGTH) : code;
+    const firstLine = sample.trim().split('\n')[0].trim();
 
     if (firstLine.startsWith('//') || firstLine.startsWith('#')) {
         const title = firstLine.replace(/^[//#]+\s*/, '').trim();
@@ -442,13 +460,13 @@ function generateCodeTitle(code, language) {
 
     const pattern = patterns[language];
     if (pattern) {
-        const match = code.match(pattern);
+        const match = sample.match(pattern);
         if (match) {
             return `${match[1]} - ${languageDisplayNames[language] || language}`;
         }
     }
 
-    const fileMatch = code.match(/\/([a-zA-Z0-9_-]+\.[a-z]+)/);
+    const fileMatch = sample.match(/\/([a-zA-Z0-9_-]+\.[a-z]+)/);
     if (fileMatch) {
         return fileMatch[1];
     }
@@ -542,9 +560,21 @@ function createCollapsibleCodeBlock(
     bindCollapseEvents(pre, header);
     bindCodeBlockActions(pre, actions, codeText, language);
 
-    if (typeof hljs !== 'undefined') {
-        hljs.highlightElement(clonedCode);
+    highlightCodeElement(clonedCode, codeText.length);
+}
+
+/**
+ * 带长度守卫的语法高亮：超长代码保持纯转义文本展示
+ * @param {HTMLElement} codeEl - code 元素
+ * @param {number} codeLength - 代码字符数
+ */
+function highlightCodeElement(codeEl, codeLength) {
+    if (typeof hljs === 'undefined') return;
+    if (codeLength > HLJS_MAX_CODE_LENGTH) {
+        codeEl.title = '代码过长，已跳过语法高亮';
+        return;
     }
+    hljs.highlightElement(codeEl);
 }
 
 function bindCollapseEvents(pre, header) {
@@ -853,9 +883,7 @@ function updateSingleCodeBlock(pre, newCode, newLanguage) {
         if (codeBlock) {
             codeBlock.textContent = newCode;
             codeBlock.className = `language-${newLanguage}`;
-            if (typeof hljs !== 'undefined') {
-                hljs.highlightElement(codeBlock);
-            }
+            highlightCodeElement(codeBlock, newCode.length);
         }
 
         const langBadge = pre.querySelector('.code-language-badge');
@@ -873,9 +901,7 @@ function updateSingleCodeBlock(pre, newCode, newLanguage) {
         if (codeBlock) {
             codeBlock.textContent = newCode;
             codeBlock.className = `language-${newLanguage}`;
-            if (typeof hljs !== 'undefined') {
-                hljs.highlightElement(codeBlock);
-            }
+            highlightCodeElement(codeBlock, newCode.length);
         }
 
         const langSelector = pre.querySelector('.code-language-selector');

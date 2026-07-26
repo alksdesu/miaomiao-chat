@@ -4,7 +4,7 @@
     align-items: center;
     height: 32px;
     background: var(--color-bg-accent);
-    color: rgba(255, 255, 255, 0.8);
+    color: rgba(var(--titlebar-fg-rgb), 0.8);
     flex-shrink: 0;
     user-select: none;
     overflow: hidden;
@@ -18,8 +18,8 @@
     font-family: var(--font-mono, monospace);
     font-size: var(--fs-base);
     font-weight: 600;
-    padding-left: 12px;
-    color: rgba(255, 255, 255, 0.7);
+    padding-left: var(--sp-6);
+    color: rgba(var(--titlebar-fg-rgb), 0.7);
     white-space: nowrap;
     -webkit-app-region: no-drag;
 }
@@ -43,13 +43,13 @@
     height: 32px;
     background: transparent;
     border: none;
-    color: rgba(255, 255, 255, 0.7);
+    color: rgba(var(--titlebar-fg-rgb), 0.7);
     cursor: pointer;
     transition: background var(--duration-fast);
 }
 
 .titlebar-btn:hover {
-    background: rgba(255, 255, 255, 0.1);
+    background: rgba(var(--titlebar-fg-rgb), 0.1);
     color: var(--color-text-inverse);
 }
 
@@ -61,9 +61,9 @@
 .titlebar-devtools-btn {
     font-size: var(--fs-sm);
     font-family: var(--font-mono, monospace);
-    padding: 0 10px;
-    margin-right: 4px;
-    border: 1px solid rgba(255, 255, 255, 0.3);
+    padding: 0 var(--sp-5);
+    margin-right: var(--sp-2);
+    border: 1px solid rgba(var(--titlebar-fg-rgb), 0.3);
     border-radius: 3px;
     width: auto;
     height: 22px;
@@ -72,7 +72,7 @@
 }
 
 .titlebar-devtools-btn:hover {
-    border-color: rgba(255, 255, 255, 0.6);
+    border-color: rgba(var(--titlebar-fg-rgb), 0.6);
 }
 
 /* ========== 顶部导航栏 ========== */
@@ -87,13 +87,14 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: calc(12px + var(--app-safe-top)) 20px 12px;
+    padding: calc(var(--sp-6) + var(--app-safe-top)) calc(var(--sp-8) + var(--app-safe-right))
+        var(--sp-6) calc(var(--sp-8) + var(--app-safe-left));
 }
 
 .header-left {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: var(--sp-6);
 }
 
 .app-title {
@@ -105,14 +106,14 @@
 
 .header-actions {
     display: flex;
-    gap: 8px;
+    gap: var(--sp-4);
 }
 
 .header-content .icon-button {
     width: 44px;
     height: 44px;
     background: transparent;
-    border: 2px solid rgba(255, 255, 255, 0.3);
+    border: 2px solid rgba(var(--titlebar-fg-rgb), 0.3);
     color: var(--color-text-inverse);
     box-shadow: none;
 }
@@ -120,7 +121,7 @@
 .header-content .icon-button:hover {
     background: var(--md-yellow);
     border-color: var(--md-yellow);
-    color: var(--color-text-primary);
+    color: var(--color-text-on-accent);
 }
 
 /* ========== 移动端 Header ========== */
@@ -156,6 +157,6 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        padding: 0 4px;
+        padding: 0 var(--sp-2);
     }
 }

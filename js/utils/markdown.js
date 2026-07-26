@@ -238,20 +238,36 @@ class MarkdownCache {
 
 const markdownCache = new MarkdownCache(300);
 
-/**
- * 生成缓存键（使用简单哈希）
- * @param {string} text - 文本内容
- * @returns {string} 缓存键
- */
-function generateCacheKey(text) {
-    if (text.length <= 200) return text;
-    // djb2 哈希
+function djb2Hash(text) {
     let hash = 5381;
     for (let i = 0; i < text.length; i++) {
         hash = (hash << 5) + hash + text.charCodeAt(i);
         hash = hash & hash; // 转32位整数
     }
-    return `h_${text.length}_${hash}`;
+    return hash >>> 0;
+}
+
+function sdbmHash(text) {
+    let hash = 0;
+    for (let i = 0; i < text.length; i++) {
+        hash = text.charCodeAt(i) + (hash << 6) + (hash << 16) - hash;
+        hash = hash & hash;
+    }
+    return hash >>> 0;
+}
+
+/**
+ * 生成缓存键
+ * 单 32 位哈希在缓存量大时存在生日碰撞风险，碰撞会把另一条消息的 HTML 渲染出来，
+ * 因此用长度 + 双独立哈希 + 首尾切片组合，把碰撞概率压到可忽略
+ * @param {string} text - 文本内容
+ * @returns {string} 缓存键
+ */
+function generateCacheKey(text) {
+    if (text.length <= 200) return text;
+    const head = text.slice(0, 24);
+    const tail = text.slice(-24);
+    return `h_${text.length}_${djb2Hash(text).toString(36)}_${sdbmHash(text).toString(36)}|${head}|${tail}`;
 }
 
 /**

@@ -17,7 +17,6 @@ import { renderMediaCard } from '../ui/media-cards.js';
 import {
     RENDER_THROTTLE_CHARS,
     RENDER_THROTTLE_MS,
-    SCROLL_LOCK_TIMEOUT_MS,
     SCROLL_FOLLOW_THRESHOLD_PX,
     THINKING_HEAVY_THRESHOLD_CHARS,
     THINKING_HEAVY_RENDER_THROTTLE_MS
@@ -31,9 +30,11 @@ let rafId = null;
 let lastRenderedLen = 0;
 let lastRenderedTs = 0;
 
-// user-scrolled 锁：用户主动滚动后短时窗内禁止自动 scrollToBottom，避免抢走阅读位
+// user-scrolled 锁：基于位置的跟随锁，用户上翻即停止自动 scrollToBottom，
+// 只有用户主动滚回底部（距底小于 SCROLL_FOLLOW_THRESHOLD_PX）才恢复跟随
 let userScrolledUp = false;
-let scrollLockTimer = null;
+// 程序 smooth 滚动进行中标记：中间帧距底仍大于阈值，不能被 onScroll 误判为用户上翻
+let autoScrollPending = false;
 let scrollListenerAttached = false;
 
 /**
@@ -47,24 +48,24 @@ function ensureScrollListener() {
 
     const lockUp = () => {
         userScrolledUp = true;
-        if (scrollLockTimer) {
-            clearTimeout(scrollLockTimer);
-        }
-        scrollLockTimer = setTimeout(() => {
-            userScrolledUp = false;
-            scrollLockTimer = null;
-        }, SCROLL_LOCK_TIMEOUT_MS);
+        // 用户手势会中断浏览器 smooth 滚动，标记随之失效
+        autoScrollPending = false;
     };
 
+    let lastScrollTop = 0;
     const onScroll = () => {
-        // 拉回底部视为重新跟随
         const distance = area.scrollHeight - area.scrollTop - area.clientHeight;
+        // 程序 smooth 滚动只向下；向上位移是拖动滚动条的可靠信号（wheel/touch 不覆盖该输入），
+        // 4px 容差防 scroll anchoring 舍入抖动
+        const movedUp = area.scrollTop < lastScrollTop - 4;
+        lastScrollTop = area.scrollTop;
         if (distance < SCROLL_FOLLOW_THRESHOLD_PX) {
+            // 拉回底部视为重新跟随
             userScrolledUp = false;
-            if (scrollLockTimer) {
-                clearTimeout(scrollLockTimer);
-                scrollLockTimer = null;
-            }
+            autoScrollPending = false;
+        } else if (!autoScrollPending || movedUp) {
+            userScrolledUp = true;
+            autoScrollPending = false;
         }
     };
 
@@ -90,14 +91,60 @@ function ensureScrollListener() {
 }
 
 /**
- * 滚动到底部（用户主动上滚后短时窗内不抢位）
+ * 滚动到底部（用户上翻期间不抢位，直到用户主动回到底部）
  */
 function scrollToBottom() {
     if (userScrolledUp) return;
+    autoScrollPending = true;
     elements.messagesArea.scrollTo({
         top: elements.messagesArea.scrollHeight,
         behavior: 'smooth'
     });
+}
+
+// 流式 markdown 前缀缓存：以最后一个空行为界，稳定前缀只 parse 一次并缓存 HTML，
+// 每帧仅对尾部增量 parse；finalize 走全文完整 parse 校正分段累计误差
+const textPrefixCache = { text: '', html: '' };
+const thinkingPrefixCache = { text: '', html: '' };
+
+function resetPrefixCache(cache) {
+    cache.text = '';
+    cache.html = '';
+}
+
+/**
+ * fence 未闭合的段落边界不可作为稳定前缀（代码块被空行拦腰截断会渲染错乱）
+ * @param {string} segment - 待推进的前缀增量
+ * @returns {boolean}
+ */
+function hasBalancedFences(segment) {
+    const fences = segment.match(/^ {0,3}(```|~~~)/gm);
+    return !fences || fences.length % 2 === 0;
+}
+
+/**
+ * 流式增量 markdown 解析：稳定前缀命中缓存，仅 parse 最后一个空行之后的尾部
+ * @param {string} content - 累积全文
+ * @param {{ text: string, html: string }} cache - 前缀缓存（text/thinking 各一份）
+ * @returns {string} 前缀缓存 HTML + 尾部增量 HTML
+ */
+function parseStreamingMarkdown(content, cache) {
+    if (!content) return '';
+    // 内容不再以缓存前缀开头（新消息 / 重发）→ 缓存作废
+    if (!content.startsWith(cache.text)) resetPrefixCache(cache);
+
+    const boundary = content.lastIndexOf('\n\n');
+    if (boundary >= cache.text.length) {
+        const segment = content.slice(cache.text.length, boundary + 2);
+        if (segment && hasBalancedFences(segment)) {
+            cache.text += segment;
+            cache.html += safeMarkedParse(segment, { isStreaming: true });
+        }
+    }
+
+    if (!cache.text) return safeMarkedParse(content, { isStreaming: true });
+    const tail = content.slice(cache.text.length);
+    return cache.html + (tail ? safeMarkedParse(tail, { isStreaming: true }) : '');
 }
 
 /**
@@ -155,10 +202,9 @@ function cleanupStreamingState(container) {
     lastRenderedLen = 0;
     lastRenderedTs = 0;
     userScrolledUp = false;
-    if (scrollLockTimer) {
-        clearTimeout(scrollLockTimer);
-        scrollLockTimer = null;
-    }
+    autoScrollPending = false;
+    resetPrefixCache(textPrefixCache);
+    resetPrefixCache(thinkingPrefixCache);
 }
 
 /**
@@ -204,7 +250,7 @@ function doRender(textContent, thinkingContent) {
 
         // 渲染文本内容
         if (textContent) {
-            html += safeMarkedParse(textContent, { isStreaming: true });
+            html += parseStreamingMarkdown(textContent, textPrefixCache);
         }
 
         // 添加打字光标
@@ -239,9 +285,10 @@ function doRender(textContent, thinkingContent) {
 
                 // 只更新内容，不重建 DOM
                 // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
-                thinkingContentEl.innerHTML = safeMarkedParse(thinkingContent, {
-                    isStreaming: true
-                });
+                thinkingContentEl.innerHTML = parseStreamingMarkdown(
+                    thinkingContent,
+                    thinkingPrefixCache
+                );
 
                 // 恢复滚动位置（如果用户在查看，保持位置；如果在底部，跟随新内容）
                 if (isScrolledToBottom) {
@@ -263,7 +310,7 @@ function doRender(textContent, thinkingContent) {
             if (textContent) {
                 const textDiv = document.createElement('div');
                 // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
-                textDiv.innerHTML = safeMarkedParse(textContent, { isStreaming: true });
+                textDiv.innerHTML = parseStreamingMarkdown(textContent, textPrefixCache);
                 state.currentAssistantMessage.appendChild(textDiv);
             }
 
@@ -298,7 +345,7 @@ function doRender(textContent, thinkingContent) {
 
             // 渲染文本内容
             if (textContent) {
-                html += safeMarkedParse(textContent, { isStreaming: true });
+                html += parseStreamingMarkdown(textContent, textPrefixCache);
             }
 
             // 添加打字光标

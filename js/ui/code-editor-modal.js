@@ -15,6 +15,7 @@ import {
     analyzeCode
 } from './code-editor-core.js';
 import { trapFocus, openFullscreenPreview } from './code-editor-toolbar.js';
+import { acquireInert, releaseInert } from '../utils/focus-trap.js';
 import { bindTopmostEscape } from '../utils/modal-stack.js';
 
 /**
@@ -32,7 +33,7 @@ export function openCodeEditorModal(code, language, onSave, isReadOnly = false) 
     trapFocus(modal);
 
     // 禁用主内容交互
-    document.querySelector('.app-container')?.setAttribute('inert', '');
+    acquireInert();
 
     // 初始化标签页（默认显示「分析」）
     switchTab(modal, 'analysis');
@@ -221,7 +222,7 @@ function bindModalEvents(modal, originalCode, originalLanguage, onSave, isReadOn
         ac.abort(); // 清理所有事件监听器
         modal.remove();
         document.body.style.overflow = '';
-        document.querySelector('.app-container')?.removeAttribute('inert');
+        releaseInert();
     };
 
     closeBtn.addEventListener('click', closeModal, { signal });

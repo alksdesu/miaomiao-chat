@@ -158,7 +158,7 @@
 /* 次要按钮 */
 .update-btn-secondary {
     background: var(--md-yellow);
-    color: var(--color-text-primary);
+    color: var(--color-text-on-accent);
 }
 
 .update-btn-secondary:hover {

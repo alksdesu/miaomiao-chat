@@ -33,11 +33,6 @@ vi.mock('../../js/utils/modal-stack.js', () => ({
     bindTopmostEscape: vi.fn()
 }));
 
-vi.mock('../../js/utils/focus-trap.js', () => ({
-    trapFocus: vi.fn(),
-    removeFocusTrap: vi.fn()
-}));
-
 vi.mock('../../js/utils/logger.js', () => ({
     logger: { warn: vi.fn(), debug: vi.fn(), error: vi.fn(), info: vi.fn() }
 }));
@@ -59,6 +54,8 @@ describe('viewer', () => {
     });
 
     afterEach(() => {
+        // inert 引用计数是模块级状态，必须成对释放避免跨用例泄漏
+        closeImageViewer();
         document.body.innerHTML = '';
     });
 

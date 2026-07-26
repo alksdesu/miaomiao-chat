@@ -128,8 +128,10 @@ function filterRuntimeState(config) {
 /**
  * 为导出的会话列表加载消息数据（v4 架构适配）
  * v3 未迁移的会话可能有 _pendingMessages，v4 从 messages store 加载
+ * @param {Array} sessions - 会话元数据列表
+ * @param {{loadFailed:number}} [stats] - 可选累加器，统计消息读取失败的会话数供调用方提示用户
  */
-async function loadMessagesForSessions(sessions) {
+async function loadMessagesForSessions(sessions, stats = null) {
     const results = [];
     for (const session of sessions) {
         const merged = { ...session };
@@ -149,6 +151,7 @@ async function loadMessagesForSessions(sessions) {
                 }
             } catch (e) {
                 logger.warn(`[Export] 加载会话 ${merged.id} 消息失败:`, e);
+                if (stats) stats.loadFailed++;
             }
         }
         results.push(merged);
@@ -250,7 +253,8 @@ export async function exportSessions() {
         const sessions = await loadAllSessionsFromDB();
 
         // v4: 从 messages store 加载每个会话的消息
-        const sessionsWithMessages = await loadMessagesForSessions(sessions);
+        const loadStats = { loadFailed: 0 };
+        const sessionsWithMessages = await loadMessagesForSessions(sessions, loadStats);
 
         // 清理会话中的私有字段
         const exportStats = { sensitiveStripped: 0 };
@@ -274,7 +278,15 @@ export async function exportSessions() {
             exportStats.sensitiveStripped > 0
                 ? `（已移除 ${exportStats.sensitiveStripped} 个服务端签名字段以保护隐私）`
                 : '';
-        showNotification(`已导出 ${cleanedSessions.length} 个会话${strippedNote}`, 'success');
+        if (loadStats.loadFailed > 0) {
+            showNotification(
+                `已导出 ${cleanedSessions.length} 个会话${strippedNote}，但 ${loadStats.loadFailed} 个会话消息读取失败未包含在备份中`,
+                'warning',
+                10000
+            );
+        } else {
+            showNotification(`已导出 ${cleanedSessions.length} 个会话${strippedNote}`, 'success');
+        }
     } catch (error) {
         logger.error('导出会话失败:', error);
         showNotification('导出会话失败: ' + error.message, 'error');
@@ -319,7 +331,8 @@ export async function exportAllData() {
         const filteredSavedConfigs = savedConfigs.map(filterRuntimeState);
 
         // 清理会话中的私有字段
-        const sessionsWithMessages = await loadMessagesForSessions(sessions);
+        const loadStats = { loadFailed: 0 };
+        const sessionsWithMessages = await loadMessagesForSessions(sessions, loadStats);
         const exportStats = { sensitiveStripped: 0 };
         const cleanedSessions = sessionsWithMessages.map((session) =>
             sanitizeSession(session, exportStats)
@@ -348,10 +361,18 @@ export async function exportAllData() {
             exportStats.sensitiveStripped > 0
                 ? `（已移除 ${exportStats.sensitiveStripped} 个服务端签名字段以保护隐私）`
                 : '';
-        showNotification(
-            `已导出完整备份（${cleanedSessions.length} 个会话）${strippedNote}`,
-            'success'
-        );
+        if (loadStats.loadFailed > 0) {
+            showNotification(
+                `已导出完整备份（${cleanedSessions.length} 个会话）${strippedNote}，但 ${loadStats.loadFailed} 个会话消息读取失败未包含在备份中`,
+                'warning',
+                10000
+            );
+        } else {
+            showNotification(
+                `已导出完整备份（${cleanedSessions.length} 个会话）${strippedNote}`,
+                'success'
+            );
+        }
     } catch (error) {
         logger.error('导出失败:', error);
         showNotification('导出失败: ' + error.message, 'error');

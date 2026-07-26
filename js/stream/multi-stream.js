@@ -292,11 +292,14 @@ async function parseReplyStream(adapter, response, showRealtime, signal = null) 
     // sessionId=null：BufferedSink.commit 是 no-op，无需会话归属
     const parser = await adapter.streamParser(reader, null, sink, signal);
 
-    if (sink.errorInfo) {
-        // 流内 API 错误：抛出让外层 Promise.allSettled 收集
-        throw new Error(
-            `${sink.errorInfo.errorCode || 'stream_error'}: ${sink.errorInfo.errorMessage}`
-        );
+    // 从 parser 实例提取 reply（子类 collectReply 提供格式特有字段）
+    if (!parser || typeof parser.collectReply !== 'function') {
+        if (sink.errorInfo) {
+            throw new Error(
+                `${sink.errorInfo.errorCode || 'stream_error'}: ${sink.errorInfo.errorMessage}`
+            );
+        }
+        throw new Error('adapter.streamParser 未返回 parser 实例（缺 collectReply 方法）');
     }
 
     if (sink.skippedToolCalls) {
@@ -307,9 +310,13 @@ async function parseReplyStream(adapter, response, showRealtime, signal = null) 
         );
     }
 
-    // 从 parser 实例提取 reply（子类 collectReply 提供格式特有字段）
-    if (!parser || typeof parser.collectReply !== 'function') {
-        throw new Error('adapter.streamParser 未返回 parser 实例（缺 collectReply 方法）');
+    const reply = parser.collectReply();
+    if (sink.errorInfo) {
+        // 流内 API 错误不 throw：已接收文本随 reply 保留，
+        // isError 标记走 reply-selector 的失败 tab 展示分支
+        reply.isError = true;
+        reply.errorType = sink.errorInfo.errorCode || 'stream_error';
+        reply.errorMessage = sink.errorInfo.errorMessage;
     }
-    return parser.collectReply();
+    return reply;
 }

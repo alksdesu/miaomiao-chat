@@ -122,7 +122,11 @@ describe('toggleSidebar (jsdom)', () => {
         elements.closeSidebar = document.getElementById('close-sidebar');
     });
 
-    afterEach(() => {
+    afterEach(async () => {
+        // inert 引用计数是模块级状态，必须成对释放避免跨用例泄漏
+        if (elements.sidebar?.classList.contains('open')) {
+            await toggleSidebar(true);
+        }
         document.body.innerHTML = '';
         elements.sidebar = null;
         elements.sidebarToggle = null;

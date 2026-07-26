@@ -117,6 +117,11 @@ export async function initInputResize() {
             }
         }
     });
+
+    // 系统手势打断触摸时不保存高度，仅退出拖拽态
+    document.addEventListener('touchcancel', () => {
+        isResizing = false;
+    });
 }
 
 /**
@@ -260,6 +265,12 @@ export async function initPanelResize() {
                     localStorage.setItem(storageKey, width);
                 }
             }
+        });
+
+        // 系统手势打断触摸时不保存宽度，仅退出拖拽态
+        document.addEventListener('touchcancel', () => {
+            isResizing = false;
+            handle.classList.remove('resizing');
         });
 
         // 键盘支持（方向键调整宽度）

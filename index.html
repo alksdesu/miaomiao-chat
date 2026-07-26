@@ -1508,6 +1508,7 @@
                             class="icon-button"
                             title="会话列表"
                             aria-label="打开会话列表"
+                            aria-expanded="false"
                         >
                             <svg
                                 aria-hidden="true"
@@ -1878,7 +1879,7 @@
 
             <!-- 聊天容器 -->
             <main class="chat-container">
-                <div id="messages" class="messages-area">
+                <div id="messages" class="messages-area" role="log">
                     <!-- 欢迎消息 -->
                     <div class="welcome-message glass">
                         <div class="gemini-logo">
@@ -2008,6 +2009,7 @@
                         class="input-icon-btn"
                         title="设置"
                         aria-label="打开设置面板"
+                        aria-expanded="false"
                     >
                         <svg
                             aria-hidden="true"

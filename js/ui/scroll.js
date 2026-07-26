@@ -7,6 +7,8 @@ import { elements } from '../core/elements.js';
 import { eventBus } from '../core/events.js';
 import { logger } from '../utils/logger.js';
 
+const NEAR_BOTTOM_THRESHOLD_PX = 150;
+
 let scrollTimeout = null;
 
 /**
@@ -31,11 +33,38 @@ function updateScrollButtonVisibility() {
     const clientHeight = elements.messagesArea.clientHeight;
     const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
 
-    // 距离底部超过 150px 时显示按钮
-    if (distanceFromBottom > 150) {
+    if (distanceFromBottom > NEAR_BOTTOM_THRESHOLD_PX) {
         elements.scrollToBottomBtn.classList.add('visible');
     } else {
         elements.scrollToBottomBtn.classList.remove('visible');
+    }
+}
+
+/**
+ * 视口收缩（软键盘弹出）时保持贴底
+ * 收缩前贴底的判定：当前距底减去收缩量即收缩前距底（layout 视口未变时该估计偏松，同样应补偿）
+ */
+function initViewportShrinkCompensation() {
+    const visualViewport = window.visualViewport;
+    let lastHeight = visualViewport ? visualViewport.height : window.innerHeight;
+
+    const onViewportResize = () => {
+        const height = visualViewport ? visualViewport.height : window.innerHeight;
+        const shrunkBy = lastHeight - height;
+        lastHeight = height;
+        if (shrunkBy <= 0 || !elements.messagesArea) return;
+
+        const area = elements.messagesArea;
+        const distanceFromBottom = area.scrollHeight - area.scrollTop - area.clientHeight;
+        if (distanceFromBottom - shrunkBy < NEAR_BOTTOM_THRESHOLD_PX) {
+            scrollToBottom();
+        }
+    };
+
+    if (visualViewport) {
+        visualViewport.addEventListener('resize', onViewportResize);
+    } else {
+        window.addEventListener('resize', onViewportResize);
     }
 }
 
@@ -62,6 +91,8 @@ export function initScrollControl() {
 
     // 初始检查
     updateScrollButtonVisibility();
+
+    initViewportShrinkCompensation();
 
     // 将函数暴露到全局作用域供 HTML onclick 使用
     window.scrollToBottom = scrollToBottom;

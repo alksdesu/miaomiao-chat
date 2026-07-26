@@ -13,6 +13,28 @@
 const FOCUSABLE_SELECTOR =
     'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+// 嵌套弹层共享 .app-container 的 inert：计数归零才真正解除，防止内层关闭提前恢复背景交互
+let inertCount = 0;
+
+/**
+ * 申请背景隔离：.app-container 加 inert（引用计数 +1）
+ */
+export function acquireInert() {
+    inertCount += 1;
+    document.querySelector('.app-container')?.setAttribute('inert', '');
+}
+
+/**
+ * 释放背景隔离：引用计数 -1，归零才移除 inert
+ */
+export function releaseInert() {
+    if (inertCount === 0) return;
+    inertCount -= 1;
+    if (inertCount === 0) {
+        document.querySelector('.app-container')?.removeAttribute('inert');
+    }
+}
+
 /**
  * 启用焦点陷阱：Tab/Shift+Tab 循环聚焦在 element 内
  * 幂等：重复调用同一 element 不会装多个 handler
@@ -67,8 +89,7 @@ export function activateModalIsolation(modal) {
     if (!modal) return { release: () => {} };
 
     const previousActive = document.activeElement;
-    const appContainer = document.querySelector('.app-container');
-    appContainer?.setAttribute('inert', '');
+    acquireInert();
     trapFocus(modal);
 
     let released = false;
@@ -77,7 +98,7 @@ export function activateModalIsolation(modal) {
             if (released) return;
             released = true;
             removeFocusTrap(modal);
-            appContainer?.removeAttribute('inert');
+            releaseInert();
             // 还原焦点：previousActive 仍在 DOM 中且支持 focus() 才还原（避免还原到已删除节点）
             if (
                 previousActive &&

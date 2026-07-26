@@ -43,12 +43,22 @@ const sessionGrantedTools = new Set();
 const turnApprovalCache = new Map();
 let currentTurnId = null;
 
+// 必须对完整序列化串哈希：截断会让不同长参数共享同一批准结果，确认 gate 失效
 function hashArgs(args) {
+    let str;
     try {
-        return JSON.stringify(args).slice(0, 256);
+        str = JSON.stringify(args) ?? String(args);
     } catch {
-        return String(args);
+        str = String(args);
     }
+    let h1 = 0x811c9dc5;
+    let h2 = 0x1505;
+    for (let i = 0; i < str.length; i++) {
+        const c = str.charCodeAt(i);
+        h1 = Math.imul(h1 ^ c, 0x01000193);
+        h2 = Math.imul(h2, 33) ^ c;
+    }
+    return (h1 >>> 0).toString(16).padStart(8, '0') + (h2 >>> 0).toString(16).padStart(8, '0');
 }
 
 /**

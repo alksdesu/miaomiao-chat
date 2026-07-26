@@ -35,14 +35,24 @@
 
     /* ---- Header 紧凑化 ---- */
     .header-content {
-        padding: calc(6px + var(--app-safe-top)) 10px 6px;
+        padding: calc(6px + var(--app-safe-top)) calc(10px + var(--app-safe-right)) 6px
+            calc(10px + var(--app-safe-left));
     }
 
+    /* 视觉 32px，::before 把命中区扩到 44px（WCAG 2.5.5）；
+       基础样式的 overflow:hidden 会裁掉命中区，此处必须放开 */
     .header-content .icon-button {
         width: 32px;
         height: 32px;
         border: none;
         background: transparent;
+        overflow: visible;
+    }
+
+    .header-content .icon-button::before {
+        content: '';
+        position: absolute;
+        inset: -6px;
     }
 
     .header-content .icon-button svg {
@@ -52,8 +62,8 @@
 
     /* ---- 输入栏全面紧凑 ---- */
     .input-bar {
-        padding: 4px 8px;
-        padding-bottom: calc(4px + var(--app-safe-bottom));
+        padding: 4px calc(8px + var(--app-safe-right)) calc(4px + var(--app-safe-bottom))
+            calc(8px + var(--app-safe-left));
     }
 
     .input-bar-inner {
@@ -95,16 +105,26 @@
         height: 16px;
     }
 
-    /* resize handle */
+    /* resize handle：视觉 10px，::after 透明区把命中高度扩到 24px，不占布局 */
     .input-resize-handle {
         height: 10px;
         margin-bottom: 1px;
         opacity: 0.5;
+        position: relative;
     }
 
     .input-resize-handle::before {
         width: 32px;
         height: 3px;
+    }
+
+    .input-resize-handle::after {
+        content: '';
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: -7px;
+        bottom: -7px;
     }
 
     /* ---- 快捷开关：横向滑动 + 小巧 ---- */
@@ -219,9 +239,17 @@
         min-height: 44px;
     }
 
+    /* 视觉 24px，::before 把命中区扩到 44px（WCAG 2.5.5） */
     .remove-image {
         width: 24px;
         height: 24px;
+        position: relative;
+    }
+
+    .remove-image::before {
+        content: '';
+        position: absolute;
+        inset: -10px;
     }
 
     /* ---- 消息操作按钮 ---- */
@@ -296,9 +324,17 @@
         line-clamp: 3;
     }
 
+    /* 视觉 28px，::before 把命中区扩到 44px（WCAG 2.5.5） */
     .quote-preview-close {
         width: 28px;
         height: 28px;
+        position: relative;
+    }
+
+    .quote-preview-close::before {
+        content: '';
+        position: absolute;
+        inset: -8px;
     }
 
     /* ---- 全屏型弹层：必须显式标记 ---- */
@@ -329,11 +365,19 @@
         padding: 6px 30px 6px 10px;
     }
 
+    /* 视觉 24px，::before 把命中区扩到 44px（WCAG 2.5.5） */
     .notification-close {
         width: 24px;
         height: 24px;
         margin-right: 2px;
         font-size: var(--fs-lg);
+        position: relative;
+    }
+
+    .notification-close::before {
+        content: '';
+        position: absolute;
+        inset: -10px;
     }
 
     /* ---- 侧边栏移动端 ---- */
@@ -992,9 +1036,10 @@
         max-width: 480px;
     }
 
-    /* 输入栏适配 */
+    /* 输入栏适配（shorthand 会覆盖基础样式的 safe-area padding，必须一并带上） */
     .input-bar {
-        padding: 12px 16px;
+        padding: 12px calc(16px + var(--app-safe-right)) calc(12px + var(--app-safe-bottom))
+            calc(16px + var(--app-safe-left));
     }
 
     /* 工具调用卡片两列布局 */

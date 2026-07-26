@@ -8,18 +8,17 @@ import { state, elements } from '../core/state.js';
 import { eventBus } from '../core/events.js';
 import { requestStateMachine } from '../core/request-state-machine.js';
 import { createMessageElement } from '../messages/renderer.js';
-import { removeMessagesAfterAll, updateMessageContentWithImages } from '../messages/editor.js';
-import { showNotification } from './notifications.js';
-import { pushMessage, updateMessageAt } from '../core/state-mutations.js';
-import { categorizeFile } from '../utils/file-helpers.js';
 import {
-    createMessage,
-    Role,
-    textPart,
-    mediaPart,
-    filePart,
-    MediaKind
-} from '../messages/schema.js';
+    removeMessagesAfterAll,
+    updateUserMessageFromDraft,
+    buildAttachmentParts,
+    resolveEditingIndex,
+    endEditingState
+} from '../messages/editor.js';
+import { showNotification } from './notifications.js';
+import { showConfirmDialog } from '../utils/dialogs.js';
+import { pushMessage, updateMessageAt } from '../core/state-mutations.js';
+import { createMessage, Role, textPart } from '../messages/schema.js';
 import {
     MAX_ATTACHMENTS,
     IMAGE_COMPRESSION_TIMEOUT,
@@ -65,39 +64,6 @@ export function autoResizeTextarea() {
 
     textarea.style.height = 'auto';
     textarea.style.height = Math.min(textarea.scrollHeight, maxHeight) + 'px';
-}
-
-/**
- * 更新用户消息 DOM
- * @param {HTMLElement} messageEl - 消息元素
- * @param {string} text - 文本内容
- * @param {Array} images - 图片数组
- */
-function updateUserMessageDOM(messageEl, text, images = null) {
-    const contentWrapper = messageEl.querySelector('.message-content-wrapper');
-    const contentDiv = contentWrapper?.querySelector('.message-content');
-    if (!contentDiv) return;
-
-    contentDiv.textContent = text;
-
-    const oldImages = contentDiv.querySelector('.message-images');
-    if (oldImages) oldImages.remove();
-
-    if (images && images.length > 0) {
-        const imagesContainer = document.createElement('div');
-        imagesContainer.className = 'message-images';
-        images.forEach((img) => {
-            const imgEl = document.createElement('img');
-            imgEl.src = img.data;
-            imgEl.alt = img.name;
-            imgEl.title = '点击查看大图';
-            imgEl.onclick = () => {
-                eventBus.emit('ui:open-image-viewer', { url: img.data });
-            };
-            imagesContainer.appendChild(imgEl);
-        });
-        contentDiv.appendChild(imagesContainer);
-    }
 }
 
 /**
@@ -166,6 +132,7 @@ function cancelEdit() {
     }
     state.editingIndex = null;
     updateCancelEditButton();
+    endEditingState();
 
     showNotification('已取消编辑', 'info');
 }
@@ -176,6 +143,13 @@ function cancelEdit() {
 function saveEdit() {
     if (state.editingIndex === null) return;
 
+    const targetIndex = resolveEditingIndex();
+    if (targetIndex < 0) {
+        showNotification('原消息已不存在，无法保存', 'error');
+        cancelEdit();
+        return;
+    }
+
     const textContent = elements.userInput.value.trim();
     const hasAttachments = state.uploadedImages.length > 0;
 
@@ -184,19 +158,16 @@ function saveEdit() {
         return;
     }
 
-    const attachmentDataUrls = hasAttachments ? state.uploadedImages.map((file) => file.data) : [];
-    let messageAttachments = [];
-
-    if (hasAttachments) {
-        messageAttachments = attachmentDataUrls;
-    }
-
-    updateMessageContentWithImages(state.editingIndex, textContent, messageAttachments, 'user');
+    updateUserMessageFromDraft(
+        targetIndex,
+        textContent,
+        hasAttachments ? state.uploadedImages : []
+    );
 
     if (state.editingElement) {
         eventBus.emit('message:content-updated', {
             messageEl: state.editingElement,
-            index: state.editingIndex,
+            index: targetIndex,
             newContent: textContent,
             role: 'user'
         });
@@ -213,6 +184,7 @@ function saveEdit() {
     }
     state.editingIndex = null;
     updateCancelEditButton();
+    endEditingState();
 
     showNotification('消息已保存', 'success');
 }
@@ -244,6 +216,24 @@ export async function handleSend() {
             duration: 2000
         });
         return;
+    }
+
+    let editTargetIndex = null;
+    if (isEditing) {
+        editTargetIndex = resolveEditingIndex();
+        if (editTargetIndex < 0) {
+            showNotification('原消息已不存在，无法重新发送', 'error');
+            cancelEdit();
+            return;
+        }
+        const followCount = state.messages.length - editTargetIndex - 1;
+        if (followCount > 0) {
+            const confirmed = await showConfirmDialog(
+                `重新发送将删除该消息之后的 ${followCount} 条消息，确定继续？`,
+                '重新发送'
+            );
+            if (!confirmed) return;
+        }
     }
 
     // 如果有引用消息，添加引用上下文
@@ -303,20 +293,7 @@ export async function handleSend() {
         parts.push(textPart(textContent));
     }
     if (hasAttachments) {
-        for (const file of state.uploadedImages) {
-            const cat = file.category || categorizeFile(file.type);
-            if (cat === 'image') {
-                parts.push(mediaPart(MediaKind.IMAGE, file.data, file.type));
-            } else if (cat === 'video') {
-                parts.push(mediaPart(MediaKind.VIDEO, file.data, file.type));
-            } else if (cat === 'pdf') {
-                parts.push(filePart(file.name, file.type, file.data));
-            } else if (cat === 'text') {
-                parts.push(
-                    filePart(file.name, file.type || 'text/plain', file.data, { encoding: 'text' })
-                );
-            }
-        }
+        parts.push(...buildAttachmentParts(state.uploadedImages));
     }
 
     const userMessage = createMessage(Role.USER, parts);
@@ -329,19 +306,20 @@ export async function handleSend() {
 
     let messageIndex;
     if (isEditing) {
-        const targetIndex = state.editingIndex;
-        updateMessageAt(targetIndex, userMessage, true);
+        updateMessageAt(editTargetIndex, userMessage, true);
 
         if (state.editingElement) {
-            updateUserMessageDOM(
-                state.editingElement,
-                textContent,
-                hasAttachments ? state.uploadedImages : null
-            );
+            // 走 rerenderMessageContent 从 state 重建，文本/PDF 附件才能渲染为文件卡片而非损坏图片
+            eventBus.emit('message:content-updated', {
+                messageEl: state.editingElement,
+                index: editTargetIndex,
+                newContent: textContent,
+                role: 'user'
+            });
         }
 
-        removeMessagesAfterAll(targetIndex);
-        messageIndex = targetIndex;
+        removeMessagesAfterAll(editTargetIndex);
+        messageIndex = editTargetIndex;
     } else {
         messageIndex = pushMessage(userMessage);
         const messageEl = createMessageElement(
@@ -370,6 +348,7 @@ export async function handleSend() {
         state.editingElement = null;
     }
     updateCancelEditButton();
+    if (isEditing) endEditingState();
 
     eventBus.emit('ui:scroll-to-bottom');
 

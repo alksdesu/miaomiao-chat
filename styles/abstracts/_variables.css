@@ -94,10 +94,10 @@
     --border-color: var(--color-border-primary);
     --text-tertiary: var(--color-text-tertiary, #999);
     --md-primary: var(--md-blue);
+    --primary-color: var(--md-blue);
     --md-surface-container: var(--color-bg-surface);
     --md-surface-variant: var(--color-bg-secondary, #e0e0e0);
     --color-surface-secondary: var(--color-bg-secondary, #f0f0f0);
-    --radius-lg: var(--radius-2xl);
 
     /* ===== 字体 ===== */
     --font-sans:
@@ -109,7 +109,7 @@
     --font-mono: 'Space Mono', 'JetBrains Mono', 'Cascadia Code', 'SF Mono', 'Consolas', monospace;
 
     /* ===== 字体大小 ===== */
-    --fs-2xs: 9px;
+    --fs-2xs: 10px;
     --fs-xs: 10px;
     --fs-sm: 11px;
     --fs-base: 12px;
@@ -120,6 +120,8 @@
     --fs-3xl: 20px;
     --fs-4xl: 24px;
     --fs-5xl: 28px;
+    /* 正文阅读字号，明暗共用，仅在 :root 定义 */
+    --fs-body: 15px;
 
     /* ===== 间距 ===== */
     --sp-1: 2px;
@@ -139,6 +141,7 @@
     --radius-none: 0;
     --radius-sm: 2px;
     --radius-md: 4px;
+    --radius-lg: 6px;
     --radius-xl: 8px;
     --radius-2xl: 12px;
     --radius-full: 9999px;
@@ -157,6 +160,11 @@
     --shadow-depth-lg:
         -4px 4px 0px 0px rgba(var(--shadow-color-rgb), 1),
         -8px 8px 0px 0px rgba(var(--shadow-color-rgb), 0.5);
+
+    /* 消息卡片阴影（暗色主题经 --card-ring 叠加内描边） */
+    --card-ring: 0 0 0 0 transparent;
+    --shadow-card: var(--card-ring), var(--shadow-md);
+    --shadow-card-hover: var(--card-ring), var(--shadow-depth-md);
 
     /* 彩色发光 */
     --glow-blue: 0 0 20px rgba(var(--palette-blue-rgb), 0.5);
@@ -201,6 +209,8 @@
     /* ===== 焦点/标题栏/滚动阴影 ===== */
     --color-focus: var(--md-blue);
     --color-bg-titlebar: transparent;
+    /* 标题栏始终是深色底（--color-bg-accent），前景固定白系，主题引擎可覆盖 */
+    --titlebar-fg-rgb: 255, 255, 255;
     --scroll-shadow-color: rgba(0, 0, 0, 0.1);
 
     /* ===== 代码语法高亮（light） ===== */
@@ -217,6 +227,7 @@
     --lazy-image-shimmer-b: #f8f8f8;
 
     /* ===== 组件状态色 ===== */
+    --hover-bg: rgba(var(--color-text-primary-rgb), 0.06);
     --color-bg-error-image: #fee;
     --color-bg-settings-group: rgba(255, 255, 255, 0.3);
     --color-bg-settings-group-hover: rgba(255, 255, 255, 0.5);
@@ -278,6 +289,8 @@
 
     /* 阴影 */
     --shadow-color-rgb: 42, 42, 42;
+    /* 暗色卡片内描边，弥补硬阴影在深底上的层级感缺失 */
+    --card-ring: 0 0 0 1px rgba(255, 255, 255, 0.07);
 
     /* 发光（暗色下降低强度） */
     --glow-blue: 0 0 20px rgba(var(--palette-blue-rgb), 0.35);
@@ -307,7 +320,8 @@
     --syntax-variable: #e8e8e8;
 
     /* 兼容性别名 */
-    --md-charcoal: var(--color-border-primary);
+    /* 比 --color-border-primary 略亮：边框与硬阴影在深底上需要更多分离度 */
+    --md-charcoal: #3a3a3a;
     --md-muted: var(--color-text-muted);
     --md-border: var(--color-border-primary);
     --md-surface: var(--color-bg-surface);
@@ -336,6 +350,7 @@
     /* 焦点/标题栏/滚动 */
     --color-focus: var(--md-teal);
     --color-bg-titlebar: #1e1e1e;
+    --titlebar-fg-rgb: 255, 255, 255;
     --scroll-shadow-color: rgba(229, 229, 229, 0.15);
 
     /* 懒加载占位 */
@@ -343,6 +358,7 @@
     --lazy-image-shimmer-b: #2a2a2a;
 
     /* 组件状态色 */
+    --hover-bg: rgba(255, 255, 255, 0.08);
     --color-bg-error-image: #3a2020;
     --color-bg-settings-group: rgba(255, 255, 255, 0.05);
     --color-bg-settings-group-hover: rgba(255, 255, 255, 0.08);

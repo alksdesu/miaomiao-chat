@@ -38,6 +38,10 @@ const ERROR_MESSAGES = {
     TypeError: { title: '请求失败', hint: '可能是跨域或网络问题' },
     AbortError: { title: '请求已取消', hint: '请求被手动中断' },
     TimeoutError: { title: '请求超时', hint: '服务响应太慢，请重试' },
+    OpenClawDisconnectedError: {
+        title: 'WebSocket 连接断开',
+        hint: '与 OpenClaw 网关的连接中断，正在自动重连，稍后可重发消息'
+    },
 
     // 流式专用错误码（base-parser._handleStreamReadError 抛出）
     idle_timeout: {
@@ -51,6 +55,10 @@ const ERROR_MESSAGES = {
     empty_response: {
         title: '响应内容为空',
         hint: '代理可能返回了 HTML 错误页，请检查代理配置或端点地址'
+    },
+    user_cancelled: {
+        title: '请求已取消',
+        hint: '已保留取消前接收的内容'
     }
 };
 

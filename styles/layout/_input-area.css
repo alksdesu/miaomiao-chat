@@ -1,8 +1,8 @@
 /* ========== 简洁输入栏 ========== */
 .input-bar {
     background: var(--color-bg-accent);
-    padding: 12px 20px;
-    padding-bottom: calc(12px + var(--app-safe-bottom));
+    padding: var(--sp-6) calc(var(--sp-8) + var(--app-safe-right))
+        calc(var(--sp-6) + var(--app-safe-bottom)) calc(var(--sp-8) + var(--app-safe-left));
     flex-shrink: 0;
     z-index: var(--z-sticky);
 }
@@ -10,7 +10,7 @@
 /* 拖拽调整高度的手柄 */
 .input-resize-handle {
     max-width: var(--content-max-width);
-    margin: 0 auto 8px;
+    margin: 0 auto var(--sp-4);
     height: 6px;
     cursor: ns-resize;
     display: flex;
@@ -41,10 +41,10 @@
     margin: 0 auto;
     display: flex;
     align-items: flex-end;
-    gap: 8px;
+    gap: var(--sp-4);
     background: var(--color-bg-surface);
     border: var(--border);
-    padding: 8px 12px;
+    padding: var(--sp-4) var(--sp-6);
     box-shadow: var(--shadow-md);
 }
 
@@ -54,14 +54,15 @@
     background: transparent;
     color: var(--color-text-primary);
     font-family: var(--font-sans);
-    font-size: var(--fs-lg);
+    /* iOS Safari 聚焦字号 <16px 会强制放大整页，必须保持 ≥16px */
+    font-size: 16px;
     line-height: 1.5;
     resize: none;
     outline: none;
     max-height: 500px;
     min-height: 24px;
     height: 60px;
-    padding: 4px 0;
+    padding: var(--sp-2) 0;
     overflow-y: auto; /* JS 失败时的回退 */
 }
 
@@ -102,7 +103,7 @@
 .char-counter {
     position: absolute;
     bottom: -24px;
-    right: 12px;
+    right: var(--sp-6);
     font-size: var(--fs-sm);
     font-family: var(--font-mono);
     color: var(--md-muted);
@@ -205,18 +206,18 @@
 /* 快捷开关栏 */
 .input-quick-toggles {
     max-width: var(--content-max-width);
-    margin: 8px auto 0;
+    margin: var(--sp-4) auto 0;
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--sp-3);
     flex-wrap: wrap;
 }
 
 .quick-toggle-btn {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    padding: 4px 10px;
+    gap: var(--sp-2);
+    padding: var(--sp-2) var(--sp-5);
     background: var(--md-surface);
     border: var(--border);
     color: var(--md-muted);
@@ -237,7 +238,7 @@
 
 .quick-toggle-btn.active {
     background: var(--md-teal);
-    color: var(--color-text-primary);
+    color: var(--color-text-on-accent);
 }
 
 .quick-toggle-btn.active:hover {
@@ -259,7 +260,7 @@
     height: 44px;
     border: var(--border);
     background: var(--md-green);
-    color: var(--color-text-inverse);
+    color: var(--color-text-on-accent);
     cursor: pointer;
     display: none;
     align-items: center;
@@ -284,7 +285,7 @@
     height: 44px;
     border: var(--border);
     background: var(--md-coral);
-    color: var(--color-text-primary);
+    color: var(--color-text-on-accent);
     cursor: pointer;
     display: none;
     align-items: center;
@@ -310,8 +311,8 @@
     overflow: hidden;
     opacity: 0;
     flex-wrap: wrap;
-    gap: 12px;
-    padding: 0 12px;
+    gap: var(--sp-6);
+    padding: 0 var(--sp-6);
     background: var(--color-bg-surface);
     border: var(--border);
     border-bottom: none;
@@ -327,8 +328,8 @@
     max-height: 200px;
     overflow-y: auto;
     opacity: 1;
-    padding: 12px;
-    margin-bottom: 12px;
+    padding: var(--sp-6);
+    margin-bottom: var(--sp-6);
 }
 
 .image-preview-item {
@@ -365,13 +366,13 @@
     grid-column-start: 1;
     justify-self: end; /* 水平靠右 */
     align-self: start; /* 垂直靠上 */
-    margin: 4px; /* 距离边缘的间距 */
+    margin: var(--sp-2); /* 距离边缘的间距 */
     width: 32px;
     height: 32px;
     border: var(--border);
     border-radius: 50%;
     background: var(--md-coral);
-    color: var(--color-text-primary);
+    color: var(--color-text-on-accent);
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -405,6 +406,8 @@
 .remove-image:hover {
     transform: scale(1.1);
     background: var(--color-bg-surface);
+    /* hover 背景回落到 surface，前景必须跟随主题色否则暗色下深字不可见 */
+    color: var(--color-text-primary);
 }
 
 /* ========== 引用预览栏（输入框上方，与图片预览并列） ========== */
@@ -414,19 +417,19 @@
     background: var(--color-bg-primary);
     border: var(--border);
     border-bottom: none; /* 默认无底部边框，与图片预览衔接 */
-    padding: 12px;
+    padding: var(--sp-6);
     box-shadow: var(--shadow-sm);
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
+    gap: var(--sp-6);
     animation: slideDown var(--duration-slower) var(--ease);
 }
 
 /* 当引用预览单独存在时（没有图片），添加底部边框和间距 */
 .quote-preview.standalone {
     border-bottom: var(--border);
-    margin-bottom: 12px;
+    margin-bottom: var(--sp-6);
 }
 
 @keyframes slideDown {
@@ -443,7 +446,7 @@
 .quote-preview-content {
     display: flex;
     align-items: flex-start;
-    gap: 10px;
+    gap: var(--sp-5);
     flex: 1;
     min-width: 0;
 }
@@ -459,7 +462,7 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: var(--sp-2);
 }
 
 .quote-preview-label {
@@ -503,7 +506,7 @@
 
 .quote-preview-close:hover {
     background: var(--md-coral);
-    color: var(--color-text-primary);
+    color: var(--color-text-on-accent);
     transform: scale(1.1);
 }
 
@@ -517,8 +520,8 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 6px;
-    padding: 8px;
+    gap: var(--sp-3);
+    padding: var(--sp-4);
     position: relative;
     background: var(--md-surface);
 }
@@ -551,7 +554,7 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 2px;
+    gap: var(--sp-1);
     text-align: center;
     max-width: 100%;
 }
@@ -593,10 +596,10 @@
     top: -6px;
     right: -6px;
     background: var(--color-primary);
-    color: var(--color-text-inverse);
+    color: var(--color-text-on-accent);
     font-size: var(--fs-2xs);
     font-weight: 600;
-    padding: 2px 4px;
+    padding: var(--sp-1) var(--sp-2);
     border-radius: 8px;
     border: 2px solid var(--color-bg-primary);
     letter-spacing: 0.5px;

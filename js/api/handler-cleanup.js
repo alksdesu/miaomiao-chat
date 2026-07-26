@@ -9,6 +9,7 @@
 import { state } from '../core/state.js';
 import { eventBus } from '../core/events.js';
 import { resetAllImageRetryState } from './image-retry.js';
+import { clearStreamSnapshot } from '../state/stream-snapshot.js';
 
 /**
  * 后台任务清理 + 跨会话完成通知
@@ -46,6 +47,9 @@ export function cleanupAfterSend(ctx, requestSucceeded) {
 
     state.isSavingContinuation = false;
     resetAllImageRetryState(sessionId);
+
+    // sink.commit 未执行的异常路径（parse 冒泡到 handler）会残留流式快照，此处兜底清理
+    clearStreamSnapshot(sessionId);
 
     if (sessionId === state.currentSessionId && !state.isToolCallPending) {
         state.currentAssistantMessage = null;

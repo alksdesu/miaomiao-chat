@@ -439,6 +439,8 @@ async function saveToBackgroundSession(
     try {
         const existing = (await loadSessionMessages(sessionId)) || { messages: [] };
 
+        // 本轮写入/合并的那条消息，冲突重试时按其 id 在 fresh 中定位
+        let savedMessage = null;
         let mergedIntoExisting = false;
         if (isContinuation && !isError) {
             // 倒序找最后一条「真实」assistant 消息合并新轮 parts，复用主路径同款 _turn 标记
@@ -456,6 +458,7 @@ async function saveToBackgroundSession(
 
                 const { mergedParts, mergedMeta } = mergeContinuationParts(m, parts, meta);
                 existing.messages[i] = { ...m, parts: mergedParts, meta: mergedMeta };
+                savedMessage = existing.messages[i];
                 mergedIntoExisting = true;
                 logger.debug(`[sync] background continuation 合并到消息 #${i} (${sessionId})`);
                 break;
@@ -478,6 +481,7 @@ async function saveToBackgroundSession(
             }
 
             existing.messages.push(msg);
+            savedMessage = msg;
         }
 
         // 走 saveSessionAtomic 乐观锁，与 writeToolResultsToBackgroundSession 路径对齐
@@ -502,8 +506,15 @@ async function saveToBackgroundSession(
                     `[sync] 后台保存冲突 ${sessionId}: baseline=${baseline}, actual=${saveErr.actualUpdatedAt}，reload 重试`
                 );
                 const fresh = (await loadSessionMessages(sessionId)) || { messages: [] };
-                const lastAssistant = existing.messages[existing.messages.length - 1];
-                fresh.messages.push(lastAssistant);
+                // continuation 合并场景 fresh 里已存在同 id 消息：按 id 替换，盲目 push 会造成重复
+                const freshIdx = savedMessage?.id
+                    ? fresh.messages.findIndex((m) => m?.id === savedMessage.id)
+                    : -1;
+                if (freshIdx >= 0) {
+                    fresh.messages[freshIdx] = savedMessage;
+                } else {
+                    fresh.messages.push(savedMessage);
+                }
                 const retryMeta = {
                     ...targetSession,
                     updatedAt: Date.now(),

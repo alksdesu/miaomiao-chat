@@ -3,7 +3,7 @@
  * 设置面板：toggleSettings, parseAppSettings, cleanup
  * @vitest-environment jsdom
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 vi.mock('../../js/core/state.js', () => ({
     state: {
@@ -78,6 +78,13 @@ beforeEach(() => {
     elements.apiKey = document.createElement('input');
     elements.modelSelect = document.createElement('select');
     document.body.innerHTML = '';
+});
+
+afterEach(() => {
+    // inert 引用计数是模块级状态，必须成对释放避免跨用例泄漏
+    if (elements.settingsPanel?.classList.contains('open')) {
+        toggleSettings();
+    }
 });
 
 describe('toggleSettings', () => {

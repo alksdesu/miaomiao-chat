@@ -38,7 +38,9 @@ import {
     hasMessagesStore,
     hasSearchIndexStore,
     saveToStore,
-    loadFromStore
+    loadFromStore,
+    safeLocalStorageGet,
+    safeLocalStorageSet
 } from './indexeddb.js';
 import { logger } from '../utils/logger.js';
 
@@ -267,9 +269,12 @@ export class SessionConflictError extends Error {
  * @param {number|null} [opts.expectedUpdatedAt]
  *     乐观锁：写入前先读现存 sessionMeta.updatedAt 与此值比对，不匹配抛 SessionConflictError。
  *     null/undefined = 不做乐观锁检查（首次保存或显式覆盖路径）
+ * @param {boolean} [opts.skipSearchIndex]
+ *     跳过搜索索引构建与写入，由调用方延迟重建；读取端 isSessionSearchIndexUsable 对
+ *     messageCount 不匹配的陈旧索引会自动重建，一致性有兜底
  */
 export async function saveSessionAtomic(sessionMeta, messagesData, opts = {}) {
-    const { expectedUpdatedAt = null } = opts;
+    const { expectedUpdatedAt = null, skipSearchIndex = false } = opts;
     return withDBLock(`webchat-session-${sessionMeta.id}`, async () => {
         if (!getDB()) {
             try {
@@ -282,13 +287,16 @@ export async function saveSessionAtomic(sessionMeta, messagesData, opts = {}) {
 
         return new Promise((resolve, reject) => {
             const messages = Array.isArray(messagesData?.messages) ? messagesData.messages : [];
-            const searchIndex = createSessionSearchIndexRecord(
-                sessionMeta.id,
-                messages,
-                messagesData?.searchIndex || null
-            );
+            const searchIndex = skipSearchIndex
+                ? null
+                : createSessionSearchIndexRecord(
+                      sessionMeta.id,
+                      messages,
+                      messagesData?.searchIndex || null
+                  );
+            const useSearchStore = !skipSearchIndex && hasSearchIndexStore();
             const storeNames = [STORE_NAME, STORES.MESSAGES];
-            if (hasSearchIndexStore()) {
+            if (useSearchStore) {
                 storeNames.push(STORES.SEARCH_INDEXES);
             }
 
@@ -299,7 +307,7 @@ export async function saveSessionAtomic(sessionMeta, messagesData, opts = {}) {
 
             const sessionStore = transaction.objectStore(STORE_NAME);
             const messagesStore = transaction.objectStore(STORES.MESSAGES);
-            const searchStore = hasSearchIndexStore()
+            const searchStore = useSearchStore
                 ? transaction.objectStore(STORES.SEARCH_INDEXES)
                 : null;
 
@@ -332,10 +340,12 @@ export async function saveSessionAtomic(sessionMeta, messagesData, opts = {}) {
             }
 
             transaction.oncomplete = () => {
-                eventBus.emit('session-search:index-updated', {
-                    sessionId: sessionMeta.id,
-                    searchIndex
-                });
+                if (searchIndex) {
+                    eventBus.emit('session-search:index-updated', {
+                        sessionId: sessionMeta.id,
+                        searchIndex
+                    });
+                }
                 resolve();
             };
             transaction.onerror = () => {
@@ -563,6 +573,97 @@ export async function migrateFromLocalStorage() {
         }
     }
     return null;
+}
+
+// ========== 会话应急槽（IDB 写入失败时的 localStorage 兜底） ==========
+
+const EMERGENCY_SESSION_KEY = 'webchatEmergencySession';
+// localStorage 5MB 配额：base64 媒体动辄数 MB，超过该长度的 data: URL 一律裁掉只保文本
+const EMERGENCY_DATA_URL_MAX_LENGTH = 4096;
+const EMERGENCY_FALLBACK_MESSAGE_COUNT = 30;
+
+function stripLargeDataUrls(value) {
+    if (typeof value === 'string') {
+        return value.startsWith('data:') && value.length > EMERGENCY_DATA_URL_MAX_LENGTH
+            ? ''
+            : value;
+    }
+    if (Array.isArray(value)) {
+        return value.map(stripLargeDataUrls);
+    }
+    if (value && typeof value === 'object') {
+        const out = {};
+        for (const [k, v] of Object.entries(value)) {
+            out[k] = stripLargeDataUrls(v);
+        }
+        return out;
+    }
+    return value;
+}
+
+/**
+ * 把保存失败的当前会话写入 localStorage 应急槽（单槽覆盖写，仅存最近一个会话）
+ * @param {Object} sessionMeta - 会话元数据
+ * @param {Array} messages - 消息数组
+ * @returns {boolean} 是否写入成功
+ */
+export function saveEmergencySessionSnapshot(sessionMeta, messages) {
+    if (!sessionMeta?.id) return false;
+    try {
+        const strippedMessages = stripLargeDataUrls(Array.isArray(messages) ? messages : []);
+        const payload = {
+            version: 1,
+            savedAt: Date.now(),
+            session: {
+                ...stripLargeDataUrls({ ...sessionMeta }),
+                messageCount: strippedMessages.length
+            },
+            messages: strippedMessages
+        };
+        if (safeLocalStorageSet(EMERGENCY_SESSION_KEY, JSON.stringify(payload))) {
+            return true;
+        }
+        // 配额兜底：只保留最近一段消息再试一次
+        payload.messages = strippedMessages.slice(-EMERGENCY_FALLBACK_MESSAGE_COUNT);
+        payload.session.messageCount = payload.messages.length;
+        payload.truncated = true;
+        return safeLocalStorageSet(EMERGENCY_SESSION_KEY, JSON.stringify(payload));
+    } catch (e) {
+        logger.error('[Storage] 写入会话应急槽失败:', e);
+        return false;
+    }
+}
+
+/**
+ * 读取会话应急槽（数据损坏时清槽返回 null）
+ * @returns {Object|null} { savedAt, session, messages, truncated? }
+ */
+export function loadEmergencySessionSnapshot() {
+    const raw = safeLocalStorageGet(EMERGENCY_SESSION_KEY);
+    if (!raw) return null;
+    try {
+        const snap = JSON.parse(raw);
+        if (!snap?.session?.id || !Array.isArray(snap.messages)) {
+            clearEmergencySessionSnapshot();
+            return null;
+        }
+        return snap;
+    } catch (e) {
+        logger.warn('[Storage] 会话应急槽数据损坏，已丢弃:', e);
+        clearEmergencySessionSnapshot();
+        return null;
+    }
+}
+
+/**
+ * 清空会话应急槽
+ */
+export function clearEmergencySessionSnapshot() {
+    try {
+        localStorage.removeItem(EMERGENCY_SESSION_KEY);
+    } catch (_e) {
+        /* 跟踪保护下 removeItem 也可能抛错，静默 */
+    }
 }
 
 // ========== 配置存储 API ==========

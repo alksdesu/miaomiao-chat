@@ -19,6 +19,7 @@
     transform: translate(3px, -3px);
     box-shadow: none;
     background: var(--md-yellow);
+    color: var(--color-text-on-accent);
 }
 
 .icon-button:active {

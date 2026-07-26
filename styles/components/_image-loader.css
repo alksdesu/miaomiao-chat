@@ -93,6 +93,7 @@
 
 .export-import-btn:hover {
     background: var(--md-teal);
+    color: var(--color-text-on-accent);
     transform: translate(2px, -2px);
     box-shadow: -2px 2px 0 var(--color-border-primary);
 }

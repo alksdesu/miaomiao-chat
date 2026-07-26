@@ -8,9 +8,11 @@ import { elements } from '../core/state.js';
 import { downloadImage } from '../utils/images.js';
 import { downloadMedia } from '../utils/media.js';
 import { bindTopmostEscape } from '../utils/modal-stack.js';
-import { trapFocus, removeFocusTrap } from '../utils/focus-trap.js';
+import { activateModalIsolation } from '../utils/focus-trap.js';
 import { getMediaExtension } from '../utils/media.js';
 import { logger } from '../utils/logger.js';
+
+let viewerIsolation = null;
 
 /**
  * 打开图片查看器
@@ -24,11 +26,16 @@ export function openImageViewer(src) {
         modal.classList.add('open');
         document.body.style.overflow = 'hidden';
 
-        // 启用焦点陷阱
-        trapFocus(modal);
-
-        // 禁用主内容交互
-        document.querySelector('.app-container')?.setAttribute('inert', '');
+        // 模态隔离：焦点陷阱 + 计数化 inert + 记录 opener 以便关闭归还焦点
+        if (!viewerIsolation) {
+            viewerIsolation = activateModalIsolation(modal);
+        }
+        // 等显示动画启动后再移焦点，避免聚焦尚不可见的元素失败
+        setTimeout(() => {
+            if (modal.classList.contains('open')) {
+                modal.querySelector('.image-viewer-close')?.focus();
+            }
+        }, 100);
     }
 }
 
@@ -41,11 +48,8 @@ export function closeImageViewer() {
         modal.classList.remove('open');
         document.body.style.overflow = '';
 
-        // 移除焦点陷阱
-        removeFocusTrap(modal);
-
-        // 恢复主内容交互
-        document.querySelector('.app-container')?.removeAttribute('inert');
+        viewerIsolation?.release();
+        viewerIsolation = null;
     }
 }
 

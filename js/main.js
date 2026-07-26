@@ -14,6 +14,7 @@ if (typeof window.requestIdleCallback !== 'function') {
 import { eventBus as _globalErrorEventBus } from './core/events.js';
 import { escapeHtml } from './utils/helpers.js';
 import { isSafeHref } from './utils/uri.js';
+import { HLJS_MAX_CODE_LENGTH } from './utils/constants.js';
 
 function _emitGlobalErrorNotification(rawMessage) {
     try {
@@ -297,7 +298,12 @@ async function init() {
                 gfm: true,
                 renderer: renderer,
                 highlight: function (code, lang) {
-                    if (typeof hljs !== 'undefined' && hljs.getLanguage(lang)) {
+                    // 超长代码同步高亮会在 marked.parse 内冻结主线程，交给默认转义展示
+                    if (
+                        typeof hljs !== 'undefined' &&
+                        code.length <= HLJS_MAX_CODE_LENGTH &&
+                        hljs.getLanguage(lang)
+                    ) {
                         return hljs.highlight(code, { language: lang }).value;
                     }
                     return code;

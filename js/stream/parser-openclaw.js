@@ -17,6 +17,7 @@ import { ToolMode } from '../messages/schema.js';
 import { DefaultSink } from './sink.js';
 import { generateIdSet } from '../api/format-converter.js';
 import { renderHumanizedError } from '../utils/errors.js';
+import { STREAM_IDLE_TIMEOUT_DEFAULT } from '../utils/constants.js';
 
 /**
  * 处理 OpenClaw 的流式事件
@@ -54,8 +55,17 @@ export async function handleOpenClawStream(sessionId, sink = null, signal = null
     return new Promise((resolve, reject) => {
         let abortListener = null;
         let settled = false;
+        let idleTimerId = null;
+        const idleTimeoutMs =
+            typeof state.streamIdleTimeout === 'number' && state.streamIdleTimeout > 0
+                ? state.streamIdleTimeout
+                : STREAM_IDLE_TIMEOUT_DEFAULT;
         const cleanup = () => {
             removeAllListeners();
+            if (idleTimerId) {
+                clearTimeout(idleTimerId);
+                idleTimerId = null;
+            }
             if (abortListener && signal) {
                 signal.removeEventListener('abort', abortListener);
                 abortListener = null;
@@ -68,8 +78,66 @@ export async function handleOpenClawStream(sessionId, sink = null, signal = null
             fn();
         };
 
+        // 错误收尾统一入口 — 走 sink.commitError 让消息标记 isError + 携 errorHtml，
+        // 与 base-parser.finalizeStreamWithError 路径对称：已接收内容保留渲染 + append 错误块
+        const settleWithStreamError = (errorCode, errorMessage, settleFn) => {
+            settle(() => {
+                logger.error(`[OpenClaw Parser] 流错误 (${errorCode}):`, errorMessage);
+
+                if (state.isToolCallPending) state.isToolCallPending = false;
+                stats.finalize();
+
+                const remaining = thinkTagParser.flush();
+                if (remaining.thinkingDelta) thinkingContent += remaining.thinkingDelta;
+                if (remaining.displayText) textContent += remaining.displayText;
+
+                if (textContent || thinkingContent) {
+                    sink.renderFinalText(textContent, thinkingContent);
+                }
+
+                const errorObject = { code: errorCode, message: errorMessage, type: errorCode };
+                const errorHtml =
+                    renderHumanizedError(errorObject, errorCode, true) +
+                    `<div class="stream-error-partial-save">\u{1F4BE} 已保存部分接收的内容</div>`;
+                sink.renderError(errorHtml);
+
+                stats.recalculateTokenCount({ textContent, thinkingContent, contentParts: [] });
+                sink.appendStats(stats);
+
+                sink.commitError(
+                    buildPartsFromStreamingState({
+                        textContent,
+                        thinkingContent,
+                        signatureFormat: 'claude'
+                    }),
+                    buildMetaFromStreamingState({ streamStats: stats.getData() }),
+                    {},
+                    { errorCode, errorMessage, errorHtml, partialContent: textContent }
+                );
+
+                settleFn();
+            });
+        };
+
+        // WS 哨兵返回后 handler 已清 fetch 超时与 sendLock，服务端 run 挂死会永久
+        // loading — 以 frame 间隔计时兜底，语义与 base-parser 的 idle timeout 对齐
+        const resetIdleTimer = () => {
+            if (idleTimerId) clearTimeout(idleTimerId);
+            if (settled) return;
+            idleTimerId = setTimeout(() => {
+                const errorMessage = `流式响应空闲超时（${idleTimeoutMs}ms 无新数据）`;
+                settleWithStreamError('idle_timeout', errorMessage, () => {
+                    openclawClient.failRun(new DOMException(errorMessage, 'TimeoutError'));
+                    // 与 base-parser idle_timeout 一致：commitError 已落库并发 stream:error，
+                    // reject 会再触发 generic handler 双重落库并覆盖已渲染内容
+                    resolve();
+                });
+            }, idleTimeoutMs);
+        };
+
         // chat.delta - 流式文本/思维链
         addListener('openclaw:chat-delta', (payload) => {
+            resetIdleTimer();
             if (!payload) return;
 
             const { delta, type: deltaType } = payload;
@@ -95,6 +163,7 @@ export async function handleOpenClawStream(sessionId, sink = null, signal = null
 
         // agent.event - 工具调用、屏幕截图等
         addListener('openclaw:agent-event', (payload) => {
+            resetIdleTimer();
             if (!payload) return;
 
             switch (payload.type) {
@@ -174,42 +243,11 @@ export async function handleOpenClawStream(sessionId, sink = null, signal = null
             });
         });
 
-        // 错误事件 — 走 sink.commitError 让消息标记 isError + 携 errorHtml，
-        // 与 base-parser.finalizeStreamWithError 路径对称；不再用 finalizeOpenClawStream
-        // 把错误消息当正常 commit 保存
+        // 错误事件 — 不用 finalizeOpenClawStream 把错误消息当正常 commit 保存
         addListener('openclaw:error', (payload) => {
-            settle(() => {
-                const errorCode = payload?.code || 'openclaw_error';
-                const errorMessage = payload?.message || '未知错误';
-                logger.error('[OpenClaw Parser] 错误:', errorMessage);
-
-                if (state.isToolCallPending) state.isToolCallPending = false;
-                stats.finalize();
-
-                if (textContent || thinkingContent) {
-                    sink.renderFinalText(textContent, thinkingContent);
-                }
-
-                const errorObject = { code: errorCode, message: errorMessage, type: errorCode };
-                const errorHtml =
-                    renderHumanizedError(errorObject, errorCode, true) +
-                    `<div class="stream-error-partial-save">\u{1F4BE} 已保存部分接收的内容</div>`;
-                sink.renderError(errorHtml);
-
-                stats.recalculateTokenCount({ textContent, thinkingContent, contentParts: [] });
-                sink.appendStats(stats);
-
-                sink.commitError(
-                    buildPartsFromStreamingState({
-                        textContent,
-                        thinkingContent,
-                        signatureFormat: 'claude'
-                    }),
-                    buildMetaFromStreamingState({ streamStats: stats.getData() }),
-                    {},
-                    { errorCode, errorMessage, errorHtml, partialContent: textContent }
-                );
-
+            const errorCode = payload?.code || 'openclaw_error';
+            const errorMessage = payload?.message || '未知错误';
+            settleWithStreamError(errorCode, errorMessage, () => {
                 openclawClient.failRun(new Error(errorMessage));
                 reject(new Error(errorMessage));
             });
@@ -242,15 +280,29 @@ export async function handleOpenClawStream(sessionId, sink = null, signal = null
                 return;
             }
             abortListener = () => {
-                settle(() => {
-                    openclawClient.failRun(new Error('Aborted'));
-                    const abortErr = new Error('Stream aborted by user');
-                    abortErr.name = 'AbortError';
-                    reject(abortErr);
-                });
+                // 已接收内容非空时以「已取消」标记落库，partialSaved 让 user-abort
+                // handler 跳过 DOM 覆盖 — 与 base-parser.commitAbortedPartial 语义对齐
+                if (textContent || thinkingContent) {
+                    settleWithStreamError('user_cancelled', '请求已取消', () => {
+                        openclawClient.failRun(new Error('Aborted'));
+                        const abortErr = new Error('Stream aborted by user');
+                        abortErr.name = 'AbortError';
+                        abortErr.partialSaved = true;
+                        reject(abortErr);
+                    });
+                } else {
+                    settle(() => {
+                        openclawClient.failRun(new Error('Aborted'));
+                        const abortErr = new Error('Stream aborted by user');
+                        abortErr.name = 'AbortError';
+                        reject(abortErr);
+                    });
+                }
             };
             signal.addEventListener('abort', abortListener, { once: true });
         }
+
+        resetIdleTimer();
     });
 }
 

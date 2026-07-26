@@ -4,6 +4,8 @@
  */
 
 import { safeMarkedParse } from '../utils/markdown.js';
+import { state } from '../core/state.js';
+import { getThinkingContent } from './schema.js';
 
 // 思维链块分隔符
 const THINKING_BLOCK_SEPARATOR = '\n\n---\n\n';
@@ -28,6 +30,74 @@ function setThinkingCacheEntry(tid, content) {
 /** 清理思维链惰性渲染缓存（会话切换时调用） */
 export function clearThinkingCache() {
     thinkingRawContentMap.clear();
+}
+
+/**
+ * LRU 淘汰后的兜底：经消息 DOM 定位 state.messages 里的原始 thinking 内容
+ * @param {HTMLElement} block - thinking-block 元素
+ * @returns {string|null} 该 block 对应的 thinking 原文，找不到返回 null
+ */
+function resolveThinkingFromState(block) {
+    const messageEl = block.closest('.message');
+    if (!messageEl) return null;
+
+    let msg = null;
+    const idx = parseInt(messageEl.dataset.messageIndex, 10);
+    if (Number.isInteger(idx) && state.messages[idx]) {
+        msg = state.messages[idx];
+    }
+    if (!msg && messageEl.dataset.messageId) {
+        msg = state.messages.find((m) => m?.id === messageEl.dataset.messageId) || null;
+    }
+    if (!msg) return null;
+
+    let full = getThinkingContent(msg);
+    if (!full) {
+        // 多回复消息的 thinking 可能只落在选中 reply 上
+        const all = msg.replies?.all;
+        if (Array.isArray(all) && all.length > 0) {
+            const selected = all[msg.replies.selected ?? 0] || all[0];
+            if (selected) full = getThinkingContent(selected);
+        }
+    }
+    if (!full) return null;
+
+    const textBlocks = full.split(THINKING_BLOCK_SEPARATOR).filter((b) => b.trim());
+    if (textBlocks.length <= 1) return full;
+
+    // 多块场景按 block 在容器内的位置索引对齐 split 结果
+    const container = block.closest('.message-content') || messageEl;
+    const domBlocks = Array.from(container.querySelectorAll('.thinking-block'));
+    const blockIdx = domBlocks.indexOf(block);
+    return textBlocks[blockIdx] ?? full;
+}
+
+/**
+ * 惰性渲染 thinking-content：优先取 LRU 缓存，miss 时回退 state.messages 原文
+ * @param {HTMLElement} block - thinking-block 元素
+ * @param {HTMLElement} contentDiv - thinking-content 元素
+ * @param {Function} [enhanceCodeBlocksFn] - 渲染后按需触发代码块增强
+ */
+function renderLazyThinkingContent(block, contentDiv, enhanceCodeBlocksFn) {
+    const tid = contentDiv?.dataset.thinkingId;
+    if (!tid) return;
+
+    let raw = null;
+    if (thinkingRawContentMap.has(tid)) {
+        raw = thinkingRawContentMap.get(tid);
+        thinkingRawContentMap.delete(tid);
+    } else {
+        raw = resolveThinkingFromState(block);
+    }
+    delete contentDiv.dataset.thinkingId;
+
+    if (raw) {
+        // eslint-disable-next-line no-restricted-syntax -- 已审计：safeMarkedParse 输出
+        contentDiv.innerHTML = safeMarkedParse(raw);
+        if (enhanceCodeBlocksFn) enhanceCodeBlocksFn(block);
+    } else {
+        contentDiv.textContent = '思维链内容不可用（缓存已回收且消息数据缺失）';
+    }
 }
 
 /**
@@ -80,13 +150,8 @@ export function restoreExpandedThinkingState(el, expanded, enhanceCodeBlocksFn) 
 
         // 走和 toggleThinking 展开分支一样的惰性渲染路径，避免还原后展开仍是空白
         const contentDiv = block.querySelector('.thinking-content');
-        const tid = contentDiv?.dataset.thinkingId;
-        if (tid && thinkingRawContentMap.has(tid)) {
-            // eslint-disable-next-line no-restricted-syntax -- 已审计：safeMarkedParse 输出
-            contentDiv.innerHTML = safeMarkedParse(thinkingRawContentMap.get(tid));
-            thinkingRawContentMap.delete(tid);
-            delete contentDiv.dataset.thinkingId;
-            if (enhanceCodeBlocksFn) enhanceCodeBlocksFn(block);
+        if (contentDiv) {
+            renderLazyThinkingContent(block, contentDiv, enhanceCodeBlocksFn);
         }
     });
 }
@@ -182,16 +247,11 @@ export function enhanceThinkingBlocks(container, enhanceCodeBlocksFn) {
             const isCollapsed = block.classList.toggle('collapsed');
             header.setAttribute('aria-expanded', !isCollapsed);
 
-            // 惰性渲染：首次展开时从 Map 取原始文本并解析 Markdown
+            // 惰性渲染：首次展开时从 Map 取原始文本并解析 Markdown，miss 时回退 state 原文
             if (!isCollapsed) {
                 const contentDiv = block.querySelector('.thinking-content');
-                const tid = contentDiv?.dataset.thinkingId;
-                if (tid && thinkingRawContentMap.has(tid)) {
-                    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
-                    contentDiv.innerHTML = safeMarkedParse(thinkingRawContentMap.get(tid));
-                    thinkingRawContentMap.delete(tid);
-                    delete contentDiv.dataset.thinkingId;
-                    if (enhanceCodeBlocksFn) enhanceCodeBlocksFn(block);
+                if (contentDiv) {
+                    renderLazyThinkingContent(block, contentDiv, enhanceCodeBlocksFn);
                 }
             }
 

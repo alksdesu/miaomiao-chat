@@ -225,16 +225,27 @@ export class RequestStateMachine {
         this.abortController = abortController;
         this.sessionId = sessionId;
 
-        // 设置发送锁（240 秒超时）
+        // 发送锁兜底必须晚于 fetch 超时（state.requestTimeout）触发，
+        // 否则无 reason 的 abort 会被 classifyError 误判为用户取消
+        const sendLockMs = Math.max((state.requestTimeout || 0) + 30000, 240000);
         if (this.sendLockTimeout) {
             clearTimeout(this.sendLockTimeout);
         }
         this.sendLockTimeout = setTimeout(() => {
-            logger.warn('[StateMachine] 请求超时（240秒），强制释放');
+            logger.warn(`[StateMachine] 请求超时（${Math.round(sendLockMs / 1000)}秒），强制释放`);
             if (this.state !== RequestState.IDLE) {
+                if (this.abortController && !this.abortController.signal.aborted) {
+                    try {
+                        this.abortController.abort(
+                            new DOMException('Request timeout', 'TimeoutError')
+                        );
+                    } catch (_error) {
+                        // 忽略 abort 错误
+                    }
+                }
                 this.forceReset();
             }
-        }, 240000);
+        }, sendLockMs);
 
         // 更新 UI
         this._updateUI({

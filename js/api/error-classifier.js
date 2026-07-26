@@ -39,9 +39,12 @@ export const ErrorKind = Object.freeze({
  * @returns {ClassifiedError}
  */
 export function classifyError(error, ctx) {
+    // 现代浏览器 abort(reason) 时 fetch reject 的就是 reason 本身（TimeoutError DOMException）,
+    // 旧实现 reject AbortError 需回查 signal.reason，两条路径都要覆盖
     const isTimeoutAbort =
-        error?.name === 'AbortError' &&
-        ctx.abortController?.signal?.reason?.name === 'TimeoutError';
+        error?.name === 'TimeoutError' ||
+        (error?.name === 'AbortError' &&
+            ctx.abortController?.signal?.reason?.name === 'TimeoutError');
     const isCrossSession = ctx.sessionId !== state.currentSessionId;
 
     // user-abort 必须最先判（早期 return），cleanupAfterSend 在 finally 兜底

@@ -35,27 +35,23 @@
     font-size: var(--fs-4xl);
     margin-top: 28px;
     padding-bottom: 10px;
-    border-bottom: 2px solid var(--md-orange);
+    border-bottom: 2px solid var(--md-blue);
 }
 
 .message-content h3 {
     font-size: var(--fs-3xl);
-    color: var(--md-blue);
 }
 
 .message-content h4 {
     font-size: var(--fs-2xl);
-    color: var(--md-orange);
 }
 
 .message-content h5 {
     font-size: var(--fs-xl);
-    color: var(--md-teal);
 }
 
 .message-content h6 {
     font-size: var(--fs-lg);
-    color: var(--md-coral);
     text-transform: uppercase;
     letter-spacing: 0.05em;
 }
@@ -456,7 +452,7 @@
     width: 24px;
     height: 24px;
     background: var(--md-blue);
-    color: var(--color-text-inverse);
+    color: var(--color-text-on-accent);
     border-radius: 50%;
     display: flex;
     align-items: center;
@@ -465,22 +461,6 @@
     font-weight: 700;
     font-family: var(--font-mono);
     border: 2px solid var(--color-border-primary);
-}
-
-.message-content ol li:nth-child(2)::before {
-    background: var(--md-teal);
-}
-.message-content ol li:nth-child(3)::before {
-    background: var(--md-orange);
-}
-.message-content ol li:nth-child(4)::before {
-    background: var(--md-coral);
-}
-.message-content ol li:nth-child(5)::before {
-    background: var(--md-yellow);
-}
-.message-content ol li:nth-child(n + 6)::before {
-    background: var(--md-pink);
 }
 
 .message-content blockquote {

@@ -298,10 +298,11 @@ describe('clearThinkingCache', () => {
         enhanceThinkingBlocks(container);
         container.querySelector('.thinking-header').click();
 
-        // data-thinking-id 还在但 Map 中已无数据，所以不会渲染
+        // data-thinking-id 还在但 Map 中已无数据，且无对应 state 消息可回退，
+        // 展示不可用提示而非旧会话内容
         const content = container.querySelector('.thinking-content');
-        // 内容保持空
-        expect(content.innerHTML.trim()).toBe('');
+        expect(content.textContent).not.toContain('缓存内容');
+        expect(content.textContent).toContain('思维链内容不可用');
 
         document.body.removeChild(container);
     });

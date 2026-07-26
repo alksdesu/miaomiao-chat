@@ -188,13 +188,20 @@ export class GeminiStreamParser extends BaseStreamParser {
     }
 
     _processTextDelta(deltaText) {
+        // 同一 chunk 内 thinking 与正文的先后由进入时的解析状态决定：
+        // 已在 <think> 内则 thinking 段在前，否则正文在前，保证 contentParts 顺序与模型输出一致
+        const wasInsideThink = this.thinkTagParser.isInsideThink;
         const { displayText: thinkParsedText, thinkingDelta } =
             this.thinkTagParser.processDelta(deltaText);
-        if (thinkingDelta) {
+
+        const appendThinkingDelta = () => {
+            if (!thinkingDelta) return;
             this.thinkingContent += thinkingDelta;
             this.totalReceived += thinkingDelta.length;
             this.mergeContentPart('thinking', thinkingDelta);
-        }
+        };
+
+        if (wasInsideThink) appendThinkingDelta();
 
         const { parts: parsedParts, newBuffer } = parseStreamingMarkdownImages(
             thinkParsedText,
@@ -221,6 +228,8 @@ export class GeminiStreamParser extends BaseStreamParser {
                 this.totalReceived += parsedPart.url.length;
             }
         }
+
+        if (!wasInsideThink) appendThinkingDelta();
     }
 
     _processInlineData(part) {

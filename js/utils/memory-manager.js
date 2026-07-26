@@ -135,17 +135,23 @@ class MemoryManager {
         };
 
         const images = document.querySelectorAll('img.lazy-image.loaded');
-        let unloadedCount = 0;
 
+        // 先纯读收集再纯写卸载：unloadImage 改 src/class 会失效布局，
+        // 读写交替会让每次 getBoundingClientRect 强制同步 reflow
+        const toUnload = [];
         images.forEach((img) => {
             const rect = img.getBoundingClientRect();
             const absoluteTop = rect.top + window.scrollY;
 
             if (absoluteTop < visibleRect.top || absoluteTop > visibleRect.bottom) {
-                this.unloadImage(img);
-                unloadedCount++;
+                toUnload.push(img);
             }
         });
+
+        toUnload.forEach((img) => {
+            this.unloadImage(img);
+        });
+        const unloadedCount = toUnload.length;
 
         this.cleanupOrphanedReferences();
 

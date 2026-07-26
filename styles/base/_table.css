@@ -194,6 +194,7 @@
 .download-image-btn:hover {
     transform: scale(1.1);
     background: var(--md-teal);
+    color: var(--color-text-on-accent);
 }
 
 /* 移动端：始终显示下载按钮（触摸设备没有 hover 状态） */

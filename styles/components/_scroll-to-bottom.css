@@ -28,6 +28,7 @@
 
 .scroll-to-bottom-btn:hover {
     background: var(--md-teal);
+    color: var(--color-text-on-accent);
     transform: translateY(-3px) scale(1.05);
     box-shadow: var(--shadow-lg), var(--glow-teal);
 }

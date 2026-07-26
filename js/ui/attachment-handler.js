@@ -184,82 +184,90 @@ export function handleAttachFile() {
 
             const fileCategory = getFileCategory(fileType);
 
-            if (fileCategory === 'text') {
-                const textContent = await fileToText(file);
-                state.uploadedImages.push({
-                    name: file.name,
-                    type: fileType,
-                    category: 'text',
-                    data: textContent,
-                    size: file.size
-                });
-                logger.debug(`已添加文本文件: ${file.name} (${(file.size / 1024).toFixed(2)} KB)`);
-            } else {
-                const base64 = await fileToBase64(file);
-
-                if (fileCategory === 'image') {
+            // 单文件读取失败不中断后续文件的处理
+            try {
+                if (fileCategory === 'text') {
+                    const textContent = await fileToText(file);
                     state.uploadedImages.push({
                         name: file.name,
                         type: fileType,
-                        category: 'image',
-                        data: base64,
+                        category: 'text',
+                        data: textContent,
                         size: file.size
                     });
                     logger.debug(
-                        `已添加图片: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`
+                        `已添加文本文件: ${file.name} (${(file.size / 1024).toFixed(2)} KB)`
                     );
-                } else if (fileCategory === 'pdf') {
-                    if (state.pdfMode === 'render') {
-                        try {
-                            const canAdd = MAX_ATTACHMENTS - state.uploadedImages.length;
-                            if (canAdd <= 0) {
-                                showNotification(
-                                    `已达到附件上限，无法添加 PDF 渲染的图片`,
-                                    'warning'
-                                );
-                                break;
-                            }
+                } else {
+                    const base64 = await fileToBase64(file);
 
-                            showNotification(`正在渲染 PDF: ${file.name}...`, 'info');
-                            const renderedImages = await renderPdfToImages(base64, {
-                                scale: 1.5,
-                                format: 'image/jpeg',
-                                quality: 0.85,
-                                maxPages: Math.min(20, canAdd)
-                            });
-
-                            for (const img of renderedImages) {
-                                state.uploadedImages.push(img);
-                            }
-
-                            if (renderedImages.length === 0) {
-                                showNotification(`PDF 渲染未产生有效图片`, 'warning');
-                            } else {
-                                showNotification(
-                                    `PDF 已渲染为 ${renderedImages.length} 张图片`,
-                                    'success'
-                                );
-                            }
-                            logger.debug(
-                                `已渲染 PDF: ${file.name} → ${renderedImages.length} 张图片`
-                            );
-                        } catch (err) {
-                            logger.error('[PDF 渲染失败]', err);
-                            showNotification(`PDF 渲染失败: ${err.message}`, 'error');
-                        }
-                    } else {
+                    if (fileCategory === 'image') {
                         state.uploadedImages.push({
                             name: file.name,
                             type: fileType,
-                            category: 'pdf',
+                            category: 'image',
                             data: base64,
                             size: file.size
                         });
                         logger.debug(
-                            `已添加 PDF: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`
+                            `已添加图片: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`
                         );
+                    } else if (fileCategory === 'pdf') {
+                        if (state.pdfMode === 'render') {
+                            try {
+                                const canAdd = MAX_ATTACHMENTS - state.uploadedImages.length;
+                                if (canAdd <= 0) {
+                                    showNotification(
+                                        `已达到附件上限，无法添加 PDF 渲染的图片`,
+                                        'warning'
+                                    );
+                                    break;
+                                }
+
+                                showNotification(`正在渲染 PDF: ${file.name}...`, 'info');
+                                const renderedImages = await renderPdfToImages(base64, {
+                                    scale: 1.5,
+                                    format: 'image/jpeg',
+                                    quality: 0.85,
+                                    maxPages: Math.min(20, canAdd)
+                                });
+
+                                for (const img of renderedImages) {
+                                    state.uploadedImages.push(img);
+                                }
+
+                                if (renderedImages.length === 0) {
+                                    showNotification(`PDF 渲染未产生有效图片`, 'warning');
+                                } else {
+                                    showNotification(
+                                        `PDF 已渲染为 ${renderedImages.length} 张图片`,
+                                        'success'
+                                    );
+                                }
+                                logger.debug(
+                                    `已渲染 PDF: ${file.name} → ${renderedImages.length} 张图片`
+                                );
+                            } catch (err) {
+                                logger.error('[PDF 渲染失败]', err);
+                                showNotification(`PDF 渲染失败: ${err.message}`, 'error');
+                            }
+                        } else {
+                            state.uploadedImages.push({
+                                name: file.name,
+                                type: fileType,
+                                category: 'pdf',
+                                data: base64,
+                                size: file.size
+                            });
+                            logger.debug(
+                                `已添加 PDF: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`
+                            );
+                        }
                     }
                 }
+            } catch (err) {
+                logger.error(`[Attachment] 读取文件失败: ${file.name}`, err);
+                showNotification(`读取文件 "${file.name}" 失败`, 'error');
             }
         }
         updateImagePreview();
@@ -404,9 +412,15 @@ export async function handlePaste(e, onPreviewUpdate) {
         showNotification(`只能再添加 ${remaining} 个附件`, 'warning');
     }
 
+    let pastedCount = 0;
     for (const item of itemsToProcess) {
         const file = item.getAsFile();
         if (!file) continue;
+
+        if (file.size > MAX_FILE_SIZE) {
+            showNotification('粘贴的图片超过 20MB 限制', 'error');
+            continue;
+        }
 
         try {
             const base64 = await fileToBase64(file);
@@ -421,6 +435,7 @@ export async function handlePaste(e, onPreviewUpdate) {
                 data: base64,
                 size: file.size
             });
+            pastedCount++;
 
             logger.debug(
                 `[Input] 已粘贴图片: ${fileName} (${(file.size / 1024 / 1024).toFixed(2)} MB)`
@@ -432,5 +447,7 @@ export async function handlePaste(e, onPreviewUpdate) {
     }
 
     if (onPreviewUpdate) onPreviewUpdate();
-    showNotification(`已粘贴 ${itemsToProcess.length} 张图片`, 'success');
+    if (pastedCount > 0) {
+        showNotification(`已粘贴 ${pastedCount} 张图片`, 'success');
+    }
 }

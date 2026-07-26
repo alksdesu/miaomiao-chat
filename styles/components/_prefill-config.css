@@ -293,7 +293,7 @@
 
 .add-prefill-btn:hover {
     opacity: 1;
-    border-color: var(--primary-color, var(--md-blue));
+    border-color: var(--md-blue);
 }
 
 .prefill-detail {

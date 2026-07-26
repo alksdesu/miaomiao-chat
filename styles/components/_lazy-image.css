@@ -9,7 +9,7 @@
     width: 100%;
     height: auto;
     background-color: var(--color-surface-secondary);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-2xl);
     transition: opacity var(--duration-slower) ease;
     position: relative;
     min-height: 100px; /* 最小高度，避免布局跳动 */

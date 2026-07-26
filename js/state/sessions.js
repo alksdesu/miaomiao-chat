@@ -15,7 +15,12 @@ import {
     savePreference,
     loadPreference,
     loadSessionMessages,
+    saveSessionMessages,
     saveSessionAtomic,
+    saveSessionSearchIndex,
+    saveEmergencySessionSnapshot,
+    loadEmergencySessionSnapshot,
+    clearEmergencySessionSnapshot,
     SessionConflictError
 } from './storage.js';
 import { generateSessionId, generateSessionName } from '../utils/helpers.js';
@@ -23,6 +28,7 @@ import { renderSessionMessages } from '../messages/restore.js';
 import { replaceAllMessages } from '../core/state-mutations.js';
 import { requestStateMachine } from '../core/request-state-machine.js';
 import { broadcastEvent } from './tab-sync.js';
+import { recoverStreamSnapshots } from './stream-snapshot.js';
 import { buildSessionSearchIndex } from './session-search-index.js';
 import { createThinkingDots } from '../api/handler-loading-dots.js';
 import { getTextContent, agePendingToolCallsInPlace } from '../messages/schema.js';
@@ -38,6 +44,14 @@ import { logger } from '../utils/logger.js';
 let saveSessionTimer = null;
 // 已删除会话 ID 集合，防止异步保存操作重建已删除的记录
 const _deletedSessionIds = new Set();
+// 冲突挂起：SessionConflictError 后暂停自动/trailing 保存，等用户在冲突对话框做出选择再恢复，
+// 否则 dirty 未清 + 500ms 防抖会让冲突弹窗无限重现
+let _conflictPending = false;
+// 保存失败持久通知去重：降级模式下每 500ms 都会失败，只弹一次直到保存恢复成功
+let _saveFailureNotified = false;
+// 搜索索引延迟重建（保存路径不再同步全量构建索引）
+let searchIndexRebuildTimer = null;
+const SEARCH_INDEX_REBUILD_DELAY_MS = 2000;
 
 // 启动/切回会话时把上次中断的 pending/running tool_call 老化为 ERROR。
 // 浏览器关闭/崩溃时正在执行的工具调用 part.state 永久停留在 'pending'/'running'，
@@ -159,6 +173,57 @@ export async function createPersistedSessionPayload(source = {}) {
 }
 
 /**
+ * 恢复上次保存失败时写入 localStorage 应急槽的会话
+ * - IDB 可用：应急数据比库里新则写回 IDB 并清槽
+ * - 降级模式：内存挂载（_pendingMessages 复用 switchToSession 的 v3 兼容分支），槽位保留
+ */
+async function restoreEmergencySessionSnapshot() {
+    const snap = loadEmergencySessionSnapshot();
+    if (!snap) return;
+
+    const existing = state.sessions.find((s) => s.id === snap.session.id);
+
+    if (state.storageMode === 'localStorage') {
+        if (existing) {
+            existing._pendingMessages = snap.messages;
+        } else {
+            state.sessions.unshift({ ...snap.session, _pendingMessages: snap.messages });
+        }
+        eventBus.emit('ui:notification', {
+            message: '已从本地应急备份恢复上次未保存的会话（存储降级模式，数据仍有丢失风险）',
+            type: 'warning',
+            duration: 10000
+        });
+        return;
+    }
+
+    if (existing && (existing.updatedAt || 0) >= (snap.session.updatedAt || 0)) {
+        clearEmergencySessionSnapshot();
+        return;
+    }
+
+    try {
+        await saveSessionToDB(snap.session);
+        await saveSessionMessages(snap.session.id, { messages: snap.messages });
+        state._lastKnownSessionUpdatedAt?.set(snap.session.id, snap.session.updatedAt);
+        if (existing) {
+            Object.assign(existing, snap.session);
+        } else {
+            state.sessions.unshift(snap.session);
+        }
+        clearEmergencySessionSnapshot();
+        eventBus.emit('ui:notification', {
+            message: '已恢复上次保存失败的会话数据（来自本地应急备份）',
+            type: 'warning',
+            duration: 8000
+        });
+    } catch (e) {
+        // 写回失败保留槽位，下次启动再试
+        logger.error('[Session] 应急备份写回 IndexedDB 失败:', e);
+    }
+}
+
+/**
  * 加载所有会话
  */
 export async function loadSessions() {
@@ -172,6 +237,11 @@ export async function loadSessions() {
         logger.error('加载会话失败:', e);
         state.sessions = [];
     }
+
+    await restoreEmergencySessionSnapshot();
+
+    // 必须在 switchToSession 之前：中断消息先写入 IDB，切换加载时才能一并渲染
+    await recoverStreamSnapshots();
 
     // 加载当前会话ID
     let currentId = null;
@@ -191,7 +261,12 @@ export async function loadSessions() {
 
     // 如果没有会话，创建一个默认会话
     if (state.sessions.length === 0) {
-        const newSession = await createNewSession(false);
+        let newSession = await createNewSession(false);
+        if (!newSession) {
+            // 存储完全不可用时的保底：仅内存会话保证应用能进，数据由保存路径的应急槽兜底
+            newSession = buildNewSessionObject();
+            state.sessions.unshift(newSession);
+        }
         // 必须设置 currentSessionId，否则 saveCurrentSessionMessages 不会保存
         state.currentSessionId = newSession.id;
         await saveCurrentSessionId();
@@ -236,6 +311,8 @@ export async function saveCurrentSessionMessages(force = false) {
     if (!state.currentSessionId) return;
     // 防止保存已删除的会话
     if (_deletedSessionIds.has(state.currentSessionId)) return;
+    // 冲突挂起期间跳过所有保存（含 force flush）：写入必然再次冲突并重弹对话框
+    if (_conflictPending) return;
     // 跳过无变更的保存（除非强制）
     if (!force && !state.sessionDirty) return;
 
@@ -301,7 +378,6 @@ export async function saveCurrentSessionMessages(force = false) {
 
         // 保存到 IndexedDB（消息和元数据原子写入同一事务 + 乐观锁防多 tab 后写覆盖）
         try {
-            const searchIndex = buildSessionSearchIndex(state.messages);
             session.messageCount = state.messages.length;
             const sessionMeta = {
                 id: session.id,
@@ -316,15 +392,16 @@ export async function saveCurrentSessionMessages(force = false) {
                 monitorEnabled: session.monitorEnabled ?? false
             };
             const expectedUpdatedAt = state._lastKnownSessionUpdatedAt?.get(session.id) ?? null;
-            await saveSessionAtomic(
-                sessionMeta,
-                {
-                    ...persistedPayload,
-                    searchIndex
-                },
-                { expectedUpdatedAt }
-            );
+            await saveSessionAtomic(sessionMeta, persistedPayload, {
+                expectedUpdatedAt,
+                skipSearchIndex: true
+            });
             state._lastKnownSessionUpdatedAt?.set(session.id, session.updatedAt);
+            scheduleSearchIndexRebuild(session.id);
+            if (_saveFailureNotified) {
+                _saveFailureNotified = false;
+                clearEmergencySessionSnapshot();
+            }
             // dirty 快照模式：save 期间新到的 dirty 不被清零，防止丢一轮变更
             if (state.sessionDirty === dirtyAtStart) {
                 state.sessionDirty = false;
@@ -336,6 +413,7 @@ export async function saveCurrentSessionMessages(force = false) {
             });
         } catch (e) {
             if (e instanceof SessionConflictError) {
+                _conflictPending = true;
                 cancelPendingSave();
                 logger.warn(
                     `[Session] 多 tab 写入冲突 ${e.sessionId}: 期望 ${e.expectedUpdatedAt}, IDB ${e.actualUpdatedAt}`
@@ -347,7 +425,21 @@ export async function saveCurrentSessionMessages(force = false) {
                 });
             } else {
                 logger.error('保存会话到 IndexedDB 失败:', e);
-                eventBus.emit('ui:notification', { message: '保存会话失败', type: 'error' });
+                const { _pendingMessages: _pm, ...snapMeta } = session;
+                const emergencySaved = saveEmergencySessionSnapshot(
+                    snapMeta,
+                    persistedPayload.messages
+                );
+                if (!_saveFailureNotified) {
+                    _saveFailureNotified = true;
+                    eventBus.emit('ui:notification', {
+                        message: emergencySaved
+                            ? '会话保存失败，已写入本地应急备份，重启应用后自动恢复'
+                            : '会话保存失败，且应急备份写入失败，请尽快导出数据',
+                        type: 'error',
+                        duration: 0
+                    });
+                }
             }
         }
 
@@ -357,12 +449,35 @@ export async function saveCurrentSessionMessages(force = false) {
 
     _savingPromise = doSave().finally(() => {
         _savingPromise = null;
-        // trailing save：若 save 期间有新 dirty 到来（dirty 仍为 true），排下一轮 debounced
-        if (state.sessionDirty) {
+        // trailing save：若 save 期间有新 dirty 到来（dirty 仍为 true），排下一轮 debounced；
+        // 冲突挂起期间不排，等用户在冲突对话框做出选择
+        if (state.sessionDirty && !_conflictPending) {
             debouncedSaveSession();
         }
     });
     return _savingPromise;
+}
+
+/**
+ * 防抖 + 延迟重建当前会话的搜索索引
+ *
+ * 保存路径改走 skipSearchIndex 后索引写入与消息保存解耦：大会话每 500ms 全量
+ * 重建索引的同步开销移出保存关键路径；陈旧索引由读取端 isSessionSearchIndexUsable 兜底
+ */
+function scheduleSearchIndexRebuild(sessionId) {
+    clearTimeout(searchIndexRebuildTimer);
+    searchIndexRebuildTimer = setTimeout(() => {
+        // 会话已切换/删除时 state.messages 不再对应该会话，放弃本轮重建
+        if (state.currentSessionId !== sessionId || _deletedSessionIds.has(sessionId)) return;
+        try {
+            const searchIndex = buildSessionSearchIndex(state.messages);
+            saveSessionSearchIndex(sessionId, searchIndex).catch((e) =>
+                logger.debug('[Session] 搜索索引延迟写入失败:', e)
+            );
+        } catch (e) {
+            logger.debug('[Session] 搜索索引构建失败:', e);
+        }
+    }, SEARCH_INDEX_REBUILD_DELAY_MS);
 }
 
 /**
@@ -432,29 +547,10 @@ export async function reloadCurrentSessionMessages() {
 }
 
 /**
- * 创建新会话
- * @param {boolean} shouldSwitch - 是否立即切换到新会话
- * @returns {Promise<Object>} 新会话对象
+ * 构造新会话对象（createNewSession 与存储不可用时的内存保底路径共用）
  */
-export async function createNewSession(shouldSwitch = true) {
-    // 检查当前会话是否为空，如果为空则直接复用
-    // v4 架构下 session 是纯元数据，消息在 state.messages 中
-    const currentSession = state.sessions.find((s) => s.id === state.currentSessionId);
-    if (currentSession) {
-        const hasMessages = state.messages.length > 0;
-        if (!hasMessages && !currentSession.customName) {
-            eventBus.emit('ui:notification', {
-                message: '当前会话为空，无需创建新会话',
-                type: 'info'
-            });
-            return currentSession;
-        }
-    }
-
-    // 先保存当前会话
-    await saveCurrentSessionMessages();
-
-    const newSession = {
+function buildNewSessionObject() {
+    return {
         id: generateSessionId(),
         name: '新会话',
         apiFormat: state.apiFormat,
@@ -475,6 +571,32 @@ export async function createNewSession(shouldSwitch = true) {
             geminiSystemParts: []
         }
     };
+}
+
+/**
+ * 创建新会话
+ * @param {boolean} shouldSwitch - 是否立即切换到新会话
+ * @returns {Promise<Object|null>} 新会话对象，落盘失败时返回 null
+ */
+export async function createNewSession(shouldSwitch = true) {
+    // 检查当前会话是否为空，如果为空则直接复用
+    // v4 架构下 session 是纯元数据，消息在 state.messages 中
+    const currentSession = state.sessions.find((s) => s.id === state.currentSessionId);
+    if (currentSession) {
+        const hasMessages = state.messages.length > 0;
+        if (!hasMessages && !currentSession.customName) {
+            eventBus.emit('ui:notification', {
+                message: '当前会话为空，无需创建新会话',
+                type: 'info'
+            });
+            return currentSession;
+        }
+    }
+
+    // 先保存当前会话
+    await saveCurrentSessionMessages();
+
+    const newSession = buildNewSessionObject();
 
     // 先落盘再 unshift，失败时不留"内存有 IDB 无"的孤儿会话
     // 用户对孤儿编辑会持续保存失败，刷新后数据全部丢失
@@ -490,6 +612,7 @@ export async function createNewSession(shouldSwitch = true) {
         return null;
     }
 
+    state._lastKnownSessionUpdatedAt?.set(newSession.id, newSession.updatedAt);
     state.sessions.unshift(newSession);
 
     if (shouldSwitch) {
@@ -649,6 +772,9 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
         // 与 replaceAllMessages 紧邻同步执行，保证 currentSessionId 与 state.messages 原子切换
         state.currentSessionId = sessionId;
         replaceAllMessages(msgData.messages || []);
+
+        // 挂起的冲突随旧会话上下文失效（未做选择即切走 = 放弃本地冲突改动）
+        _conflictPending = false;
 
         // 记录加载时的 updatedAt 作为乐观锁基线，下次 saveSessionAtomic 用它对比
         if (session.updatedAt) {
@@ -923,6 +1049,8 @@ export async function renameSession(sessionId, newName) {
     session.updatedAt = Date.now();
 
     await saveSessionToDB(session);
+    // 同步乐观锁基线，否则下一次自动保存拿旧 baseline 对比新 updatedAt 必触发假冲突
+    state._lastKnownSessionUpdatedAt?.set(sessionId, session.updatedAt);
     eventBus.emit('sessions:updated', { sessions: state.sessions });
     eventBus.emit('ui:notification', { message: '会话已重命名', type: 'info' });
 }
@@ -965,16 +1093,24 @@ eventBus.on('storage:quota-exceeded', async ({ message }) => {
 // 监听多 tab 写入冲突：弹 confirm dialog 让用户决定是否丢弃本地改动重新加载
 // 之前只发 toast 8s 自动消失，用户错过提示就不知道还能 reload
 eventBus.on('storage:conflict', async ({ sessionId }) => {
-    if (sessionId !== state.currentSessionId) return;
+    if (sessionId !== state.currentSessionId) {
+        // 冲突会话已不是当前会话（emit 后被切走），解除挂起避免新会话保存被永久拦截
+        _conflictPending = false;
+        return;
+    }
     try {
         const confirmed = await showConfirmDialog(
             '另一标签页已更新此会话，是否丢弃本地未保存改动并重新加载？\n\n选「取消」可继续编辑（再次保存仍会冲突）',
             '会话保存冲突'
         );
-        if (confirmed) {
+        // 用户已做出选择，恢复自动保存；「取消」后下次编辑保存仍会冲突并再次弹窗
+        _conflictPending = false;
+        // dialog 打开期间可能已切会话，上下文失效时不 reload 以免覆盖新会话的未保存改动
+        if (confirmed && sessionId === state.currentSessionId) {
             await reloadCurrentSessionMessages();
         }
     } catch (e) {
+        _conflictPending = false;
         logger.error('[Session] 处理冲突 dialog 失败:', e);
         eventBus.emit('ui:notification', {
             message: '检测到此会话在其他标签页已更新（保存冲突），点击侧栏对应会话可重新加载',

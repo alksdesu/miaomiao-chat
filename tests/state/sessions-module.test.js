@@ -41,7 +41,12 @@ vi.mock('../../js/state/storage.js', () => ({
     savePreference: vi.fn(() => Promise.resolve()),
     loadPreference: vi.fn(() => Promise.resolve(null)),
     loadSessionMessages: vi.fn(() => Promise.resolve(null)),
+    saveSessionMessages: vi.fn(() => Promise.resolve()),
     saveSessionAtomic: vi.fn(() => Promise.resolve()),
+    saveSessionSearchIndex: vi.fn(() => Promise.resolve()),
+    saveEmergencySessionSnapshot: vi.fn(() => true),
+    loadEmergencySessionSnapshot: vi.fn(() => null),
+    clearEmergencySessionSnapshot: vi.fn(),
     SessionConflictError: class SessionConflictError extends Error {}
 }));
 

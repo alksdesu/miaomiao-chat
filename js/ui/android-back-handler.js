@@ -1,5 +1,5 @@
 /**
- * 安卓返回键分发
+ * 返回键分发（Android backButton / Web popstate 哨兵）
  *
  * 当前方案只按界面层分发，不按浏览器历史分发。
  * 即使 `backButton` 事件携带 `canGoBack`，这里也会显式忽略，
@@ -13,16 +13,18 @@
  * - 动态高层对话框：`body` 直属 `.modal.active` 且没有 `id` 的节点，取最后追加的可见项
  */
 
-import { isAndroid } from '../utils/platform.js';
+import { isAndroid, isWeb } from '../utils/platform.js';
 import { showNotification } from './notifications.js';
 import { closeImageViewer } from './viewer.js';
 import { logger } from '../utils/logger.js';
 
 const ROOT_EXIT_WINDOW_MS = 2000;
+const WEB_BACK_SENTINEL_KEY = 'webchatBackSentinel';
 
 let isInitialized = false;
 let backButtonListenerHandle = null;
 let lastRootBackAt = 0;
+let webSentinelArmed = false;
 
 function isActuallyVisible(element) {
     if (!element || element.nodeType !== 1 || !element.isConnected) {
@@ -328,7 +330,58 @@ async function handleAndroidBackButton(event) {
     }
 }
 
+function armWebBackSentinel() {
+    if (webSentinelArmed) return;
+    window.history.pushState({ [WEB_BACK_SENTINEL_KEY]: true }, '');
+    webSentinelArmed = true;
+}
+
+async function handleWebPopState(event) {
+    // 浏览器前进重新落在哨兵条目上：恢复武装态即可，不分发
+    if (event.state?.[WEB_BACK_SENTINEL_KEY]) {
+        webSentinelArmed = true;
+        return;
+    }
+
+    if (!webSentinelArmed) {
+        return;
+    }
+    webSentinelArmed = false;
+
+    try {
+        const handled = await dispatchAndroidBack();
+        if (handled) {
+            armWebBackSentinel();
+        } else {
+            window.history.back();
+        }
+    } catch (error) {
+        logger.error('[Web Back] 返回处理失败:', error);
+        armWebBackSentinel();
+    }
+}
+
+function initWebBackHandler() {
+    // 刷新后当前条目可能已是哨兵，重复 pushState 会堆积历史
+    if (window.history.state?.[WEB_BACK_SENTINEL_KEY]) {
+        webSentinelArmed = true;
+    } else {
+        armWebBackSentinel();
+    }
+    window.addEventListener('popstate', handleWebPopState);
+    logger.debug('[Web Back] 浏览器返回拦截已初始化');
+    return true;
+}
+
 export async function initAndroidBackHandler() {
+    if (isWeb()) {
+        if (isInitialized) {
+            return true;
+        }
+        isInitialized = true;
+        return initWebBackHandler();
+    }
+
     if (!isAndroid()) {
         return false;
     }

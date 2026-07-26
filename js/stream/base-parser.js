@@ -184,6 +184,13 @@ export class BaseStreamParser {
 
             // 流自然结束，子类执行收尾
             await this.onStreamEnd();
+        } catch (err) {
+            // 用户主动取消（非 timeout reason abort）时把已接收内容落库为「已取消」消息，
+            // partialSaved 标记让 user-abort handler 跳过 DOM 覆盖与重复状态机操作
+            if (err?.name === 'AbortError' && signal?.reason?.name !== 'TimeoutError') {
+                err.partialSaved = this.commitAbortedPartial();
+            }
+            throw err;
         } finally {
             if (signal && abortListener) {
                 signal.removeEventListener('abort', abortListener);
@@ -230,6 +237,30 @@ export class BaseStreamParser {
         const extra = this._collectExtraSaveFields();
         const grounding = this.getGroundingMetadata();
         this.finalizeStreamWithError(errorCode, errorMessage, extra, grounding);
+    }
+
+    /**
+     * 用户取消时保存已接收的部分内容（parse 的 AbortError 路径专用）。
+     *
+     * 有内容时复用 finalizeStreamWithError 机制以「已取消」标记落库：
+     * DOM 保留已渲染内容并在末尾 append 取消提示（与 restore 渲染的 append 语义一致）；
+     * 无内容返回 false，由 user-abort handler 维持整体「请求已取消」提示。
+     * @returns {boolean} 是否执行了部分保存
+     */
+    commitAbortedPartial() {
+        try {
+            this.syncBeforeFinalize();
+            this.beforeTruncationFinalize();
+        } catch (flushErr) {
+            logger.error('[BaseStreamParser] 取消前收尾失败:', flushErr);
+        }
+        if (!this.textContent && !this.thinkingContent && this.contentParts.length === 0) {
+            return false;
+        }
+        const extra = this._collectExtraSaveFields();
+        const grounding = this.getGroundingMetadata();
+        this.finalizeStreamWithError('user_cancelled', '请求已取消', extra, grounding);
+        return true;
     }
 
     /**
@@ -329,14 +360,20 @@ export class BaseStreamParser {
      * @param {string} deltaText - XML 处理后的文本增量
      */
     processThinkAndMarkdown(deltaText) {
+        // 同一 chunk 内 thinking 与正文的先后由进入时的解析状态决定：
+        // 已在 <think> 内则 thinking 段在前，否则正文在前，保证 contentParts 顺序与模型输出一致
+        const wasInsideThink = this.thinkTagParser.isInsideThink;
         const { displayText: thinkParsedText, thinkingDelta } =
             this.thinkTagParser.processDelta(deltaText);
 
-        if (thinkingDelta) {
+        const appendThinkingDelta = () => {
+            if (!thinkingDelta) return;
             this.appendThinking(thinkingDelta);
             this.totalReceived += thinkingDelta.length;
             this.mergeContentPart('thinking', thinkingDelta);
-        }
+        };
+
+        if (wasInsideThink) appendThinkingDelta();
 
         const { parts, newBuffer } = parseStreamingMarkdownImages(
             thinkParsedText,
@@ -354,6 +391,8 @@ export class BaseStreamParser {
                 this.totalReceived += part.url.length;
             }
         }
+
+        if (!wasInsideThink) appendThinkingDelta();
     }
 
     /**

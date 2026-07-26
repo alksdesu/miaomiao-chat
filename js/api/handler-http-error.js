@@ -63,7 +63,8 @@ export async function handleHttpErrorResponse(response, ctx) {
         ctx.sessionId
     );
     if (retried) {
-        requestStateMachine.forceReset();
+        // 压缩重试属自动流程，弹「已强制重置」success 通知会误导用户
+        requestStateMachine.forceReset({ silent: true });
         if (ctx.timeoutId) {
             clearTimeout(ctx.timeoutId);
             ctx.timeoutId = null;
@@ -83,9 +84,13 @@ export async function handleHttpErrorResponse(response, ctx) {
             `[handler-http-error] 跨会话场景: ctx.sessionId=${ctx.sessionId} current=${state.currentSessionId}，错误写回原会话`
         );
         await persistErrorToBackground(ctx, errorData, response.status);
-        requestStateMachine.transition(RequestState.ERROR, {
-            error: { status: response.status }
-        });
+        // 与 handler-cleanup 的会话归属判断对齐：状态机是全局单例，切会话后可能
+        // 已被当前会话新请求占用，无条件转 ERROR 会让新请求的取消按钮消失
+        if (requestStateMachine.sessionId === ctx.sessionId) {
+            requestStateMachine.transition(RequestState.ERROR, {
+                error: { status: response.status }
+            });
+        }
         return { retried: false };
     }
 

@@ -19,7 +19,16 @@ import { clearThoughtSignatures, hasThoughtSignatures } from '../api/format-conv
 import { categorizeFile } from '../utils/file-helpers.js';
 import { escapeHtml } from '../utils/helpers.js';
 import { rerenderMessageContent } from './renderer.js';
-import { PartType, MediaKind, getTextContent, getThinkingContent } from './schema.js';
+import {
+    PartType,
+    MediaKind,
+    getTextContent,
+    getThinkingContent,
+    textPart,
+    mediaPart,
+    filePart
+} from './schema.js';
+import { MAX_FILE_SIZE } from '../utils/constants.js';
 import { parseUserContent } from './user-content-parser.js';
 import { logger } from '../utils/logger.js';
 
@@ -40,7 +49,7 @@ function autoResizeGeneric(textarea, minHeight = 60, maxHeight = 400) {
  * 进入编辑模式（将消息加载到输入框）
  * @param {HTMLElement} messageEl - 消息元素
  */
-export function enterEditMode(messageEl) {
+export async function enterEditMode(messageEl) {
     // 流式响应中禁止编辑
     if (state.isLoading) {
         eventBus.emit('ui:notification', { message: '请等待回复完成后再编辑', type: 'warning' });
@@ -59,6 +68,17 @@ export function enterEditMode(messageEl) {
     const message = hit.msg;
     if (!message || message.role !== 'user') return;
 
+    if (state.editingIndex !== null) {
+        // 此时输入框内容是另一条消息未保存的编辑稿，无法暂存恢复，只能确认丢弃
+        const confirmed = await showConfirmDialog(
+            '当前正在编辑另一条消息，切换将丢弃未保存的修改，确定切换？',
+            '切换编辑'
+        );
+        if (!confirmed) return;
+    } else {
+        stashInputDraft();
+    }
+
     // 新格式：从 parts 提取文本和附件
     if (message.parts && Array.isArray(message.parts)) {
         let text = '';
@@ -68,7 +88,7 @@ export function enterEditMode(messageEl) {
             else if (p.type === PartType.MEDIA && p.media === MediaKind.IMAGE) {
                 attachments.push({
                     name: '已上传图片',
-                    type: 'image/*',
+                    type: p.mime || 'image/*',
                     category: 'image',
                     data: p.url
                 });
@@ -95,6 +115,7 @@ export function enterEditMode(messageEl) {
         state.editingElement.classList.remove('editing');
     }
     state.editingIndex = targetIndex;
+    editingMessageId = message.id || null;
     state.editingElement = messageEl;
     messageEl.classList.add('editing');
     logger.debug('[editor.js] 编辑状态已更新, state.editingIndex =', state.editingIndex);
@@ -464,6 +485,60 @@ export function updateMessageContentWithImages(index, newText, images, _role) {
 }
 
 /**
+ * 附件对象数组 → parts[]，发送与编辑保存共用同一构造逻辑
+ * @param {Array} files - {name, type, category, data} 附件对象数组
+ * @returns {Array} parts 数组
+ */
+export function buildAttachmentParts(files) {
+    const parts = [];
+    for (const file of files || []) {
+        const cat = file.category || categorizeFile(file.type);
+        if (cat === 'image') {
+            parts.push(mediaPart(MediaKind.IMAGE, file.data, file.type));
+        } else if (cat === 'video') {
+            parts.push(mediaPart(MediaKind.VIDEO, file.data, file.type));
+        } else if (cat === 'pdf') {
+            parts.push(filePart(file.name, file.type, file.data));
+        } else if (cat === 'text') {
+            parts.push(
+                filePart(file.name, file.type || 'text/plain', file.data, { encoding: 'text' })
+            );
+        }
+    }
+    return parts;
+}
+
+/**
+ * 用输入框草稿（文本 + 完整附件对象）重建用户消息 parts
+ * 附件按 category 分派 media/file part；非图片 MEDIA 与 TOOL_CALL 等结构 part 原样保留
+ * @param {number} index - 消息索引
+ * @param {string} newText - 新文本内容
+ * @param {Array} attachments - 完整附件对象数组
+ */
+export function updateUserMessageFromDraft(index, newText, attachments) {
+    if (!state.messages[index]) return;
+
+    const msg = state.messages[index];
+    const parts = [];
+    if (newText) parts.push(textPart(newText));
+    parts.push(...buildAttachmentParts(attachments));
+
+    if (Array.isArray(msg.parts)) {
+        for (const p of msg.parts) {
+            if (p.type === PartType.TEXT || p.type === PartType.FILE) continue;
+            if (p.type === PartType.MEDIA && (!p.media || p.media === MediaKind.IMAGE)) continue;
+            parts.push(p);
+        }
+    }
+
+    updateAndCleanup(index, getEditCleanupKeys(msg), { parts });
+    clearSubsequentSignatures(index);
+    runPostEditValidation();
+
+    eventBus.emit('messages:changed', { action: 'updated', index });
+}
+
+/**
  * 删除消息
  * @param {HTMLElement} messageEl - 消息元素
  */
@@ -485,6 +560,11 @@ export async function deleteMessage(messageEl) {
     const confirmed = await showConfirmDialog('确定要删除这条消息吗？', '确认删除');
     if (!confirmed) {
         return;
+    }
+
+    // 删除目标是正在编辑的消息时先退出编辑模式，避免保存时写入错误消息
+    if (state.editingIndex !== null && resolveEditingIndex() === index) {
+        exitInputEditMode();
     }
 
     // 使用工具调用兼容的安全删除（自动处理关联的工具结果消息）
@@ -515,6 +595,11 @@ export async function deleteMessage(messageEl) {
     remainingMessages.forEach((el, i) => {
         el.dataset.messageIndex = i;
     });
+
+    // 关联删除（工具结果消息等）可能波及编辑目标，删除后按 id 兜底检测
+    if (state.editingIndex !== null && resolveEditingIndex() < 0) {
+        exitInputEditMode();
+    }
 
     // 发出事件通知
     eventBus.emit('messages:changed', {
@@ -625,7 +710,88 @@ function resolveMessageHit(messageEl) {
     return state.messageStore.findByEl(messageEl, { messagesArea: elements.messagesArea });
 }
 
+// ========== 编辑目标与输入框草稿 ==========
+
+let editingMessageId = null;
+let stashedDraft = null;
+
+/**
+ * 解析当前编辑目标的实时索引
+ * 编辑期间删除/重排其他消息后 state.editingIndex 会错位，按 id 重新定位
+ * @returns {number} -1 表示目标消息已不存在
+ */
+export function resolveEditingIndex() {
+    if (editingMessageId) return state.messageStore.findIndexById(editingMessageId);
+    // 无 id 的旧数据回落到进入编辑时记录的索引
+    return typeof state.editingIndex === 'number' ? state.editingIndex : -1;
+}
+
+/**
+ * 结束一次输入框编辑：清除编辑目标 id 并恢复进入编辑前暂存的草稿
+ */
+export function endEditingState() {
+    editingMessageId = null;
+    void restoreInputDraft();
+}
+
+/**
+ * 进入编辑模式前暂存输入框中未发送的草稿（文本 + 附件引用）
+ */
+function stashInputDraft() {
+    if (stashedDraft) return;
+    const text = elements.userInput?.value ?? '';
+    const attachments = Array.isArray(state.uploadedImages) ? [...state.uploadedImages] : [];
+    if (!text.trim() && attachments.length === 0) return;
+    stashedDraft = { text, attachments, sessionId: state.currentSessionId ?? null };
+}
+
+async function restoreInputDraft() {
+    if (!stashedDraft) return;
+    const draft = stashedDraft;
+    stashedDraft = null;
+    // 会话已切换时不跨会话恢复，与切换会话清空输入框的既有行为一致
+    if (draft.sessionId !== (state.currentSessionId ?? null)) return;
+    if (!elements.userInput) return;
+    const hasCurrent =
+        elements.userInput.value.trim() ||
+        (Array.isArray(state.uploadedImages) && state.uploadedImages.length > 0);
+    if (hasCurrent) {
+        const confirmed = await showConfirmDialog(
+            '恢复编辑前未发送的草稿将覆盖当前输入内容，确定恢复？',
+            '恢复草稿'
+        );
+        if (!confirmed) return;
+    }
+    elements.userInput.value = draft.text;
+    state.uploadedImages = draft.attachments;
+    eventBus.emit('editor:refresh-attachments');
+    eventBus.emit('editor:resize-textarea');
+}
+
+/**
+ * 退出输入框编辑模式（删除编辑目标等 editor 侧触发的场景）
+ * emit editor:mode-changed 让 input.js 同步按钮状态、本模块收尾草稿恢复
+ */
+function exitInputEditMode() {
+    if (state.editingIndex === null) return;
+    if (elements.userInput) elements.userInput.value = '';
+    state.uploadedImages = [];
+    if (state.editingElement) {
+        state.editingElement.classList.remove('editing');
+        state.editingElement = null;
+    }
+    state.editingIndex = null;
+    eventBus.emit('editor:refresh-attachments');
+    eventBus.emit('editor:resize-textarea');
+    eventBus.emit('editor:mode-changed', { isEditing: false });
+}
+
 // ========== 事件监听 ==========
+
+// Esc / 会话切换等路径只 emit 事件不经过 input.js 的退出函数，在此统一收尾
+eventBus.on('editor:mode-changed', ({ isEditing }) => {
+    if (!isEditing) endEditingState();
+});
 
 // 监听编辑请求
 eventBus.on('message:edit-requested', ({ messageEl }) => {
@@ -714,6 +880,11 @@ export function preserveStructuralParts(oldParts, replacement) {
             continue;
         }
         if (p.type === PartType.MEDIA) {
+            // 编辑器只管理图片，video/audio 等其他媒体子类型原样保留
+            if (p.media && p.media !== MediaKind.IMAGE) {
+                out.push(p);
+                continue;
+            }
             if (!imagesInserted && newImages && newImages.length > 0) {
                 for (const n of newImages) {
                     out.push({
@@ -831,7 +1002,6 @@ function getEditCleanupKeys(msg, keepContentParts = false) {
     if (!keepContentParts && msg.contentParts) keys.push('contentParts'); // 旧格式清理
     if (msg.allReplies) keys.push('allReplies'); // 旧格式清理
     if (msg.selectedReplyIndex !== undefined) keys.push('selectedReplyIndex');
-    if (msg.replies) keys.push('replies');
     return keys;
 }
 
@@ -843,7 +1013,22 @@ function updateAndCleanup(index, cleanupKeys, updates) {
     const msg = state.messages[index];
     if (msg) {
         for (const key of cleanupKeys) delete msg[key];
+        syncPartsToSelectedReply(msg);
     }
+}
+
+/**
+ * 编辑结果写回 replies.all[selected]，保持多回复分支与顶层 parts 一致
+ * structuredClone 防止 reply.parts 与 msg.parts 共享引用后被二次编辑污染
+ */
+function syncPartsToSelectedReply(msg) {
+    const all = msg.replies?.all;
+    if (!Array.isArray(all) || all.length === 0) return;
+    const sel = msg.replies.selected;
+    if (!Number.isInteger(sel) || sel < 0 || sel >= all.length) return;
+    const reply = all[sel];
+    if (!reply || typeof reply !== 'object') return;
+    all[sel] = { ...reply, parts: structuredClone(msg.parts) };
 }
 
 /**
@@ -890,6 +1075,14 @@ async function addNewImage(editableImages, renderCallback) {
         if (!file || !file.type.startsWith('image/')) {
             eventBus.emit('ui:notification', {
                 message: '请选择有效的图片文件',
+                type: 'error'
+            });
+            return;
+        }
+
+        if (file.size > MAX_FILE_SIZE) {
+            eventBus.emit('ui:notification', {
+                message: `文件 "${file.name}" 超过 20MB 限制`,
                 type: 'error'
             });
             return;

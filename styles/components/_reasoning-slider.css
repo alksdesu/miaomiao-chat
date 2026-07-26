@@ -28,7 +28,7 @@
 .strength-btn.active {
     background: var(--md-blue);
     border-color: var(--md-blue);
-    color: var(--color-text-primary);
+    color: var(--color-text-on-accent);
 }
 
 /* 自定义思考 token 预算输入 */

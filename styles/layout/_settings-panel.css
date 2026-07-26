@@ -12,7 +12,12 @@
     border-left: 3px solid var(--color-border-primary);
     z-index: var(--z-settings-panel);
     transform: translateX(100%);
-    transition: transform var(--duration-slow) ease-out;
+    /* 关闭态必须彻底退出可达性树，否则面板外元素仍可被 Tab 聚焦；
+       visibility 延迟到滑出动画结束再生效以保住动画 */
+    visibility: hidden;
+    transition:
+        transform var(--duration-slow) ease-out,
+        visibility 0s linear var(--duration-slow);
     display: flex;
     flex-direction: column;
     box-shadow: var(--shadow-lg);
@@ -59,6 +64,8 @@
 
 .settings-panel.open {
     transform: translateX(0);
+    visibility: visible;
+    transition: transform var(--duration-slow) ease-out;
 }
 
 .settings-header {
@@ -74,7 +81,7 @@
     font-family: var(--font-ui-accent);
     font-size: var(--fs-xl);
     font-weight: 600;
-    color: var(--color-text-primary);
+    color: var(--color-text-on-accent);
 }
 
 .close-settings-btn {
@@ -92,6 +99,7 @@
 
 .close-settings-btn:hover {
     background: var(--md-coral);
+    color: var(--color-text-on-accent);
 }
 
 .settings-content {
@@ -288,7 +296,7 @@
 
 .password-toggle:hover {
     background: var(--md-blue);
-    color: var(--color-text-primary);
+    color: var(--color-text-on-accent);
 }
 
 .password-toggle:active {
@@ -321,7 +329,7 @@
     border: var(--border);
     font-family: var(--font-sans);
     font-size: var(--fs-sm);
-    color: var(--color-text-primary);
+    color: var(--color-text-on-accent);
 }
 
 .input-error-message.show {
@@ -337,7 +345,7 @@
     border: var(--border);
     font-family: var(--font-sans);
     font-size: var(--fs-sm);
-    color: var(--color-text-primary);
+    color: var(--color-text-on-accent);
 }
 
 .input-success-message.show {
@@ -440,7 +448,7 @@
 
 .format-btn.active {
     background: var(--md-blue);
-    color: var(--color-text-primary);
+    color: var(--color-text-on-accent);
 }
 
 .format-btn:active {
@@ -502,13 +510,19 @@
 @media (max-width: 768px) {
     .settings-group-body {
         overflow: hidden;
+        visibility: visible;
         transition: max-height var(--duration-slow) var(--ease);
     }
 
     /* settings.js:338/349/355 给 body 写 inline maxHeight，class 必须用 !important 覆盖
      * inline 才能强制折叠到 0。优雅做法是 JS 改成纯 class toggle，留作后续重构 */
+    /* visibility 延迟到折叠动画结束再 hidden，防止 max-height:0 后控件仍可被 Tab 聚焦 */
     .settings-group-body.collapsed {
         max-height: 0 !important;
+        visibility: hidden;
+        transition:
+            max-height var(--duration-slow) var(--ease),
+            visibility 0s linear var(--duration-slow);
     }
 
     .settings-group.accordion .settings-label {

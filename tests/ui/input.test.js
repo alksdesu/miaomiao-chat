@@ -52,7 +52,11 @@ vi.mock('../../js/messages/renderer.js', () => ({
 
 vi.mock('../../js/messages/editor.js', () => ({
     removeMessagesAfterAll: vi.fn(),
-    updateMessageContentWithImages: vi.fn()
+    updateMessageContentWithImages: vi.fn(),
+    updateUserMessageFromDraft: vi.fn(),
+    buildAttachmentParts: vi.fn(() => []),
+    resolveEditingIndex: vi.fn(() => 0),
+    endEditingState: vi.fn()
 }));
 
 vi.mock('../../js/ui/notifications.js', () => ({

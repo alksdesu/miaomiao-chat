@@ -41,7 +41,7 @@
     height: 48px;
     background: var(--md-coral);
     border: 3px solid var(--color-border-primary);
-    color: var(--color-text-primary);
+    color: var(--color-text-on-accent);
     font-size: var(--fs-5xl);
     font-weight: bold;
     cursor: pointer;

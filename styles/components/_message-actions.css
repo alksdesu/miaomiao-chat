@@ -23,6 +23,7 @@
 
 .retry-button:hover {
     background: var(--md-blue);
+    color: var(--color-text-on-accent);
     transform: translate(3px, -3px);
     box-shadow: none;
 }
@@ -53,7 +54,7 @@
 .message.user .edit-button:hover {
     background: var(--md-yellow);
     border-color: var(--md-yellow);
-    color: var(--color-text-primary);
+    color: var(--color-text-on-accent);
 }
 
 /* 移动端：始终显示编辑按钮（触摸设备无hover） */

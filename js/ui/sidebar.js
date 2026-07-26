@@ -13,7 +13,7 @@ import {
     reloadCurrentSessionMessages
 } from '../state/sessions.js';
 import { escapeHtml } from '../utils/helpers.js';
-import { trapFocus, removeFocusTrap } from '../utils/focus-trap.js';
+import { trapFocus, removeFocusTrap, acquireInert, releaseInert } from '../utils/focus-trap.js';
 import { getSessionSearchState, highlightMatch } from './session-search.js';
 import { sessionToMarkdown } from '../state/export-import.js';
 import { getIcon } from '../utils/icons.js';
@@ -98,16 +98,24 @@ export async function toggleSidebar(skipSave = false) {
         }
     }
 
+    elements.sidebarToggle?.setAttribute('aria-expanded', isOpening ? 'true' : 'false');
+
     if (isOpening) {
         // 打开时启用焦点陷阱
         trapFocus(elements.sidebar);
         // 禁用主内容的交互
-        document.querySelector('.app-container')?.setAttribute('inert', '');
+        acquireInert();
+        // 等开合动画启动后再移焦点，避免聚焦尚不可见的元素失败
+        setTimeout(() => {
+            if (elements.sidebar?.classList.contains('open')) {
+                elements.closeSidebar?.focus();
+            }
+        }, 100);
     } else {
         // 关闭时移除焦点陷阱
         removeFocusTrap(elements.sidebar);
         // 恢复主内容交互
-        document.querySelector('.app-container')?.removeAttribute('inert');
+        releaseInert();
         // 返回焦点到触发按钮
         elements.sidebarToggle?.focus();
     }
@@ -226,6 +234,10 @@ function buildFolderGroup(folder, folderSessions, currentQuery) {
 
     const headerEl = document.createElement('div');
     headerEl.className = 'folder-header';
+    headerEl.setAttribute('tabindex', '0');
+    headerEl.setAttribute('role', 'button');
+    headerEl.setAttribute('aria-expanded', folder.collapsed ? 'false' : 'true');
+    headerEl.setAttribute('aria-label', `文件夹: ${folder.name}`);
     // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     headerEl.innerHTML = `
         <span class="folder-toggle">▶</span>
@@ -244,6 +256,18 @@ function buildFolderGroup(folder, folderSessions, currentQuery) {
     headerEl.addEventListener('click', (e) => {
         if (e.target.closest('.folder-action-btn')) return;
         toggleFolderCollapse(folder.id);
+    });
+
+    headerEl.addEventListener('keydown', async (e) => {
+        if (e.target !== headerEl) return;
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            await toggleFolderCollapse(folder.id);
+            // 折叠切换触发列表全量重建，headerEl 已被替换，需重新定位归还焦点
+            elements.sessionList
+                ?.querySelector(`[data-folder-id="${CSS.escape(folder.id)}"] .folder-header`)
+                ?.focus();
+        }
     });
 
     headerEl.querySelector('.rename-folder-btn').addEventListener('click', async (e) => {

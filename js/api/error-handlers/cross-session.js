@@ -58,6 +58,10 @@ export async function handleCrossSession(classification, ctx) {
         });
     }
 
-    requestStateMachine.forceReset();
+    // 状态机是全局单例：跨会话错误到达时可能已被当前会话新请求占用，
+    // 无参 forceReset 会 abort 新请求并弹「已强制重置」通知；仅在仍归属本请求会话时收口
+    if (requestStateMachine.sessionId === ctx.sessionId) {
+        requestStateMachine.forceReset({ skipAbort: true, silent: true });
+    }
     return { handled: true };
 }

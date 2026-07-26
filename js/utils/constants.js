@@ -82,14 +82,14 @@ export const THINKING_HEAVY_THRESHOLD_CHARS = 5000;
 /** 重 thinking 模式下两次 doRender 最小间隔（ms） */
 export const THINKING_HEAVY_RENDER_THROTTLE_MS = 1500;
 
-/** user-scrolled 探测：wheel/touchmove 触发后此时长内不自动滚到底 */
-export const SCROLL_LOCK_TIMEOUT_MS = 5000;
-
 /** scroll 监听容差：距底部小于此值视为跟随底部 */
 export const SCROLL_FOLLOW_THRESHOLD_PX = 120;
 
 /** requestIdleCallback 单帧高亮预算 */
 export const STREAMING_FRAME_BUDGET_MS = 12;
+
+/** hljs 单块高亮长度上限，超限降级为纯转义展示（防主线程冻结） */
+export const HLJS_MAX_CODE_LENGTH = 50000;
 
 // ========== 工具调用配对/老化 ==========
 

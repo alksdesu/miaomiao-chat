@@ -5,7 +5,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../js/utils/platform.js', () => ({
-    isAndroid: vi.fn(() => false)
+    isAndroid: vi.fn(() => false),
+    isWeb: vi.fn(() => false)
 }));
 
 vi.mock('../../js/ui/notifications.js', () => ({

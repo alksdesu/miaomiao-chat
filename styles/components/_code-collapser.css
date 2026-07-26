@@ -124,7 +124,7 @@
 .code-action-btn:hover {
     background: var(--md-blue);
     border-color: var(--md-blue);
-    color: var(--color-text-primary);
+    color: var(--color-text-on-accent);
     transform: translateY(-1px);
 }
 

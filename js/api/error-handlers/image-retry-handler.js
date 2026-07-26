@@ -39,7 +39,8 @@ export async function handleImageRetryAttempt(classification, ctx) {
     }
 
     if (retried) {
-        requestStateMachine.forceReset();
+        // 压缩重试属自动流程，弹「已强制重置」success 通知会误导用户
+        requestStateMachine.forceReset({ silent: true });
         // lazy import 打破循环依赖：handler.js → error-handlers/index.js → 本文件 → handler.js
         const { sendToAPI } = await import('../handler.js');
         await sendToAPI();

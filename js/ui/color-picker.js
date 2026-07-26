@@ -481,6 +481,7 @@ export function openColorPicker(anchor, initialColor, onChange, onClose) {
         document.addEventListener('touchmove', move, { passive: false, signal });
         document.addEventListener('mouseup', end, { signal });
         document.addEventListener('touchend', end, { signal });
+        document.addEventListener('touchcancel', end, { signal });
     }
 
     // SV 拖拽

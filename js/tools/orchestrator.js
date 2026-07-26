@@ -10,6 +10,7 @@
 
 import { logger } from '../utils/logger.js';
 import { eventBus } from '../core/events.js';
+import { EVENTS } from '../core/events-registry.js';
 import { executeTool } from './executor.js';
 import { snapshotBeforeToolCall } from './undo.js';
 import { createToolCallUI, updateToolCallStatus } from '../ui/tool-display.js';
@@ -629,7 +630,10 @@ export async function handleToolCallStream(toolCalls, context = {}) {
                 logger.error('[Orchestrator] 取消后写回工具结果失败:', e);
             }
             state.isToolCallPending = false;
-            requestStateMachine.forceReset();
+            // 状态机可能已被当前会话新请求占用，仅归属本请求会话时才重置
+            if (requestStateMachine.sessionId === sourceSessionId) {
+                requestStateMachine.forceReset({ silent: true });
+            }
             eventBus.emit('ui:reset-input-buttons');
             return;
         }
@@ -648,7 +652,14 @@ export async function handleToolCallStream(toolCalls, context = {}) {
                 logger.error('[Orchestrator] 跨会话写回 IDB 失败:', e);
             }
             state.isToolCallPending = false;
-            requestStateMachine.forceReset();
+            // 状态机可能已被当前会话新请求占用，仅归属本请求会话时才重置
+            if (requestStateMachine.sessionId === sourceSessionId) {
+                requestStateMachine.forceReset({ silent: true });
+            }
+            eventBus.emit(EVENTS.UI_NOTIFICATION, {
+                message: '会话切换导致回复中断，请重发获取完整回复',
+                type: 'warning'
+            });
             eventBus.emit('ui:reset-input-buttons');
             return;
         }
@@ -758,14 +769,28 @@ export async function startPauseTurnContinuation(assistantMessageEl, sourceSessi
                 `[Orchestrator] pause_turn 跨会话跳过: source=${capturedSessionId} current=${state.currentSessionId}`
             );
             state.isToolCallPending = false;
-            requestStateMachine.forceReset();
+            // 状态机可能已被当前会话新请求占用，仅归属本请求会话时才重置
+            if (requestStateMachine.sessionId === capturedSessionId) {
+                requestStateMachine.forceReset({ silent: true });
+            }
+            eventBus.emit(EVENTS.UI_NOTIFICATION, {
+                message: '会话切换导致回复中断，请重发获取完整回复',
+                type: 'warning'
+            });
             return;
         }
         // assistantMessageEl 在原会话被 restore.js innerHTML='' 清空后已脱离 DOM
         if (assistantMessageEl && !assistantMessageEl.isConnected) {
             logger.warn('[Orchestrator] pause_turn 跳过：assistantMessageEl 已脱离 DOM');
             state.isToolCallPending = false;
-            requestStateMachine.forceReset();
+            // 状态机可能已被当前会话新请求占用，仅归属本请求会话时才重置
+            if (requestStateMachine.sessionId === capturedSessionId) {
+                requestStateMachine.forceReset({ silent: true });
+            }
+            eventBus.emit(EVENTS.UI_NOTIFICATION, {
+                message: '会话切换导致回复中断，请重发获取完整回复',
+                type: 'warning'
+            });
             return;
         }
         await resendWithToolResults(assistantMessageEl);
