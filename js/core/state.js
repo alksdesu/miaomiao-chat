@@ -82,19 +82,22 @@ const _rawState = {
     editingElement: null,
 
     // API 配置
-    apiFormat: 'openai', // 'openai' | 'gemini' | 'claude'
+    apiFormat: 'openai', // 'openai' | 'openai-responses' | 'openai-image' | 'gemini' | 'claude' | 'openclaw'
     endpoints: {
         openai: '',
+        'openai-image': '',
         gemini: '',
         claude: ''
     },
     apiKeys: {
         openai: '',
+        'openai-image': '',
         gemini: '',
         claude: ''
     },
     customModels: {
         openai: '',
+        'openai-image': '',
         gemini: '',
         claude: ''
     },
@@ -113,6 +116,18 @@ const _rawState = {
             top_p: null,
             frequency_penalty: null,
             presence_penalty: null
+        },
+        'openai-image': {
+            size: null,
+            customSize: '',
+            quality: null,
+            output_format: null,
+            output_compression: null,
+            background: null,
+            moderation: null,
+            input_fidelity: null,
+            n: 1,
+            partial_images: 0
         },
         gemini: {
             temperature: null,

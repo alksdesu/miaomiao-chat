@@ -330,6 +330,7 @@ function getDefaultEndpoint(apiFormat) {
     const defaults = {
         openai: 'https://api.openai.com',
         'openai-responses': 'https://api.openai.com/v1/responses',
+        'openai-image': 'https://api.openai.com/v1/images/generations',
         gemini: 'https://generativelanguage.googleapis.com',
         claude: 'https://api.anthropic.com',
         openclaw: 'ws://localhost:18789'
@@ -352,6 +353,10 @@ function deriveOpenAIModelsEndpoint(endpoint) {
         modelsPath = normalizedPath.slice(0, -'/chat/completions'.length) + '/models';
     } else if (normalizedPath.endsWith('/responses')) {
         modelsPath = normalizedPath.slice(0, -'/responses'.length) + '/models';
+    } else if (normalizedPath.endsWith('/images/generations')) {
+        modelsPath = normalizedPath.slice(0, -'/images/generations'.length) + '/models';
+    } else if (normalizedPath.endsWith('/images/edits')) {
+        modelsPath = normalizedPath.slice(0, -'/images/edits'.length) + '/models';
     } else if (normalizedPath.endsWith('/messages')) {
         modelsPath = normalizedPath.slice(0, -'/messages'.length) + '/models';
     } else if (normalizedPath === '/' || normalizedPath === '/v1') {

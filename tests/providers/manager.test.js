@@ -68,6 +68,7 @@ import {
     addModelToProvider,
     removeModelFromProvider,
     addModelsToProvider,
+    fetchProviderModels,
     clearModelsCache,
     syncProviderState
 } from '../../js/providers/manager.js';
@@ -347,5 +348,43 @@ describe('clearModelsCache', () => {
 
     it('不传参数清除所有缓存', () => {
         expect(() => clearModelsCache()).not.toThrow();
+    });
+});
+
+describe('OpenAI Image 模型列表', () => {
+    it('从图片端点推导 /v1/models 且不筛选模型名', async () => {
+        state.providers = [
+            {
+                id: 'image-provider',
+                name: 'Image API',
+                apiFormat: 'openai-image',
+                endpoint: 'https://api.example.com/v1/images/generations',
+                enabled: true,
+                models: []
+            }
+        ];
+        const fetchMock = vi.fn(() =>
+            Promise.resolve(
+                new Response(
+                    JSON.stringify({
+                        data: [{ id: 'gpt-image-2' }, { id: 'vendor/custom-image:model@2' }]
+                    }),
+                    { status: 200 }
+                )
+            )
+        );
+        vi.stubGlobal('fetch', fetchMock);
+
+        const models = await fetchProviderModels('image-provider', true);
+
+        expect(fetchMock).toHaveBeenCalledWith(
+            'https://api.example.com/v1/models',
+            expect.objectContaining({ headers: { Authorization: 'Bearer test-key' } })
+        );
+        expect(models.map((model) => model.id)).toEqual([
+            'gpt-image-2',
+            'vendor/custom-image:model@2'
+        ]);
+        vi.unstubAllGlobals();
     });
 });

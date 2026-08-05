@@ -36,6 +36,7 @@ let _openclawStatusUnsubs = [];
 const ENDPOINT_HINTS = {
     openai: '示例: https://api.openai.com/v1/chat/completions 或 http://localhost:8000/v1/chat/completions',
     'openai-responses': '示例: https://api.openai.com/v1/responses 或自定义代理地址/v1/responses',
+    'openai-image': '可填写任意完整 URL；仅域名根路径或 /v1 会建议补全为 /v1/images/generations',
     gemini: '示例: https://generativelanguage.googleapis.com 或自定义代理地址',
     claude: '示例: https://api.anthropic.com/v1/messages 或自定义代理地址',
     openclaw: '示例: ws://localhost:18789'
@@ -45,6 +46,7 @@ const ENDPOINT_HINTS = {
 const ENDPOINT_SUGGESTION_PATHS = {
     openai: '/v1/chat/completions',
     'openai-responses': '/v1/responses',
+    'openai-image': '/v1/images/generations',
     claude: '/v1/messages'
 };
 
@@ -91,6 +93,7 @@ export function showProviderForm(providerId) {
                 <select id="detail-provider-format" required>
                     <option value="openai" ${provider?.apiFormat === 'openai' ? 'selected' : ''}>OpenAI (Chat Completions)</option>
                     <option value="openai-responses" ${provider?.apiFormat === 'openai-responses' ? 'selected' : ''}>OpenAI (Responses API)</option>
+                    <option value="openai-image" ${provider?.apiFormat === 'openai-image' ? 'selected' : ''}>OpenAI (Image API)</option>
                     <option value="gemini" ${provider?.apiFormat === 'gemini' ? 'selected' : ''}>Gemini</option>
                     <option value="claude" ${provider?.apiFormat === 'claude' ? 'selected' : ''}>Claude</option>
                     <option value="openclaw" ${provider?.apiFormat === 'openclaw' ? 'selected' : ''}>OpenClaw</option>

@@ -123,7 +123,7 @@ export function buildConfigObject() {
         // XML 工具调用兜底
         xmlToolCallingEnabled: state.xmlToolCallingEnabled || false,
 
-        // 三格式独立端点（深拷贝）
+        // 格式独立端点（深拷贝）
         endpoints: { ...state.endpoints },
         apiKeys: { ...state.apiKeys },
         customModels: { ...state.customModels },
@@ -183,6 +183,7 @@ export function buildConfigObject() {
 export function getDefaultCapabilities(apiFormat) {
     const defaults = {
         openai: { imageInput: true, imageOutput: false }, // OpenAI 支持 Vision，但不生成图片
+        'openai-image': { imageInput: true, imageOutput: true },
         gemini: { imageInput: true, imageOutput: true }, // Gemini 完全支持多模态
         claude: { imageInput: true, imageOutput: false } // Claude 支持 Vision，但不生成图片
     };
@@ -476,14 +477,14 @@ export function applyConfigToState(config) {
     // XML 工具调用兜底
     state.xmlToolCallingEnabled = config.xmlToolCallingEnabled ?? false;
 
-    // 三格式独立端点 (带默认值兜底)
-    state.endpoints = config.endpoints ?? { openai: '', gemini: '', claude: '' };
-    state.apiKeys = config.apiKeys ?? { openai: '', gemini: '', claude: '' };
-    state.customModels = config.customModels ?? { openai: '', gemini: '', claude: '' };
+    // 格式独立端点 (带默认值兜底)
+    state.endpoints = { ...state.endpoints, ...(config.endpoints || {}) };
+    state.apiKeys = { ...state.apiKeys, ...(config.apiKeys || {}) };
+    state.customModels = { ...state.customModels, ...(config.customModels || {}) };
 
     // 模型参数 (深度合并)
     if (config.modelParams) {
-        ['openai', 'gemini', 'claude'].forEach((format) => {
+        ['openai', 'openai-image', 'gemini', 'claude'].forEach((format) => {
             if (config.modelParams[format]) {
                 state.modelParams[format] = {
                     ...state.modelParams[format],
@@ -619,7 +620,11 @@ export function applyConfigToState(config) {
     });
 
     // API 格式直接设置（不通过事件，避免时序问题）
-    if (['openai', 'openai-responses', 'gemini', 'claude', 'openclaw'].includes(config.apiFormat)) {
+    if (
+        ['openai', 'openai-responses', 'openai-image', 'gemini', 'claude', 'openclaw'].includes(
+            config.apiFormat
+        )
+    ) {
         state.apiFormat = config.apiFormat;
 
         // 直接更新UI

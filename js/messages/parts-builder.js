@@ -271,6 +271,7 @@ export function buildMetaFromStreamingState(extras = {}) {
         thoughtSignature,
         thinkingSignature,
         groundingMetadata,
+        usage,
         // 响应侧实际模型名（代理可能改写 model，如 OpenRouter 'auto' → 真实路由模型）
         responseModel
     } = extras;
@@ -307,6 +308,7 @@ export function buildMetaFromStreamingState(extras = {}) {
     return createMeta({
         model: modelName,
         provider: providerName,
+        usage: usage || null,
         stats: streamStats || null,
         raw
     });
@@ -397,5 +399,5 @@ export function buildMetaFromReply(reply) {
     }
     if (reply.thoughtSignature) raw.gemini = { thoughtSignature: reply.thoughtSignature };
     if (reply.thinkingSignature) raw.claude = { thinkingSignature: reply.thinkingSignature };
-    return createMeta({ raw });
+    return createMeta({ usage: reply.usage || null, stats: reply.stats?.getData?.() || null, raw });
 }

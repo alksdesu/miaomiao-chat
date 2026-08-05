@@ -1,173 +1,173 @@
 {
-  "name": "miaomiao-chat",
-  "version": "1.2.6",
-  "description": "Web Chat Application with Electron",
-  "main": "electron/main.js",
-  "scripts": {
-    "start": "electron .",
-    "dist": "electron-builder",
-    "dist:win": "electron-builder --win --x64",
-    "dist:mac": "electron-builder --mac",
-    "dist:linux": "electron-builder --linux",
-    "cap:prepare": "node scripts/prepare-capacitor.js",
-    "cap:sync": "npm run cap:prepare && npx cap sync android",
-    "cap:sync:ios": "npm run cap:prepare && npx cap sync ios",
-    "cap:build": "npm run cap:sync && cd android && gradlew assembleRelease",
-    "cap:open": "npx cap open android",
-    "cap:open:ios": "npx cap open ios",
-    "lint": "eslint js electron --max-warnings=300",
-    "lint:fix": "eslint js electron --fix",
-    "format": "prettier --write \"js/**/*.{js,css}\" \"styles/**/*.css\" \"*.html\"",
-    "format:check": "prettier --check \"js/**/*.{js,css}\" \"styles/**/*.css\" \"*.html\"",
-    "test": "vitest run --passWithNoTests",
-    "test:coverage": "vitest run --coverage --passWithNoTests",
-    "prepare": "husky"
-  },
-  "keywords": [
-    "electron",
-    "chat",
-    "ai"
-  ],
-  "author": {
-    "name": "alksdesu",
-    "email": "26915144+alksdesu@users.noreply.github.com"
-  },
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/alksdesu/miaomiao-chat.git"
-  },
-  "devDependencies": {
-    "@capacitor/assets": "^3.0.5",
-    "@vitest/coverage-v8": "^4.1.4",
-    "electron": "^28.3.3",
-    "electron-builder": "^24.9.1",
-    "eslint": "^9.39.2",
-    "eslint-config-prettier": "^10.1.8",
-    "eslint-plugin-prettier": "^5.5.4",
-    "husky": "^9.1.7",
-    "jsdom": "^29.0.2",
-    "lint-staged": "^16.4.0",
-    "madge": "^8.0.0",
-    "prettier": "^3.7.4",
-    "source-map": "^0.7.6",
-    "vitest": "^4.1.4"
-  },
-  "dependencies": {
-    "@capacitor/android": "^8.0.0",
-    "@capacitor/app": "^8.0.0",
-    "@capacitor/cli": "^8.0.0",
-    "@capacitor/core": "^8.0.0",
-    "@capacitor/filesystem": "^8.0.0",
-    "@capacitor/ios": "^8.3.1",
-    "@nut-tree-fork/nut-js": "^4.2.6",
-    "electron-log": "^5.0.1",
-    "electron-updater": "^6.1.7",
-    "mathjs": "^15.1.0"
-  },
-  "lint-staged": {
-    "*.js": [
-      "eslint --max-warnings=50",
-      "prettier --write"
+    "name": "miaomiao-chat",
+    "version": "1.2.7",
+    "description": "Web Chat Application with Electron",
+    "main": "electron/main.js",
+    "scripts": {
+        "start": "electron .",
+        "dist": "electron-builder",
+        "dist:win": "electron-builder --win --x64",
+        "dist:mac": "electron-builder --mac",
+        "dist:linux": "electron-builder --linux",
+        "cap:prepare": "node scripts/prepare-capacitor.js",
+        "cap:sync": "npm run cap:prepare && npx cap sync android",
+        "cap:sync:ios": "npm run cap:prepare && npx cap sync ios",
+        "cap:build": "npm run cap:sync && cd android && gradlew assembleRelease",
+        "cap:open": "npx cap open android",
+        "cap:open:ios": "npx cap open ios",
+        "lint": "eslint js electron --max-warnings=300",
+        "lint:fix": "eslint js electron --fix",
+        "format": "prettier --write \"js/**/*.{js,css}\" \"styles/**/*.css\" \"*.html\"",
+        "format:check": "prettier --check \"js/**/*.{js,css}\" \"styles/**/*.css\" \"*.html\"",
+        "test": "vitest run --passWithNoTests",
+        "test:coverage": "vitest run --coverage --passWithNoTests",
+        "prepare": "husky"
+    },
+    "keywords": [
+        "electron",
+        "chat",
+        "ai"
     ],
-    "*.css": [
-      "prettier --write"
-    ]
-  },
-  "build": {
-    "appId": "com.miaomiao.chat",
-    "productName": "Miaomiao Chat",
-    "directories": {
-      "output": "dist"
+    "author": {
+        "name": "alksdesu",
+        "email": "26915144+alksdesu@users.noreply.github.com"
     },
-    "files": [
-      "**/*",
-      "!dist",
-      "!.git",
-      "!.github",
-      "!.claude",
-      "!.wrangler",
-      "!docs",
-      "!android",
-      "!www",
-      "!resources",
-      "!scripts",
-      "!releases",
-      "!README.md",
-      "!README-APK.md",
-      "!PLAN.md",
-      "!capacitor.config.json",
-      "!.assetsignore",
-      "!.wranglerignore",
-      "!wrangler.jsonc",
-      "!_headers",
-      "!package-lock.json",
-      "!nul",
-      "!node_modules/**/{CHANGELOG.md,README.md,README,readme.md,readme}",
-      "!node_modules/*/{test,__tests__,tests,powered-test,example,examples}",
-      "!node_modules/**/{build,obj,gradle,intermediates}",
-      "!node_modules/**/dist/**",
-      "node_modules/@nut-tree-fork/**/dist/**",
-      "node_modules/electron-log/**/dist/**",
-      "node_modules/mathjs/**/dist/**",
-      "!node_modules/@capacitor/android/**",
-      "!node_modules/@capacitor/cli/**",
-      "!node_modules/*.d.ts",
-      "!node_modules/.bin",
-      "!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}",
-      "!**/*.{map,tsbuildinfo}",
-      "!.editorconfig",
-      "!**/._*",
-      "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,.gitignore,.gitattributes}",
-      "!**/{__pycache__,thumbs.db,.flowconfig,.idea,.vs,.nyc_output}",
-      "!**/{appveyor.yml,.travis.yml,circle.yml}",
-      "!**/{npm-debug.log,yarn.lock,.yarn-integrity,.yarn-metadata.json}"
-    ],
-    "win": {
-      "target": [
-        "nsis",
-        "portable"
-      ],
-      "icon": "assets/icon.ico"
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/alksdesu/miaomiao-chat.git"
     },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "allowElevation": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "Miaomiao Chat",
-      "artifactName": "${productName}-Setup-${version}.${ext}",
-      "differentialPackage": false
+    "devDependencies": {
+        "@capacitor/assets": "^3.0.5",
+        "@vitest/coverage-v8": "^4.1.4",
+        "electron": "^28.3.3",
+        "electron-builder": "^24.9.1",
+        "eslint": "^9.39.2",
+        "eslint-config-prettier": "^10.1.8",
+        "eslint-plugin-prettier": "^5.5.4",
+        "husky": "^9.1.7",
+        "jsdom": "^29.0.2",
+        "lint-staged": "^16.4.0",
+        "madge": "^8.0.0",
+        "prettier": "^3.7.4",
+        "source-map": "^0.7.6",
+        "vitest": "^4.1.4"
     },
-    "compression": "normal",
-    "asar": true,
-    "asarUnpack": [
-      "electron/**/*",
-      "libs/chii/**/*",
-      "node_modules/@nut-tree-fork/**/*",
-      "node_modules/electron-log/**/*"
-    ],
-    "mac": {
-      "target": [
-        "dmg",
-        "zip"
-      ],
-      "icon": "assets/icon.icns",
-      "category": "public.app-category.productivity"
+    "dependencies": {
+        "@capacitor/android": "^8.0.0",
+        "@capacitor/app": "^8.0.0",
+        "@capacitor/cli": "^8.0.0",
+        "@capacitor/core": "^8.0.0",
+        "@capacitor/filesystem": "^8.0.0",
+        "@capacitor/ios": "^8.3.1",
+        "@nut-tree-fork/nut-js": "^4.2.6",
+        "electron-log": "^5.0.1",
+        "electron-updater": "^6.1.7",
+        "mathjs": "^15.1.0"
     },
-    "linux": {
-      "target": [
-        "AppImage",
-        "deb"
-      ],
-      "icon": "assets/icon.png",
-      "category": "Utility"
+    "lint-staged": {
+        "*.js": [
+            "eslint --max-warnings=50",
+            "prettier --write"
+        ],
+        "*.css": [
+            "prettier --write"
+        ]
     },
-    "publish": {
-      "provider": "github",
-      "owner": "alksdesu",
-      "repo": "miaomiao-chat"
+    "build": {
+        "appId": "com.miaomiao.chat",
+        "productName": "Miaomiao Chat",
+        "directories": {
+            "output": "dist"
+        },
+        "files": [
+            "**/*",
+            "!dist",
+            "!.git",
+            "!.github",
+            "!.claude",
+            "!.wrangler",
+            "!docs",
+            "!android",
+            "!www",
+            "!resources",
+            "!scripts",
+            "!releases",
+            "!README.md",
+            "!README-APK.md",
+            "!PLAN.md",
+            "!capacitor.config.json",
+            "!.assetsignore",
+            "!.wranglerignore",
+            "!wrangler.jsonc",
+            "!_headers",
+            "!package-lock.json",
+            "!nul",
+            "!node_modules/**/{CHANGELOG.md,README.md,README,readme.md,readme}",
+            "!node_modules/*/{test,__tests__,tests,powered-test,example,examples}",
+            "!node_modules/**/{build,obj,gradle,intermediates}",
+            "!node_modules/**/dist/**",
+            "node_modules/@nut-tree-fork/**/dist/**",
+            "node_modules/electron-log/**/dist/**",
+            "node_modules/mathjs/**/dist/**",
+            "!node_modules/@capacitor/android/**",
+            "!node_modules/@capacitor/cli/**",
+            "!node_modules/*.d.ts",
+            "!node_modules/.bin",
+            "!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}",
+            "!**/*.{map,tsbuildinfo}",
+            "!.editorconfig",
+            "!**/._*",
+            "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,.gitignore,.gitattributes}",
+            "!**/{__pycache__,thumbs.db,.flowconfig,.idea,.vs,.nyc_output}",
+            "!**/{appveyor.yml,.travis.yml,circle.yml}",
+            "!**/{npm-debug.log,yarn.lock,.yarn-integrity,.yarn-metadata.json}"
+        ],
+        "win": {
+            "target": [
+                "nsis",
+                "portable"
+            ],
+            "icon": "assets/icon.ico"
+        },
+        "nsis": {
+            "oneClick": false,
+            "allowToChangeInstallationDirectory": true,
+            "allowElevation": true,
+            "createDesktopShortcut": true,
+            "createStartMenuShortcut": true,
+            "shortcutName": "Miaomiao Chat",
+            "artifactName": "${productName}-Setup-${version}.${ext}",
+            "differentialPackage": false
+        },
+        "compression": "normal",
+        "asar": true,
+        "asarUnpack": [
+            "electron/**/*",
+            "libs/chii/**/*",
+            "node_modules/@nut-tree-fork/**/*",
+            "node_modules/electron-log/**/*"
+        ],
+        "mac": {
+            "target": [
+                "dmg",
+                "zip"
+            ],
+            "icon": "assets/icon.icns",
+            "category": "public.app-category.productivity"
+        },
+        "linux": {
+            "target": [
+                "AppImage",
+                "deb"
+            ],
+            "icon": "assets/icon.png",
+            "category": "Utility"
+        },
+        "publish": {
+            "provider": "github",
+            "owner": "alksdesu",
+            "repo": "miaomiao-chat"
+        }
     }
-  }
 }

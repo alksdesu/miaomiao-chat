@@ -30,6 +30,18 @@ vi.mock('../../js/core/state.js', () => ({
                 frequency_penalty: 0,
                 presence_penalty: 0
             },
+            'openai-image': {
+                size: 'custom',
+                customSize: '1536x864',
+                quality: 'high',
+                output_format: 'webp',
+                output_compression: 80,
+                background: null,
+                moderation: null,
+                input_fidelity: null,
+                n: 2,
+                partial_images: 1
+            },
             gemini: { temperature: 0.7, maxOutputTokens: 4096, topP: 1, topK: null },
             claude: { temperature: 0.7, max_tokens: 4096, top_p: 1, top_k: null }
         },
@@ -219,6 +231,22 @@ describe('config-ui-sync', () => {
             syncUIWithState();
             expect(document.getElementById('openai-temperature').value).toBe('0.9');
             expect(document.getElementById('openai-max-tokens').value).toBe('2048');
+        });
+
+        it('同步 OpenAI Image 参数和联动显示', () => {
+            document.body.innerHTML = `
+                <select id="openai-image-size"><option value="custom">custom</option></select>
+                <div id="openai-image-custom-size-group" hidden></div>
+                <input id="openai-image-custom-size" />
+                <select id="openai-image-output-format"><option value="webp">webp</option></select>
+                <div id="openai-image-compression-group" hidden></div>
+                <input id="openai-image-output-compression" />
+            `;
+            syncUIWithState();
+
+            expect(document.getElementById('openai-image-custom-size').value).toBe('1536x864');
+            expect(document.getElementById('openai-image-custom-size-group').hidden).toBe(false);
+            expect(document.getElementById('openai-image-compression-group').hidden).toBe(false);
         });
 
         // prefill UI 同步已下沉到 prefill-modal.js，syncUIWithState 仅 emit 'config:sync-prefill-ui'

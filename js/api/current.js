@@ -44,6 +44,7 @@ export function getCurrentEndpoint() {
     const defaultEndpoints = {
         openai: 'https://api.openai.com/v1/chat/completions',
         'openai-responses': 'https://api.openai.com/v1/responses',
+        'openai-image': 'https://api.openai.com/v1/images/generations',
         gemini: 'https://generativelanguage.googleapis.com',
         claude: 'https://api.anthropic.com/v1/messages',
         openclaw: 'ws://localhost:18789'
@@ -77,7 +78,8 @@ export function getCurrentModel() {
     // 如果下拉列表为空，尝试从当前提供商的第一个模型获取
     const currentProvider = _getCurrentProvider();
     if (currentProvider?.models && currentProvider.models.length > 0) {
-        return currentProvider.models[0];
+        const firstModel = currentProvider.models[0];
+        return typeof firstModel === 'string' ? firstModel : firstModel?.id || '';
     }
 
     // 最后返回空字符串

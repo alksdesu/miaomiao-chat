@@ -62,6 +62,7 @@ import { executeRequest } from '../../js/api/request-pipeline.js';
 import { state } from '../../js/core/state.js';
 import { filterMessagesByCapabilities } from '../../js/utils/message-filter.js';
 import { getCurrentModelCapabilities } from '../../js/providers/manager.js';
+import { buildThinkingConfig, buildVerbosityConfig } from '../../js/api/params.js';
 
 // ---------- stub adapter 工厂 ----------
 
@@ -261,6 +262,44 @@ describe('executeRequest 编排顺序', () => {
         });
 
         expect(fetchSpy.mock.calls[0][1].signal).toBeUndefined();
+    });
+});
+
+describe('adapter 请求能力声明', () => {
+    it('关闭聊天特性时跳过 system、prefill、tools、thinking 和 verbosity', async () => {
+        state.systemPrompt = 'system';
+        state.monitorEnabled = true;
+        state.prefillEnabled = true;
+        const adapter = createStubAdapter({
+            requestFeatures: {
+                system: false,
+                prefill: false,
+                tools: false,
+                thinking: false,
+                verbosity: false
+            }
+        });
+
+        await executeRequest(adapter, {
+            endpoint: 'https://example.com/v1/images/generations',
+            apiKey: 'key',
+            model: 'custom-image-model'
+        });
+
+        expect(adapter.collectBuiltinTools).not.toHaveBeenCalled();
+        expect(adapter.formatSystemTools).not.toHaveBeenCalled();
+        expect(buildThinkingConfig).not.toHaveBeenCalled();
+        expect(buildVerbosityConfig).not.toHaveBeenCalled();
+        expect(adapter.buildRequestBody).toHaveBeenCalledWith(
+            expect.objectContaining({ systemCtx: {}, prefill: null, tools: [] })
+        );
+        expect(adapter.resolveEndpoint).toHaveBeenCalledWith(
+            'https://example.com/v1/images/generations',
+            'custom-image-model',
+            true,
+            expect.any(Object),
+            { state }
+        );
     });
 });
 

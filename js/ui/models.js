@@ -126,6 +126,9 @@ export function initModels() {
                 configPanel.style.display = 'block';
             }
 
+            const replyCountGroup = document.getElementById('reply-count-settings-group');
+            if (replyCountGroup) replyCountGroup.hidden = provider.apiFormat === 'openai-image';
+
             // 发送通知
             eventBus.emit('ui:notification', {
                 message: `已切换到 ${provider.apiFormat.toUpperCase()} 格式`,

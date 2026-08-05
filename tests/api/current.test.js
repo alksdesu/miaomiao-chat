@@ -57,6 +57,12 @@ describe('getCurrentEndpoint', () => {
         expect(getCurrentEndpoint()).toBe('https://api.openai.com/v1/responses');
     });
 
+    it('返回默认 OpenAI Image 端点', () => {
+        getCurrentProvider.mockReturnValue(null);
+        state.apiFormat = 'openai-image';
+        expect(getCurrentEndpoint()).toBe('https://api.openai.com/v1/images/generations');
+    });
+
     it('返回默认 OpenClaw 端点', () => {
         getCurrentProvider.mockReturnValue(null);
         state.apiFormat = 'openclaw';
@@ -95,6 +101,14 @@ describe('getCurrentModel', () => {
         elements.modelSelect = { value: '' };
         getCurrentProvider.mockReturnValue({ models: ['claude-3-opus', 'claude-3-sonnet'] });
         expect(getCurrentModel()).toBe('claude-3-opus');
+    });
+
+    it('提供商模型为对象时返回完整自定义 id', () => {
+        elements.modelSelect = { value: '' };
+        getCurrentProvider.mockReturnValue({
+            models: [{ id: 'vendor/custom-image:model@2', name: 'Custom' }]
+        });
+        expect(getCurrentModel()).toBe('vendor/custom-image:model@2');
     });
 
     it('都为空时返回空字符串', () => {

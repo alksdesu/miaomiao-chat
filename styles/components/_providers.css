@@ -122,6 +122,10 @@
     background: linear-gradient(135deg, #f59e0b, #fb923c); /* 黄橙色渐变（MotherDuck风格） */
 }
 
+.provider-item-avatar.openai-image {
+    background: var(--color-primary);
+}
+
 .provider-item-avatar.gemini {
     background: linear-gradient(135deg, #4285f4, #8ab4f8);
 }

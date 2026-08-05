@@ -17,6 +17,18 @@ vi.mock('../../js/core/state.js', () => ({
                 frequency_penalty: null,
                 presence_penalty: null
             },
+            'openai-image': {
+                size: null,
+                customSize: '',
+                quality: null,
+                output_format: null,
+                output_compression: null,
+                background: null,
+                moderation: null,
+                input_fidelity: null,
+                n: 1,
+                partial_images: 0
+            },
             gemini: { temperature: null, maxOutputTokens: null, topP: null, topK: null },
             claude: { temperature: null, max_tokens: null, top_p: null, top_k: null }
         },
@@ -112,6 +124,18 @@ describe('config-helpers', () => {
                 top_p: null,
                 frequency_penalty: null,
                 presence_penalty: null
+            },
+            'openai-image': {
+                size: null,
+                customSize: '',
+                quality: null,
+                output_format: null,
+                output_compression: null,
+                background: null,
+                moderation: null,
+                input_fidelity: null,
+                n: 1,
+                partial_images: 0
             },
             gemini: { temperature: null, maxOutputTokens: null, topP: null, topK: null },
             claude: { temperature: null, max_tokens: null, top_p: null, top_k: null }
@@ -231,6 +255,32 @@ describe('config-helpers', () => {
             tempInput.value = 'abc';
             tempInput.dispatchEvent(new Event('input'));
             expect(state.modelParams.openai.temperature).toBe(0.5);
+        });
+
+        it('更新图片参数并联动自定义尺寸和压缩率', () => {
+            document.body.innerHTML = `
+                <select id="openai-image-size"><option value="custom">custom</option></select>
+                <div id="openai-image-custom-size-group" hidden></div>
+                <input id="openai-image-custom-size" />
+                <select id="openai-image-output-format"><option value="webp">webp</option></select>
+                <div id="openai-image-compression-group" hidden></div>
+                <input id="openai-image-output-compression" />
+            `;
+            initEndpointInputListeners();
+
+            const size = document.getElementById('openai-image-size');
+            size.value = 'custom';
+            size.dispatchEvent(new Event('change'));
+            const customSize = document.getElementById('openai-image-custom-size');
+            customSize.value = '1536x864';
+            customSize.dispatchEvent(new Event('change'));
+            const format = document.getElementById('openai-image-output-format');
+            format.value = 'webp';
+            format.dispatchEvent(new Event('change'));
+
+            expect(state.modelParams['openai-image'].customSize).toBe('1536x864');
+            expect(document.getElementById('openai-image-custom-size-group').hidden).toBe(false);
+            expect(document.getElementById('openai-image-compression-group').hidden).toBe(false);
         });
     });
 

@@ -83,9 +83,10 @@ export async function sendToAPI() {
     try {
         const { requestFormat, adapter } = ctx;
         const canMultiStream = adapter?.supportsMultiStream !== false;
+        const canMultipleReplies = adapter?.supportsMultipleReplies !== false;
 
         // 流式多回复路径
-        if (state.streamEnabled && state.replyCount > 1 && canMultiStream) {
+        if (state.streamEnabled && state.replyCount > 1 && canMultiStream && canMultipleReplies) {
             clearTimeout(ctx.timeoutId);
             ctx.timeoutId = null;
             await handleMultiStreamResponses(ctx);
@@ -97,7 +98,9 @@ export async function sendToAPI() {
         }
 
         // 多回复但 adapter 不支持并发：降级 + 提示
-        if (state.streamEnabled && state.replyCount > 1 && !canMultiStream) {
+        if (state.replyCount > 1 && !canMultipleReplies) {
+            logger.debug(`[Handler] ${adapter.name} 使用格式专属数量参数，忽略全局回复数量`);
+        } else if (state.streamEnabled && state.replyCount > 1 && !canMultiStream) {
             const name = adapter?.name || requestFormat;
             logger.warn(`[Handler] ${name} 不支持多回复并发，降级为单流`);
             eventBus.emit('ui:notification', {

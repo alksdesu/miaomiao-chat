@@ -415,6 +415,114 @@
                     </details>
                 </div>
 
+                <!-- OpenAI Image 参数 -->
+                <div class="settings-group api-config" id="openai-image-config">
+                    <details class="model-params-details">
+                        <summary class="model-params-summary">
+                            图片参数 <span class="hint">(模型名称完全自定义)</span>
+                        </summary>
+                        <div class="model-params-grid">
+                            <div class="param-item">
+                                <label for="openai-image-size">尺寸</label>
+                                <select id="openai-image-size" class="settings-select">
+                                    <option value="">服务端默认</option>
+                                    <option value="auto">自动</option>
+                                    <option value="1024x1024">1024×1024</option>
+                                    <option value="1536x1024">1536×1024</option>
+                                    <option value="1024x1536">1024×1536</option>
+                                    <option value="custom">自定义</option>
+                                </select>
+                            </div>
+                            <div class="param-item" id="openai-image-custom-size-group" hidden>
+                                <label for="openai-image-custom-size">自定义尺寸</label>
+                                <input
+                                    type="text"
+                                    id="openai-image-custom-size"
+                                    inputmode="numeric"
+                                    placeholder="1536x864"
+                                />
+                            </div>
+                            <div class="param-item">
+                                <label for="openai-image-quality">质量</label>
+                                <select id="openai-image-quality" class="settings-select">
+                                    <option value="">服务端默认</option>
+                                    <option value="auto">Auto</option>
+                                    <option value="low">Low</option>
+                                    <option value="medium">Medium</option>
+                                    <option value="high">High</option>
+                                </select>
+                            </div>
+                            <div class="param-item">
+                                <label for="openai-image-output-format">输出格式</label>
+                                <select id="openai-image-output-format" class="settings-select">
+                                    <option value="">服务端默认</option>
+                                    <option value="png">PNG</option>
+                                    <option value="jpeg">JPEG</option>
+                                    <option value="webp">WebP</option>
+                                </select>
+                            </div>
+                            <div class="param-item" id="openai-image-compression-group" hidden>
+                                <label for="openai-image-output-compression">压缩率</label>
+                                <input
+                                    type="number"
+                                    id="openai-image-output-compression"
+                                    min="0"
+                                    max="100"
+                                    placeholder="0-100"
+                                />
+                            </div>
+                            <div class="param-item">
+                                <label for="openai-image-background">背景</label>
+                                <select id="openai-image-background" class="settings-select">
+                                    <option value="">服务端默认</option>
+                                    <option value="auto">Auto</option>
+                                    <option value="opaque">不透明</option>
+                                    <option value="transparent">透明</option>
+                                </select>
+                            </div>
+                            <div class="param-item">
+                                <label for="openai-image-moderation">内容审核</label>
+                                <select id="openai-image-moderation" class="settings-select">
+                                    <option value="">服务端默认</option>
+                                    <option value="auto">Auto</option>
+                                    <option value="low">Low</option>
+                                </select>
+                            </div>
+                            <div class="param-item">
+                                <label for="openai-image-input-fidelity">输入保真度</label>
+                                <select id="openai-image-input-fidelity" class="settings-select">
+                                    <option value="">服务端默认</option>
+                                    <option value="low">Low</option>
+                                    <option value="high">High</option>
+                                </select>
+                            </div>
+                            <div class="param-item">
+                                <label for="openai-image-count">图片数量</label>
+                                <input
+                                    type="number"
+                                    id="openai-image-count"
+                                    min="1"
+                                    max="10"
+                                    value="1"
+                                />
+                            </div>
+                            <div class="param-item">
+                                <label for="openai-image-partial-images">流式预览数量</label>
+                                <input
+                                    type="number"
+                                    id="openai-image-partial-images"
+                                    min="0"
+                                    max="3"
+                                    value="0"
+                                />
+                            </div>
+                        </div>
+                        <p class="settings-hint">
+                            最新用户消息含图片附件时自动调用编辑端点；图片数量由这里控制，不使用全局回复数量。
+                        </p>
+                    </details>
+                </div>
+
                 <!-- Gemini 配置 -->
                 <div class="settings-group api-config" id="gemini-config">
                     <label class="settings-label">图片尺寸</label>
@@ -1050,7 +1158,7 @@
                 </div>
 
                 <!-- 回复数量 -->
-                <div class="settings-group">
+                <div class="settings-group" id="reply-count-settings-group">
                     <label class="settings-label">回复数量</label>
                     <select
                         id="reply-count-select"

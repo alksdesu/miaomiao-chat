@@ -138,17 +138,19 @@ function filterAndConvertMessages(adapter) {
  * @returns {Promise<Response>}
  */
 export async function executeRequest(adapter, { endpoint, apiKey, model, signal = null }) {
+    const features = adapter.requestFeatures || {};
     const messages = filterAndConvertMessages(adapter);
-    const systemCtx = await buildSystemContext();
-    const prefill = collectPrefill(adapter.apiFormat);
-    const tools = await collectTools(adapter);
+    const systemCtx = features.system === false ? {} : await buildSystemContext();
+    const prefill = features.prefill === false ? null : collectPrefill(adapter.apiFormat);
+    const tools = features.tools === false ? [] : await collectTools(adapter);
 
     const requestBody = await adapter.buildRequestBody({
         messages,
         model,
         modelParams: buildModelParams(adapter.apiFormat),
-        thinkingCfg: buildThinkingConfig(adapter.apiFormat, model),
-        verbosityCfg: buildVerbosityConfig(),
+        thinkingCfg:
+            features.thinking === false ? null : buildThinkingConfig(adapter.apiFormat, model),
+        verbosityCfg: features.verbosity === false ? null : buildVerbosityConfig(),
         systemCtx,
         prefill,
         tools,
@@ -157,7 +159,13 @@ export async function executeRequest(adapter, { endpoint, apiKey, model, signal 
         endpoint // Gemini Vertex vs AI Studio safetySettings 需要看 endpoint
     });
 
-    const finalEndpoint = adapter.resolveEndpoint(endpoint, model, state.streamEnabled);
+    const finalEndpoint = adapter.resolveEndpoint(
+        endpoint,
+        model,
+        state.streamEnabled,
+        requestBody,
+        { state }
+    );
     const headers = {
         'Content-Type': 'application/json',
         ...adapter.buildHeaders(apiKey, { state, tools }),
@@ -166,7 +174,10 @@ export async function executeRequest(adapter, { endpoint, apiKey, model, signal 
     const queryString = adapter.buildQueryString(apiKey, { state });
     const fullUrl = queryString ? `${finalEndpoint}?${queryString}` : finalEndpoint;
 
-    logger.debug(`[${adapter.name}] 发送请求:`, JSON.stringify(requestBody, null, 2));
+    const logBody = adapter.sanitizeRequestForLogging
+        ? adapter.sanitizeRequestForLogging(requestBody)
+        : requestBody;
+    logger.debug(`[${adapter.name}] 发送请求:`, JSON.stringify(logBody, null, 2));
 
     const options = {
         method: 'POST',

@@ -52,6 +52,8 @@ beforeEach(() => {
         <div class="api-config" id="openai-config" style="display:block"></div>
         <div class="api-config" id="gemini-config" style="display:none"></div>
         <div class="api-config" id="claude-config" style="display:none"></div>
+        <div class="api-config" id="openai-image-config" style="display:none"></div>
+        <div id="reply-count-settings-group"></div>
     `;
     elements.geminiImageConfig = null;
     elements.apiEndpoint = document.createElement('input');
@@ -81,6 +83,13 @@ describe('setApiFormat', () => {
     it('支持 openclaw 格式', () => {
         setApiFormat('openclaw');
         expect(state.apiFormat).toBe('openclaw');
+    });
+
+    it('支持 openai-image 并隐藏全局回复数量', () => {
+        setApiFormat('openai-image');
+        expect(state.apiFormat).toBe('openai-image');
+        expect(document.getElementById('openai-image-config').style.display).toBe('block');
+        expect(document.getElementById('reply-count-settings-group').hidden).toBe(true);
     });
 
     it('切换格式显示对应配置面板', () => {

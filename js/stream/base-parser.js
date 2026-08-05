@@ -158,6 +158,15 @@ export class BaseStreamParser {
                 }
             }
 
+            const trailingLine = this.buffer + this.decoder.decode();
+            this.buffer = '';
+            if (trailingLine.trim()) {
+                throwIfAborted();
+                const shouldReturn = await this.processLine(trailingLine);
+                if (shouldReturn) return;
+                throwIfAborted();
+            }
+
             // abort 触发的 reader.cancel 也会让 read() 返回 {done:true} 正常退出循环 —
             // 必须在此显式区分"用户取消"vs"服务端自然 EOF"，否则会走 onStreamEnd → commit
             // 把半截内容当成功消息保存，与 handler.js 期望的 AbortError 分支语义冲突

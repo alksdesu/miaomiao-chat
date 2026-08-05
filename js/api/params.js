@@ -5,6 +5,7 @@
 
 import { logger } from '../utils/logger.js';
 import { state } from '../core/state.js';
+import { buildOpenAIImageParams } from './image-params.js';
 
 /**
  * 构建模型参数
@@ -16,6 +17,9 @@ export function buildModelParams(format) {
     const result = {};
 
     switch (format) {
+        case 'openai-image':
+            return buildOpenAIImageParams(params, state.streamEnabled);
+
         case 'openai':
         case 'openai-responses':
         case 'openclaw':

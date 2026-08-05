@@ -95,6 +95,24 @@ describe('provider-list', () => {
             expect(container.innerHTML).toContain('provider-item');
         });
 
+        it('显示 OpenAI Image 格式名称', () => {
+            const container = document.createElement('div');
+            document.body.appendChild(container);
+            elements.providersList = container;
+            state.providers = [
+                {
+                    id: 'image-provider',
+                    name: 'Image Provider',
+                    apiFormat: 'openai-image',
+                    enabled: true,
+                    models: ['vendor/custom-image:model@2']
+                }
+            ];
+
+            renderProvidersList();
+            expect(container.textContent).toContain('OpenAI Image');
+        });
+
         it('搜索过滤提供商', () => {
             const container = document.createElement('div');
             document.body.appendChild(container);

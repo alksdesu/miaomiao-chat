@@ -125,6 +125,7 @@ function getDefaultEndpoint(apiFormat) {
     const defaults = {
         openai: 'https://api.openai.com',
         'openai-responses': 'https://api.openai.com/v1/responses',
+        'openai-image': 'https://api.openai.com/v1/images/generations',
         gemini: 'https://generativelanguage.googleapis.com',
         claude: 'https://api.anthropic.com',
         openclaw: 'ws://localhost:18789'
@@ -139,6 +140,7 @@ function getDefaultProviderName(format) {
     const names = {
         openai: 'OpenAI',
         'openai-responses': 'OpenAI Responses',
+        'openai-image': 'OpenAI Image',
         gemini: 'Google Gemini',
         claude: 'Anthropic Claude',
         openclaw: 'OpenClaw'
@@ -168,7 +170,7 @@ export function migrateFromLegacyConfig() {
     localStorage.setItem('config-backup-pre-migration', JSON.stringify(backup));
     logger.debug('已备份旧配置到 localStorage.config-backup-pre-migration');
 
-    ['openai', 'gemini', 'claude'].forEach((format) => {
+    ['openai', 'openai-image', 'gemini', 'claude'].forEach((format) => {
         if (state.apiKeys[format] || state.endpoints[format]) {
             const models = [];
 
@@ -185,12 +187,14 @@ export function migrateFromLegacyConfig() {
 
             if (models.length === 0) {
                 const defaultModel =
-                    format === 'gemini'
-                        ? 'gemini-2.0-flash'
-                        : format === 'claude'
-                          ? 'claude-3-5-sonnet-20241022'
-                          : 'gpt-4o';
-                models.push(defaultModel);
+                    format === 'openai-image'
+                        ? ''
+                        : format === 'gemini'
+                          ? 'gemini-2.0-flash'
+                          : format === 'claude'
+                            ? 'claude-3-5-sonnet-20241022'
+                            : 'gpt-4o';
+                if (defaultModel) models.push(defaultModel);
             }
 
             const provider = createProvider({
@@ -219,12 +223,14 @@ export function migrateFromLegacyConfig() {
         }
         if (models.length === 0) {
             const defaultModel =
-                state.apiFormat === 'gemini'
-                    ? 'gemini-2.0-flash'
-                    : state.apiFormat === 'claude'
-                      ? 'claude-3-5-sonnet-20241022'
-                      : 'gpt-4o';
-            models.push(defaultModel);
+                state.apiFormat === 'openai-image'
+                    ? ''
+                    : state.apiFormat === 'gemini'
+                      ? 'gemini-2.0-flash'
+                      : state.apiFormat === 'claude'
+                        ? 'claude-3-5-sonnet-20241022'
+                        : 'gpt-4o';
+            if (defaultModel) models.push(defaultModel);
         }
 
         const provider = createProvider({

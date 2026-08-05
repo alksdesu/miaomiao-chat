@@ -1,6 +1,6 @@
 /**
  * 配置辅助功能模块
- * 处理三格式端点输入、思维链配置、配置管理等
+ * 处理格式端点输入、思维链配置、配置管理等
  */
 
 import { state } from '../core/state.js';
@@ -19,12 +19,13 @@ import { syncQuickToggles } from './quick-toggles.js';
 import { showNotification } from './notifications.js';
 import { showInputDialog, showConfirmDialog } from '../utils/dialogs.js';
 import { logger } from '../utils/logger.js';
+import { validateOpenAIImageSize } from '../api/image-params.js';
 
 /**
- * 初始化三格式端点输入监听
+ * 初始化格式端点输入监听
  */
 export function initEndpointInputListeners() {
-    const formats = ['openai', 'gemini', 'claude'];
+    const formats = ['openai', 'openai-image', 'gemini', 'claude'];
 
     formats.forEach((format) => {
         const endpointInput = document.getElementById(`${format}-endpoint`);
@@ -66,6 +67,77 @@ export function initEndpointInputListeners() {
 
     // 初始化模型参数监听
     initModelParamsListeners();
+    initOpenAIImageParamsListeners();
+}
+
+function initOpenAIImageParamsListeners() {
+    const params = state.modelParams['openai-image'];
+    if (!params) return;
+    const fields = {
+        'openai-image-size': 'size',
+        'openai-image-custom-size': 'customSize',
+        'openai-image-quality': 'quality',
+        'openai-image-output-format': 'output_format',
+        'openai-image-output-compression': 'output_compression',
+        'openai-image-background': 'background',
+        'openai-image-moderation': 'moderation',
+        'openai-image-input-fidelity': 'input_fidelity',
+        'openai-image-count': 'n',
+        'openai-image-partial-images': 'partial_images'
+    };
+    const numericFields = new Set(['output_compression', 'n', 'partial_images']);
+    const numericRanges = {
+        output_compression: [0, 100],
+        n: [1, 10],
+        partial_images: [0, 3]
+    };
+
+    const updateDependencies = () => {
+        const customSizeGroup = document.getElementById('openai-image-custom-size-group');
+        if (customSizeGroup) customSizeGroup.hidden = params.size !== 'custom';
+        const compressionGroup = document.getElementById('openai-image-compression-group');
+        if (compressionGroup) {
+            compressionGroup.hidden =
+                params.output_format !== 'jpeg' && params.output_format !== 'webp';
+        }
+    };
+
+    Object.entries(fields).forEach(([id, key]) => {
+        const input = document.getElementById(id);
+        if (!input) return;
+        input.addEventListener('change', (event) => {
+            const rawValue = event.target.value.trim();
+            const value = numericFields.has(key)
+                ? rawValue === ''
+                    ? null
+                    : Number(rawValue)
+                : rawValue || null;
+
+            if (numericFields.has(key) && value !== null) {
+                const [min, max] = numericRanges[key];
+                if (!Number.isInteger(value) || value < min || value > max) {
+                    showNotification(`请输入 ${min} 到 ${max} 的整数`, 'warning');
+                    event.target.value = params[key] ?? '';
+                    return;
+                }
+            }
+
+            if (key === 'customSize' && value) {
+                const error = validateOpenAIImageSize(value);
+                if (error) {
+                    showNotification(error, 'warning');
+                    event.target.value = params.customSize || '';
+                    return;
+                }
+            }
+
+            params[key] = key === 'customSize' && value === null ? '' : value;
+            updateDependencies();
+            saveCurrentConfig();
+        });
+    });
+
+    updateDependencies();
 }
 
 /**

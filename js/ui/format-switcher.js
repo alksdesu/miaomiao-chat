@@ -1,6 +1,6 @@
 /**
  * API 格式切换功能
- * 处理 OpenAI/Gemini/Claude 格式切换
+ * 处理 API 格式切换
  */
 
 import { state } from '../core/state.js';
@@ -12,12 +12,16 @@ import { logger } from '../utils/logger.js';
 
 /**
  * 切换 API 格式
- * @param {string} format - 目标格式 ('openai'|'openai-responses'|'gemini'|'claude')
+ * @param {string} format - 目标格式
  * @param {boolean} shouldFetchModels - 是否获取模型列表
  */
 export function setApiFormat(format, shouldFetchModels = true) {
-    // 验证格式有效性（支持 openai-responses）
-    if (!['openai', 'openai-responses', 'gemini', 'claude', 'openclaw'].includes(format)) {
+    // 验证格式有效性
+    if (
+        !['openai', 'openai-responses', 'openai-image', 'gemini', 'claude', 'openclaw'].includes(
+            format
+        )
+    ) {
         logger.warn(`无效的 API 格式: ${format}`);
         return;
     }
@@ -34,20 +38,16 @@ export function setApiFormat(format, shouldFetchModels = true) {
         configPanel.style.display = 'block';
     }
 
-    // 如果格式相同，无需转换消息，直接返回
-    if (oldFormat === format) {
-        return;
-    }
-
     // 显示/隐藏 Gemini 图片配置 (兼容旧 UI)
     if (elements.geminiImageConfig) {
         elements.geminiImageConfig.style.display = format === 'gemini' ? 'block' : 'none';
     }
 
-    // 更新端点 placeholder（支持 openai-responses）
+    // 更新端点 placeholder
     const placeholders = {
         openai: 'API 端点 (如: http://localhost:8000/v1/chat/completions)',
         'openai-responses': 'API 端点 (如: https://api.openai.com/v1/responses)',
+        'openai-image': 'API 端点 (如: https://api.openai.com/v1/images/generations)',
         gemini: 'API 端点 (如: https://generativelanguage.googleapis.com)',
         claude: 'API 端点 (如: https://api.anthropic.com/v1/messages)',
         openclaw: 'WebSocket 地址 (如: ws://localhost:18789)'
@@ -55,6 +55,10 @@ export function setApiFormat(format, shouldFetchModels = true) {
     if (elements.apiEndpoint) {
         elements.apiEndpoint.placeholder = placeholders[format] || placeholders.openai;
     }
+    const replyCountGroup = document.getElementById('reply-count-settings-group');
+    if (replyCountGroup) replyCountGroup.hidden = format === 'openai-image';
+
+    if (oldFormat === format) return;
 
     saveCurrentConfig();
 

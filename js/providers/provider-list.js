@@ -86,6 +86,7 @@ function renderProviderItem(provider) {
     const formatLabels = {
         openai: 'OpenAI',
         'openai-responses': 'OpenAI Responses',
+        'openai-image': 'OpenAI Image',
         gemini: 'Gemini',
         claude: 'Claude',
         openclaw: 'OpenClaw'

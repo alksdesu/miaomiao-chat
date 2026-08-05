@@ -249,6 +249,13 @@ describe('getDefaultCapabilities', () => {
         expect(getDefaultCapabilities('openai')).toEqual({ imageInput: true, imageOutput: false });
     });
 
+    it('OpenAI Image 支持图片输入输出', () => {
+        expect(getDefaultCapabilities('openai-image')).toEqual({
+            imageInput: true,
+            imageOutput: true
+        });
+    });
+
     it('Gemini 完全支持多模态', () => {
         expect(getDefaultCapabilities('gemini')).toEqual({ imageInput: true, imageOutput: true });
     });

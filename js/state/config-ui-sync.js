@@ -36,12 +36,36 @@ function syncModelParamsToUI() {
         'claude-top-k': 'top_k'
     };
 
+    const openaiImageParams = {
+        'openai-image-size': 'size',
+        'openai-image-custom-size': 'customSize',
+        'openai-image-quality': 'quality',
+        'openai-image-output-format': 'output_format',
+        'openai-image-output-compression': 'output_compression',
+        'openai-image-background': 'background',
+        'openai-image-moderation': 'moderation',
+        'openai-image-input-fidelity': 'input_fidelity',
+        'openai-image-count': 'n',
+        'openai-image-partial-images': 'partial_images'
+    };
+
     syncParamsToInputs('openai', openaiParams);
     syncParamsToInputs('gemini', geminiParams);
     syncParamsToInputs('claude', claudeParams);
+    syncParamsToInputs('openai-image', openaiImageParams);
+
+    const imageParams = state.modelParams['openai-image'];
+    const sizeGroup = document.getElementById('openai-image-custom-size-group');
+    if (sizeGroup) sizeGroup.hidden = imageParams?.size !== 'custom';
+    const compressionGroup = document.getElementById('openai-image-compression-group');
+    if (compressionGroup) {
+        const format = imageParams?.output_format;
+        compressionGroup.hidden = format !== 'jpeg' && format !== 'webp';
+    }
 }
 
 function syncParamsToInputs(format, paramsMap) {
+    if (!state.modelParams[format]) return;
     Object.entries(paramsMap).forEach(([inputId, paramKey]) => {
         const input = document.getElementById(inputId);
         if (input) {
@@ -136,8 +160,8 @@ export function syncUIWithState() {
         xmlToolCalling.checked = state.xmlToolCallingEnabled;
     }
 
-    // 三格式端点输入框和自定义模型
-    ['openai', 'gemini', 'claude'].forEach((format) => {
+    // 格式端点输入框和自定义模型
+    ['openai', 'openai-image', 'gemini', 'claude'].forEach((format) => {
         const endpointInput = document.getElementById(`${format}-endpoint`);
         const apikeyInput = document.getElementById(`${format}-apikey`);
         const customModelInput = document.getElementById(`${format}-custom-model`);
@@ -180,6 +204,8 @@ export function syncUIWithState() {
     if (elements.replyCountSelect && state.replyCount) {
         elements.replyCountSelect.value = state.replyCount;
     }
+    const replyCountGroup = document.getElementById('reply-count-settings-group');
+    if (replyCountGroup) replyCountGroup.hidden = state.apiFormat === 'openai-image';
 
     // API 格式标签高亮
     document.querySelectorAll('.format-btn').forEach((btn) => {

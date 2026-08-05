@@ -14,6 +14,18 @@ vi.mock('../../js/core/state.js', () => ({
                 frequency_penalty: null,
                 presence_penalty: null
             },
+            'openai-image': {
+                size: null,
+                customSize: '',
+                quality: null,
+                output_format: null,
+                output_compression: null,
+                background: null,
+                moderation: null,
+                input_fidelity: null,
+                n: 1,
+                partial_images: 0
+            },
             gemini: { temperature: null, topK: null, topP: null, maxOutputTokens: null },
             claude: { temperature: null, max_tokens: null, top_p: null, top_k: null }
         },
@@ -25,6 +37,7 @@ vi.mock('../../js/core/state.js', () => ({
         claudeEffortLevel: 'high',
         verbosityEnabled: false,
         outputVerbosity: 'medium',
+        streamEnabled: true,
         customHeaders: []
     }
 }));
@@ -47,6 +60,18 @@ beforeEach(() => {
                 frequency_penalty: null,
                 presence_penalty: null
             },
+            'openai-image': {
+                size: null,
+                customSize: '',
+                quality: null,
+                output_format: null,
+                output_compression: null,
+                background: null,
+                moderation: null,
+                input_fidelity: null,
+                n: 1,
+                partial_images: 0
+            },
             gemini: { temperature: null, topK: null, topP: null, maxOutputTokens: null },
             claude: { temperature: null, max_tokens: null, top_p: null, top_k: null }
         },
@@ -58,6 +83,7 @@ beforeEach(() => {
         claudeEffortLevel: 'high',
         verbosityEnabled: false,
         outputVerbosity: 'medium',
+        streamEnabled: true,
         customHeaders: []
     });
 });
@@ -109,6 +135,30 @@ describe('buildModelParams', () => {
             const result = buildModelParams('openai-responses');
             expect(result.temperature).toBe(0.8);
             expect(result.max_tokens).toBe(2048);
+        });
+    });
+
+    describe('openai-image 格式', () => {
+        it('使用独立图片参数，不继承聊天采样参数', () => {
+            state.modelParams.openai.temperature = 0.8;
+            state.modelParams['openai-image'] = {
+                size: 'custom',
+                customSize: '1536x864',
+                quality: 'high',
+                output_format: 'webp',
+                output_compression: 75,
+                n: 2,
+                partial_images: 1
+            };
+
+            expect(buildModelParams('openai-image')).toEqual({
+                size: '1536x864',
+                quality: 'high',
+                output_format: 'webp',
+                output_compression: 75,
+                n: 2,
+                partial_images: 1
+            });
         });
     });
 

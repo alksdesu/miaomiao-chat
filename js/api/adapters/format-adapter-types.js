@@ -53,7 +53,7 @@
  *
  * 元数据
  * @property {string} name           日志前缀（'OpenAI Chat' / 'Claude' / 'Gemini' / ...）
- * @property {string} apiFormat      provider.apiFormat 匹配键（'openai'|'openai-responses'|'claude'|'gemini'|'openclaw'）
+ * @property {string} apiFormat      provider.apiFormat 匹配键
  * @property {'before'|'after'} filterPosition
  *     capabilities 过滤时机：'before' = partsToAPIMessages 之前过滤 state.messages，
  *     'after' = 之后过滤 adapter 输出。OpenAI 历史行为是 after，其他家是 before；
@@ -61,11 +61,15 @@
  * @property {boolean} [supportsMultiStream]
  *     是否支持并行多回复（multi-stream）。缺省 true；false 时 handler 会将 replyCount 强制降为 1
  *     并发出 UI 提示（典型场景：OpenClaw 的 WebSocket 单连接协议不允许并发拉流）。
- * @property {'claude'|'gemini'|'openai'} signatureFormat
+ * @property {'claude'|'gemini'|'openai'} [signatureFormat]
  *     thinking part signature 来源标识。非流式 handler 调 buildPartsFromStreamingState 时按
  *     adapter 注入，让 thinking part 携带来源；adapter.partsToAPIMessages 在下发 thinking
  *     block 前校验 part.signatureFormat 与自家匹配，否则跳过签名避免跨家 API 400
  *     invalid_signature。OpenClaw 中转 Claude 协议响应，按 'claude' 处理。
+ * @property {boolean} [supportsMultipleReplies]
+ *     是否使用全局 replyCount；false 时只发一个请求，由格式专属参数控制输出数量。
+ * @property {Object} [requestFeatures]
+ *     可将 system/prefill/tools/thinking/verbosity 设为 false，跳过聊天格式专属管线。
  *
  * 流式层
  * @property {Function} parserClass  BaseStreamParser 子类引用（如 ClaudeStreamParser）
@@ -87,7 +91,7 @@
  *     getToolsForAPI 返回的系统工具列表的最终包装（Gemini 独有 functionDeclarations）
  * @property {(ctx: RequestBodyContext) => Object} buildRequestBody
  *     一次性组装最终 requestBody（含 messages/system/tools/params/safetySettings 等所有差异）
- * @property {(baseEndpoint: string, model: string, isStreaming: boolean) => string} resolveEndpoint
+ * @property {(baseEndpoint: string, model: string, isStreaming: boolean, requestBody?: Object, ctx?: Object) => string} resolveEndpoint
  *     OpenAI Responses 路径替换 / Gemini Vertex vs AI Studio 端点拼接
  * @property {(apiKey: string, ctx: Object) => Object} buildHeaders
  *     Authorization / x-api-key / x-goog-api-key + Claude beta features

@@ -225,7 +225,7 @@ function aggregateErrorsAndThrow(requestErrors) {
  */
 export async function handleNonStreamResponse(response, ctx) {
     const { assistantMessageEl, sessionId, adapter } = ctx;
-    const replyCount = state.replyCount || 1;
+    const replyCount = adapter.supportsMultipleReplies === false ? 1 : state.replyCount || 1;
     const requestErrors = [];
 
     // 多回复模式显示进度提示
@@ -238,7 +238,10 @@ export async function handleNonStreamResponse(response, ctx) {
 
     try {
         const data = await response.json();
-        logger.debug('API Response 1:', data);
+        logger.debug(
+            'API Response 1:',
+            adapter.sanitizeResponseForLogging ? adapter.sanitizeResponseForLogging(data) : data
+        );
 
         const allReplies = [];
 
@@ -299,6 +302,7 @@ export async function handleNonStreamResponse(response, ctx) {
                 // 透传 Gemini webSearch groundingMetadata 到 meta.raw.gemini，
                 // 否则刷新会话时 restore.js 拿不到引用，搜索来源卡片消失
                 groundingMetadata: reply0.groundingMetadata,
+                usage: reply0.usage,
                 streamStats: getCurrentStreamStatsData()
             }),
             { sessionId, allReplies, selectedReplyIndex: 0 }
