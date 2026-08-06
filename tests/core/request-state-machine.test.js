@@ -304,6 +304,47 @@ describe('clearSendLockTimeout', () => {
 // ========== 完整流程 ==========
 
 describe('完整请求流程', () => {
+    it('detach 不 abort，attach 恢复同一任务阶段和控制器', () => {
+        const controller = new AbortController();
+        const task = {
+            id: 'request-a',
+            sessionId: 'session-a',
+            phase: RequestState.STREAMING,
+            abortController: controller,
+            assistantMessageEl: null
+        };
+        sm.transition(RequestState.SENDING, {
+            abortController: controller,
+            sessionId: task.sessionId,
+            requestId: task.id
+        });
+        sm.transition(RequestState.STREAMING);
+
+        expect(sm.detach(task)).toBe(true);
+        expect(controller.signal.aborted).toBe(false);
+        expect(sm.getState()).toBe(RequestState.IDLE);
+
+        expect(sm.attach(task)).toBe(true);
+        expect(sm.getState()).toBe(RequestState.STREAMING);
+        expect(sm.abortController).toBe(controller);
+        expect(sm.requestId).toBe(task.id);
+    });
+
+    it('旧任务不能转换当前任务状态', () => {
+        const controller = new AbortController();
+        const currentTask = {
+            id: 'request-current',
+            sessionId: 'session-a',
+            phase: RequestState.STREAMING,
+            abortController: controller
+        };
+        sm.attach(currentTask);
+        const staleTask = { ...currentTask, id: 'request-stale' };
+
+        expect(sm.transitionFor(staleTask, RequestState.ERROR)).toBe(false);
+        expect(sm.getState()).toBe(RequestState.STREAMING);
+    });
+
     it('正常流程: IDLE -> SENDING -> STREAMING -> COMPLETED -> IDLE', () => {
         const ac = new AbortController();
         expect(sm.transition(RequestState.SENDING, { abortController: ac, sessionId: 's1' })).toBe(

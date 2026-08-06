@@ -10,7 +10,8 @@
 
 import { saveAssistantMessageToBackground } from '../../messages/sync.js';
 import { renderHumanizedError } from '../../utils/errors.js';
-import { requestStateMachine } from '../../core/request-state-machine.js';
+import { requestStateMachine, RequestState } from '../../core/request-state-machine.js';
+import { requestTaskRegistry } from '../../core/request-task-registry.js';
 import { eventBus } from '../../core/events.js';
 import { logger } from '../../utils/logger.js';
 
@@ -42,7 +43,11 @@ export async function handleCrossSession(classification, ctx) {
         const result = await saveAssistantMessageToBackground(
             ctx.sessionId,
             [],
-            { raw: {} },
+            {
+                model: ctx.requestProfile?.modelDisplayName,
+                provider: ctx.requestProfile?.providerName,
+                raw: {}
+            },
             { isError: true, errorData: errorPayload, errorHtml }
         );
         persisted = !!result;
@@ -60,8 +65,11 @@ export async function handleCrossSession(classification, ctx) {
 
     // 状态机是全局单例：跨会话错误到达时可能已被当前会话新请求占用，
     // 无参 forceReset 会 abort 新请求并弹「已强制重置」通知；仅在仍归属本请求会话时收口
-    if (requestStateMachine.sessionId === ctx.sessionId) {
-        requestStateMachine.forceReset({ skipAbort: true, silent: true });
+    if (ctx.task && requestTaskRegistry.owns(ctx.task)) {
+        requestTaskRegistry.setPhase(ctx.task, RequestState.ERROR);
+        requestStateMachine.transitionFor(ctx.task, RequestState.ERROR, {
+            error: errorPayload
+        });
     }
     return { handled: true };
 }

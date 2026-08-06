@@ -147,6 +147,57 @@ describe('LazyImageManager', () => {
         });
     });
 
+    describe('范围回收', () => {
+        it('只卸载范围外图片并跳过编辑中的媒体', () => {
+            document.body.innerHTML = `
+                <div data-message-index="0"><img class="lazy-image loaded" src="img0.png" /></div>
+                <div data-message-index="2"><img class="lazy-image loaded" src="img2.png" /></div>
+                <div class="editing" data-message-index="4"><img class="lazy-image loaded" src="img4.png" /></div>
+            `;
+
+            expect(manager.unloadOutsideRange(1, 3)).toBe(1);
+            expect(document.querySelector('[data-message-index="0"] img').classList).not.toContain(
+                'loaded'
+            );
+            expect(document.querySelector('[data-message-index="2"] img').classList).toContain(
+                'loaded'
+            );
+            expect(document.querySelector('[data-message-index="4"] img').classList).toContain(
+                'loaded'
+            );
+        });
+
+        it('可取消尚未完成的加载', () => {
+            const img = document.createElement('img');
+            img.dataset.src = 'http://example.com/pending.png';
+            manager.loadImage(img);
+
+            expect(manager.cancelPendingLoad(img)).toBe(true);
+            expect(manager.loadingImages.has(img)).toBe(false);
+            expect(img.classList.contains('loading')).toBe(false);
+        });
+
+        it('图片远离视口后延迟释放，重新进入时取消释放', () => {
+            vi.useFakeTimers();
+            const img = document.createElement('img');
+            img.src = 'http://example.com/loaded.png';
+            img.dataset.src = img.src;
+            img.classList.add('lazy-image', 'loaded');
+            document.body.appendChild(img);
+            manager.loadedImages.add(img);
+
+            manager.observer._callback([{ target: img, isIntersecting: false }]);
+            expect(manager.unloadTimers.has(img)).toBe(true);
+            manager.observer._callback([{ target: img, isIntersecting: true }]);
+            expect(manager.unloadTimers.has(img)).toBe(false);
+
+            manager.observer._callback([{ target: img, isIntersecting: false }]);
+            vi.advanceTimersByTime(1500);
+            expect(img.classList.contains('loaded')).toBe(false);
+            vi.useRealTimers();
+        });
+    });
+
     describe('logStats', () => {
         it('正常输出不抛错', () => {
             manager.imageStats = { total: 10, loaded: 5, failed: 1 };

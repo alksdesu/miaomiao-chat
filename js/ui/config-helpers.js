@@ -15,11 +15,13 @@ import {
 import { populateModelSelect } from './models.js';
 import { getToolStats, setToolEnabled } from '../tools/manager.js';
 import { eventBus } from '../core/events.js';
+import { EVENTS } from '../core/events-registry.js';
 import { syncQuickToggles } from './quick-toggles.js';
 import { showNotification } from './notifications.js';
 import { showInputDialog, showConfirmDialog } from '../utils/dialogs.js';
 import { logger } from '../utils/logger.js';
 import { validateOpenAIImageSize } from '../api/image-params.js';
+import { getCurrentSessionMessagesSnapshot } from '../state/session-message-repository.js';
 
 /**
  * 初始化格式端点输入监听
@@ -530,6 +532,21 @@ export function initConfigManagement() {
  * 初始化其他配置项
  */
 export function initOtherConfigInputs() {
+    const longChatRenderingMode = document.getElementById('long-chat-rendering-mode');
+    if (longChatRenderingMode) {
+        longChatRenderingMode.value = state.longChatRenderingMode || 'auto';
+        longChatRenderingMode.addEventListener('change', (event) => {
+            const mode = event.target.value;
+            state.longChatRenderingMode = ['auto', 'compatibility', 'virtual'].includes(mode)
+                ? mode
+                : 'auto';
+            saveCurrentConfig();
+            eventBus.emit(EVENTS.LONG_CHAT_RENDERING_MODE_CHANGED, {
+                mode: state.longChatRenderingMode
+            });
+        });
+    }
+
     // Gemini 图片大小
     elements.imageSizeSelect?.addEventListener('change', (e) => {
         state.imageSize = e.target.value;
@@ -568,7 +585,7 @@ export function initOtherConfigInputs() {
     const xmlToolCalling = document.getElementById('xml-tool-calling-enabled');
     if (xmlToolCalling) {
         xmlToolCalling.checked = state.xmlToolCallingEnabled || false;
-        xmlToolCalling.addEventListener('change', (e) => {
+        xmlToolCalling.addEventListener('change', async (e) => {
             const enabled = e.target.checked;
             state.xmlToolCallingEnabled = !!enabled;
             saveCurrentConfig();
@@ -579,7 +596,13 @@ export function initOtherConfigInputs() {
 
             // 历史消息已有 tool_call part 时提示切换语义：
             // 历史消息保留各自原模式，toggle 仅决定后续新对话走哪条协议
-            const hasHistoricalToolCall = (state.messages || []).some((m) =>
+            let history = state.messages || [];
+            try {
+                history = await getCurrentSessionMessagesSnapshot();
+            } catch (error) {
+                logger.warn('[Config] 历史工具调用检查失败:', error);
+            }
+            const hasHistoricalToolCall = history.some((m) =>
                 Array.isArray(m?.parts) ? m.parts.some((p) => p?.type === 'tool_call') : false
             );
             if (hasHistoricalToolCall) {

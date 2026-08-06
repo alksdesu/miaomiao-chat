@@ -5,6 +5,10 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
+const mediaMocks = vi.hoisted(() => ({
+    resolveMessagesMediaForApi: vi.fn(async (messages) => messages)
+}));
+
 vi.mock('../../js/core/state.js', () => ({
     state: {
         editingIndex: null,
@@ -14,7 +18,11 @@ vi.mock('../../js/core/state.js', () => ({
         messageHistory: [],
         maxHistorySize: 50,
         currentReplies: [],
-        selectedReplyIndex: 0
+        selectedReplyIndex: 0,
+        currentSessionId: 'session-a',
+        isSwitchingSession: false,
+        backgroundTasks: new Map(),
+        sessions: []
     },
     elements: {
         userInput: null,
@@ -38,6 +46,7 @@ vi.mock('../../js/core/request-state-machine.js', () => ({
     requestStateMachine: {
         isBusy: vi.fn(() => false),
         getState: vi.fn(() => 'idle'),
+        attach: vi.fn(),
         forceReset: vi.fn()
     }
 }));
@@ -110,11 +119,14 @@ vi.mock('../../js/ui/quote-handler.js', () => ({
     updateQuotePreviewStyle: vi.fn()
 }));
 
+vi.mock('../../js/state/media-blob-store.js', () => mediaMocks);
+
 import { state, elements } from '../../js/core/state.js';
 import { pushMessage, updateMessageAt } from '../../js/core/state-mutations.js';
 import { requestStateMachine } from '../../js/core/request-state-machine.js';
 import { eventBus } from '../../js/core/events.js';
 import { autoResizeTextarea, handleSend, initInputHandlers } from '../../js/ui/input.js';
+import { requestTaskRegistry } from '../../js/core/request-task-registry.js';
 
 beforeEach(() => {
     vi.clearAllMocks();
@@ -123,6 +135,11 @@ beforeEach(() => {
     state.uploadedImages = [];
     state.messages = [];
     state.messageHistory = [];
+    state.currentSessionId = 'session-a';
+    state.isSwitchingSession = false;
+    state.backgroundTasks = new Map();
+    requestTaskRegistry.clearForTests();
+    mediaMocks.resolveMessagesMediaForApi.mockImplementation(async (messages) => messages);
 
     elements.userInput = document.createElement('textarea');
     elements.sendButton = document.createElement('button');
@@ -155,6 +172,19 @@ describe('autoResizeTextarea', () => {
 });
 
 describe('handleSend', () => {
+    it('快速重复触发只发送一次', async () => {
+        elements.userInput.value = 'hello';
+
+        const first = handleSend();
+        const second = handleSend();
+        await Promise.all([first, second]);
+
+        const sendEvents = eventBus.emit.mock.calls.filter(
+            ([eventName]) => eventName === 'api:send-requested'
+        );
+        expect(sendEvents).toHaveLength(1);
+    });
+
     it('空输入不发送', async () => {
         elements.userInput.value = '';
         await handleSend();
@@ -229,5 +259,52 @@ describe('initInputHandlers', () => {
         initInputHandlers();
         expect(cancelSpy).toHaveBeenCalledWith('click', expect.any(Function));
         expect(saveSpy).toHaveBeenCalledWith('click', expect.any(Function));
+    });
+
+    it('保存编辑解析附件期间开始切换会话时不再操作旧编辑 DOM', async () => {
+        let resolveMedia;
+        mediaMocks.resolveMessagesMediaForApi.mockImplementationOnce(
+            () =>
+                new Promise((resolve) => {
+                    resolveMedia = resolve;
+                })
+        );
+        const saveBtn = document.getElementById('save-edit');
+        const saveSpy = vi.spyOn(saveBtn, 'addEventListener');
+        state.editingIndex = 0;
+        state.editingElement = document.createElement('div');
+        state.editingElement.className = 'message editing';
+        state.messages = [{ id: 'message-a', role: 'user', parts: [] }];
+        elements.userInput.value = 'updated';
+        initInputHandlers();
+        const saveHandler = saveSpy.mock.calls.find(([event]) => event === 'click')[1];
+
+        const pending = saveHandler();
+        state.isSwitchingSession = true;
+        resolveMedia(state.messages);
+        await pending;
+
+        expect(eventBus.emit).not.toHaveBeenCalledWith(
+            'message:content-updated',
+            expect.any(Object)
+        );
+        expect(state.editingElement).not.toBeNull();
+    });
+
+    it('切换窗口的按钮重置事件不会重新 attach 已 detach 的任务', () => {
+        const task = requestTaskRegistry.create({
+            sessionId: 'session-a',
+            abortController: new AbortController()
+        });
+        requestTaskRegistry.detach(task);
+        state.isSwitchingSession = true;
+        initInputHandlers();
+        const resetHandler = eventBus.on.mock.calls.find(
+            ([eventName]) => eventName === 'ui:reset-input-buttons'
+        )[1];
+
+        resetHandler();
+
+        expect(requestStateMachine.attach).not.toHaveBeenCalled();
     });
 });

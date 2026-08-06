@@ -1,5 +1,5 @@
 /**
- * MessageStore — state.messages 旁路封装（experimental，Stage 5b C3 引入）
+ * MessageStore — state.messages 的稳定引用与 ID 索引封装
  *
  * 包住外部传入的数组引用 + 私有 #idMap，提供 O(1) findById/findIndexById/findByEl
  * 等 store API。所有写方法保持内部数组引用稳定（splice 原地改），让外部 state.messages
@@ -45,6 +45,14 @@ export class MessageStore {
     /** 私有 idMap 只读 view —— 双轨期暴露给 state.messageIdMap alias */
     get idMap() {
         return this.#idMap;
+    }
+
+    at(index) {
+        return this.#arr.at(index);
+    }
+
+    getRange(start = 0, end = this.#arr.length) {
+        return this.#arr.slice(start, end);
     }
 
     // ========== 写入 ==========
@@ -163,6 +171,10 @@ export class MessageStore {
         if (!id) return undefined;
         const idx = this.findIndexById(id);
         return idx >= 0 ? this.#arr[idx] : undefined;
+    }
+
+    findPositionById(id) {
+        return this.findIndexById(id);
     }
 
     /**

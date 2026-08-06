@@ -11,9 +11,13 @@
 
 import { state } from './state.js';
 import { eventBus } from './events.js';
+import { EVENTS } from './events-registry.js';
 import { generateMessageId } from '../utils/helpers.js';
 import { PartType, hasParts } from '../messages/schema.js';
-import { normalizeAllMessages } from '../messages/legacy-adapter.js';
+import { normalizeSessionRecord } from '../messages/compat/gateway.js';
+import { CompatibilityStatus } from '../messages/compat/result.js';
+
+const COMPATIBILITY_NOTIFY_THRESHOLD = 10;
 
 /**
  * 内部 helper：拿到当前 messageStore（state.js 初始化时挂载）
@@ -49,6 +53,14 @@ export function removeMessageAt(index) {
     if (index < 0 || index >= state.messages.length) return;
     _store().splice(index, 1);
     state.sessionDirty = true;
+    eventBus.emit(EVENTS.STATE_MESSAGES_REPLACED, { newLength: state.messages.length });
+}
+
+export function removeMessageById(messageId) {
+    const index = _store().findIndexById(messageId);
+    if (index < 0) return false;
+    removeMessageAt(index);
+    return true;
 }
 
 /**
@@ -61,7 +73,14 @@ export function removeMessagesAfter(fromIndex) {
     _store().removeRangeAfter(fromIndex);
     if (state.messages.length === before) return;
     state.sessionDirty = true;
-    eventBus.emit('state:messages-replaced', { newLength: state.messages.length });
+    eventBus.emit(EVENTS.STATE_MESSAGES_REPLACED, { newLength: state.messages.length });
+}
+
+export function removeMessagesAfterId(messageId) {
+    const index = _store().findIndexById(messageId);
+    if (index < 0) return false;
+    removeMessagesAfter(index);
+    return true;
 }
 
 /**
@@ -80,22 +99,41 @@ export function updateMessageAt(index, updates, replace = false) {
     state.sessionDirty = true;
 }
 
+export function updateMessageById(messageId, updates, replace = false) {
+    const index = _store().findIndexById(messageId);
+    if (index < 0) return false;
+    updateMessageAt(index, updates, replace);
+    return true;
+}
+
 /**
  * 替换所有消息（持久化入口）
  *
- * 在此处统一调用 normalizeAllMessages：会话切换 / 导入 / 恢复等所有路径
+ * 在此处统一调用兼容网关：会话切换 / 导入 / 恢复等所有路径
  * 都会经过这里，旧格式消息被一次性升级为新 parts[] 格式后再写入 state。
  * 若实际产生升级，标记 sessionDirty 让下次保存把升级结果写回存储。
  *
  * @param {Array} messages - 任意格式消息数组（旧/新混合都可接受）
  */
 export function replaceAllMessages(messages) {
-    const copy = [...messages];
-    const upgraded = normalizeAllMessages(copy);
+    const compatibility = normalizeSessionRecord(
+        { sessionId: state.currentSessionId, messages },
+        { source: 'message-store' }
+    );
+    if (compatibility.status === CompatibilityStatus.FAILED) {
+        throw new Error(`会话 ${state.currentSessionId || '<unknown>'} 消息格式无法恢复`);
+    }
 
-    _store().replaceAll(copy);
-    state.sessionDirty = upgraded > 0;
-    eventBus.emit('state:messages-replaced', { newLength: state.messages.length });
+    _store().replaceAll(compatibility.messages);
+    state.sessionDirty = compatibility.writeBackRequired;
+    eventBus.emit(EVENTS.STATE_MESSAGES_REPLACED, { newLength: state.messages.length });
+    if (compatibility.changed && compatibility.messages.length >= COMPATIBILITY_NOTIFY_THRESHOLD) {
+        eventBus.emit('ui:notification', {
+            message: `已自动升级 ${compatibility.messages.length} 条旧格式消息`,
+            type: 'info',
+            duration: 5000
+        });
+    }
 }
 
 /**
@@ -111,6 +149,7 @@ export function popLastAssistantMessage() {
 
     const msg = _store().pop();
     state.sessionDirty = true;
+    eventBus.emit(EVENTS.STATE_MESSAGES_REPLACED, { newLength: state.messages.length });
     return msg;
 }
 
@@ -135,6 +174,13 @@ export function updateMessageTextAt(index, newText) {
     }
 
     state.sessionDirty = true;
+}
+
+export function updateMessageTextById(messageId, newText) {
+    const index = _store().findIndexById(messageId);
+    if (index < 0) return false;
+    updateMessageTextAt(index, newText);
+    return true;
 }
 
 /**

@@ -15,11 +15,26 @@ import { executeRequest } from './request-pipeline.js';
  * 优先用调用方传入的快照 adapter（sendToAPI 锁定），避免请求往返期间切 provider 后
  * 重查 provider 选到错误 adapter；缺省时才回退自查（保留 factory 直调兼容）
  */
-export async function sendOpenAIRequest(endpoint, apiKey, model, signal = null, adapter = null) {
+export async function sendOpenAIRequest(
+    endpoint,
+    apiKey,
+    model,
+    signal = null,
+    adapter = null,
+    requestContext = null
+) {
     const resolved =
         adapter ||
         getAdapter(
             getCurrentProvider()?.apiFormat === 'openai-responses' ? 'openai-responses' : 'openai'
         );
-    return executeRequest(resolved, { endpoint, apiKey, model, signal });
+    return executeRequest(resolved, {
+        endpoint,
+        apiKey,
+        model,
+        signal,
+        sessionId: requestContext?.sessionId,
+        sourceMessages: requestContext?.sourceMessages,
+        requestProfile: requestContext?.requestProfile
+    });
 }

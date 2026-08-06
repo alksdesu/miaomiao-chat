@@ -785,6 +785,18 @@
                     </p>
                 </div>
 
+                <div class="settings-group">
+                    <label class="settings-label" for="long-chat-rendering-mode">长会话渲染</label>
+                    <select id="long-chat-rendering-mode" class="settings-select">
+                        <option value="auto">自动</option>
+                        <option value="compatibility">兼容模式</option>
+                        <option value="virtual">强制虚拟列表</option>
+                    </select>
+                    <p class="settings-hint">
+                        自动模式按消息数量和媒体密度选择；兼容模式保留完整消息 DOM
+                    </p>
+                </div>
+
                 <!-- 思维链开关 -->
                 <div class="settings-group" id="thinking-config">
                     <label class="settings-label">思维链</label>
@@ -978,7 +990,7 @@
                     <details class="model-params-details">
                         <summary class="model-params-summary">
                             <span style="font-weight: 600; font-size: 13px"
-                                >📝 代码执行（Code Execution）</span
+                                >代码执行（Code Execution）</span
                             >
                         </summary>
                         <div style="margin-top: 12px">
@@ -1001,7 +1013,7 @@
                     <details class="model-params-details">
                         <summary class="model-params-summary">
                             <span style="font-weight: 600; font-size: 13px"
-                                >💻 Computer Use（仅 Electron）</span
+                                >Computer Use（仅 Electron）</span
                             >
                         </summary>
                         <div style="margin-top: 12px">

@@ -8,7 +8,7 @@ import { logger } from '../utils/logger.js';
 
 // IndexedDB 配置
 const DB_NAME = 'GeminiChatDB';
-const DB_VERSION = 8; // 版本 8：流式快照存储
+const DB_VERSION = 10;
 
 // 对象存储名称常量
 export const STORES = {
@@ -21,7 +21,11 @@ export const STORES = {
     SEARCH_INDEXES: 'sessionSearchIndexes', // 版本 5：会话搜索索引
     THEMES: 'themes', // 版本 6：自定义主题
     FOLDERS: 'folders', // 版本 7：会话文件夹
-    STREAM_SNAPSHOTS: 'streamSnapshots' // 版本 8：流式生成中断恢复快照
+    STREAM_SNAPSHOTS: 'streamSnapshots', // 版本 8：流式生成中断恢复快照
+    MESSAGE_PAGES: 'messagePages',
+    MESSAGE_MANIFESTS: 'messageManifests',
+    MEDIA_BLOBS: 'mediaBlobs',
+    MEDIA_REFS: 'mediaRefs'
 };
 
 let db = null;
@@ -367,6 +371,40 @@ export function initDB() {
                     logger.debug('创建对象存储: streamSnapshots');
                 }
             }
+
+            if (oldVersion < 9) {
+                if (!database.objectStoreNames.contains(STORES.MESSAGE_PAGES)) {
+                    const pageStore = database.createObjectStore(STORES.MESSAGE_PAGES, {
+                        keyPath: ['sessionId', 'pageIndex']
+                    });
+                    pageStore.createIndex('sessionId', 'sessionId', { unique: false });
+                    logger.debug('创建对象存储: messagePages');
+                }
+                if (!database.objectStoreNames.contains(STORES.MESSAGE_MANIFESTS)) {
+                    database.createObjectStore(STORES.MESSAGE_MANIFESTS, {
+                        keyPath: 'sessionId'
+                    });
+                    logger.debug('创建对象存储: messageManifests');
+                }
+            }
+
+            if (oldVersion < 10) {
+                if (!database.objectStoreNames.contains(STORES.MEDIA_BLOBS)) {
+                    const blobStore = database.createObjectStore(STORES.MEDIA_BLOBS, {
+                        keyPath: 'id'
+                    });
+                    blobStore.createIndex('lastAccessed', 'lastAccessed', { unique: false });
+                    logger.debug('创建对象存储: mediaBlobs');
+                }
+                if (!database.objectStoreNames.contains(STORES.MEDIA_REFS)) {
+                    const refStore = database.createObjectStore(STORES.MEDIA_REFS, {
+                        keyPath: ['sessionId', 'mediaId']
+                    });
+                    refStore.createIndex('sessionId', 'sessionId', { unique: false });
+                    refStore.createIndex('mediaId', 'mediaId', { unique: false });
+                    logger.debug('创建对象存储: mediaRefs');
+                }
+            }
         };
     });
 }
@@ -391,6 +429,22 @@ export function hasMessagesStore() {
  */
 export function hasSearchIndexStore() {
     return db && db.objectStoreNames.contains(STORES.SEARCH_INDEXES);
+}
+
+export function hasMessagePageStore() {
+    return Boolean(
+        db &&
+        db.objectStoreNames.contains(STORES.MESSAGE_PAGES) &&
+        db.objectStoreNames.contains(STORES.MESSAGE_MANIFESTS)
+    );
+}
+
+export function hasMediaBlobStore() {
+    return Boolean(
+        db &&
+        db.objectStoreNames.contains(STORES.MEDIA_BLOBS) &&
+        db.objectStoreNames.contains(STORES.MEDIA_REFS)
+    );
 }
 
 // ========== 通用存储 API ==========

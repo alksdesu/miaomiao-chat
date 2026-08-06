@@ -73,7 +73,6 @@ function newMsg(role, parts, opts = {}) {
         parts,
         meta: opts.meta || {},
         error: opts.error || null,
-        isError: opts.isError || false,
         ...opts
     };
 }
@@ -125,7 +124,9 @@ describe('toOpenAIMessages', () => {
             newMsg('assistant', [{ type: PartType.TEXT, text: 'err' }], {
                 error: { message: 'fail' }
             }),
-            newMsg('assistant', [{ type: PartType.TEXT, text: 'err2' }], { isError: true })
+            newMsg('assistant', [{ type: PartType.TEXT, text: 'err2' }], {
+                error: { message: 'fail again' }
+            })
         ];
         const out = openaiChatAdapter.partsToAPIMessages(msgs);
         expect(out).toHaveLength(1);

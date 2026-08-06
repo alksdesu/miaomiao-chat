@@ -104,8 +104,76 @@ function scrollToBottom() {
 
 // 流式 markdown 前缀缓存：以最后一个空行为界，稳定前缀只 parse 一次并缓存 HTML，
 // 每帧仅对尾部增量 parse；finalize 走全文完整 parse 校正分段累计误差
-const textPrefixCache = { text: '', html: '' };
-const thinkingPrefixCache = { text: '', html: '' };
+let textPrefixCache = { text: '', html: '' };
+let thinkingPrefixCache = { text: '', html: '' };
+let activeRenderContext = null;
+let activeAssistantTarget = null;
+const renderContexts = new WeakMap();
+
+function getAssistantTarget() {
+    return activeAssistantTarget || state.currentAssistantMessage;
+}
+
+function getRenderContext(renderKey) {
+    const key =
+        renderKey && (typeof renderKey === 'object' || typeof renderKey === 'function')
+            ? renderKey
+            : getAssistantTarget();
+    if (!key) return null;
+    let context = renderContexts.get(key);
+    if (!context) {
+        context = {
+            pendingRenderData: null,
+            rafId: null,
+            lastRenderedLen: 0,
+            lastRenderedTs: 0,
+            textPrefixCache: { text: '', html: '' },
+            thinkingPrefixCache: { text: '', html: '' }
+        };
+        renderContexts.set(key, context);
+    }
+    return context;
+}
+
+function runWithRenderContext(context, target, callback) {
+    if (!context || !target) return undefined;
+    const previousTarget = activeAssistantTarget;
+    const previousContext = activeRenderContext;
+    const previous = {
+        pendingRenderData,
+        rafId,
+        lastRenderedLen,
+        lastRenderedTs,
+        textPrefixCache,
+        thinkingPrefixCache
+    };
+    pendingRenderData = context.pendingRenderData;
+    rafId = context.rafId;
+    lastRenderedLen = context.lastRenderedLen;
+    lastRenderedTs = context.lastRenderedTs;
+    textPrefixCache = context.textPrefixCache;
+    thinkingPrefixCache = context.thinkingPrefixCache;
+    activeRenderContext = context;
+    activeAssistantTarget = target;
+    try {
+        return callback();
+    } finally {
+        context.pendingRenderData = pendingRenderData;
+        context.rafId = rafId;
+        context.lastRenderedLen = lastRenderedLen;
+        context.lastRenderedTs = lastRenderedTs;
+        context.textPrefixCache = textPrefixCache;
+        context.thinkingPrefixCache = thinkingPrefixCache;
+        pendingRenderData = previous.pendingRenderData;
+        rafId = previous.rafId;
+        lastRenderedLen = previous.lastRenderedLen;
+        lastRenderedTs = previous.lastRenderedTs;
+        textPrefixCache = previous.textPrefixCache;
+        thinkingPrefixCache = previous.thinkingPrefixCache;
+        activeRenderContext = previousContext;
+        activeAssistantTarget = previousTarget;
+    }
+}
 
 function resetPrefixCache(cache) {
     cache.text = '';
@@ -151,7 +219,7 @@ function parseStreamingMarkdown(content, cache) {
  * 立即同步渲染所有待处理数据，并清掉 RAF / pending 缓冲
  * finalize 路径必须先调用此函数，确保流式最后一帧不被节流吞掉
  */
-export function flushPendingRender() {
+function flushPendingRenderInternal() {
     if (rafId) {
         cancelAnimationFrame(rafId);
         rafId = null;
@@ -161,6 +229,11 @@ export function flushPendingRender() {
         pendingRenderData = null;
         doRender(textContent, thinkingContent);
     }
+}
+
+export function flushPendingRender(target = getAssistantTarget(), renderKey = target) {
+    const context = getRenderContext(renderKey);
+    return runWithRenderContext(context, target, flushPendingRenderInternal);
 }
 
 /**
@@ -213,21 +286,19 @@ function cleanupStreamingState(container) {
  * @param {string} thinkingContent - 思维链内容
  */
 function doRender(textContent, thinkingContent) {
-    if (!state.currentAssistantMessage) return;
+    if (!getAssistantTarget()) return;
 
     // 检测是否是 continuation 模式（有工具调用 UI 或持久标记）
-    const hasToolCallUI = state.currentAssistantMessage.querySelector('.tool-calls-group');
-    const hasContinuationLoading =
-        state.currentAssistantMessage.querySelector('.continuation-loading');
-    const isContinuation = state.currentAssistantMessage.dataset.isContinuation === 'true';
+    const hasToolCallUI = getAssistantTarget().querySelector('.tool-calls-group');
+    const hasContinuationLoading = getAssistantTarget().querySelector('.continuation-loading');
+    const isContinuation = getAssistantTarget().dataset.isContinuation === 'true';
 
     if (hasToolCallUI || hasContinuationLoading || isContinuation) {
         // Continuation 模式：只更新 continuation 部分
         logger.debug('[doRender] Continuation 流式模式：更新追加内容');
 
         // 移除之前的 continuation-content（如果存在）
-        const oldContinuation =
-            state.currentAssistantMessage.querySelector('.continuation-content');
+        const oldContinuation = getAssistantTarget().querySelector('.continuation-content');
         if (oldContinuation) {
             oldContinuation.remove();
         }
@@ -258,19 +329,18 @@ function doRender(textContent, thinkingContent) {
 
         // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
         continuationDiv.innerHTML = html;
-        state.currentAssistantMessage.appendChild(continuationDiv);
+        getAssistantTarget().appendChild(continuationDiv);
 
         // 重新绑定思维链事件监听器
         if (thinkingContent) {
-            enhanceThinkingBlocks(state.currentAssistantMessage.parentElement, enhanceCodeBlocks);
+            enhanceThinkingBlocks(getAssistantTarget().parentElement, enhanceCodeBlocks);
         }
 
         // 增强代码块（流式渲染时折叠）
         enhanceCodeBlocks(continuationDiv);
     } else {
         // 正常模式：优先增量更新，避免 DOM 重建
-        const existingThinkingBlock =
-            state.currentAssistantMessage.querySelector('.thinking-block');
+        const existingThinkingBlock = getAssistantTarget().querySelector('.thinking-block');
 
         // 🔧 增量更新思考链（避免滚动重置）
         if (existingThinkingBlock && thinkingContent) {
@@ -299,7 +369,7 @@ function doRender(textContent, thinkingContent) {
             }
 
             // 更新文本内容部分（移除旧的文本和光标）
-            const nodes = Array.from(state.currentAssistantMessage.childNodes);
+            const nodes = Array.from(getAssistantTarget().childNodes);
             nodes.forEach((node) => {
                 if (node !== existingThinkingBlock) {
                     node.remove();
@@ -311,24 +381,23 @@ function doRender(textContent, thinkingContent) {
                 const textDiv = document.createElement('div');
                 // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
                 textDiv.innerHTML = parseStreamingMarkdown(textContent, textPrefixCache);
-                state.currentAssistantMessage.appendChild(textDiv);
+                getAssistantTarget().appendChild(textDiv);
             }
 
             // 添加打字光标
             const cursor = document.createElement('span');
             cursor.className = 'typing-cursor';
-            state.currentAssistantMessage.appendChild(cursor);
+            getAssistantTarget().appendChild(cursor);
 
             // 增强代码块（流式渲染时折叠）
-            enhanceCodeBlocks(state.currentAssistantMessage);
+            enhanceCodeBlocks(getAssistantTarget());
         } else {
             // 首次渲染或无思考链：使用完整渲染
             // 保存思维链展开状态和滚动位置
             const expandedStates = [];
             const scrollPositions = [];
             if (thinkingContent) {
-                const existingBlocks =
-                    state.currentAssistantMessage.querySelectorAll('.thinking-block');
+                const existingBlocks = getAssistantTarget().querySelectorAll('.thinking-block');
                 existingBlocks.forEach((block, index) => {
                     expandedStates[index] = !block.classList.contains('collapsed');
                     const content = block.querySelector('.thinking-content');
@@ -352,17 +421,14 @@ function doRender(textContent, thinkingContent) {
             html += '<span class="typing-cursor"></span>';
 
             // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
-            state.currentAssistantMessage.innerHTML = html;
+            getAssistantTarget().innerHTML = html;
 
             // 重新绑定思维链事件监听器（innerHTML 会销毁原有监听器）
             if (thinkingContent) {
-                enhanceThinkingBlocks(
-                    state.currentAssistantMessage.parentElement,
-                    enhanceCodeBlocks
-                );
+                enhanceThinkingBlocks(getAssistantTarget().parentElement, enhanceCodeBlocks);
 
                 // 恢复展开状态和滚动位置
-                const newBlocks = state.currentAssistantMessage.querySelectorAll('.thinking-block');
+                const newBlocks = getAssistantTarget().querySelectorAll('.thinking-block');
                 newBlocks.forEach((block, index) => {
                     if (expandedStates[index]) {
                         block.classList.remove('collapsed');
@@ -385,7 +451,7 @@ function doRender(textContent, thinkingContent) {
             }
 
             // 增强代码块（流式渲染时折叠）
-            enhanceCodeBlocks(state.currentAssistantMessage);
+            enhanceCodeBlocks(getAssistantTarget());
         }
     }
 
@@ -402,7 +468,7 @@ function doRender(textContent, thinkingContent) {
  * @param {string} textContent - 文本内容
  * @param {string} thinkingContent - 思维链内容
  */
-export function updateStreamingMessage(textContent, thinkingContent) {
+function updateStreamingMessageInternal(textContent, thinkingContent) {
     // 首次调用时挂滚动监听（element 此时已就绪）
     ensureScrollListener();
 
@@ -427,13 +493,29 @@ export function updateStreamingMessage(textContent, thinkingContent) {
     }
 
     // 使用 requestAnimationFrame 在下一帧渲染（60fps 限制）
+    const context = activeRenderContext;
+    const target = getAssistantTarget();
     rafId = requestAnimationFrame(() => {
-        if (pendingRenderData) {
-            doRender(pendingRenderData.textContent, pendingRenderData.thinkingContent);
-            pendingRenderData = null;
-        }
-        rafId = null;
+        runWithRenderContext(context, target, () => {
+            if (pendingRenderData && target.isConnected !== false) {
+                doRender(pendingRenderData.textContent, pendingRenderData.thinkingContent);
+                pendingRenderData = null;
+            }
+            rafId = null;
+        });
     });
+}
+
+export function updateStreamingMessage(
+    textContent,
+    thinkingContent,
+    target = getAssistantTarget(),
+    renderKey = target
+) {
+    const context = getRenderContext(renderKey);
+    return runWithRenderContext(context, target, () =>
+        updateStreamingMessageInternal(textContent, thinkingContent)
+    );
 }
 
 /**
@@ -442,21 +524,20 @@ export function updateStreamingMessage(textContent, thinkingContent) {
  * @param {string} thinkingContent - 思维链内容
  * @param {Object} groundingMetadata - 搜索结果元数据（可选）
  */
-export function renderFinalTextWithThinking(
+function renderFinalTextWithThinkingInternal(
     textContent,
     thinkingContent,
     groundingMetadata = null
 ) {
     // 先把还在 pending 缓冲里的最后一帧刷掉，避免被阈值节流吞掉
-    flushPendingRender();
+    flushPendingRenderInternal();
 
-    if (!state.currentAssistantMessage) return;
+    if (!getAssistantTarget()) return;
 
     // 检测是否是 continuation 模式（有工具调用 UI 或持久标记）
-    const hasToolCallUI = state.currentAssistantMessage.querySelector('.tool-calls-group');
-    const hasContinuationLoading =
-        state.currentAssistantMessage.querySelector('.continuation-loading');
-    const isContinuation = state.currentAssistantMessage.dataset.isContinuation === 'true';
+    const hasToolCallUI = getAssistantTarget().querySelector('.tool-calls-group');
+    const hasContinuationLoading = getAssistantTarget().querySelector('.continuation-loading');
+    const isContinuation = getAssistantTarget().dataset.isContinuation === 'true';
 
     if (hasToolCallUI || hasContinuationLoading || isContinuation) {
         // Continuation 模式：追加新内容，保留现有内容
@@ -468,16 +549,14 @@ export function renderFinalTextWithThinking(
         }
 
         // 移除流式 continuation 容器（如果存在）
-        const continuationContent =
-            state.currentAssistantMessage.querySelector('.continuation-content');
+        const continuationContent = getAssistantTarget().querySelector('.continuation-content');
         if (continuationContent) {
             continuationContent.remove();
         }
 
         // 获取之前保存的思维链（从DOM或state中恢复）
         // 检查是否已有思维链块
-        const existingThinkingBlocks =
-            state.currentAssistantMessage.querySelectorAll('.thinking-block');
+        const existingThinkingBlocks = getAssistantTarget().querySelectorAll('.thinking-block');
 
         let html = '';
 
@@ -504,10 +583,10 @@ export function renderFinalTextWithThinking(
 
         // 使用 insertAdjacentHTML 追加内容（而不是覆盖）
         // eslint-disable-next-line no-restricted-syntax -- 已审计：html 由 renderThinkingBlock + safeMarkedParse + renderSearchGrounding + renderMediaCard 组合，与同函数下方 innerHTML 分支同源
-        state.currentAssistantMessage.insertAdjacentHTML('beforeend', html);
+        getAssistantTarget().insertAdjacentHTML('beforeend', html);
 
         // 清除 continuation 标记
-        delete state.currentAssistantMessage.dataset.isContinuation;
+        delete getAssistantTarget().dataset.isContinuation;
     } else {
         // 正常模式：覆盖整个内容
         let html = '';
@@ -525,14 +604,27 @@ export function renderFinalTextWithThinking(
         }
 
         // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
-        state.currentAssistantMessage.innerHTML = html;
+        getAssistantTarget().innerHTML = html;
     }
 
     // 清理残留的流式状态（防止状态未重置）
-    cleanupStreamingState(state.currentAssistantMessage);
+    cleanupStreamingState(getAssistantTarget());
 
-    enhanceCodeBlocks(state.currentAssistantMessage);
+    enhanceCodeBlocks(getAssistantTarget());
     scrollToBottom();
+}
+
+export function renderFinalTextWithThinking(
+    textContent,
+    thinkingContent,
+    groundingMetadata = null,
+    target = getAssistantTarget(),
+    renderKey = target
+) {
+    const context = getRenderContext(renderKey);
+    return runWithRenderContext(context, target, () =>
+        renderFinalTextWithThinkingInternal(textContent, thinkingContent, groundingMetadata)
+    );
 }
 
 /**
@@ -541,21 +633,20 @@ export function renderFinalTextWithThinking(
  * @param {string} thinkingContent - 运行时变量，非旧格式字段
  * @param {Object} groundingMetadata - 搜索结果元数据（可选）
  */
-export function renderFinalContentWithThinking(
+function renderFinalContentWithThinkingInternal(
     contentParts,
     thinkingContent,
     groundingMetadata = null
 ) {
     // 先把还在 pending 缓冲里的最后一帧刷掉，避免被阈值节流吞掉
-    flushPendingRender();
+    flushPendingRenderInternal();
 
-    if (!state.currentAssistantMessage) return;
+    if (!getAssistantTarget()) return;
 
     // 检测是否是 continuation 模式（有工具调用 UI 或持久标记）
-    const hasToolCallUI = state.currentAssistantMessage.querySelector('.tool-calls-group');
-    const hasContinuationLoading =
-        state.currentAssistantMessage.querySelector('.continuation-loading');
-    const isContinuation = state.currentAssistantMessage.dataset.isContinuation === 'true';
+    const hasToolCallUI = getAssistantTarget().querySelector('.tool-calls-group');
+    const hasContinuationLoading = getAssistantTarget().querySelector('.continuation-loading');
+    const isContinuation = getAssistantTarget().dataset.isContinuation === 'true';
 
     let html = '';
 
@@ -582,8 +673,7 @@ export function renderFinalContentWithThinking(
         }
     } else {
         // 检查是否已有思维链块（continuation 模式下）
-        const existingThinkingBlocks =
-            state.currentAssistantMessage.querySelectorAll('.thinking-block');
+        const existingThinkingBlocks = getAssistantTarget().querySelectorAll('.thinking-block');
 
         // 旧模式（向后兼容）：thinking 在顶部，然后是 contentParts
         // 但是在 continuation 模式下，只有当没有现有思维链时才渲染新的
@@ -628,29 +718,49 @@ export function renderFinalContentWithThinking(
         }
 
         // 移除流式 continuation 容器（如果存在）
-        const continuationContent =
-            state.currentAssistantMessage.querySelector('.continuation-content');
+        const continuationContent = getAssistantTarget().querySelector('.continuation-content');
         if (continuationContent) {
             continuationContent.remove();
         }
 
         // 使用 insertAdjacentHTML 追加内容（而不是覆盖）
         // eslint-disable-next-line no-restricted-syntax -- 已审计：html 由 renderThinkingBlock + safeMarkedParse + renderSearchGrounding + renderMediaCard 组合，与同函数下方 innerHTML 分支同源
-        state.currentAssistantMessage.insertAdjacentHTML('beforeend', html);
+        getAssistantTarget().insertAdjacentHTML('beforeend', html);
 
         // 清除 continuation 标记
-        delete state.currentAssistantMessage.dataset.isContinuation;
+        delete getAssistantTarget().dataset.isContinuation;
     } else {
         // 正常模式：覆盖整个内容
         // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
-        state.currentAssistantMessage.innerHTML = html;
+        getAssistantTarget().innerHTML = html;
     }
 
     // 清理残留的流式状态（防止状态未重置）
-    cleanupStreamingState(state.currentAssistantMessage);
+    cleanupStreamingState(getAssistantTarget());
 
-    enhanceCodeBlocks(state.currentAssistantMessage);
+    enhanceCodeBlocks(getAssistantTarget());
     scrollToBottom();
+}
+
+export function renderFinalContentWithThinking(
+    contentParts,
+    thinkingContent,
+    groundingMetadata = null,
+    target = getAssistantTarget(),
+    renderKey = target
+) {
+    const context = getRenderContext(renderKey);
+    return runWithRenderContext(context, target, () =>
+        renderFinalContentWithThinkingInternal(contentParts, thinkingContent, groundingMetadata)
+    );
+}
+
+export function disposeStreamRenderSession(renderKey) {
+    if (!renderKey || (typeof renderKey !== 'object' && typeof renderKey !== 'function')) return;
+    const context = renderContexts.get(renderKey);
+    if (!context) return;
+    if (context.rafId) cancelAnimationFrame(context.rafId);
+    renderContexts.delete(renderKey);
 }
 
 /**

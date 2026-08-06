@@ -24,6 +24,7 @@ import { savePreference, loadSessionMessages } from '../state/storage.js';
 // 新增：自定义对话框（替代 Electron 中不支持的 prompt/confirm）
 import { showInputDialog, showConfirmDialog } from '../utils/dialogs.js';
 import { logger } from '../utils/logger.js';
+import { getCurrentSessionMessagesSnapshot } from '../state/session-message-repository.js';
 import {
     loadFolders,
     createFolder,
@@ -57,7 +58,7 @@ async function getSessionDataForExport(sessionMeta) {
     if (sessionMeta.id === state.currentSessionId) {
         return {
             ...sessionMeta,
-            messages: state.messages || []
+            messages: await getCurrentSessionMessagesSnapshot()
         };
     }
 

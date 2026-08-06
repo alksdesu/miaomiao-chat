@@ -25,18 +25,67 @@ import { showNotification } from '../ui/notifications.js';
 import { populateModelSelect } from '../ui/models.js';
 import { showConfirmDialog } from '../utils/dialogs.js';
 import { sanitizeMessageForExport, ensureIdMap } from '../api/format-converter.js'; // 过滤私有字段 + 旧数据 idMap 补齐
-import { categorizeFile } from '../utils/file-helpers.js';
 import {
-    SCHEMA_VERSION,
-    isSchemaFormatParts,
+    PartType,
+    MediaKind,
     getTextContent,
     getThinkingContent,
     agePendingToolCallsInPlace,
     validateToolPairings
 } from '../messages/schema.js';
-import { migrateSession } from '../messages/migration.js';
+import { normalizeSessionRecord } from '../messages/compat/gateway.js';
+import { CompatibilityStatus } from '../messages/compat/result.js';
 import { logger } from '../utils/logger.js';
 import { IMPORT_FILE_MAX_SIZE } from '../utils/constants.js';
+import { resolveMessagesMediaForApi } from './media-blob-store.js';
+
+function normalizeImportedMessages(session, messages, geminiContents = [], claudeContents = []) {
+    const compatibility = normalizeSessionRecord(
+        {
+            sessionId: session.id,
+            messages,
+            geminiContents,
+            claudeContents,
+            messageSchemaVersion: session.messageSchemaVersion
+        },
+        { source: 'session-import' }
+    );
+    if (compatibility.status === CompatibilityStatus.FAILED) {
+        throw new Error(`会话 ${session.id} 的消息格式无法恢复`);
+    }
+    if (compatibility.changed) {
+        logger.debug(
+            `[Import] 规范化会话 ${session.id}: ${messages.length} → ${compatibility.messages.length} 条消息`
+        );
+    }
+    return compatibility.messages;
+}
+
+async function makeMessagesPortable(messages) {
+    const resolved = await resolveMessagesMediaForApi(messages || []);
+    const portableParts = (parts) =>
+        Array.isArray(parts)
+            ? parts.map((part) => {
+                  if (!part?.mediaId || !part.url) return part;
+                  const portable = { ...part };
+                  delete portable.mediaId;
+                  return portable;
+              })
+            : parts;
+    return resolved.map((message) => {
+        const parts = portableParts(message?.parts);
+        const replies = Array.isArray(message?.replies?.all)
+            ? {
+                  ...message.replies,
+                  all: message.replies.all.map((reply) => ({
+                      ...reply,
+                      parts: portableParts(reply?.parts)
+                  }))
+              }
+            : message?.replies;
+        return { ...message, parts, replies };
+    });
+}
 
 /**
  * 标记导入消息中缺签名的 thinking part 为 _edited
@@ -153,6 +202,9 @@ async function loadMessagesForSessions(sessions, stats = null) {
                 logger.warn(`[Export] 加载会话 ${merged.id} 消息失败:`, e);
                 if (stats) stats.loadFailed++;
             }
+        }
+        if (Array.isArray(merged.messages)) {
+            merged.messages = await makeMessagesPortable(merged.messages);
         }
         results.push(merged);
     }
@@ -506,31 +558,15 @@ async function importSessions(data) {
             }
 
             // 分离消息数据，写入 messages store
-            const { messages, geminiContents: _gc, claudeContents: _cc, ...sessionMeta } = session;
+            const { messages, geminiContents, claudeContents, ...sessionMeta } = session;
             await saveSessionToDB(sessionMeta);
             if (messages && messages.length > 0) {
-                // 检查是否需要迁移旧格式消息
-                // 如果消息已有有效的 schema parts，即使没有 _schemaVersion 也不需要迁移
-                const firstMsg = messages[0];
-                const hasValidParts =
-                    firstMsg?.parts && isSchemaFormatParts(firstMsg.parts, firstMsg);
-                const needsMigration =
-                    !hasValidParts &&
-                    (!firstMsg?._schemaVersion || firstMsg._schemaVersion < SCHEMA_VERSION);
-                let finalMessages = messages;
-                if (needsMigration) {
-                    try {
-                        const migrated = migrateSession(messages);
-                        if (migrated.messages.length > 0) {
-                            finalMessages = migrated.messages;
-                            logger.debug(
-                                `[Import] 迁移会话 ${session.id}: ${messages.length} → ${finalMessages.length} 条消息`
-                            );
-                        }
-                    } catch (e) {
-                        logger.warn(`[Import] 迁移失败，使用原始格式:`, e);
-                    }
-                }
+                const finalMessages = normalizeImportedMessages(
+                    session,
+                    messages,
+                    geminiContents,
+                    claudeContents
+                );
                 // 导出时已剥离 signature / signatureFormat / encryptedContent 等私有字段
                 // (clearForeignSignatures 走 EXPORT_SENSITIVE_KEYS 黑名单)；
                 // 没有 signature 的 thinking part 在 Claude adapter 会走 'signature 缺失则跳过'
@@ -658,32 +694,15 @@ async function importFullBackup(data) {
             }
             _fbIndex++;
             try {
-                const {
-                    messages,
-                    geminiContents: _gc,
-                    claudeContents: _cc,
-                    ...sessionMeta
-                } = session;
+                const { messages, geminiContents, claudeContents, ...sessionMeta } = session;
                 await saveSessionToDB(sessionMeta);
                 if (messages && messages.length > 0) {
-                    // 检查是否需要迁移旧格式消息
-                    const firstMsg = messages[0];
-                    const hasValidParts =
-                        firstMsg?.parts && isSchemaFormatParts(firstMsg.parts, firstMsg);
-                    const needsMigration =
-                        !hasValidParts &&
-                        (!firstMsg?._schemaVersion || firstMsg._schemaVersion < SCHEMA_VERSION);
-                    let finalMessages = messages;
-                    if (needsMigration) {
-                        try {
-                            const migrated = migrateSession(messages);
-                            if (migrated.messages.length > 0) {
-                                finalMessages = migrated.messages;
-                            }
-                        } catch (e) {
-                            logger.warn(`[Import] 迁移失败，使用原始格式:`, e);
-                        }
-                    }
+                    const finalMessages = normalizeImportedMessages(
+                        session,
+                        messages,
+                        geminiContents,
+                        claudeContents
+                    );
                     markStrippedThinkingAsEdited(finalMessages);
                     backfillToolCallIdMap(finalMessages);
                     // 跨设备/旧备份的 pending/running tool_call 在新设备上不可能等到结果，
@@ -890,37 +909,19 @@ function getSelectedReply(msg) {
     if (!Array.isArray(repliesAll) || repliesAll.length === 0) {
         return null;
     }
-    const selectedIndex =
-        msg?.replies?.selected ??
-        (Number.isInteger(msg?.selectedReplyIndex) ? msg.selectedReplyIndex : 0);
+    const selectedIndex = msg?.replies?.selected ?? 0;
     return repliesAll[selectedIndex] || repliesAll[0] || null;
 }
 
 function getAttachmentMarker(part) {
     if (!part || typeof part !== 'object') return '';
 
-    // 新格式 parts: type=media/file
-    if (part.type === 'media') {
-        if (part.media === 'video') return '[视频]';
-        if (part.media === 'audio') return '[音频]';
+    if (part.type === PartType.MEDIA) {
+        if (part.media === MediaKind.VIDEO) return '[视频]';
+        if (part.media === MediaKind.AUDIO) return '[音频]';
         return '[图片]';
     }
-    if (part.type === 'file') return '[文档]';
-
-    // 旧格式
-    if (part.type === 'image_url' || part.type === 'image') return '[图片]';
-    if (part.type === 'video_url') return '[视频]';
-    if (part.type === 'document') return '[文档]';
-
-    const inlineData = part.inlineData || part.inline_data;
-    if (inlineData) {
-        const mimeType = inlineData.mimeType || inlineData.mime_type || '';
-        const category = categorizeFile(mimeType);
-        if (category === 'image') return '[图片]';
-        if (category === 'video') return '[视频]';
-        if (category === 'pdf' || category === 'text') return '[文档]';
-        return '[附件]';
-    }
+    if (part.type === PartType.FILE) return '[文档]';
 
     return '';
 }
@@ -929,8 +930,8 @@ function extractTextFromParts(parts = []) {
     return parts
         .map((part) => {
             if (!part || typeof part !== 'object') return '';
-            if (part.thought || part.type === 'thinking') return '';
-            if (typeof part.text === 'string') return part.text;
+            if (part.type === PartType.THINKING) return '';
+            if (part.type === PartType.TEXT && typeof part.text === 'string') return part.text;
             return getAttachmentMarker(part);
         })
         .filter(Boolean)
@@ -941,17 +942,12 @@ function extractTextFromParts(parts = []) {
 function extractThinkingContent(msg) {
     const selectedReply = getSelectedReply(msg);
 
-    // 新格式优先：从 parts 提取
     const thinking = getThinkingContent(msg);
     if (thinking) return thinking;
 
-    // selectedReply 可能有独立的 thinkingContent（通过 getThinkingContent 兜底）
     if (selectedReply) {
         const replyThinking = getThinkingContent(selectedReply);
         if (replyThinking) return replyThinking;
-    }
-    if (msg?.thought) {
-        return msg.thought;
     }
     return '';
 }
@@ -960,38 +956,24 @@ function extractMessageBody(msg) {
     const selectedReply = getSelectedReply(msg);
 
     if (selectedReply) {
-        // 用 schema 工具函数提取（内部处理 parts + content 回退）
         const replyText = getTextContent(selectedReply);
         if (replyText) return replyText;
-        if (Array.isArray(selectedReply.claudeContent) && selectedReply.claudeContent.length > 0) {
-            return extractTextFromParts(selectedReply.claudeContent);
-        }
     }
 
-    // 用 schema 工具函数提取（内部处理 parts + content 回退）
     const text = getTextContent(msg);
     if (text) return text;
+    if (Array.isArray(msg?.parts)) return extractTextFromParts(msg.parts);
     return '';
 }
 
 function extractToolCalls(msg) {
-    // 新格式：从 parts 提取
     if (Array.isArray(msg?.parts)) {
         const tcNames = msg.parts
-            .filter((p) => p.type === 'tool_call' && p.name)
+            .filter((p) => p.type === PartType.TOOL_CALL && p.name)
             .map((p) => p.name);
         if (tcNames.length > 0) return tcNames.map((n) => `- ${n}`).join('\n');
     }
-    // 旧格式回退
-    const toolCalls = msg?.toolCalls;
-    if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
-        return '';
-    }
-    const lines = toolCalls
-        .map((toolCall) => toolCall?.name || toolCall?.function?.name || toolCall?.id || '')
-        .filter(Boolean);
-    if (lines.length === 0) return '';
-    return lines.map((name) => `- ${name}`).join('\n');
+    return '';
 }
 
 /**

@@ -11,12 +11,13 @@
 import { state } from '../core/state.js';
 import { eventBus } from '../core/events.js';
 import { requestStateMachine, RequestState } from '../core/request-state-machine.js';
-import { saveErrorMessage, saveAssistantMessageToBackground } from '../messages/sync.js';
+import { saveAssistantMessageAsync, saveAssistantMessageToBackground } from '../messages/sync.js';
 import { setCurrentMessageIndex } from '../messages/dom-sync.js';
 import { renderHumanizedError } from '../utils/errors.js';
 import { safeSetHTML } from '../utils/helpers.js';
 import { logger } from '../utils/logger.js';
 import { attemptImageCompressionRetry, resetAllImageRetryState } from './image-retry.js';
+import { requestTaskRegistry } from '../core/request-task-registry.js';
 
 /**
  * 跨会话路径：错误消息落库到原会话不污染当前会话
@@ -28,7 +29,11 @@ async function persistErrorToBackground(ctx, errorData, status) {
         const result = await saveAssistantMessageToBackground(
             ctx.sessionId,
             [],
-            { raw: {} },
+            {
+                model: ctx.requestProfile?.modelDisplayName,
+                provider: ctx.requestProfile?.providerName,
+                raw: {}
+            },
             { isError: true, errorData, errorHtml }
         );
         persisted = !!result;
@@ -60,26 +65,26 @@ export async function handleHttpErrorResponse(response, ctx) {
     const retried = await attemptImageCompressionRetry(
         errorData,
         ctx.assistantMessageEl,
-        ctx.sessionId
+        ctx.sessionId,
+        ctx.task
     );
     if (retried) {
         // 压缩重试属自动流程，弹「已强制重置」success 通知会误导用户
-        requestStateMachine.forceReset({ silent: true });
         if (ctx.timeoutId) {
             clearTimeout(ctx.timeoutId);
             ctx.timeoutId = null;
         }
         // lazy import 打破循环依赖：handler.js → handler-http-error.js → handler.js
         const { sendToAPI } = await import('./handler.js');
-        await sendToAPI();
+        await sendToAPI({ task: ctx.task });
         return { retried: true };
     }
 
-    resetAllImageRetryState(ctx.sessionId);
+    resetAllImageRetryState(ctx.sessionId, ctx.task);
 
     // 跨会话守卫：响应到达时用户已切走，错误必须写原会话不写当前会话
     // 与 cross-session error-handler 行为一致：background 落库 + 失败通知 + 状态机重置
-    if (ctx.sessionId !== state.currentSessionId) {
+    if (ctx.sessionId !== state.currentSessionId || ctx.task?.isDetached) {
         logger.warn(
             `[handler-http-error] 跨会话场景: ctx.sessionId=${ctx.sessionId} current=${state.currentSessionId}，错误写回原会话`
         );
@@ -94,14 +99,36 @@ export async function handleHttpErrorResponse(response, ctx) {
         return { retried: false };
     }
 
-    if (state.currentAssistantMessage) {
-        safeSetHTML(
-            state.currentAssistantMessage,
-            renderHumanizedError(errorData, response.status)
-        );
-        const messageIndex = saveErrorMessage(errorData, response.status, renderHumanizedError);
+    const errorHtml = renderHumanizedError(errorData, response.status);
+    const target = ctx.assistantMessageEl?.querySelector?.('.message-content') || null;
+    if (target) safeSetHTML(target, errorHtml);
+    const messageIndex = await saveAssistantMessageAsync(
+        [],
+        {
+            model: ctx.requestProfile?.modelDisplayName,
+            provider: ctx.requestProfile?.providerName,
+            raw: {}
+        },
+        {
+            sessionId: ctx.sessionId,
+            forceBackground: ctx.task?.isDetached === true,
+            isError: true,
+            errorData,
+            errorHtml
+        }
+    );
+    if (
+        ctx.sessionId === state.currentSessionId &&
+        !ctx.task?.isDetached &&
+        (!ctx.task || requestTaskRegistry.owns(ctx.task))
+    ) {
         setCurrentMessageIndex(messageIndex);
     }
-    requestStateMachine.transition(RequestState.ERROR, { error: { status: response.status } });
+    if (ctx.task && requestTaskRegistry.owns(ctx.task)) {
+        requestTaskRegistry.setPhase(ctx.task, RequestState.ERROR);
+        requestStateMachine.transitionFor(ctx.task, RequestState.ERROR, {
+            error: { status: response.status }
+        });
+    }
     return { retried: false };
 }

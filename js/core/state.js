@@ -44,6 +44,7 @@ const _rawState = {
     // reasoning 模型（含 extended thinking）内部推理时可能持续 1-5 分钟无 SSE
     // chunk，120s 默认会误杀；用户可在偏好设置中调高
     streamIdleTimeout: 120000,
+    longChatRenderingMode: 'auto',
 
     // 工具调用续传状态
     isToolCallPending: false, // 工具正在执行中

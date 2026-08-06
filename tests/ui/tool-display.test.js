@@ -128,6 +128,23 @@ describe('tool-display', () => {
             const btn = container.querySelector('.tool-calls-summary-btn');
             expect(btn.getAttribute('data-status')).toBe('failed');
         });
+
+        it('限定 scope 时不会更新其他消息中的同名工具 ID', async () => {
+            const first = document.createElement('div');
+            const second = document.createElement('div');
+            first.className = 'message-content';
+            second.className = 'message-content';
+            document.body.append(first, second);
+
+            await createToolCallUI({ id: 'shared', name: 'first', args: {} }, first);
+            await createToolCallUI({ id: 'shared', name: 'second', args: {} }, second);
+            updateToolCallStatus('shared', 'completed', { result: 'ok' }, second);
+
+            expect(first.querySelector('.tool-calls-summary-btn').dataset.status).toBe('executing');
+            expect(second.querySelector('.tool-calls-summary-btn').dataset.status).toBe(
+                'completed'
+            );
+        });
     });
 
     // ========== restoreToolCallsGroup ==========

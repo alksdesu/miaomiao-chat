@@ -27,10 +27,13 @@ import { generateSessionId, generateSessionName } from '../utils/helpers.js';
 import { renderSessionMessages } from '../messages/restore.js';
 import { replaceAllMessages } from '../core/state-mutations.js';
 import { requestStateMachine } from '../core/request-state-machine.js';
+import { requestTaskRegistry } from '../core/request-task-registry.js';
+import { withSessionWriteLock } from './session-write-queue.js';
 import { broadcastEvent } from './tab-sync.js';
 import { recoverStreamSnapshots } from './stream-snapshot.js';
-import { buildSessionSearchIndex } from './session-search-index.js';
+import { buildSessionSearchIndexAsync } from './session-search-index.js';
 import { createThinkingDots } from '../api/handler-loading-dots.js';
+import { updateStreamingMessage, flushPendingRender } from '../stream/helpers.js';
 import { getTextContent, agePendingToolCallsInPlace } from '../messages/schema.js';
 import {
     replaceVideoDataUrlsDeep,
@@ -39,6 +42,13 @@ import {
 } from './video-persistence.js';
 import { showConfirmDialog } from '../utils/dialogs.js';
 import { logger } from '../utils/logger.js';
+import { longChatPerformance } from '../utils/long-chat-performance.js';
+import {
+    loadSessionMessageWindow,
+    getCurrentSessionMessagesSnapshot,
+    materializeSessionMessages
+} from './session-message-repository.js';
+import { externalizeMessagesMedia } from './media-blob-store.js';
 
 // 防抖保存定时器
 let saveSessionTimer = null;
@@ -153,18 +163,17 @@ function cloneSerializable(data) {
  * - Web：保持原样
  */
 export async function createPersistedSessionPayload(source = {}) {
-    const clonedPayload = {
-        messages: cloneSerializable(source.messages || [])
-    };
-
+    const messages = Array.isArray(source.messages) ? source.messages : [];
     if (!isElectronIpcAvailable() && !isAndroidFilesystemAvailable()) {
-        return clonedPayload;
+        return { messages };
     }
 
+    const clonedPayload = {
+        messages: cloneSerializable(messages)
+    };
+
     const cache = new Map(persistedVideoUrlCache);
-
     await replaceVideoDataUrlsDeep(clonedPayload.messages, cache);
-
     for (const [dataUrl, fileUrl] of cache.entries()) {
         setVideoCacheEntry(dataUrl, fileUrl);
     }
@@ -341,111 +350,115 @@ export async function saveCurrentSessionMessages(force = false) {
 
     session.monitorEnabled = state.monitorEnabled ?? false;
 
-    // 自动生成会话名称（取第一条用户消息）
-    if (!session.customName) {
-        let content = '';
-
-        if (state.messages.length > 0) {
-            const firstUserMsg = state.messages.find((m) => m.role === 'user');
-            if (firstUserMsg) {
-                // 用 schema 工具函数提取（内部处理新/旧格式回退）
-                if (!content) {
-                    content = getTextContent(firstUserMsg);
-                }
-            }
-        }
-
-        if (content) {
-            session.name = generateSessionName(content);
-        }
-    }
-
     // 进入 save 流程：起点记录 dirty 快照，写完后只有 dirty 仍是该值（中间无新增）才清零
     const dirtyAtStart = state.sessionDirty;
 
-    const doSave = async () => {
-        let persistedPayload;
-        try {
-            persistedPayload = await createPersistedSessionPayload({
-                messages: state.messages
-            });
-        } catch (error) {
-            logger.error('[Session] 构建持久化快照失败，回退到原始消息:', error);
-            persistedPayload = {
-                messages: cloneSerializable(state.messages)
-            };
-        }
-
-        // 保存到 IndexedDB（消息和元数据原子写入同一事务 + 乐观锁防多 tab 后写覆盖）
-        try {
-            session.messageCount = state.messages.length;
-            const sessionMeta = {
-                id: session.id,
-                name: session.name,
-                apiFormat: session.apiFormat,
-                createdAt: session.createdAt,
-                updatedAt: session.updatedAt,
-                customName: session.customName,
-                messageCount: session.messageCount,
-                prefillSnapshot: session.prefillSnapshot,
-                folderId: session.folderId ?? null,
-                monitorEnabled: session.monitorEnabled ?? false
-            };
-            const expectedUpdatedAt = state._lastKnownSessionUpdatedAt?.get(session.id) ?? null;
-            await saveSessionAtomic(sessionMeta, persistedPayload, {
-                expectedUpdatedAt,
-                skipSearchIndex: true
-            });
-            state._lastKnownSessionUpdatedAt?.set(session.id, session.updatedAt);
-            scheduleSearchIndexRebuild(session.id);
-            if (_saveFailureNotified) {
-                _saveFailureNotified = false;
-                clearEmergencySessionSnapshot();
-            }
-            // dirty 快照模式：save 期间新到的 dirty 不被清零，防止丢一轮变更
-            if (state.sessionDirty === dirtyAtStart) {
-                state.sessionDirty = false;
-            }
-            broadcastEvent('session-updated', {
-                sessionId: session.id,
-                updatedAt: session.updatedAt,
-                messageCount: session.messageCount
-            });
-        } catch (e) {
-            if (e instanceof SessionConflictError) {
-                _conflictPending = true;
-                cancelPendingSave();
-                logger.warn(
-                    `[Session] 多 tab 写入冲突 ${e.sessionId}: 期望 ${e.expectedUpdatedAt}, IDB ${e.actualUpdatedAt}`
-                );
-                eventBus.emit('storage:conflict', {
-                    sessionId: e.sessionId,
-                    expectedUpdatedAt: e.expectedUpdatedAt,
-                    actualUpdatedAt: e.actualUpdatedAt
+    const doSave = () =>
+        withSessionWriteLock(session.id, async () => {
+            const messageWindow = state.messageStore?.toArray?.() || [...state.messages];
+            const externalizedWindow = await externalizeMessagesMedia(messageWindow);
+            if (state.currentSessionId === session.id) {
+                externalizedWindow.messages.forEach((message, index) => {
+                    if (
+                        message !== messageWindow[index] &&
+                        state.messages[index]?.id === messageWindow[index]?.id
+                    ) {
+                        state.messageStore.replaceAt(index, message);
+                    }
                 });
-            } else {
-                logger.error('保存会话到 IndexedDB 失败:', e);
-                const { _pendingMessages: _pm, ...snapMeta } = session;
-                const emergencySaved = saveEmergencySessionSnapshot(
-                    snapMeta,
-                    persistedPayload.messages
-                );
-                if (!_saveFailureNotified) {
-                    _saveFailureNotified = true;
-                    eventBus.emit('ui:notification', {
-                        message: emergencySaved
-                            ? '会话保存失败，已写入本地应急备份，重启应用后自动恢复'
-                            : '会话保存失败，且应急备份写入失败，请尽快导出数据',
-                        type: 'error',
-                        duration: 0
+            }
+            const messageSnapshot = await materializeSessionMessages(
+                session.id,
+                externalizedWindow.messages
+            );
+            if (!session.customName) {
+                const firstUserMsg = messageSnapshot.find((message) => message.role === 'user');
+                const content = firstUserMsg ? getTextContent(firstUserMsg) : '';
+                if (content) session.name = generateSessionName(content);
+            }
+
+            let persistedPayload;
+            try {
+                persistedPayload = await createPersistedSessionPayload({
+                    messages: messageSnapshot
+                });
+            } catch (error) {
+                logger.error('[Session] 构建持久化快照失败，回退到原始消息:', error);
+                persistedPayload = {
+                    messages: cloneSerializable(messageSnapshot)
+                };
+            }
+
+            // 保存到 IndexedDB（消息和元数据原子写入同一事务 + 乐观锁防多 tab 后写覆盖）
+            try {
+                session.messageCount = messageSnapshot.length;
+                const sessionMeta = {
+                    id: session.id,
+                    name: session.name,
+                    apiFormat: session.apiFormat,
+                    createdAt: session.createdAt,
+                    updatedAt: session.updatedAt,
+                    customName: session.customName,
+                    messageCount: session.messageCount,
+                    prefillSnapshot: session.prefillSnapshot,
+                    folderId: session.folderId ?? null,
+                    monitorEnabled: session.monitorEnabled ?? false
+                };
+                const expectedUpdatedAt = state._lastKnownSessionUpdatedAt?.get(session.id) ?? null;
+                await saveSessionAtomic(sessionMeta, persistedPayload, {
+                    expectedUpdatedAt,
+                    skipSearchIndex: true
+                });
+                state._lastKnownSessionUpdatedAt?.set(session.id, session.updatedAt);
+                scheduleSearchIndexRebuild(session.id);
+                if (_saveFailureNotified) {
+                    _saveFailureNotified = false;
+                    clearEmergencySessionSnapshot();
+                }
+                // dirty 快照模式：save 期间新到的 dirty 不被清零，防止丢一轮变更
+                if (state.sessionDirty === dirtyAtStart) {
+                    state.sessionDirty = false;
+                }
+                broadcastEvent('session-updated', {
+                    sessionId: session.id,
+                    updatedAt: session.updatedAt,
+                    messageCount: session.messageCount
+                });
+            } catch (e) {
+                if (e instanceof SessionConflictError) {
+                    _conflictPending = true;
+                    cancelPendingSave();
+                    logger.warn(
+                        `[Session] 多 tab 写入冲突 ${e.sessionId}: 期望 ${e.expectedUpdatedAt}, IDB ${e.actualUpdatedAt}`
+                    );
+                    eventBus.emit('storage:conflict', {
+                        sessionId: e.sessionId,
+                        expectedUpdatedAt: e.expectedUpdatedAt,
+                        actualUpdatedAt: e.actualUpdatedAt
                     });
+                } else {
+                    logger.error('保存会话到 IndexedDB 失败:', e);
+                    const { _pendingMessages: _pm, ...snapMeta } = session;
+                    const emergencySaved = saveEmergencySessionSnapshot(
+                        snapMeta,
+                        persistedPayload.messages
+                    );
+                    if (!_saveFailureNotified) {
+                        _saveFailureNotified = true;
+                        eventBus.emit('ui:notification', {
+                            message: emergencySaved
+                                ? '会话保存失败，已写入本地应急备份，重启应用后自动恢复'
+                                : '会话保存失败，且应急备份写入失败，请尽快导出数据',
+                            type: 'error',
+                            duration: 0
+                        });
+                    }
                 }
             }
-        }
 
-        saveCurrentSessionId();
-        eventBus.emit('sessions:updated', { sessions: state.sessions });
-    };
+            saveCurrentSessionId();
+            eventBus.emit('sessions:updated', { sessions: state.sessions });
+        });
 
     _savingPromise = doSave().finally(() => {
         _savingPromise = null;
@@ -466,11 +479,13 @@ export async function saveCurrentSessionMessages(force = false) {
  */
 function scheduleSearchIndexRebuild(sessionId) {
     clearTimeout(searchIndexRebuildTimer);
-    searchIndexRebuildTimer = setTimeout(() => {
+    searchIndexRebuildTimer = setTimeout(async () => {
         // 会话已切换/删除时 state.messages 不再对应该会话，放弃本轮重建
         if (state.currentSessionId !== sessionId || _deletedSessionIds.has(sessionId)) return;
         try {
-            const searchIndex = buildSessionSearchIndex(state.messages);
+            const messages = await getCurrentSessionMessagesSnapshot();
+            if (state.currentSessionId !== sessionId || _deletedSessionIds.has(sessionId)) return;
+            const searchIndex = await buildSessionSearchIndexAsync(messages);
             saveSessionSearchIndex(sessionId, searchIndex).catch((e) =>
                 logger.debug('[Session] 搜索索引延迟写入失败:', e)
             );
@@ -522,7 +537,14 @@ export async function reloadCurrentSessionMessages() {
         logger.error('[Session] 重新加载消息失败:', e);
         return false;
     }
-    const aged = agePendingToolCallsInPlace(msgData?.messages, { nowMs: Date.now() });
+    if (state.currentSessionId !== sid || state.isSwitchingSession) {
+        logger.debug(`[Session] 重新加载完成时会话已变化，丢弃 ${sid} 的结果`);
+        return false;
+    }
+    const activeTask = requestTaskRegistry.getBySession(sid);
+    const aged = activeTask
+        ? 0
+        : agePendingToolCallsInPlace(msgData?.messages, { nowMs: Date.now() });
     replaceAllMessages(msgData?.messages || []);
 
     // 更新乐观锁基线：从 sessions 数组对应记录拿最新 updatedAt（loadAllSessions 已同步过元数据）
@@ -539,6 +561,7 @@ export async function reloadCurrentSessionMessages() {
 
     // 仅当 aged > 0 时需要持久化老化结果，主动调用一次而不依赖 debouncedSaveSession
     if (aged > 0) {
+        if (state.currentSessionId !== sid || state.isSwitchingSession) return false;
         logger.info(`[Session] reload 老化 ${aged} 个中断的 pending tool_call → ERROR`);
         state.sessionDirty = true;
         await saveCurrentSessionMessages(true);
@@ -638,7 +661,7 @@ export async function createNewSession(shouldSwitch = true) {
  */
 export async function switchToSession(sessionId, saveOld = true, elements = null) {
     // 防止重复切换（同一会话）
-    if (state.currentSessionId === sessionId) return;
+    if (state.currentSessionId === sessionId && !state.isSwitchingSession) return;
 
     // 清除防抖保存定时器，防止跨会话保存
     if (saveSessionTimer) {
@@ -658,6 +681,7 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
 
     // 设置切换标志
     state.isSwitchingSession = true;
+    const oldSessionId = state.currentSessionId;
 
     // 触发会话切换前事件（用于清理）
     eventBus.emit('session:before-switch');
@@ -673,36 +697,17 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
             return;
         }
 
-        const oldSessionId = state.currentSessionId;
-
-        // 将当前会话的生成任务移到后台（必须在 cancel 之前，否则 abort 会取消请求）
-        // AbortController 仅存于状态机 + backgroundTask；state 上无对应字段
-        const activeAbortController = requestStateMachine.abortController;
-        const hasActiveRequest = requestStateMachine.isBusy() && activeAbortController;
-        if (oldSessionId && hasActiveRequest) {
+        const activeTask = requestTaskRegistry.getBySession(oldSessionId);
+        if (activeTask && requestTaskRegistry.isActive(activeTask)) {
             logger.debug(`[sessions.js] 将会话 ${oldSessionId} 的任务移到后台`);
-
-            // 一次性构建 task 对象再 set，避免事后回填 cleanupTimer 期间被并发 delete
-            // （deleteSession / cleanupAfterSend / 自身 timer 三处竞争）导致 TypeError
-            const task = {
-                abortController: activeAbortController,
-                messageElement: state.currentAssistantMessage,
-                createdAt: Date.now(),
-                cleanupTimer: null
-            };
-            task.cleanupTimer = setTimeout(() => {
-                const current = state.backgroundTasks.get(oldSessionId);
-                if (current === task && Date.now() - task.createdAt > 180000) {
-                    logger.warn('[sessions.js] 清理超时后台任务:', oldSessionId);
-                    task.abortController?.abort();
-                    state.backgroundTasks.delete(oldSessionId);
-                    eventBus.emit('sessions:updated');
-                }
-            }, 180000);
-            state.backgroundTasks.set(oldSessionId, task);
-
-            // 立即清空全局引用，阻止后台流的 rAF 回调继续渲染到旧 DOM
+            requestTaskRegistry.setAssistantElement(
+                activeTask,
+                state.currentAssistantMessage?.closest?.('.message') ||
+                    activeTask.assistantMessageEl
+            );
+            requestTaskRegistry.detach(activeTask);
             state.currentAssistantMessage = null;
+            state.isSavingContinuation = false;
 
             eventBus.emit('ui:notification', {
                 message: '上一个会话的生成将在后台继续',
@@ -710,12 +715,9 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
                 duration: 3000
             });
 
-            // 不 cancel/abort 请求，只重置状态机到 IDLE
-            // 请求继续在后台运行，由 sendToAPI 的 finally 清理
-            requestStateMachine.forceReset({ skipAbort: true, silent: true });
+            requestStateMachine.detach(activeTask);
         } else if (requestStateMachine.isBusy()) {
-            // 没有 abortController 的异常情况，直接取消
-            requestStateMachine.cancel();
+            requestStateMachine.forceReset({ skipAbort: true, silent: true });
         }
 
         // 保存当前会话
@@ -740,7 +742,13 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
         // 保持原值，避免 B 数据落库到 C 的连切覆盖 race
         let msgData = null;
         try {
-            msgData = await loadSessionMessages(sessionId);
+            msgData = await longChatPerformance.measureAsync(
+                'sessionMessageLoad',
+                async () =>
+                    (await loadSessionMessageWindow(sessionId)) ||
+                    (await loadSessionMessages(sessionId)),
+                { sessionId }
+            );
         } catch (e) {
             logger.error('[Session] 从 IndexedDB 加载消息失败:', e);
         }
@@ -762,8 +770,12 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
             }
         }
 
+        const registeredTask = requestTaskRegistry.getBySession(sessionId);
+        const backgroundTask = requestTaskRegistry.isActive(registeredTask) ? registeredTask : null;
         // 启动/切回时把上次中断的 pending tool_call 老化为 ERROR，防 UI 永久转圈 + 重发 400
-        const aged = agePendingToolCallsInPlace(msgData.messages, { nowMs: Date.now() });
+        const aged = backgroundTask
+            ? 0
+            : agePendingToolCallsInPlace(msgData.messages, { nowMs: Date.now() });
         if (aged > 0) {
             logger.info(`[Session] 老化 ${aged} 个中断的 pending tool_call → ERROR`);
             state.sessionDirty = true;
@@ -851,12 +863,15 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
         // 用专用事件名避免与下方 UI 通知用的 session:switched 双发触发所有 listener 跑两次
         eventBus.emit('session:monitor-ready', { session });
 
+        if (signal.aborted) {
+            logger.debug('[Session] 会话切换在配置同步后被取消');
+            return;
+        }
+
         // 检查目标会话是否有后台任务
-        const backgroundTask = state.backgroundTasks.get(sessionId);
         if (backgroundTask) {
-            // 恢复后台任务的状态（abortController 由状态机/backgroundTask 持有，state 字段已废除）
-            state.isLoading = true;
-            // currentAssistantMessage 将在 renderSessionMessages 后自动恢复
+            requestTaskRegistry.attach(backgroundTask);
+            requestStateMachine.attach(backgroundTask);
             logger.debug(
                 `[sessions.js] 恢复会话 ${sessionId} 的后台任务, state.isLoading =`,
                 state.isLoading
@@ -902,7 +917,7 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
         }
 
         // 如果有后台任务，恢复 currentAssistantMessage 引用
-        if (backgroundTask && backgroundTask.messageElement && isElementsInitialized()) {
+        if (backgroundTask && isElementsInitialized()) {
             // 延迟到下一帧执行，确保 renderSessionMessages() 的 DOM 操作完全完成
             requestAnimationFrame(() => {
                 // 二次检查：确保会话没有再次切换
@@ -910,6 +925,7 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
                     logger.warn('[sessions.js] 会话已切换，取消后台任务恢复');
                     return;
                 }
+                if (!requestTaskRegistry.isActive(backgroundTask)) return;
 
                 try {
                     // 直接使用 document.getElementById 避免 Proxy 问题
@@ -946,6 +962,17 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
                     messagesArea.appendChild(messageDiv);
 
                     state.currentAssistantMessage = contentDiv;
+                    requestTaskRegistry.setAssistantElement(backgroundTask, messageDiv);
+                    requestStateMachine.attach(backgroundTask, messageDiv);
+                    if (backgroundTask.partialRender) {
+                        updateStreamingMessage(
+                            backgroundTask.partialRender.textContent,
+                            backgroundTask.partialRender.thinkingContent,
+                            contentDiv,
+                            backgroundTask
+                        );
+                        flushPendingRender(contentDiv, backgroundTask);
+                    }
                 } catch (error) {
                     logger.error('[sessions.js] ❌ 恢复后台任务失败:', error);
                 }
@@ -970,6 +997,19 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
         // 清除切换标志（只有在没有新的切换时）
         // 如果已经有新的 AbortController，说明新的切换已经开始，不要清除标志
         if (sessionSwitchController && sessionSwitchController.signal === signal) {
+            if (state.currentSessionId === oldSessionId) {
+                const oldTask = requestTaskRegistry.getBySession(oldSessionId);
+                if (oldTask?.isDetached && requestTaskRegistry.isActive(oldTask)) {
+                    requestTaskRegistry.attach(oldTask);
+                    const messageEl = oldTask.messageElement || oldTask.assistantMessageEl;
+                    state.currentAssistantMessage = messageEl?.classList?.contains(
+                        'message-content'
+                    )
+                        ? messageEl
+                        : messageEl?.querySelector?.('.message-content') || null;
+                    requestStateMachine.attach(oldTask, messageEl);
+                }
+            }
             state.isSwitchingSession = false;
             sessionSwitchController = null;
         }
@@ -1007,12 +1047,15 @@ export async function deleteSession(sessionId) {
     }
 
     // 停止该会话的后台任务
-    const task = state.backgroundTasks.get(sessionId);
+    const task = requestTaskRegistry.getBySession(sessionId);
     if (task) {
-        if (task.cleanupTimer) {
-            clearTimeout(task.cleanupTimer);
-        }
-        task.abortController.abort();
+        requestTaskRegistry.abort(task);
+        if (requestStateMachine.owns(task)) requestStateMachine.cancel();
+        requestTaskRegistry.finish(task, 'cancelled', { reason: 'session-deleted' });
+    } else {
+        const legacyTask = state.backgroundTasks.get(sessionId);
+        legacyTask?.abortController?.abort?.();
+        legacyTask?.toolAbortController?.abort?.();
         state.backgroundTasks.delete(sessionId);
     }
 

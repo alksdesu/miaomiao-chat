@@ -150,8 +150,12 @@ describe('claude API', () => {
 
     it('过滤错误消息', async () => {
         state.messages = [
-            { role: 'user', content: 'Hello' },
-            { role: 'assistant', content: 'err', isError: true }
+            { role: 'user', parts: [{ type: 'text', text: 'Hello' }], error: null },
+            {
+                role: 'assistant',
+                parts: [{ type: 'text', text: 'err' }],
+                error: { type: 'api', message: 'failed' }
+            }
         ];
         await sendClaudeRequest('https://api.anthropic.com/v1/messages', 'sk-test', 'claude-3');
 

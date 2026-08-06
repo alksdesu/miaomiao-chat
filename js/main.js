@@ -110,13 +110,16 @@ import {
     isLocalStorageAvailable,
     migrateMCPServersFromLocalStorage,
     loadAllMCPServers,
-    migrateSessionsToV4
+    migrateSessionsToV4,
+    migrateMessagesToPages,
+    migrateSessionMessagesToPages
 } from './state/storage.js';
 import { loadConfig, saveCurrentConfigImmediate } from './state/config.js';
 import { loadSessions, saveCurrentSessionMessages } from './state/sessions.js';
 import { initTabSync } from './state/tab-sync.js';
 // initExportImport → 延迟动态加载
 import { initQuickMessages } from './state/quick-messages.js';
+import { cleanupOrphanedMedia } from './state/media-blob-store.js';
 // 新增：数据迁移
 import {
     executeMigration,
@@ -358,6 +361,39 @@ async function init() {
                 }
             } catch (e) {
                 logger.error('[schema] 消息格式迁移失败:', e);
+            }
+        }
+
+        if (dbReady) {
+            try {
+                const currentSessionId = await loadPreference('currentSessionId');
+                if (currentSessionId) {
+                    await migrateSessionMessagesToPages(currentSessionId);
+                }
+                requestIdleCallback(
+                    () => {
+                        void migrateMessagesToPages()
+                            .then((pageMigration) => {
+                                if (pageMigration.migrated > 0) {
+                                    logger.debug(
+                                        `[message-pages] 迁移完成: ${pageMigration.migrated} 个会话`
+                                    );
+                                }
+                                if (pageMigration.errors.length > 0) {
+                                    logger.warn(
+                                        `[message-pages] ${pageMigration.errors.length} 个会话迁移失败`
+                                    );
+                                }
+                            })
+                            .catch((error) => logger.error('[message-pages] 分页迁移失败:', error));
+                        void cleanupOrphanedMedia().catch((error) =>
+                            logger.debug('[media] 清理跳过:', error)
+                        );
+                    },
+                    { timeout: 5000 }
+                );
+            } catch (e) {
+                logger.error('[message-pages] 当前会话迁移失败:', e);
             }
         }
 

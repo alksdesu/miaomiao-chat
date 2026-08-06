@@ -6,16 +6,14 @@
 import { logger } from '../utils/logger.js';
 import { state } from '../core/state.js';
 import { eventBus } from '../core/events.js';
-import { buildModelParams, buildThinkingConfig } from './params.js';
-import { getToolsForAPI } from '../tools/manager.js';
 import { PartType } from '../messages/schema.js';
 import { WS_HEARTBEAT_TIMEOUT_RATIO } from '../utils/constants.js';
-// 静态 import current 安全：current → manager → fetchModelsFromAPI 内 openclaw 仍是 lazy，
-// 顶层 openclaw → current → manager 单向无环
-import { getCurrentModel, getCurrentProvider } from './current.js';
+import { materializeSessionMessages } from '../state/session-message-repository.js';
+import { loadSessionMessages } from '../state/storage.js';
 
 // 请求 ID 计数器
 let requestIdCounter = 0;
+let dispatchInFlight = false;
 
 /**
  * OpenClaw WebSocket 客户端（单例）
@@ -311,13 +309,12 @@ class OpenClawClient {
      * @returns {Promise<void>} - 当 chat.done 收到时 resolve
      */
     async sendMessage(message, sessionKey, options = {}) {
-        const model = getCurrentModel();
+        const model = options.model || '';
 
         // 切 provider 后 this.url 仍是旧值：重连退避期 sendMessage 会用旧 url 连旧 gateway，
         // 即使新 provider 有新 url。比对当前 provider 的 url 与 this.url 不一致时强制 disconnect
         // 让下面的重连分支用 caller 传入的端点重新建连
-        const provider = getCurrentProvider();
-        const desiredUrl = provider?.endpoint || provider?.url || null;
+        const desiredUrl = options.endpoint || null;
         if (desiredUrl && this.url && desiredUrl !== this.url) {
             logger.warn(
                 `[OpenClaw] 检测到 provider url 变更 (${this.url} → ${desiredUrl})，强制重连`
@@ -347,29 +344,29 @@ class OpenClawClient {
                 return;
             }
 
-            // 如果已有活跃 run，先 reject 旧的
+            // Gateway 事件没有稳定 run scope，只允许一个活动 run。
             if (this.activeRunReject) {
-                this.activeRunReject(new Error('被新请求取代'));
-                this._clearActiveRun();
+                reject(new Error('OpenClaw 当前已有请求正在运行'));
+                return;
             }
 
+            const { requestProfile = null, useRun = false } = options;
             const params = {
                 sessionKey: sessionKey || state.currentSessionId,
                 message,
-                model: options.model || model,
-                ...options
+                model: options.model || model
             };
 
-            const modelParams = buildModelParams('openclaw');
+            const modelParams = requestProfile?.modelParams || {};
             Object.assign(params, modelParams);
 
-            const thinkingConfig = buildThinkingConfig('openclaw', model);
+            const thinkingConfig = requestProfile?.thinkingCfg || null;
             if (thinkingConfig) {
                 Object.assign(params, thinkingConfig);
             }
 
-            if (!state.xmlToolCallingEnabled) {
-                const tools = getToolsForAPI('openclaw');
+            if (!requestProfile?.isXmlMode) {
+                const tools = requestProfile?.tools || [];
                 if (tools.length > 0) {
                     params.tools = tools;
                     // OpenClaw Gateway 协议设计为 server-side 工具执行（chat.run 通过
@@ -390,7 +387,7 @@ class OpenClawClient {
             const id = String(++requestIdCounter);
             const msg = {
                 type: 'method',
-                method: options.useRun ? 'chat.run' : 'chat.send',
+                method: useRun ? 'chat.run' : 'chat.send',
                 id,
                 params
             };
@@ -564,68 +561,86 @@ export const openclawClient = new OpenClawClient();
  * 直接调用 handleOpenClawStream() 监听 eventBus 事件。
  * 此函数只负责：建连 + 发送 WS 消息 + 返回 sentinel 对象。
  */
-export async function sendOpenClawRequest(endpoint, apiKey, model, signal = null) {
-    // 确保已连接
-    if (!openclawClient.connected) {
-        const result = await openclawClient.connect(endpoint, apiKey);
-        if (!result.success) {
-            throw new Error(`OpenClaw 连接失败: ${result.error}`);
-        }
+export async function sendOpenClawRequest(
+    endpoint,
+    apiKey,
+    model,
+    signal = null,
+    _adapter = null,
+    requestContext = null
+) {
+    const sessionId = requestContext?.sessionId || state.currentSessionId;
+    if (dispatchInFlight || openclawClient.activeRunReject) {
+        throw new Error('OpenClaw 当前已有请求正在运行');
     }
+    dispatchInFlight = true;
+    const sourceMessages = requestContext?.sourceMessages;
+    const messagesPromise = Array.isArray(sourceMessages)
+        ? materializeSessionMessages(sessionId, sourceMessages)
+        : loadSessionMessages(sessionId).then((stored) => stored?.messages || []);
 
-    // 从 state.messages 提取最后一条用户消息文本
-    const msgs = state.messages;
-    let messageText = '';
-    for (let i = msgs.length - 1; i >= 0; i--) {
-        const m = msgs[i];
-        if (m.isError) continue;
-        if (m.role === 'user') {
-            // 新格式：从 parts 提取文本
-            if (m.parts && Array.isArray(m.parts)) {
-                messageText = m.parts
-                    .filter((p) => p.type === PartType.TEXT)
-                    .map((p) => p.text)
-                    .join('\n');
+    try {
+        // 确保已连接
+        if (!openclawClient.connected) {
+            const result = await openclawClient.connect(endpoint, apiKey);
+            if (!result.success) {
+                throw new Error(`OpenClaw 连接失败: ${result.error}`);
             }
-            // 旧格式兼容
-            else if (typeof m.content === 'string') {
-                messageText = m.content;
-            } else if (Array.isArray(m.content)) {
-                messageText = m.content
-                    .filter((p) => p.type === 'text')
-                    .map((p) => p.text)
-                    .join('\n');
-            }
-            break;
         }
-    }
 
-    // 监听取消信号 — 在 chat.done / chat.error 收到后由 parser-openclaw 触发的
-    // openclaw:disconnected 事件路径同时 cleanup listener，避免连续多次 abort 在
-    // signal 上堆积冗余 listener（once:true 仅保证单次触发，不保证生命周期解绑）
-    let abortListener = null;
-    const detachAbortListener = () => {
-        if (abortListener && signal) {
-            signal.removeEventListener('abort', abortListener);
-            abortListener = null;
+        const msgs = await messagesPromise;
+        let messageText = '';
+        for (let i = msgs.length - 1; i >= 0; i--) {
+            const m = msgs[i];
+            if (m.error) continue;
+            if (m.role === 'user') {
+                if (Array.isArray(m.parts)) {
+                    messageText = m.parts
+                        .filter((p) => p.type === PartType.TEXT)
+                        .map((p) => p.text)
+                        .join('\n');
+                }
+                break;
+            }
         }
-    };
-    if (signal) {
-        abortListener = () => {
-            openclawClient.abortRun();
-            detachAbortListener();
+
+        // 监听取消信号 — 在 chat.done / chat.error 收到后由 parser-openclaw 触发的
+        // openclaw:disconnected 事件路径同时 cleanup listener，避免连续多次 abort 在
+        // signal 上堆积冗余 listener（once:true 仅保证单次触发，不保证生命周期解绑）
+        let abortListener = null;
+        const detachAbortListener = () => {
+            if (abortListener && signal) {
+                signal.removeEventListener('abort', abortListener);
+                abortListener = null;
+            }
         };
-        signal.addEventListener('abort', abortListener, { once: true });
+        if (signal) {
+            abortListener = () => {
+                openclawClient.abortRun();
+                detachAbortListener();
+            };
+            signal.addEventListener('abort', abortListener, { once: true });
+        }
+
+        const runPromise = openclawClient.sendMessage(messageText, sessionId, {
+            model,
+            useRun: true,
+            endpoint,
+            requestProfile: requestContext?.requestProfile || null
+        });
+        runPromise
+            .catch(() => {
+                /* abortRun / 失败已由其它路径 reject，这里只确保不堆积 listener */
+            })
+            .finally(() => {
+                dispatchInFlight = false;
+                detachAbortListener();
+            });
+
+        // 返回 sentinel，handler.js 检测到 openclaw 时不使用 response.body
+        return { ok: true, status: 200, body: null };
+    } catch (error) {
+        dispatchInFlight = false;
+        throw error;
     }
-
-    // 发送 WS 消息（side effect）
-    openclawClient
-        .sendMessage(messageText, state.currentSessionId, { model, useRun: true })
-        .catch(() => {
-            /* abortRun / 失败已由其它路径 reject，这里只确保不堆积 listener */
-        })
-        .finally(detachAbortListener);
-
-    // 返回 sentinel，handler.js 检测到 openclaw 时不使用 response.body
-    return { ok: true, status: 200, body: null };
 }

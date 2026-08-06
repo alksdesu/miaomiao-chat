@@ -3,7 +3,8 @@
  * 负责把消息抽取为轻量可搜索结构，供持久化与侧边栏搜索复用。
  */
 
-import { PartType, hasParts, getTextContent } from '../messages/schema.js';
+import { PartType } from '../messages/schema.js';
+import { buildSearchIndexInWorker } from '../utils/long-chat-worker-client.js';
 
 export const SESSION_SEARCH_INDEX_VERSION = 1;
 
@@ -28,40 +29,13 @@ export function extractMessageSearchText(message) {
         return '';
     }
 
-    if (hasParts(message)) {
-        return normalizeSearchText(
-            message.parts
-                .filter((part) => {
-                    if (typeof part?.text !== 'string') {
-                        return false;
-                    }
-
-                    return part.type === PartType.TEXT || part.type === undefined;
-                })
-                .map((part) => part.text)
-                .join(' ')
-        );
-    }
-
-    if (typeof message.content === 'string') {
-        return normalizeSearchText(message.content);
-    }
-
-    // 旧格式 content 数组或未经 schema 检测的 parts：用 getTextContent 统一提取
-    const text = getTextContent(message);
-    if (text) return normalizeSearchText(text);
-
-    // 兜底：Gemini 原始 parts（无 type 标记）
-    if (Array.isArray(message.parts)) {
-        return normalizeSearchText(
-            message.parts
-                .filter((part) => typeof part.text === 'string')
-                .map((part) => part.text)
-                .join(' ')
-        );
-    }
-
-    return '';
+    if (!Array.isArray(message.parts)) return '';
+    return normalizeSearchText(
+        message.parts
+            .filter((part) => part?.type === PartType.TEXT && typeof part.text === 'string')
+            .map((part) => part.text)
+            .join(' ')
+    );
 }
 
 export function buildSessionSearchIndex(messages = []) {
@@ -88,6 +62,12 @@ export function buildSessionSearchIndex(messages = []) {
         messageCount: safeMessages.length,
         entries
     };
+}
+
+export async function buildSessionSearchIndexAsync(messages = []) {
+    const safeMessages = Array.isArray(messages) ? messages : [];
+    if (safeMessages.length < 200) return buildSessionSearchIndex(safeMessages);
+    return buildSearchIndexInWorker(safeMessages);
 }
 
 export function isSessionSearchIndexUsable(searchIndex, expectedMessageCount = null) {

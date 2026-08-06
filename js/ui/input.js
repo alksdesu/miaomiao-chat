@@ -7,6 +7,7 @@
 import { state, elements } from '../core/state.js';
 import { eventBus } from '../core/events.js';
 import { requestStateMachine } from '../core/request-state-machine.js';
+import { requestTaskRegistry } from '../core/request-task-registry.js';
 import { createMessageElement } from '../messages/renderer.js';
 import {
     removeMessagesAfterAll,
@@ -19,11 +20,7 @@ import { showNotification } from './notifications.js';
 import { showConfirmDialog } from '../utils/dialogs.js';
 import { pushMessage, updateMessageAt } from '../core/state-mutations.js';
 import { createMessage, Role, textPart } from '../messages/schema.js';
-import {
-    MAX_ATTACHMENTS,
-    IMAGE_COMPRESSION_TIMEOUT,
-    AUTO_DOCUMENT_TOKEN_THRESHOLD
-} from '../utils/constants.js';
+import { MAX_ATTACHMENTS, AUTO_DOCUMENT_TOKEN_THRESHOLD } from '../utils/constants.js';
 import { estimateTokenCount } from '../stream/stats.js';
 import { handleAttachFile, updateImagePreview, handlePaste } from './attachment-handler.js';
 import {
@@ -33,6 +30,27 @@ import {
     updateQuotePreviewStyle
 } from './quote-handler.js';
 import { logger } from '../utils/logger.js';
+import { isVirtualScrollManaged } from './virtual-scroll.js';
+import { materializeCurrentSessionMessages } from '../state/session-message-repository.js';
+import { resolveMessagesMediaForApi } from '../state/media-blob-store.js';
+import {
+    estimateTokensInWorker,
+    LONG_CHAT_WORKER_TEXT_THRESHOLD
+} from '../utils/long-chat-worker-client.js';
+
+function estimateInputTokens(text) {
+    return text.length >= LONG_CHAT_WORKER_TEXT_THRESHOLD
+        ? estimateTokensInWorker(text)
+        : Promise.resolve(estimateTokenCount(text));
+}
+
+let sendPreparationInFlight = false;
+
+function isSourceSessionActive(sessionId) {
+    if (state.currentSessionId === sessionId && !state.isSwitchingSession) return true;
+    showNotification('会话已切换，本次发送已取消', 'info');
+    return false;
+}
 
 // re-export 保持外部兼容
 export { handleAttachFile, updateImagePreview } from './attachment-handler.js';
@@ -140,8 +158,11 @@ function cancelEdit() {
 /**
  * 保存编辑（不删除后续消息）
  */
-function saveEdit() {
+async function saveEdit() {
     if (state.editingIndex === null) return;
+
+    const sourceSessionId = state.currentSessionId;
+    if (!isSourceSessionActive(sourceSessionId)) return;
 
     const targetIndex = resolveEditingIndex();
     if (targetIndex < 0) {
@@ -164,12 +185,16 @@ function saveEdit() {
         hasAttachments ? state.uploadedImages : []
     );
 
+    const [messageOverride] = await resolveMessagesMediaForApi([state.messages[targetIndex]]);
+    if (!isSourceSessionActive(sourceSessionId)) return;
+
     if (state.editingElement) {
         eventBus.emit('message:content-updated', {
             messageEl: state.editingElement,
             index: targetIndex,
             newContent: textContent,
-            role: 'user'
+            role: 'user',
+            messageOverride
         });
     }
 
@@ -193,7 +218,22 @@ function saveEdit() {
  * 处理消息发送
  */
 export async function handleSend() {
+    if (sendPreparationInFlight) {
+        showNotification('消息正在准备，请勿重复发送', 'warning');
+        return;
+    }
+    const sourceSessionId = state.currentSessionId;
+    sendPreparationInFlight = true;
+    try {
+        return await prepareAndSend(sourceSessionId);
+    } finally {
+        sendPreparationInFlight = false;
+    }
+}
+
+async function prepareAndSend(sourceSessionId) {
     logger.debug('[input.js] handleSend 被调用, 状态机:', requestStateMachine.getState());
+    if (!isSourceSessionActive(sourceSessionId)) return;
 
     let textContent = elements.userInput.value.trim();
     let hasAttachments = state.uploadedImages.length > 0;
@@ -204,7 +244,7 @@ export async function handleSend() {
         return;
     }
 
-    if (requestStateMachine.isBusy()) {
+    if (requestTaskRegistry.getBySession(sourceSessionId) || requestStateMachine.isBusy()) {
         logger.debug(
             '[input.js] handleSend 被阻止: 请求正在进行中, 当前状态:',
             requestStateMachine.getState()
@@ -232,7 +272,15 @@ export async function handleSend() {
                 `重新发送将删除该消息之后的 ${followCount} 条消息，确定继续？`,
                 '重新发送'
             );
-            if (!confirmed) return;
+            if (!confirmed || !isSourceSessionActive(sourceSessionId)) return;
+        }
+        await materializeCurrentSessionMessages();
+        if (!isSourceSessionActive(sourceSessionId)) return;
+        editTargetIndex = resolveEditingIndex();
+        if (editTargetIndex < 0) {
+            showNotification('原消息已不存在，无法重新发送', 'error');
+            cancelEdit();
+            return;
         }
     }
 
@@ -248,7 +296,8 @@ export async function handleSend() {
     // 超长文本通过下面的 AUTO_DOCUMENT_TOKEN_THRESHOLD 自动转文档附件处理，
     // 不再设硬字符上限，避免长粘贴被拦截在发送之前
     if (textContent) {
-        const tokenCount = estimateTokenCount(textContent);
+        const tokenCount = await estimateInputTokens(textContent);
+        if (!isSourceSessionActive(sourceSessionId)) return;
         logger.debug(`[input.js] 消息 token 数: ${tokenCount}`);
 
         if (tokenCount > AUTO_DOCUMENT_TOKEN_THRESHOLD) {
@@ -297,6 +346,7 @@ export async function handleSend() {
     }
 
     const userMessage = createMessage(Role.USER, parts);
+    if (!isSourceSessionActive(sourceSessionId)) return;
 
     state.lastUserMessage = userMessage;
     state.messageHistory.push({ message: userMessage, timestamp: Date.now() });
@@ -306,6 +356,8 @@ export async function handleSend() {
 
     let messageIndex;
     if (isEditing) {
+        const [messageOverride] = await resolveMessagesMediaForApi([userMessage]);
+        if (!isSourceSessionActive(sourceSessionId)) return;
         updateMessageAt(editTargetIndex, userMessage, true);
 
         if (state.editingElement) {
@@ -314,7 +366,8 @@ export async function handleSend() {
                 messageEl: state.editingElement,
                 index: editTargetIndex,
                 newContent: textContent,
-                role: 'user'
+                role: 'user',
+                messageOverride
             });
         }
 
@@ -322,15 +375,17 @@ export async function handleSend() {
         messageIndex = editTargetIndex;
     } else {
         messageIndex = pushMessage(userMessage);
-        const messageEl = createMessageElement(
-            'user',
-            textContent,
-            hasAttachments ? state.uploadedImages : null,
-            userMessage.id
-        );
-        elements.messagesArea.appendChild(messageEl);
-        if (messageEl) {
-            messageEl.dataset.messageIndex = messageIndex;
+        if (!isVirtualScrollManaged()) {
+            const messageEl = createMessageElement(
+                'user',
+                textContent,
+                hasAttachments ? state.uploadedImages : null,
+                userMessage.id
+            );
+            elements.messagesArea.appendChild(messageEl);
+            if (messageEl) {
+                messageEl.dataset.messageIndex = messageIndex;
+            }
         }
     }
 
@@ -388,14 +443,22 @@ export function initInputHandlers() {
     elements.userInput?.addEventListener('input', (e) => {
         const text = e.target.value;
         const length = text.length;
+        const sourceSessionId = state.currentSessionId;
 
         if (elements.charCounter) {
             if (length > 0) {
                 elements.charCounter.textContent = `${length}`;
 
                 clearTimeout(tokenCountTimeout);
-                tokenCountTimeout = setTimeout(() => {
-                    const tokenCount = estimateTokenCount(text);
+                tokenCountTimeout = setTimeout(async () => {
+                    const tokenCount = await estimateInputTokens(text);
+                    if (
+                        state.currentSessionId !== sourceSessionId ||
+                        state.isSwitchingSession ||
+                        elements.userInput?.value !== text
+                    ) {
+                        return;
+                    }
                     elements.charCounter.textContent = `${length} 字符 / ${tokenCount} tokens`;
 
                     if (tokenCount > AUTO_DOCUMENT_TOKEN_THRESHOLD * 0.9) {
@@ -451,17 +514,22 @@ export function initInputHandlers() {
     // 会话切换时的按钮重置
     eventBus.on('ui:reset-input-buttons', () => {
         logger.debug('[input.js] 收到 ui:reset-input-buttons 事件');
-        if (requestStateMachine.isBusy()) {
-            logger.warn('[input.js] 状态机显示正忙，强制重置');
-            requestStateMachine.forceReset();
-        } else {
-            if (elements.sendButton) {
-                elements.sendButton.disabled = false;
-                elements.sendButton.style.display = 'inline-flex';
-            }
-            if (elements.cancelRequestButton) {
-                elements.cancelRequestButton.style.display = 'none';
-            }
+        const task = requestTaskRegistry.getBySession(state.currentSessionId);
+        if (
+            task &&
+            requestTaskRegistry.isActive(task) &&
+            !task.isDetached &&
+            !state.isSwitchingSession
+        ) {
+            requestStateMachine.attach(task, task.assistantMessageEl);
+            return;
+        }
+        if (elements.sendButton) {
+            elements.sendButton.disabled = false;
+            elements.sendButton.style.display = 'inline-flex';
+        }
+        if (elements.cancelRequestButton) {
+            elements.cancelRequestButton.style.display = 'none';
         }
     });
 
@@ -484,21 +552,6 @@ export function initInputHandlers() {
     // 编辑模式刷新
     eventBus.on('editor:refresh-attachments', () => _doUpdateImagePreview());
     eventBus.on('editor:resize-textarea', () => autoResizeTextarea());
-
-    // 全局按钮状态检测器
-    setInterval(() => {
-        const isBusy = requestStateMachine.isBusy();
-        const sendButtonDisabled = elements.sendButton?.disabled;
-        const cancelButtonVisible = elements.cancelRequestButton?.style.display === 'inline-flex';
-
-        if (!isBusy && (sendButtonDisabled || cancelButtonVisible)) {
-            logger.warn('[按钮状态修复] 检测到状态不一致，强制修复');
-            logger.warn('[按钮状态修复] 状态机:', requestStateMachine.getState());
-            logger.warn('[按钮状态修复] UI:', { sendButtonDisabled, cancelButtonVisible });
-
-            requestStateMachine.forceReset();
-        }
-    }, IMAGE_COMPRESSION_TIMEOUT);
 
     logger.debug('Input handlers initialized');
 }

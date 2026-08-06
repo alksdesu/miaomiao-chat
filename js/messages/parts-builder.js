@@ -19,7 +19,8 @@ import {
     textPart,
     thinkingPart,
     mediaPart,
-    toolCallPart
+    toolCallPart,
+    isSchemaFormatParts
 } from './schema.js';
 import { isVideoMimeType } from '../utils/media.js';
 import { generateId } from '../utils/helpers.js';
@@ -102,7 +103,7 @@ function deduplicateMediaParts(parts) {
     const seen = new Set();
     return parts.filter((p) => {
         if (p.type === PartType.MEDIA) {
-            const key = simpleHash(p.url);
+            const key = `${p.media || ''}:${p.mediaId || simpleHash(p.url)}`;
             if (seen.has(key)) return false;
             seen.add(key);
         }
@@ -140,11 +141,13 @@ function streamingContentPartsToSchema(contentParts, signatureFormat = null) {
         } else if (p.type === 'server_tool_use') {
             // 服务端工具调用（web_search, code_execution 等）已完成
             const result = p.result ? { type: p.result.type, content: p.result.content } : null;
+            const partId = p.id || generateId('tc');
             parts.push(
-                toolCallPart(p.id, p.name, p.input || {}, {
+                toolCallPart(partId, p.name, p.input || {}, {
                     server: true,
                     state: ToolState.DONE,
-                    result
+                    result,
+                    idMap: p.idMap || generateIdSet(partId)
                 })
             );
         }
@@ -400,4 +403,27 @@ export function buildMetaFromReply(reply) {
     if (reply.thoughtSignature) raw.gemini = { thoughtSignature: reply.thoughtSignature };
     if (reply.thinkingSignature) raw.claude = { thinkingSignature: reply.thinkingSignature };
     return createMeta({ usage: reply.usage || null, stats: reply.stats?.getData?.() || null, raw });
+}
+
+export function buildCanonicalReply(reply, ts = Date.now()) {
+    const source = reply && typeof reply === 'object' ? reply : {};
+    return {
+        parts: isSchemaFormatParts(source.parts) ? source.parts : buildPartsFromReply(source),
+        meta: source.meta || buildMetaFromReply(source),
+        ts: source.ts || source.timestamp || ts,
+        isOriginal: source.isOriginal,
+        error:
+            source.error ||
+            (source.isError
+                ? {
+                      type: source.errorType || 'unknown',
+                      message: source.errorMessage || 'Unknown error',
+                      ...(source.errorHtml ? { html: source.errorHtml } : {})
+                  }
+                : null)
+    };
+}
+
+export function buildCanonicalReplies(replies, ts = Date.now()) {
+    return Array.isArray(replies) ? replies.map((reply) => buildCanonicalReply(reply, ts)) : [];
 }

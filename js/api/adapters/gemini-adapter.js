@@ -68,7 +68,7 @@ function partsToAPIMessages(msgs, _opts = {}) {
     const out = [];
 
     for (const msg of msgs) {
-        if (msg.error || msg.isError) continue;
+        if (msg.error) continue;
         if (msg.role === Role.SYSTEM) continue;
 
         // 旧数据 idMap 缺槽补齐：避免下方 getMappedId 走 generateFormatId 兜底
@@ -212,10 +212,10 @@ function partsToAPIMessages(msgs, _opts = {}) {
 
 // ========== parseResponse ==========
 
-function parseResponse(data) {
+function parseResponse(data, options = {}) {
     if (data.error) return null;
     if (!data.candidates || data.candidates.length === 0) return null;
-    const xmlMode = state.xmlToolCallingEnabled;
+    const xmlMode = options.isXmlMode ?? state.xmlToolCallingEnabled;
 
     const candidate = data.candidates[0];
     if (!candidate.content || !candidate.content.parts) return null;
@@ -556,10 +556,11 @@ async function buildRequestBody(ctx) {
  * - 原生 Gemini provider：清理 OpenAI/Claude 路径残留 → 拼 /v1beta/models/{model}:{action}
  * - 统一代理（OpenAI/Claude/Responses provider 切到 gemini 格式）：保持原 endpoint
  */
-function resolveEndpoint(baseEndpoint, model, isStreaming) {
+function resolveEndpoint(baseEndpoint, model, isStreaming, _requestBody, ctx = {}) {
     const action = isStreaming ? 'streamGenerateContent' : 'generateContent';
-    const provider = getCurrentProvider();
-    const isNativeGeminiProvider = provider && provider.apiFormat === 'gemini';
+    const providerApiFormat =
+        ctx.requestProfile?.providerApiFormat || getCurrentProvider()?.apiFormat;
+    const isNativeGeminiProvider = providerApiFormat === 'gemini';
 
     if (isNativeGeminiProvider) {
         let cleanedEndpoint = baseEndpoint.replace(/\/$/, '');
@@ -578,8 +579,9 @@ function resolveEndpoint(baseEndpoint, model, isStreaming) {
 /**
  * Gemini headers：根据 state.geminiApiKeyInHeader 决定 API key 走 header 还是 query
  */
-function buildHeaders(apiKey, _ctx) {
-    if (state.geminiApiKeyInHeader) {
+function buildHeaders(apiKey, ctx = {}) {
+    const stateRef = ctx.state || state;
+    if (stateRef.geminiApiKeyInHeader) {
         return { 'x-goog-api-key': apiKey };
     }
     return {};
@@ -590,11 +592,12 @@ function buildHeaders(apiKey, _ctx) {
  * - header 模式：流式加 alt=sse
  * - query 模式：key=...&alt=sse（流式）或 key=...（非流式）
  */
-function buildQueryString(apiKey, _ctx) {
-    if (state.geminiApiKeyInHeader) {
-        return state.streamEnabled ? 'alt=sse' : '';
+function buildQueryString(apiKey, ctx = {}) {
+    const stateRef = ctx.state || state;
+    if (stateRef.geminiApiKeyInHeader) {
+        return stateRef.streamEnabled ? 'alt=sse' : '';
     }
-    return state.streamEnabled ? `key=${apiKey}&alt=sse` : `key=${apiKey}`;
+    return stateRef.streamEnabled ? `key=${apiKey}&alt=sse` : `key=${apiKey}`;
 }
 
 // ========== Adapter 对象 + 注册 ==========

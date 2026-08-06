@@ -206,34 +206,8 @@ describe('extractThoughtSignature', () => {
         expect(extractThoughtSignature(msg)).toBe('sig123');
     });
 
-    it('旧格式 tool_calls _thoughtSignature', () => {
-        const msg = {
-            role: 'assistant',
-            tool_calls: [{ _thoughtSignature: 'sig_old' }]
-        };
-        expect(extractThoughtSignature(msg)).toBe('sig_old');
-    });
-
-    it('旧格式 thoughtSignature', () => {
-        const msg = { role: 'assistant', thoughtSignature: 'gemini_sig' };
-        expect(extractThoughtSignature(msg)).toBe('gemini_sig');
-    });
-
-    it('旧格式 thinkingSignature', () => {
-        const msg = { role: 'assistant', thinkingSignature: 'claude_sig' };
-        expect(extractThoughtSignature(msg)).toBe('claude_sig');
-    });
-
     it('无签名返回 null', () => {
         expect(extractThoughtSignature({ role: 'assistant' })).toBeNull();
-    });
-
-    it('toolCallIndex 参数', () => {
-        const msg = {
-            role: 'assistant',
-            tool_calls: [{ _thoughtSignature: null }, { _thoughtSignature: 'sig2' }]
-        };
-        expect(extractThoughtSignature(msg, 1)).toBe('sig2');
     });
 });
 
@@ -252,46 +226,23 @@ describe('clearThoughtSignatures', () => {
         expect(msgs[0].parts[0].signature).toBeUndefined();
     });
 
-    it('清除旧格式签名', () => {
-        const msgs = [
-            {
-                role: 'assistant',
-                thoughtSignature: 'sig',
-                thinkingSignature: 'sig2'
-            }
-        ];
-        const count = clearThoughtSignatures(msgs, 0);
-        expect(count).toBe(2);
-        expect(msgs[0].thoughtSignature).toBeUndefined();
-        expect(msgs[0].thinkingSignature).toBeUndefined();
-    });
-
-    it('清除 tool_calls 签名', () => {
-        const msgs = [
-            {
-                role: 'assistant',
-                tool_calls: [{ _thoughtSignature: 'sig' }]
-            }
-        ];
-        const count = clearThoughtSignatures(msgs, 0);
-        expect(count).toBe(1);
-    });
-
     it('只清除 fromIndex 之后', () => {
         const msgs = [
-            { role: 'assistant', thoughtSignature: 'keep' },
-            { role: 'assistant', thoughtSignature: 'remove' }
+            { role: 'assistant', parts: [{ type: 'thinking', signature: 'keep', text: '' }] },
+            { role: 'assistant', parts: [{ type: 'thinking', signature: 'remove', text: '' }] }
         ];
         clearThoughtSignatures(msgs, 1);
-        expect(msgs[0].thoughtSignature).toBe('keep');
-        expect(msgs[1].thoughtSignature).toBeUndefined();
+        expect(msgs[0].parts[0].signature).toBe('keep');
+        expect(msgs[1].parts[0].signature).toBeUndefined();
     });
 
     it('跳过 user 消息', () => {
-        const msgs = [{ role: 'user', thoughtSignature: 'should_stay' }];
+        const msgs = [
+            { role: 'user', parts: [{ type: 'thinking', signature: 'should_stay', text: '' }] }
+        ];
         const count = clearThoughtSignatures(msgs, 0);
         expect(count).toBe(0);
-        expect(msgs[0].thoughtSignature).toBe('should_stay');
+        expect(msgs[0].parts[0].signature).toBe('should_stay');
     });
 });
 
@@ -300,21 +251,21 @@ describe('clearThoughtSignatures', () => {
 describe('hasThoughtSignatures', () => {
     it('有签名返回 true', () => {
         const msgs = [
-            { role: 'user', content: 'hi' },
-            { role: 'assistant', thoughtSignature: 'sig' }
+            { role: 'user', parts: [{ type: 'text', text: 'hi' }] },
+            { role: 'assistant', parts: [{ type: 'thinking', signature: 'sig', text: '' }] }
         ];
         expect(hasThoughtSignatures(msgs)).toBe(true);
     });
 
     it('无签名返回 false', () => {
-        const msgs = [{ role: 'assistant', content: 'hello' }];
+        const msgs = [{ role: 'assistant', parts: [{ type: 'text', text: 'hello' }] }];
         expect(hasThoughtSignatures(msgs)).toBe(false);
     });
 
     it('fromIndex 参数', () => {
         const msgs = [
-            { role: 'assistant', thoughtSignature: 'sig' },
-            { role: 'assistant', content: 'no sig' }
+            { role: 'assistant', parts: [{ type: 'thinking', signature: 'sig', text: '' }] },
+            { role: 'assistant', parts: [{ type: 'text', text: 'no sig' }] }
         ];
         expect(hasThoughtSignatures(msgs, 1)).toBe(false);
     });

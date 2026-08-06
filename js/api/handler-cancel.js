@@ -15,6 +15,7 @@ import { requestStateMachine, RequestState } from '../core/request-state-machine
 import { clearToolCallContinuation, clearImageRetry } from '../core/state-mutations.js';
 import { abortToolExecution } from '../tools/orchestrator.js';
 import { logger } from '../utils/logger.js';
+import { requestTaskRegistry } from '../core/request-task-registry.js';
 
 let _cancelInFlight = false;
 
@@ -39,7 +40,7 @@ function _doCancel() {
     logger.debug('[Handler] 取消按钮被点击, 当前状态:', requestStateMachine.getState());
 
     try {
-        abortToolExecution();
+        abortToolExecution(requestTaskRegistry.getBySession(state.currentSessionId));
     } catch (err) {
         logger.error('[Handler] 通知工具执行取消失败:', err);
     }
@@ -49,6 +50,30 @@ function _doCancel() {
         elements.cancelRequestButton.style.display !== 'none' &&
         elements.cancelRequestButton.style.display !== '';
     const currentState = requestStateMachine.getState();
+    const registeredTask = requestTaskRegistry.getBySession(state.currentSessionId);
+    const currentTask = requestTaskRegistry.isActive(registeredTask) ? registeredTask : null;
+
+    if (currentTask) {
+        if (!requestStateMachine.owns(currentTask)) {
+            requestStateMachine.attach(currentTask, currentTask.assistantMessageEl);
+        }
+        if (requestStateMachine.owns(currentTask)) requestStateMachine.cancel();
+        requestTaskRegistry.abort(currentTask);
+        requestTaskRegistry.setPhase(currentTask, RequestState.CANCELLED);
+        currentTask.isToolCallPending = false;
+        state.isToolCallPending = false;
+        clearToolCallContinuation();
+        clearImageRetry();
+        logger.debug(`[Handler] 已取消请求任务 ${currentTask.id}`);
+        return true;
+    }
+
+    if (
+        [RequestState.COMPLETED, RequestState.ERROR, RequestState.CANCELLED].includes(currentState)
+    ) {
+        logger.debug('[Handler] 请求已进入结束状态，等待状态机自动回到 IDLE');
+        return false;
+    }
 
     // 场景 1：状态机非 IDLE，走正常 cancel
     if (currentState !== RequestState.IDLE) {
@@ -62,18 +87,6 @@ function _doCancel() {
     // 场景 2：状态泄漏（IDLE 但按钮可见），强制重置 + 后台任务 abort
     if (currentState === RequestState.IDLE && isCancelButtonVisible) {
         logger.warn('[Handler] 检测到状态泄漏（UI loading 但状态机 IDLE），强制重置');
-
-        // 后台任务场景：abortController 挂在 backgroundTask，直接 abort 才能真停后台请求
-        const sid = state.currentSessionId;
-        const bgTask = sid ? state.backgroundTasks.get(sid) : null;
-        if (bgTask?.abortController) {
-            try {
-                bgTask.abortController.abort();
-                logger.debug(`[Handler] 已取消后台任务 ${sid}`);
-            } catch (err) {
-                logger.error('[Handler] 取消后台任务失败:', err);
-            }
-        }
 
         state.isLoading = false;
         state.isSending = false;

@@ -36,7 +36,7 @@ function partsToAPIMessages(msgs, _opts = {}) {
     const out = [];
 
     for (const msg of msgs) {
-        if (msg.error || msg.isError) continue;
+        if (msg.error) continue;
 
         const role = msg.role;
         const contentItems = [];
@@ -173,13 +173,13 @@ function partsToAPIMessages(msgs, _opts = {}) {
 
 // ========== parseResponse ==========
 
-function parseResponse(data) {
+function parseResponse(data, options = {}) {
     if (!data.choices || !data.choices[0]) return null;
 
     const message = data.choices[0].message;
     const finishReason = data.choices[0].finish_reason;
     // 入口一次性快照 XML toggle，整段解析期间复用同一值
-    const xmlMode = state.xmlToolCallingEnabled;
+    const xmlMode = options.isXmlMode ?? state.xmlToolCallingEnabled;
 
     // 检测原生 tool_calls（仅在非 XML 模式）
     if (message.tool_calls && finishReason === 'tool_calls' && !xmlMode) {

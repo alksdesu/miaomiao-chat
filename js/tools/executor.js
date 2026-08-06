@@ -283,12 +283,15 @@ async function executeTextEditorTool(args) {
  */
 export async function executeTool(toolId, args, options = {}) {
     const startTime = Date.now();
+    const apiFormat = options.apiFormat ?? state.apiFormat;
+    const isXmlMode = options.isXmlMode ?? state.xmlToolCallingEnabled;
+    const sessionId = options.sessionId ?? state.currentSessionId;
 
     // 特殊处理：Claude 原生工具（computer, bash, text_editor）
     // 这些工具通过 beta header 启用，只在 Claude 原生模式下使用
     // ⭐ XML 模式下即使是 Claude 也使用自定义工具
     const nativeTools = ['computer', 'bash', 'str_replace_based_edit_tool'];
-    const isClaudeNativeMode = state.apiFormat === 'claude' && !state.xmlToolCallingEnabled;
+    const isClaudeNativeMode = apiFormat === 'claude' && !isXmlMode;
 
     // 只有在 Claude 原生模式下才将这些工具名当作原生工具处理
     if (nativeTools.includes(toolId) && isClaudeNativeMode) {
@@ -306,7 +309,9 @@ export async function executeTool(toolId, args, options = {}) {
 
             // gate: 用户确认（内部承载 sessionAllow 缓存 + toolPermissions/bashConfig OR 逻辑）
             const approved = await confirmToolExecutionIfRequired(toolId, toolId, args, {
-                signal: options?.signal
+                signal: options.signal,
+                sessionId: options.sessionId,
+                turnId: options.turnId
             });
             if (!approved) {
                 const reason = `用户拒绝执行工具 "${toolId}"`;
@@ -323,6 +328,7 @@ export async function executeTool(toolId, args, options = {}) {
             // 记录到历史（与主分支对齐）
             try {
                 recordToolCall({
+                    sessionId,
                     toolId,
                     toolName: toolId,
                     args,
@@ -349,6 +355,7 @@ export async function executeTool(toolId, args, options = {}) {
             // 失败也记录（与主分支 catch 路径对齐）
             try {
                 recordToolCall({
+                    sessionId,
                     toolId,
                     toolName: toolId,
                     args,
@@ -370,11 +377,7 @@ export async function executeTool(toolId, args, options = {}) {
     }
 
     // XML 模式下的提示
-    if (
-        nativeTools.includes(toolId) &&
-        state.apiFormat === 'claude' &&
-        state.xmlToolCallingEnabled
-    ) {
+    if (nativeTools.includes(toolId) && apiFormat === 'claude' && isXmlMode) {
         logger.debug(`[Executor] 💬 XML 模式：使用自定义工具 "${toolId}"（非 Claude 原生工具）`);
     }
 
@@ -415,7 +418,9 @@ export async function executeTool(toolId, args, options = {}) {
             // requireConfirmation 开启时弹窗等待用户批准，拒绝走 ERROR 路径让 LLM 知道。
             // 透传 options.signal 让用户点停止按钮 / 切走会话时关闭对话框，避免永久 RUNNING
             const approved = await confirmToolExecutionIfRequired(toolId, toolName, args, {
-                signal: options.signal
+                signal: options.signal,
+                sessionId: options.sessionId,
+                turnId: options.turnId
             });
             if (!approved) {
                 logger.warn(`[Executor] ❌ 用户拒绝执行: ${toolName}`);
@@ -474,6 +479,7 @@ export async function executeTool(toolId, args, options = {}) {
         // 记录到历史
         try {
             recordToolCall({
+                sessionId,
                 toolId,
                 toolName,
                 args,
@@ -500,6 +506,7 @@ export async function executeTool(toolId, args, options = {}) {
         // 记录到历史
         try {
             recordToolCall({
+                sessionId,
                 toolId,
                 toolName,
                 args,

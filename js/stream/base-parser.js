@@ -55,7 +55,7 @@ export class BaseStreamParser {
 
         // XML 工具调用
         // 构造时冻结当前 toggle，整个流期间只读 this.xmlMode，禁止运行中切换
-        this.xmlMode = state.xmlToolCallingEnabled;
+        this.xmlMode = sink?.task?.requestProfile?.isXmlMode ?? state.xmlToolCallingEnabled;
         this.xmlToolCallAccumulator = new XMLStreamAccumulator();
         this.xmlParsingDisabled = false;
 
@@ -70,6 +70,8 @@ export class BaseStreamParser {
 
     /** 流式空闲超时，子类可覆盖。state.requestTimeout 走 fetch abort 只保护连接阶段 */
     get idleTimeout() {
+        const configured = this.sink?.task?.requestProfile?.state?.streamIdleTimeout;
+        if (typeof configured === 'number' && configured > 0) return configured;
         // 用户偏好优先（设置面板可调），用于 reasoning 模型场景调高 / 弱网调低
         if (typeof state.streamIdleTimeout === 'number' && state.streamIdleTimeout > 0) {
             return state.streamIdleTimeout;
@@ -581,7 +583,10 @@ export class BaseStreamParser {
      * @param {Object} groundingMetadata - 搜索引用元数据（Gemini 用）
      */
     finalizeStream(extraSaveFields = {}, groundingMetadata = null) {
-        if (state.isToolCallPending) {
+        if (this.sink?.task) {
+            this.sink.task.isToolCallPending = false;
+        }
+        if (!this.sink.isBackground() && state.isToolCallPending) {
             state.isToolCallPending = false;
         }
 

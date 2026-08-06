@@ -5,6 +5,8 @@
  * 其他家校验 body 非 null 后取 reader）从 handler.js 主体抽出。
  */
 
+import { DefaultSink } from '../stream/sink.js';
+
 /**
  * @param {Response} response
  * @param {import('./handler-context.js').HandlerContext} ctx
@@ -22,5 +24,7 @@ export async function handleStreamResponse(response, ctx) {
 
     // adapter.streamParser 统一签名 (reader, sessionId, sink?, signal?)
     // signal 透传到 BaseStreamParser.parse 监听 abort
-    await adapter.streamParser(reader, sessionId, null, abortController?.signal || null);
+    const sink = new DefaultSink(sessionId, ctx.task || null);
+    await adapter.streamParser(reader, sessionId, sink, abortController?.signal || null);
+    await sink.waitForCommits();
 }

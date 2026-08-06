@@ -60,9 +60,14 @@ vi.mock('../../js/messages/schema.js', () => ({
     isNewFormat: (msg) => msg?._schemaVersion >= 1
 }));
 
-// mock legacy-adapter（replaceAllMessages 会通过它做格式升级，测试不关心实际升级）
-vi.mock('../../js/messages/legacy-adapter.js', () => ({
-    normalizeAllMessages: () => 0
+// replaceAllMessages 的 gateway 编排由兼容层测试覆盖，这里只测试 store 变更
+vi.mock('../../js/messages/compat/gateway.js', () => ({
+    normalizeSessionRecord: ({ messages }) => ({
+        messages: [...messages],
+        status: 'unchanged',
+        changed: false,
+        writeBackRequired: false
+    })
 }));
 
 import { state } from '../../js/core/state.js';
@@ -70,15 +75,47 @@ import { eventBus } from '../../js/core/events.js';
 import {
     pushMessage,
     removeMessageAt,
+    removeMessageById,
     removeMessagesAfter,
+    removeMessagesAfterId,
     updateMessageAt,
+    updateMessageById,
     replaceAllMessages,
     popLastAssistantMessage,
     updateMessageTextAt,
+    updateMessageTextById,
     ensureMessageIds,
     rebuildMessageIdMap,
     setState
 } from '../../js/core/state-mutations.js';
+
+describe('messageId mutators', () => {
+    beforeEach(() => {
+        state.messages = [
+            { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'one' }] },
+            { id: 'm2', role: 'assistant', parts: [{ type: 'text', text: 'two' }] },
+            { id: 'm3', role: 'user', parts: [{ type: 'text', text: 'three' }] }
+        ];
+        rebuildMessageIdMap();
+        state.sessionDirty = false;
+    });
+
+    it('按 ID 更新、更新文本和删除消息', () => {
+        expect(updateMessageById('m2', { role: 'user' })).toBe(true);
+        expect(updateMessageTextById('m2', 'updated')).toBe(true);
+        expect(state.messageStore.findById('m2')).toMatchObject({ role: 'user' });
+        expect(state.messageStore.findById('m2').parts[0].text).toBe('updated');
+        expect(removeMessageById('m1')).toBe(true);
+        expect(state.messageStore.findById('m1')).toBeUndefined();
+    });
+
+    it('按 ID 截断并对不存在 ID 返回 false', () => {
+        expect(removeMessagesAfterId('m1')).toBe(true);
+        expect(state.messages.map((message) => message.id)).toEqual(['m1']);
+        expect(updateMessageById('missing', {})).toBe(false);
+        expect(removeMessageById('missing')).toBe(false);
+    });
+});
 
 beforeEach(() => {
     // 通过 store.clear() 清空保持引用稳定（不能 state.messages = []，会丢失 store 同步）
@@ -202,7 +239,7 @@ describe('removeMessagesAfter', () => {
     });
 });
 
-// Stage 5a-F2: removeMessagesAfter 必须 emit state:messages-replaced，让订阅方（如 MessageList）感知截断
+// 截断后必须通知依赖消息总数的订阅方
 describe('removeMessagesAfter event emission', () => {
     beforeEach(() => {
         state.messages = [

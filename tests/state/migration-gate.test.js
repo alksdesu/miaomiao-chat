@@ -4,19 +4,14 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-vi.mock('../../js/messages/schema.js', () => ({
-    SCHEMA_VERSION: 2,
-    validateMessages: vi.fn(() => ({ valid: true, errors: [] }))
-}));
-
-vi.mock('../../js/messages/migration.js', () => ({
-    migrateSession: vi.fn((messages) => ({
-        messages: messages.map((m) => ({ ...m, _schemaVersion: 2 })),
-        errors: [],
-        toolMsgCount: 0
-    })),
-    validateMigration: vi.fn(() => ({ valid: true }))
-}));
+vi.mock('../../js/messages/migration.js', async (importOriginal) => {
+    const actual = await importOriginal();
+    return {
+        ...actual,
+        migrateSession: vi.fn(actual.migrateSession),
+        validateMigration: vi.fn(actual.validateMigration)
+    };
+});
 
 vi.mock('../../js/state/storage.js', () => ({
     loadAllSessionsFromDB: vi.fn(() => Promise.resolve([])),
@@ -31,6 +26,7 @@ vi.mock('../../js/utils/logger.js', () => ({
 }));
 
 import { runMigrationIfNeeded } from '../../js/state/migration-gate.js';
+import { SCHEMA_VERSION, createMessage, textPart, Role } from '../../js/messages/schema.js';
 import {
     loadAllSessionsFromDB,
     loadSessionMessages,
@@ -54,7 +50,7 @@ describe('migration-gate', () => {
     });
 
     it('版本已最新时跳过迁移', async () => {
-        loadPreference.mockResolvedValueOnce(2);
+        loadPreference.mockResolvedValueOnce(SCHEMA_VERSION);
         const result = await runMigrationIfNeeded();
         expect(result.migrated).toBe(false);
         expect(result.count).toBe(0);
@@ -66,7 +62,7 @@ describe('migration-gate', () => {
         loadAllSessionsFromDB.mockResolvedValueOnce([]);
         const result = await runMigrationIfNeeded();
         expect(result.migrated).toBe(false);
-        expect(savePreference).toHaveBeenCalledWith('message_schema_version', 2);
+        expect(savePreference).toHaveBeenCalledWith('message_schema_version', SCHEMA_VERSION);
     });
 
     it('有会话但消息为空时跳过', async () => {
@@ -87,18 +83,14 @@ describe('migration-gate', () => {
         loadSessionMessages.mockResolvedValueOnce({
             messages: [{ role: 'user', content: 'hello' }]
         });
-        migrateSession.mockReturnValueOnce({
-            messages: [{ role: 'user', content: 'hello', _schemaVersion: 2 }],
-            errors: [],
-            toolMsgCount: 0
-        });
         const result = await runMigrationIfNeeded();
         expect(result.migrated).toBe(true);
         expect(result.count).toBe(1);
         expect(saveSessionMessages).toHaveBeenCalledWith('s1', {
-            messages: expect.any(Array)
+            messages: expect.any(Array),
+            messageSchemaVersion: SCHEMA_VERSION
         });
-        expect(savePreference).toHaveBeenCalledWith('message_schema_version', 2);
+        expect(savePreference).toHaveBeenCalledWith('message_schema_version', SCHEMA_VERSION);
     });
 
     it('已迁移的会话被跳过', async () => {
@@ -106,7 +98,8 @@ describe('migration-gate', () => {
         loadPreference.mockResolvedValueOnce(null);
         loadAllSessionsFromDB.mockResolvedValueOnce([{ id: 's1', name: 'test' }]);
         loadSessionMessages.mockResolvedValueOnce({
-            messages: [{ role: 'user', content: 'hello', _schemaVersion: 2 }]
+            messages: [createMessage(Role.USER, [textPart('hello')])],
+            messageSchemaVersion: SCHEMA_VERSION
         });
         const result = await runMigrationIfNeeded();
         expect(result.migrated).toBe(true);
@@ -124,17 +117,6 @@ describe('migration-gate', () => {
         loadSessionMessages
             .mockResolvedValueOnce({ messages: [{ role: 'user', content: 'a' }] })
             .mockResolvedValueOnce({ messages: [{ role: 'user', content: 'b' }] });
-        migrateSession
-            .mockReturnValueOnce({
-                messages: [{ role: 'user', content: 'a', _schemaVersion: 2 }],
-                errors: [],
-                toolMsgCount: 0
-            })
-            .mockReturnValueOnce({
-                messages: [{ role: 'user', content: 'b', _schemaVersion: 2 }],
-                errors: [],
-                toolMsgCount: 0
-            });
         const result = await runMigrationIfNeeded();
         expect(result.count).toBe(2);
     });
@@ -148,7 +130,7 @@ describe('migration-gate', () => {
         expect(result.migrated).toBe(true);
         expect(result.errors.length).toBe(1);
         // 有致命错误时不更新版本号
-        expect(savePreference).not.toHaveBeenCalledWith('message_schema_version', 2);
+        expect(savePreference).not.toHaveBeenCalledWith('message_schema_version', SCHEMA_VERSION);
     });
 
     it('loadAllSessionsFromDB 失败返回错误', async () => {
@@ -179,11 +161,6 @@ describe('migration-gate', () => {
             }
         ]);
         loadSessionMessages.mockResolvedValueOnce({ messages: [] });
-        migrateSession.mockReturnValueOnce({
-            messages: [{ role: 'user', content: 'pending', _schemaVersion: 2 }],
-            errors: [],
-            toolMsgCount: 0
-        });
         const result = await runMigrationIfNeeded();
         expect(result.count).toBe(1);
     });
@@ -196,14 +173,14 @@ describe('migration-gate', () => {
             messages: [{ role: 'user', content: 'x' }]
         });
         migrateSession.mockReturnValueOnce({
-            messages: [{ role: 'user', content: 'x', _schemaVersion: 2 }],
+            messages: [createMessage(Role.USER, [textPart('x')])],
             errors: ['some warning'],
             toolMsgCount: 0
         });
         const result = await runMigrationIfNeeded();
         expect(result.count).toBe(1);
         expect(result.errors.length).toBe(1);
-        expect(savePreference).toHaveBeenCalledWith('message_schema_version', 2);
+        expect(savePreference).toHaveBeenCalledWith('message_schema_version', SCHEMA_VERSION);
     });
 
     it('长会话名被截断', async () => {
@@ -212,11 +189,6 @@ describe('migration-gate', () => {
         const longName = 'A'.repeat(50);
         loadAllSessionsFromDB.mockResolvedValueOnce([{ id: 's1', name: longName }]);
         loadSessionMessages.mockResolvedValueOnce({ messages: [{ role: 'user', content: 'x' }] });
-        migrateSession.mockReturnValueOnce({
-            messages: [{ role: 'user', content: 'x', _schemaVersion: 2 }],
-            errors: [],
-            toolMsgCount: 0
-        });
         // 主要验证不抛错
         const result = await runMigrationIfNeeded();
         expect(result.count).toBe(1);

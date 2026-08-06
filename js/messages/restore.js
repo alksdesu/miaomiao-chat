@@ -5,38 +5,61 @@
 
 import { state, elements } from '../core/state.js';
 import { eventBus } from '../core/events.js';
+import { EVENTS } from '../core/events-registry.js';
 import {
     createMessageElement,
-    renderThinkingBlock,
+    rerenderMessageContent,
+    captureExpandedThinkingState,
+    restoreExpandedThinkingState,
+    purgeThinkingCacheInElement,
     renderReplyWithSelector,
     enhanceCodeBlocks,
-    renderContentParts,
+    captureExpandedCodeBlockState,
+    restoreExpandedCodeBlockState,
     clearThinkingCache,
-    renderSearchGrounding
+    renderSearchGrounding,
+    renderCanonicalParts
 } from './renderer.js';
-import { safeMarkedParse } from '../utils/markdown.js';
 import { renderStreamStatsFromData } from '../stream/stats.js';
 import { rebuildMessageIdMap, ensureMessageIds } from '../core/state-mutations.js';
 import { renderHumanizedError } from '../utils/errors.js';
-import { safeSetHTML, escapeHtml } from '../utils/helpers.js';
+import { safeSetHTML } from '../utils/helpers.js';
 import { lazyImageManager } from '../utils/lazy-image.js';
-import {
-    PartType,
-    MediaKind,
-    hasParts,
-    filterParts,
-    partsToToolCallRestoreFormat,
-    getThinkingContent as schemaGetThinkingContent
-} from './schema.js';
-import { parseUserContent } from './user-content-parser.js';
+import { PartType, MediaKind, filterParts, partsToToolCallRestoreFormat } from './schema.js';
 import { logger } from '../utils/logger.js';
+import { longChatPerformance } from '../utils/long-chat-performance.js';
+import { messageRenderController } from './message-render-controller.js';
+import {
+    getMessageUiState,
+    retainMessageUiStates,
+    updateMessageUiState
+} from './message-ui-state.js';
+import { isLazyMessage, loadStoredMessageAt } from '../state/session-message-repository.js';
+import {
+    hasStoredMedia,
+    releaseAllMediaObjectUrls,
+    releaseMediaObjectUrl,
+    resolveMessageMediaForDisplay
+} from '../state/media-blob-store.js';
+
+const messageMediaIds = new WeakMap();
 
 /**
  * 渲染会话消息
  */
 export function renderSessionMessages() {
+    longChatPerformance.observeLongTasks();
+    const finishRestore = longChatPerformance.startSpan('sessionRestoreInteractive', {
+        sessionId: state.currentSessionId,
+        messageCount: state.messages.length
+    });
+    const finishShellRender = longChatPerformance.startSpan('messageShellRender', {
+        messageCount: state.messages.length
+    });
+    messageRenderController.reset(elements.messagesArea);
+
     // 清理旧的虚拟滚动状态（通过事件通知 UI 层）
-    eventBus.emit('restore:disable-virtual-scroll');
+    eventBus.emit(EVENTS.RESTORE_DISABLE_VIRTUAL_SCROLL);
 
     // 清理思维链惰性渲染缓存（防止跨会话内存泄漏）
     clearThinkingCache();
@@ -67,48 +90,42 @@ export function renderSessionMessages() {
                 <h2>你好，我是 AI 助手</h2>
             </div>
         `;
+        longChatPerformance.setGauge('messageDomCount', 0);
+        finishShellRender({ domCount: 0 });
+        finishRestore({ domCount: 0 });
         return;
     }
 
-    // 所有消息一次性创建 DOM，content-visibility:auto 由浏览器跳过屏幕外渲染
-    // 性能优化：使用 DocumentFragment 批量插入，避免频繁 reflow
-    const fragment = document.createDocumentFragment();
-    const enhancementQueue = []; // 增强操作队列（异步执行）
-
     // 批量补充缺少 ID 的旧消息
     ensureMessageIds();
+    retainMessageUiStates(state.messages.map((message) => message.id));
     // 先建 ID map 再渲染：map 只依赖 state.messages 数组，与 DOM 解耦；
     // 若渲染期 createMessageElement 抛错，map 仍为当前会话状态，不会残留上一会话
     rebuildMessageIdMap();
 
-    // 渲染所有消息（统一读 state.messages）
-    state.messages.forEach((msg, index) => {
-        // 新格式优先从 parts 提取文本和附件
-        let text, images;
-        if (hasParts(msg)) {
-            text = filterParts(msg.parts, PartType.TEXT)
-                .map((p) => p.text)
-                .join('\n');
-            const mediaAttachments = filterParts(msg.parts, PartType.MEDIA)
-                .filter((p) => p.media === MediaKind.IMAGE)
-                .map((p) => ({
-                    name: '已上传图片',
-                    type: p.mime || 'image/*',
-                    category: 'image',
-                    data: p.url
-                }));
-            const fileAttachments = filterParts(msg.parts, PartType.FILE).map((p) => ({
-                name: p.name || '已上传文件',
-                type: p.mime || 'application/octet-stream',
-                category: p.mime === 'application/pdf' ? 'pdf' : 'text',
-                data: p.url
+    const renderMessage = (msg, index) => {
+        const text = filterParts(msg.parts, PartType.TEXT)
+            .map((part) => part.text)
+            .join('\n');
+        const mediaAttachments = filterParts(msg.parts, PartType.MEDIA)
+            .filter((part) => part.media === MediaKind.IMAGE && part.url)
+            .map((part) => ({
+                name: '已上传图片',
+                type: part.mime || 'image/*',
+                category: 'image',
+                data: part.url
             }));
-            images = [...mediaAttachments, ...fileAttachments];
-        } else {
-            ({ text, images } = parseUserContent(msg.content));
-        }
-        const modelName = msg.modelName || msg.meta?.model || null;
-        const providerName = msg.providerName || msg.meta?.provider || null;
+        const fileAttachments = filterParts(msg.parts, PartType.FILE)
+            .filter((part) => part.url)
+            .map((part) => ({
+                name: part.name || '已上传文件',
+                type: part.mime || 'application/octet-stream',
+                category: part.mime === 'application/pdf' ? 'pdf' : 'text',
+                data: part.url
+            }));
+        const images = [...mediaAttachments, ...fileAttachments];
+        const modelName = msg.meta?.model || null;
+        const providerName = msg.meta?.provider || null;
 
         const messageEl = createMessageElement(
             msg.role,
@@ -117,51 +134,122 @@ export function renderSessionMessages() {
             msg.id,
             modelName,
             providerName,
-            // assistant 内容由下方 enhanceAllAsync 分片渲染，此处只放纯文本占位，
-            // 避免几百条消息在同步 forEach 里重复跑 markdown+DOMPurify 冻结主线程
+            // assistant 内容由视口控制器按需渲染，避免同步解析整段会话
             { deferAssistantRender: true }
         );
         messageEl.dataset.messageIndex = index;
 
-        fragment.appendChild(messageEl);
+        const lazy = isLazyMessage(msg);
+        const storedMedia = hasStoredMedia(msg);
+        const isError = Boolean(msg.error);
+        if (msg.role === 'assistant' || lazy || storedMedia) {
+            const dehydrate =
+                msg.role === 'assistant' ? () => dehydrateAssistantMessage(messageEl) : null;
+            if (isError) messageEl.dataset.isError = 'true';
+            messageRenderController.register(
+                messageEl,
+                async () => {
+                    let renderedMessage = msg;
+                    let renderedIndex = index;
+                    if (lazy) {
+                        const loaded = await loadStoredMessageAt(
+                            msg._lazy.sessionId,
+                            msg._lazy.index
+                        );
+                        if (!loaded) throw new Error(`消息 ${msg.id} 分页数据缺失`);
+                        const currentIndex = state.messageStore.findIndexById(msg.id);
+                        renderedIndex = currentIndex >= 0 ? currentIndex : index;
+                        state.messageStore.replaceAt(renderedIndex, loaded);
+                        renderedMessage = loaded;
+                        messageEl.dataset.messageId = loaded.id;
+                        messageEl.dataset.messageIndex = String(renderedIndex);
+                    }
 
-        const isError = Boolean(msg.isError || msg.error);
-        if (msg.role === 'assistant') {
-            enhancementQueue.push({ messageEl, msg, openaiMsg: msg, isError });
-            if (isError) {
-                messageEl.dataset.isError = 'true';
-            }
-        }
-    });
+                    releaseMessageMedia(messageEl);
+                    const displayMedia = await resolveMessageMediaForDisplay(renderedMessage);
+                    renderedMessage = displayMedia.message;
+                    messageMediaIds.set(messageEl, displayMedia.mediaIds);
 
-    // 一次性插入所有消息（只触发一次 reflow）
-    elements.messagesArea.appendChild(fragment);
-
-    // 长会话启用 content-visibility:auto 优化（屏幕外节点跳过 layout/paint）
-    eventBus.emit('restore:init-virtual-scroll');
-
-    // Render assistant enhancements chunked：每 K 条 yield 一次让浏览器渲染中间帧
-    // 千楼会话 1000×1-15ms 同步串行会冻结主线程 1-15s，分块 yield 后 UI 可滚动/响应
-    const ENHANCE_CHUNK = 10;
-    const enhanceAllAsync = async () => {
-        for (let idx = 0; idx < enhancementQueue.length; idx++) {
-            const { messageEl, msg, openaiMsg, isError } = enhancementQueue[idx];
-            try {
-                enhanceAssistantMessage(messageEl, msg, openaiMsg, { isError });
-                if (isError) {
-                    appendStoredErrorBlock(messageEl, msg);
+                    const finishHydration = longChatPerformance.startSpan('assistantHydration', {
+                        messageId: renderedMessage.id || '',
+                        index: renderedIndex
+                    });
+                    try {
+                        messageEl.classList.remove('message-dehydrated');
+                        const renderedError = Boolean(renderedMessage.error);
+                        if (renderedMessage.role === 'assistant') {
+                            enhanceAssistantMessage(messageEl, renderedMessage, {
+                                isError: renderedError
+                            });
+                            if (renderedError) appendStoredErrorBlock(messageEl, renderedMessage);
+                        } else {
+                            rerenderMessageContent(
+                                messageEl,
+                                renderedIndex,
+                                renderedMessage.role,
+                                renderedMessage
+                            );
+                        }
+                        messageEl.style.minHeight = '';
+                    } finally {
+                        finishHydration();
+                    }
+                },
+                {
+                    priority: index >= state.messages.length - 8,
+                    dehydrate
                 }
-            } catch (e) {
-                logger.error('[Restore] 消息增强失败 (index:', idx, '):', e);
-            }
-            if ((idx + 1) % ENHANCE_CHUNK === 0 && idx + 1 < enhancementQueue.length) {
-                // setTimeout(0) 比 requestIdleCallback 更确定性，避免 idle 长时间不来
-                await new Promise((r) => setTimeout(r, 0));
-            }
+            );
         }
+        return messageEl;
     };
-    // 不 await：让 restoreMessages 同步路径快速完成 + scroll to bottom，enhance 异步追加
-    enhanceAllAsync().catch((e) => logger.error('[Restore] enhanceAllAsync 异常:', e));
+
+    const renderAll = () => {
+        const fragment = document.createDocumentFragment();
+        state.messages.forEach((message, index) =>
+            fragment.appendChild(renderMessage(message, index))
+        );
+        elements.messagesArea.replaceChildren(fragment);
+    };
+
+    const virtualScrollRequest = {
+        messages: state.messages,
+        renderItem: renderMessage,
+        renderAll,
+        initialIndex: state.messages.length - 1,
+        estimates: state.messages.map(
+            (message) => getMessageUiState(message.id).measuredHeight || 0
+        ),
+        getEstimates: () =>
+            state.messages.map((message) => getMessageUiState(message.id).measuredHeight || 0),
+        beforeRerender: () => {
+            releaseAllMediaObjectUrls();
+            messageRenderController.reset(elements.messagesArea);
+        },
+        onUnmount: (messageEl, message) => {
+            releaseMessageMedia(messageEl);
+            if (message?.role === 'assistant') {
+                void messageRenderController.dehydrate(messageEl, { force: true });
+            } else if (message?.id) {
+                const measuredHeight =
+                    messageEl.getBoundingClientRect().height || messageEl.offsetHeight || 0;
+                if (measuredHeight > 0) updateMessageUiState(message.id, { measuredHeight });
+            }
+            messageRenderController.dispose(messageEl);
+        },
+        handled: false
+    };
+    eventBus.emit(EVENTS.RESTORE_INIT_VIRTUAL_SCROLL, virtualScrollRequest);
+    if (!virtualScrollRequest.handled) renderAll();
+
+    const messageDomCount = elements.messagesArea.querySelectorAll('.message').length;
+    longChatPerformance.setGauge('messageDomCount', messageDomCount);
+    finishShellRender({ domCount: messageDomCount });
+
+    if (!state.messages.some((message) => message.role === 'assistant')) {
+        longChatPerformance.setGauge('pendingMessageHydrations', 0);
+    }
+    finishRestore({ domCount: messageDomCount });
 
     // 观察所有懒加载图片
     requestIdleCallback(
@@ -184,6 +272,40 @@ export function renderSessionMessages() {
     }, 50);
 }
 
+function releaseMessageMedia(messageEl) {
+    const mediaIds = messageMediaIds.get(messageEl) || [];
+    mediaIds.forEach((mediaId) => releaseMediaObjectUrl(mediaId));
+    messageMediaIds.delete(messageEl);
+}
+
+function dehydrateAssistantMessage(messageEl) {
+    if (!messageEl?.isConnected) return;
+    const messageId = messageEl.dataset.messageId;
+    const contentWrapper = messageEl.querySelector('.message-content-wrapper');
+    const contentDiv = contentWrapper?.querySelector('.message-content');
+    if (!contentWrapper || !contentDiv) return;
+
+    const measuredHeight = messageEl.getBoundingClientRect().height || messageEl.offsetHeight || 0;
+    if (messageId) {
+        updateMessageUiState(messageId, {
+            thinkingExpanded: captureExpandedThinkingState(contentDiv),
+            codeBlocksExpanded: captureExpandedCodeBlockState(contentDiv),
+            measuredHeight
+        });
+    }
+
+    purgeThinkingCacheInElement(contentDiv);
+    releaseMessageMedia(messageEl);
+    contentDiv.querySelectorAll('img.lazy-image').forEach((img) => {
+        lazyImageManager.unloadImage(img, { force: true, reobserve: false });
+    });
+    contentWrapper.querySelector('.reply-selector')?.remove();
+    contentWrapper.querySelector('.stream-stats')?.remove();
+    contentDiv.replaceChildren();
+    if (measuredHeight > 0) messageEl.style.minHeight = `${measuredHeight}px`;
+    messageEl.classList.add('message-dehydrated');
+}
+
 /**
  * 在已渲染的部分接收内容之后追加错误块
  * 与流式路径 sink.renderError 的 insertAdjacentHTML('beforeend') 行为对齐，
@@ -195,7 +317,7 @@ function appendStoredErrorBlock(messageEl, msg) {
     const contentDiv = messageEl.querySelector('.message-content');
     if (!contentDiv) return;
 
-    const storedErrorHtml = msg.errorHtml || msg.meta?.raw?.errorHtml;
+    const storedErrorHtml = msg.error?.html;
     if (storedErrorHtml) {
         // 历史 errorHtml 需经 DOMPurify 净化后 append，safeSetHTML 只能整体覆盖，借临时容器过渡
         const holder = document.createElement('div');
@@ -203,11 +325,11 @@ function appendStoredErrorBlock(messageEl, msg) {
         while (holder.firstChild) {
             contentDiv.appendChild(holder.firstChild);
         }
-    } else if (msg.errorData) {
+    } else if (msg.error) {
         // eslint-disable-next-line no-restricted-syntax -- 已审计：renderHumanizedError 输出内容已 escapeHtml
         contentDiv.insertAdjacentHTML(
             'beforeend',
-            renderHumanizedError(msg.errorData, msg.httpStatus || null, false)
+            renderHumanizedError({ error: msg.error }, msg.error.status || null, false)
         );
     } else {
         // eslint-disable-next-line no-restricted-syntax -- 已审计：静态 HTML
@@ -258,99 +380,22 @@ async function restoreToolCallsUI(toolCalls, messageEl) {
 }
 
 // 与用户附件懒加载共用的灰色占位图（renderer.js / memory-manager.js 同款）
-const LAZY_IMAGE_PLACEHOLDER =
-    'data:image/svg+xml,%3Csvg width="400" height="300" xmlns="http://www.w3.org/2000/svg"%3E%3Crect width="100%25" height="100%25" fill="%23f5f5f5"/%3E%3C/svg%3E';
-
 /**
  * 异步增强 assistant 消息（思维链、统计、多回复、工具UI）
  * 性能优化：使用 requestIdleCallback 避免阻塞 UI
  * 性能优化：缓存 DOM 查询
  * @param {HTMLElement} messageEl - 消息元素
- * @param {Object} msg - Gemini 或 OpenAI 消息对象
- * @param {Object} openaiMsg - OpenAI 格式消息对象（用于元数据）
+ * @param {Object} msg - 标准消息对象
  * @param {Object} [options]
  * @param {boolean} [options.isError=false] - 错误消息无正文属正常场景，不打无内容 warn
  */
-function enhanceAssistantMessage(_messageEl, msg, openaiMsg, { isError = false } = {}) {
+function enhanceAssistantMessage(_messageEl, msg, { isError = false } = {}) {
     // 优化：缓存 querySelector 结果
     const contentDiv = _messageEl.querySelector('.message-content');
 
     // 恢复消息内容（思维链 + 文本/图片）
-    if (contentDiv && openaiMsg) {
-        let html = '';
-        let contentRendered = false; // 跟踪是否成功渲染了内容
-
-        // 1. 渲染思维链：新格式 parts 优先，回退到旧字段（旧格式兜底，未迁移数据需要）
-        let thinkingText = '';
-        if (hasParts(msg)) {
-            thinkingText = schemaGetThinkingContent(msg);
-        }
-        if (!thinkingText) {
-            if (openaiMsg.thinkingContent) logger.warn('[Restore] 命中旧格式回退: thinkingContent');
-            thinkingText = openaiMsg.thinkingContent || ''; // 旧格式兜底
-        }
-        if (thinkingText) {
-            html += renderThinkingBlock(thinkingText);
-        }
-
-        // 2. 渲染内容：新格式 parts 优先
-        if (hasParts(msg)) {
-            for (const p of msg.parts) {
-                if (p.type === PartType.THINKING) continue; // 已在上面渲染
-                if (p.type === PartType.TEXT && p.text && p.text !== '(调用工具)') {
-                    html += safeMarkedParse(p.text);
-                    contentRendered = true;
-                } else if (p.type === PartType.MEDIA && p.url) {
-                    const safeUrl = escapeHtml(p.url);
-                    if (p.media === MediaKind.VIDEO) {
-                        html += `<div class="image-wrapper video-wrapper"><video src="${safeUrl}" controls playsinline muted preload="metadata"></video></div>`;
-                    } else if (p.media === MediaKind.AUDIO) {
-                        html += `<div class="audio-wrapper"><audio src="${safeUrl}" controls preload="metadata"></audio></div>`;
-                    } else {
-                        // AI 生成图与用户附件同待遇走懒加载，恢复长会话时避免全部图片立即解码
-                        html += `<div class="image-wrapper"><img src="${LAZY_IMAGE_PLACEHOLDER}" data-src="${safeUrl}" alt="Generated image" class="lazy-image" style="cursor:pointer;"></div>`;
-                    }
-                    contentRendered = true;
-                }
-            }
-        }
-
-        // 3. 回退到 contentParts（旧格式兜底，未迁移数据需要）
-        if (!contentRendered && openaiMsg.contentParts && openaiMsg.contentParts.length > 0) {
-            logger.warn('[Restore] 命中旧格式回退: contentParts');
-            const validContentParts = openaiMsg.contentParts.filter(
-                // 旧格式兜底
-                (p) =>
-                    !(p.type === PartType.TEXT && p.text === '(调用工具)') &&
-                    (thinkingText ? p.type !== PartType.THINKING : true)
-            );
-
-            if (validContentParts.length > 0) {
-                const renderedContent = renderContentParts(validContentParts);
-                if (renderedContent && renderedContent.trim()) {
-                    html += renderedContent;
-                    contentRendered = true;
-                }
-            }
-        }
-
-        // 4. 回退到 openaiMsg.content（旧格式）
-        if (!contentRendered && openaiMsg.content) {
-            logger.warn('[Restore] 命中旧格式回退: content');
-            let textContent = '';
-            if (typeof openaiMsg.content === 'string') {
-                textContent = openaiMsg.content;
-            } else if (Array.isArray(openaiMsg.content)) {
-                textContent = openaiMsg.content
-                    .filter((p) => p.type === 'text')
-                    .map((p) => p.text)
-                    .join('');
-            }
-            if (textContent && textContent !== '(调用工具)') {
-                html += safeMarkedParse(textContent);
-                contentRendered = true;
-            }
-        }
+    if (contentDiv) {
+        const html = renderCanonicalParts(msg.parts, 'assistant', { lazyImages: true });
 
         // 5. 如果有内容，更新 DOM
         if (html) {
@@ -364,18 +409,16 @@ function enhanceAssistantMessage(_messageEl, msg, openaiMsg, { isError = false }
         }
 
         // 日志记录未渲染的情况
-        if (!contentRendered && !thinkingText && !isError) {
+        if (!html && !isError) {
             logger.warn('[Restore] 消息无法渲染内容:', {
                 index: _messageEl.dataset.messageIndex,
-                contentParts: openaiMsg.contentParts?.length, // 旧格式兜底，调试日志
-                content: typeof openaiMsg.content,
                 parts: msg?.parts?.length
             });
         }
     }
 
     // 恢复流统计信息
-    const statsData = msg.meta?.stats || msg.streamStats || (openaiMsg && openaiMsg.streamStats);
+    const statsData = msg.meta?.stats;
     if (statsData) {
         const wrapper = _messageEl.querySelector('.message-content-wrapper');
         if (wrapper) {
@@ -384,19 +427,19 @@ function enhanceAssistantMessage(_messageEl, msg, openaiMsg, { isError = false }
         }
     }
 
-    // 恢复多回复选择器：新格式 replies 优先，回退到旧字段
-    const allReplies = msg.replies?.all; // 运行时变量，非旧格式字段
+    const allReplies = msg.replies?.all;
+    const uiState = getMessageUiState(msg.id);
     if (allReplies && allReplies.length > 1) {
-        const selectedIndex = msg.replies?.selected ?? openaiMsg?.selectedReplyIndex ?? 0;
+        const storedIndex = msg.replies?.selected ?? 0;
+        const selectedIndex = Math.min(uiState.selectedReply ?? storedIndex, allReplies.length - 1);
         renderReplyWithSelector(allReplies, selectedIndex, _messageEl);
     } else {
         enhanceCodeBlocks(_messageEl);
     }
 
     // 恢复 Gemini 搜索引用（groundingMetadata）
-    const groundingMetadata =
-        msg.meta?.raw?.gemini?.groundingMetadata || openaiMsg?.groundingMetadata;
-    if (groundingMetadata) {
+    const groundingMetadata = msg.meta?.raw?.gemini?.groundingMetadata;
+    if ((!allReplies || allReplies.length <= 1) && groundingMetadata) {
         const contentDiv = _messageEl.querySelector('.message-content');
         if (contentDiv) {
             // eslint-disable-next-line no-restricted-syntax -- 已审计：renderSearchGrounding 已对 uri/title 双 escapeHtml + safeHref 协议白名单
@@ -404,12 +447,13 @@ function enhanceAssistantMessage(_messageEl, msg, openaiMsg, { isError = false }
         }
     }
 
-    // 恢复工具调用UI：新格式 parts 优先，回退到旧字段
     const mapped = partsToToolCallRestoreFormat(msg.parts);
     if (mapped.length > 0) {
         restoreToolCallsUI(mapped, _messageEl);
-    } else if (openaiMsg?.toolCalls && openaiMsg.toolCalls.length > 0) {
-        logger.warn('[Restore] 命中旧格式回退: toolCalls');
-        restoreToolCallsUI(openaiMsg.toolCalls, _messageEl);
     }
+
+    restoreExpandedThinkingState(contentDiv, uiState.thinkingExpanded, (block) =>
+        enhanceCodeBlocks(block)
+    );
+    restoreExpandedCodeBlockState(contentDiv, uiState.codeBlocksExpanded);
 }

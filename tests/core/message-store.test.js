@@ -1,5 +1,5 @@
 /**
- * MessageStore 单元测试（Stage 5b C3）
+ * MessageStore 单元测试
  *
  * 覆盖：构造/push/pop/splice/replaceAt/updateAt/removeRangeAfter/clear/replaceAll/
  *      findById/findIndexById/findByEl/rebuildIdMap/toArray/toJSON/devThrow
@@ -254,6 +254,12 @@ describe('MessageStore', () => {
             expect(store.findById('zzz')).toBeUndefined();
             expect(store.findById('')).toBeUndefined();
             expect(store.findById(null)).toBeUndefined();
+        });
+
+        it('at、getRange 和 findPositionById 提供稳定查询契约', () => {
+            expect(store.at(1).id).toBe('b');
+            expect(store.getRange(1, 3).map((message) => message.id)).toEqual(['b', 'c']);
+            expect(store.findPositionById('c')).toBe(2);
         });
 
         it('findIndexById 未找到返 -1', () => {

@@ -4,6 +4,12 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+const sessionRepositoryMocks = vi.hoisted(() => ({
+    loadSessionMessageWindow: vi.fn(() => Promise.resolve(null)),
+    getCurrentSessionMessagesSnapshot: vi.fn(() => Promise.resolve([])),
+    materializeSessionMessages: vi.fn((_sessionId, messages) => Promise.resolve(messages))
+}));
+
 vi.mock('../../js/core/state.js', () => ({
     state: {
         sessions: [],
@@ -69,6 +75,8 @@ vi.mock('../../js/core/request-state-machine.js', () => ({
         cancel: vi.fn(),
         forceReset: vi.fn(),
         clearSendLockTimeout: vi.fn(),
+        detach: vi.fn(() => true),
+        attach: vi.fn(() => true),
         abortController: null
     }
 }));
@@ -78,11 +86,14 @@ vi.mock('../../js/state/tab-sync.js', () => ({
 }));
 
 vi.mock('../../js/state/session-search-index.js', () => ({
-    buildSessionSearchIndex: vi.fn(() => ({}))
+    buildSessionSearchIndexAsync: vi.fn(() => Promise.resolve({}))
 }));
 
+vi.mock('../../js/state/session-message-repository.js', () => sessionRepositoryMocks);
+
 vi.mock('../../js/messages/schema.js', () => ({
-    getTextContent: vi.fn((msg) => msg?.content || '')
+    getTextContent: vi.fn((msg) => msg?.content || ''),
+    agePendingToolCallsInPlace: vi.fn(() => 0)
 }));
 
 vi.mock('../../js/state/video-persistence.js', () => ({
@@ -104,8 +115,12 @@ import {
     debouncedSaveSession,
     createNewSession,
     deleteSession,
-    renameSession
+    renameSession,
+    reloadCurrentSessionMessages,
+    switchToSession
 } from '../../js/state/sessions.js';
+import { requestTaskRegistry } from '../../js/core/request-task-registry.js';
+import { replaceAllMessages } from '../../js/core/state-mutations.js';
 
 describe('sessions module', () => {
     beforeEach(() => {
@@ -118,6 +133,14 @@ describe('sessions module', () => {
         state.storageMode = 'indexedDB';
         state.sessionDirty = false;
         state.backgroundTasks = new Map();
+        state._lastKnownSessionUpdatedAt = new Map();
+        requestTaskRegistry.clearForTests();
+        sessionRepositoryMocks.getCurrentSessionMessagesSnapshot.mockImplementation(() =>
+            Promise.resolve([...state.messages])
+        );
+        sessionRepositoryMocks.materializeSessionMessages.mockImplementation(
+            (_sessionId, messages) => Promise.resolve(messages)
+        );
     });
 
     afterEach(() => {
@@ -210,6 +233,37 @@ describe('sessions module', () => {
             expect(saveSessionAtomic).toHaveBeenCalled();
         });
 
+        it('分页会话保存完整快照但不实体化 UI 消息窗口', async () => {
+            const lazyWindow = [
+                {
+                    id: 'm1',
+                    role: 'user',
+                    parts: [],
+                    _lazy: { sessionId: 'sess1', index: 0 }
+                }
+            ];
+            const fullHistory = [
+                { id: 'm1', role: 'user', content: 'first' },
+                { id: 'm2', role: 'assistant', content: 'reply' }
+            ];
+            state.currentSessionId = 'sess1';
+            state.sessionDirty = true;
+            state.sessions = [{ id: 'sess1', name: 'test', createdAt: 1 }];
+            state.messages = lazyWindow;
+            sessionRepositoryMocks.materializeSessionMessages.mockResolvedValue(fullHistory);
+
+            await saveCurrentSessionMessages();
+
+            const { saveSessionAtomic } = await import('../../js/state/storage.js');
+            expect(saveSessionAtomic).toHaveBeenCalledWith(
+                expect.objectContaining({ messageCount: 2 }),
+                expect.objectContaining({ messages: fullHistory }),
+                expect.any(Object)
+            );
+            expect(state.messages).toBe(lazyWindow);
+            expect(state.messages[0]._lazy).toBeDefined();
+        });
+
         it('session 不存在时跳过', async () => {
             state.currentSessionId = 'nonexistent';
             state.sessionDirty = true;
@@ -218,6 +272,32 @@ describe('sessions module', () => {
 
             const { saveSessionAtomic } = await import('../../js/state/storage.js');
             expect(saveSessionAtomic).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('reloadCurrentSessionMessages', () => {
+        it('加载期间切换会话时丢弃旧会话结果', async () => {
+            const { loadSessionMessages } = await import('../../js/state/storage.js');
+            let resolveLoad;
+            loadSessionMessages.mockImplementationOnce(
+                () =>
+                    new Promise((resolve) => {
+                        resolveLoad = resolve;
+                    })
+            );
+            state.currentSessionId = 'session-a';
+            state.sessions = [
+                { id: 'session-a', name: 'A' },
+                { id: 'session-b', name: 'B' }
+            ];
+
+            const pending = reloadCurrentSessionMessages();
+            state.currentSessionId = 'session-b';
+            resolveLoad({ messages: [{ id: 'message-a', role: 'user', parts: [] }] });
+            const result = await pending;
+
+            expect(result).toBe(false);
+            expect(replaceAllMessages).not.toHaveBeenCalled();
         });
     });
 
@@ -276,6 +356,23 @@ describe('sessions module', () => {
 
             const { eventBus } = await import('../../js/core/events.js');
             expect(eventBus.emit).toHaveBeenCalledWith('sessions:updated', expect.any(Object));
+        });
+    });
+
+    describe('switchToSession', () => {
+        it('目标不存在时重新挂载已 detach 的当前任务', async () => {
+            state.sessions = [{ id: 'session-a', name: 'A' }];
+            state.currentSessionId = 'session-a';
+            const task = requestTaskRegistry.create({
+                sessionId: 'session-a',
+                abortController: new AbortController()
+            });
+
+            await switchToSession('missing-session');
+
+            expect(requestTaskRegistry.owns(task)).toBe(true);
+            expect(task.isDetached).toBe(false);
+            expect(state.currentSessionId).toBe('session-a');
         });
     });
 

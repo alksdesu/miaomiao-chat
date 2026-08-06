@@ -1,26 +1,7 @@
 /**
  * session-search-index.js 会话搜索索引测试
  */
-import { describe, it, expect, vi } from 'vitest';
-
-vi.mock('../../js/messages/schema.js', () => ({
-    PartType: { TEXT: 'text', THINKING: 'thinking', MEDIA: 'media', TOOL_CALL: 'tool_call' },
-    hasParts: (msg) => Array.isArray(msg?.parts) && msg.parts.length > 0 && msg._schemaVersion,
-    getTextContent: (msg) => {
-        if (msg?.parts) {
-            const textParts = msg.parts.filter((p) => p.type === 'text');
-            return textParts.map((p) => p.text).join('');
-        }
-        if (typeof msg?.content === 'string') return msg.content;
-        if (Array.isArray(msg?.content)) {
-            return msg.content
-                .filter((p) => p.type === 'text')
-                .map((p) => p.text)
-                .join(' ');
-        }
-        return '';
-    }
-}));
+import { describe, it, expect } from 'vitest';
 
 import {
     extractMessageSearchText,
@@ -64,32 +45,24 @@ describe('extractMessageSearchText', () => {
         expect(extractMessageSearchText(msg)).toBe('hello');
     });
 
-    it('旧格式字符串 content', () => {
-        expect(extractMessageSearchText({ content: 'hello world' })).toBe('hello world');
-    });
-
-    it('旧格式数组 content 提取 text', () => {
-        const msg = {
-            content: [
-                { type: 'text', text: 'hello' },
-                { type: 'image_url', image_url: {} },
-                { type: 'text', text: 'world' }
-            ]
-        };
-        expect(extractMessageSearchText(msg)).toBe('hello world');
+    it('不在搜索层读取旧格式 content', () => {
+        expect(extractMessageSearchText({ content: 'hello world' })).toBe('');
     });
 
     it('空白字符合并', () => {
-        expect(extractMessageSearchText({ content: '  hello   world  ' })).toBe('hello world');
+        const msg = {
+            parts: [{ type: 'text', text: '  hello   world  ' }]
+        };
+        expect(extractMessageSearchText(msg)).toBe('hello world');
     });
 
     it('没有 content 或 parts 返回空', () => {
         expect(extractMessageSearchText({})).toBe('');
     });
 
-    it('parts 有 text 但无 _schemaVersion 走 fallback', () => {
+    it('忽略没有标准 type 的原始 part', () => {
         const msg = { parts: [{ text: 'fallback text' }] };
-        expect(extractMessageSearchText(msg)).toBe('fallback text');
+        expect(extractMessageSearchText(msg)).toBe('');
     });
 });
 
@@ -110,8 +83,8 @@ describe('buildSessionSearchIndex', () => {
 
     it('构建正常索引', () => {
         const messages = [
-            { id: 'msg1', role: 'user', content: 'hello' },
-            { id: 'msg2', role: 'assistant', content: 'hi there' }
+            { id: 'msg1', role: 'user', parts: [{ type: 'text', text: 'hello' }] },
+            { id: 'msg2', role: 'assistant', parts: [{ type: 'text', text: 'hi there' }] }
         ];
         const index = buildSessionSearchIndex(messages);
         expect(index.entries).toHaveLength(2);
@@ -127,8 +100,8 @@ describe('buildSessionSearchIndex', () => {
 
     it('跳过无文本内容的消息', () => {
         const messages = [
-            { id: 'msg1', role: 'user', content: 'hello' },
-            { id: 'msg2', role: 'assistant', content: '' }
+            { id: 'msg1', role: 'user', parts: [{ type: 'text', text: 'hello' }] },
+            { id: 'msg2', role: 'assistant', parts: [] }
         ];
         const index = buildSessionSearchIndex(messages);
         expect(index.entries).toHaveLength(1);
@@ -136,16 +109,16 @@ describe('buildSessionSearchIndex', () => {
     });
 
     it('无 id 时生成占位 id', () => {
-        const messages = [{ role: 'user', content: 'test' }];
+        const messages = [{ role: 'user', parts: [{ type: 'text', text: 'test' }] }];
         const index = buildSessionSearchIndex(messages);
         expect(index.entries[0].id).toBe('msg_0');
     });
 
     it('role 规范化', () => {
         const messages = [
-            { id: 'm1', role: 'USER', content: 'test' },
-            { id: 'm2', role: '', content: 'test2' },
-            { id: 'm3', content: 'test3' }
+            { id: 'm1', role: 'USER', parts: [{ type: 'text', text: 'test' }] },
+            { id: 'm2', role: '', parts: [{ type: 'text', text: 'test2' }] },
+            { id: 'm3', parts: [{ type: 'text', text: 'test3' }] }
         ];
         const index = buildSessionSearchIndex(messages);
         expect(index.entries[0].role).toBe('user');
@@ -238,7 +211,11 @@ describe('createSessionSearchIndexRecord', () => {
             messageCount: 1,
             entries: [{ id: 'm1', index: 0, role: 'user', text: 'test' }]
         };
-        const record = createSessionSearchIndexRecord('s1', [{ content: 'test' }], idx);
+        const record = createSessionSearchIndexRecord(
+            's1',
+            [{ parts: [{ type: 'text', text: 'test' }] }],
+            idx
+        );
         expect(record.sessionId).toBe('s1');
         expect(record.entries).toHaveLength(1);
     });
@@ -246,7 +223,7 @@ describe('createSessionSearchIndexRecord', () => {
     it('searchIndex 不可用时重建', () => {
         const record = createSessionSearchIndexRecord(
             's1',
-            [{ id: 'm1', role: 'user', content: 'hello' }],
+            [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hello' }] }],
             null
         );
         expect(record.sessionId).toBe('s1');

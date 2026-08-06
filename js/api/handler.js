@@ -23,8 +23,9 @@
 import { state } from '../core/state.js';
 import { eventBus } from '../core/events.js';
 import { requestStateMachine, RequestState } from '../core/request-state-machine.js';
+import { requestTaskRegistry } from '../core/request-task-registry.js';
 import { getSendFunction } from './factory.js';
-import { resetStreamStats } from '../stream/stats.js';
+import { StreamStats } from '../stream/stats.js';
 import { handleMultiStreamResponses } from '../stream/multi-stream.js';
 import { logger } from '../utils/logger.js';
 
@@ -45,11 +46,52 @@ export { cancelCurrentRequest } from './handler-cancel.js';
 export { resendWithToolResults } from './handler-continuation.js';
 export { getCurrentEndpoint, getCurrentApiKey, getCurrentModel } from './current.js';
 
+function isTaskForeground(task, sessionId) {
+    return (
+        sessionId === state.currentSessionId && requestTaskRegistry.owns(task) && !task.isDetached
+    );
+}
+
 /**
  * 发送到 API（主入口）
  */
-export async function sendToAPI() {
-    const ctx = createHandlerContext();
+export async function sendToAPI(options = {}) {
+    const existingTask = options.task || null;
+    if (existingTask && !requestTaskRegistry.isActive(existingTask)) {
+        logger.debug('[sendToAPI] 忽略已结束或已取消的任务续作', {
+            requestId: existingTask.id,
+            phase: existingTask.phase
+        });
+        return false;
+    }
+    const ctx = createHandlerContext(existingTask);
+    const task =
+        existingTask ||
+        requestTaskRegistry.create({
+            sessionId: ctx.sessionId,
+            abortController: ctx.abortController,
+            requestContext: ctx
+        });
+    if (!task || !requestTaskRegistry.owns(task)) {
+        logger.warn('[sendToAPI] 当前会话已有请求任务，忽略重复发送');
+        eventBus.emit('ui:notification', {
+            message: '当前会话已有请求正在进行',
+            type: 'warning',
+            duration: 2000
+        });
+        return false;
+    }
+    ctx.task = task;
+    task.requestContext = ctx;
+    task.requestProfile = ctx.requestProfile;
+    task.requestOrigin ||= {
+        endpoint: ctx.endpoint,
+        apiKey: ctx.apiKey,
+        model: ctx.model,
+        requestFormat: ctx.requestFormat,
+        adapter: ctx.adapter
+    };
+    if (existingTask) requestTaskRegistry.setAbortController(task, ctx.abortController);
     logger.debug('[sendToAPI] ctx:', {
         endpoint: ctx.endpoint,
         model: ctx.model,
@@ -59,10 +101,33 @@ export async function sendToAPI() {
         hasApiKey: !!ctx.apiKey
     });
 
-    requestStateMachine.transition(RequestState.SENDING, {
-        abortController: ctx.abortController,
-        sessionId: ctx.sessionId
-    });
+    if (isTaskForeground(task, ctx.sessionId)) {
+        const attachSucceeded = existingTask
+            ? requestStateMachine.attach(task, task.assistantMessageEl)
+            : true;
+        const transitioned = existingTask
+            ? attachSucceeded && task.phase === RequestState.SENDING
+                ? requestStateMachine.owns(task)
+                : requestStateMachine.transitionFor(task, RequestState.SENDING, {
+                      abortController: ctx.abortController,
+                      sessionId: ctx.sessionId,
+                      requestId: task.id,
+                      timeoutMs: ctx.timeoutMs
+                  })
+            : requestStateMachine.transition(RequestState.SENDING, {
+                  abortController: ctx.abortController,
+                  sessionId: ctx.sessionId,
+                  requestId: task.id,
+                  timeoutMs: ctx.timeoutMs
+              });
+        if (!transitioned) {
+            requestTaskRegistry.finish(task, RequestState.ERROR, {
+                reason: 'state-transition-rejected'
+            });
+            return false;
+        }
+    }
+    requestTaskRegistry.setPhase(task, RequestState.SENDING);
 
     // 请求超时——abort 携带 TimeoutError reason 让 classifyError 区分超时 vs 用户取消
     ctx.timeoutId = setTimeout(() => {
@@ -70,14 +135,22 @@ export async function sendToAPI() {
         logger.warn(`请求超时（${ctx.timeoutMs}ms），已自动取消`);
     }, ctx.timeoutMs);
 
-    resolvePlaceholder(ctx);
+    if (isTaskForeground(task, ctx.sessionId)) {
+        resolvePlaceholder(ctx);
+    } else {
+        ctx.assistantMessageEl = null;
+        ctx.isContinuationMode = task.isSavingContinuation === true;
+        ctx.isImageRetryMode = task.isImageRetry === true;
+    }
+    requestTaskRegistry.setAssistantElement(task, ctx.assistantMessageEl);
 
     // continuation 模式累计统计，image-retry 与 new 模式重置
-    if (!ctx.isContinuationMode) {
-        resetStreamStats();
+    if (!ctx.isContinuationMode || !task.requestStats) {
+        task.requestStats = new StreamStats();
     } else {
         logger.debug('[Handler] Continuation 模式，保留原有统计数据');
     }
+    ctx.requestStats = task.requestStats;
 
     let requestSucceeded = false;
     try {
@@ -86,21 +159,22 @@ export async function sendToAPI() {
         const canMultipleReplies = adapter?.supportsMultipleReplies !== false;
 
         // 流式多回复路径
-        if (state.streamEnabled && state.replyCount > 1 && canMultiStream && canMultipleReplies) {
+        if (ctx.streamEnabled && ctx.replyCount > 1 && canMultiStream && canMultipleReplies) {
             clearTimeout(ctx.timeoutId);
             ctx.timeoutId = null;
             await handleMultiStreamResponses(ctx);
             requestSucceeded = true;
-            if (!state.isToolCallPending) {
-                requestStateMachine.transition(RequestState.COMPLETED);
+            if (!task.isToolCallPending) {
+                requestTaskRegistry.setPhase(task, RequestState.COMPLETED);
+                requestStateMachine.transitionFor(task, RequestState.COMPLETED);
             }
-            return;
+            return true;
         }
 
         // 多回复但 adapter 不支持并发：降级 + 提示
-        if (state.replyCount > 1 && !canMultipleReplies) {
+        if (ctx.replyCount > 1 && !canMultipleReplies) {
             logger.debug(`[Handler] ${adapter.name} 使用格式专属数量参数，忽略全局回复数量`);
-        } else if (state.streamEnabled && state.replyCount > 1 && !canMultiStream) {
+        } else if (ctx.streamEnabled && ctx.replyCount > 1 && !canMultiStream) {
             const name = adapter?.name || requestFormat;
             logger.warn(`[Handler] ${name} 不支持多回复并发，降级为单流`);
             eventBus.emit('ui:notification', {
@@ -119,7 +193,8 @@ export async function sendToAPI() {
             ctx.apiKey,
             ctx.model,
             ctx.abortController.signal,
-            ctx.adapter
+            ctx.adapter,
+            ctx
         );
 
         clearTimeout(ctx.timeoutId);
@@ -133,20 +208,27 @@ export async function sendToAPI() {
 
         // OpenClaw 走 WebSocket 必须走流式路径
         const forceStream = requestFormat === 'openclaw';
-        requestStateMachine.transition(RequestState.STREAMING, {
+        requestTaskRegistry.setPhase(task, RequestState.STREAMING);
+        requestStateMachine.transitionFor(task, RequestState.STREAMING, {
             assistantMessageEl: ctx.assistantMessageEl
         });
-        if (state.streamEnabled || forceStream) {
+        if (ctx.streamEnabled || forceStream) {
             await handleStreamResponse(response, ctx);
         } else {
             await handleNonStreamResponse(response, ctx);
         }
 
+        if (task.phase === RequestState.ERROR || task.phase === RequestState.CANCELLED) {
+            return false;
+        }
+
         // 请求成功完成（工具调用进行中由 continuation 流程管理状态机，跳过此处转换）
         requestSucceeded = true;
-        if (!state.isToolCallPending) {
-            requestStateMachine.transition(RequestState.COMPLETED);
+        if (!task.isToolCallPending) {
+            requestTaskRegistry.setPhase(task, RequestState.COMPLETED);
+            requestStateMachine.transitionFor(task, RequestState.COMPLETED);
         }
+        return true;
     } catch (error) {
         logger.error('[sendToAPI] Error:', error);
         const classification = classifyError(error, ctx);
@@ -172,12 +254,15 @@ export function initAPIHandler() {
         cancelCurrentRequest();
     });
 
-    eventBus.on('stream:error', ({ errorCode, errorMessage }) => {
+    eventBus.on('stream:error', ({ errorCode, errorMessage, requestId, sessionId }) => {
         logger.error('[Handler] 流式错误:', errorCode, errorMessage);
+        const task = requestId
+            ? requestTaskRegistry.getById(requestId)
+            : requestTaskRegistry.getBySession(sessionId || state.currentSessionId);
 
-        // 后台任务的流错误不应干扰当前会话状态
-        if (!requestStateMachine.isBusy()) {
-            logger.debug('[Handler] 忽略后台任务的流式错误（状态机已空闲）');
+        if (task && !requestStateMachine.owns(task)) {
+            requestTaskRegistry.setPhase(task, RequestState.ERROR);
+            logger.debug('[Handler] 后台任务流错误已按任务收口');
             return;
         }
 
@@ -187,9 +272,16 @@ export function initAPIHandler() {
             return;
         }
 
-        requestStateMachine.transition(RequestState.ERROR, {
-            error: { code: errorCode, message: errorMessage }
-        });
+        if (task) {
+            requestTaskRegistry.setPhase(task, RequestState.ERROR);
+            requestStateMachine.transitionFor(task, RequestState.ERROR, {
+                error: { code: errorCode, message: errorMessage }
+            });
+        } else if (requestStateMachine.isBusy()) {
+            requestStateMachine.transition(RequestState.ERROR, {
+                error: { code: errorCode, message: errorMessage }
+            });
+        }
 
         // 旧版状态标志清理（向后兼容）
         state.isLoading = false;

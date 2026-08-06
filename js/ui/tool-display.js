@@ -135,12 +135,17 @@ export async function createToolCallUI(toolCall, targetContainer = null) {
 /**
  * 更新工具执行状态
  */
-export function updateToolCallStatus(toolId, status, data = {}) {
+export function updateToolCallStatus(toolId, status, data = {}, scope = null) {
     // 找到包含该工具的 group
     let group = null;
     let toolInfo = null;
 
-    for (const g of document.querySelectorAll('.tool-calls-group')) {
+    const groups = scope
+        ? scope.classList?.contains('tool-calls-group')
+            ? [scope]
+            : scope.querySelectorAll?.('.tool-calls-group') || []
+        : document.querySelectorAll('.tool-calls-group');
+    for (const g of groups) {
         const gData = toolCallsDataMap.get(g);
         if (!gData) continue;
         const found = gData.tools.find((t) => t.id === toolId);

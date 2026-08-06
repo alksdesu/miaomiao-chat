@@ -13,6 +13,21 @@ import { executeRequest } from './request-pipeline.js';
  *
  * 优先用调用方传入的快照 adapter，缺省回退固定 claude adapter（保留 factory 直调兼容）
  */
-export async function sendClaudeRequest(endpoint, apiKey, model, signal = null, adapter = null) {
-    return executeRequest(adapter || getAdapter('claude'), { endpoint, apiKey, model, signal });
+export async function sendClaudeRequest(
+    endpoint,
+    apiKey,
+    model,
+    signal = null,
+    adapter = null,
+    requestContext = null
+) {
+    return executeRequest(adapter || getAdapter('claude'), {
+        endpoint,
+        apiKey,
+        model,
+        signal,
+        sessionId: requestContext?.sessionId,
+        sourceMessages: requestContext?.sourceMessages,
+        requestProfile: requestContext?.requestProfile
+    });
 }

@@ -10,35 +10,53 @@
 import { logger } from '../utils/logger.js';
 import { state } from '../core/state.js';
 import { appendStreamStats } from './stats.js';
-import { saveAssistantMessage } from '../messages/sync.js';
+import { saveAssistantMessageAsync } from '../messages/sync.js';
 import {
     buildPartsFromStreamingState,
-    buildMetaFromStreamingState
+    buildMetaFromStreamingState,
+    buildCanonicalReplies
 } from '../messages/parts-builder.js';
 import { setCurrentMessageIndex } from '../messages/dom-sync.js';
 import { renderReplyWithSelector } from '../messages/renderer.js';
 import { renderHumanizedError } from '../utils/errors.js';
-import { saveErrorMessage } from '../messages/sync.js';
 import { getSendFunction } from '../api/factory.js';
 import { executeRequest } from '../api/request-pipeline.js';
 import { BufferedSink } from './sink.js';
+import { requestTaskRegistry } from '../core/request-task-registry.js';
+import { safeSetHTML } from '../utils/helpers.js';
+
+function isForegroundContext(ctx) {
+    return (
+        ctx.sessionId === state.currentSessionId &&
+        (!ctx.task || (requestTaskRegistry.owns(ctx.task) && !ctx.task.isDetached))
+    );
+}
+
+function getContextElements(ctx) {
+    const messageElement = ctx.task?.messageElement || ctx.assistantMessageEl || null;
+    const target = messageElement?.classList?.contains('message-content')
+        ? messageElement
+        : messageElement?.querySelector?.('.message-content') || null;
+    return { messageElement, target };
+}
+
+function resolveResponseMeta(meta, ctx) {
+    return {
+        ...meta,
+        model: ctx.requestProfile?.modelDisplayName || meta?.model,
+        provider: ctx.requestProfile?.providerName || meta?.provider
+    };
+}
 
 /**
  * 处理多个流式响应（并行）
  * @param {import('../api/handler-context.js').HandlerContext} ctx - sendToAPI 的不可变快照
  */
 export async function handleMultiStreamResponses(ctx) {
-    const {
-        endpoint,
-        apiKey,
-        model,
-        abortController,
-        assistantMessageEl,
-        sessionId,
-        adapter,
-        requestFormat
-    } = ctx;
-    const replyCount = state.replyCount || 1;
+    const { endpoint, apiKey, model, abortController, sessionId, adapter, requestFormat } = ctx;
+    const replyCount = ctx.replyCount || 1;
+    const foreground = isForegroundContext(ctx);
+    const { target } = getContextElements(ctx);
 
     // 显示进度 —— 用独立 DOM 节点（class:multi-reply-progress-bar）不覆盖整个 message-content，
     // 后续 BufferedSink showRealtime 的 updateStreamingMessage 可与进度条共存，避免 loading
@@ -46,9 +64,9 @@ export async function handleMultiStreamResponses(ctx) {
     const progressEl = document.createElement('div');
     progressEl.className = 'multi-reply-progress multi-reply-progress-bar';
     progressEl.textContent = `正在并行生成 ${replyCount} 个回复...`;
-    // eslint-disable-next-line no-restricted-syntax -- 已审计：清空 children，无注入
-    state.currentAssistantMessage.innerHTML = '';
-    state.currentAssistantMessage.appendChild(progressEl);
+    if (foreground && target) {
+        target.replaceChildren(progressEl);
+    }
 
     // 用 ctx 快照 adapter 走 executeRequest：请求往返期间用户切 provider 也不会让并发流
     // 用错 adapter 或打到新端点。openclaw supportsMultiStream:false 不进本路径（handler 已
@@ -57,7 +75,15 @@ export async function handleMultiStreamResponses(ctx) {
         requestFormat === 'openclaw'
             ? getSendFunction(requestFormat)
             : (ep, key, mdl, sig) =>
-                  executeRequest(adapter, { endpoint: ep, apiKey: key, model: mdl, signal: sig });
+                  executeRequest(adapter, {
+                      endpoint: ep,
+                      apiKey: key,
+                      model: mdl,
+                      signal: sig,
+                      sessionId,
+                      sourceMessages: ctx.sourceMessages,
+                      requestProfile: ctx.requestProfile
+                  });
 
     const promises = [];
     for (let i = 0; i < replyCount; i++) {
@@ -117,15 +143,28 @@ export async function handleMultiStreamResponses(ctx) {
             }));
         }
 
-        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
-        state.currentAssistantMessage.innerHTML = renderHumanizedError(errorObj, statusCode);
-        saveErrorMessage(errorObj, statusCode, renderHumanizedError);
+        const errorHtml = renderHumanizedError(errorObj, statusCode);
+        const currentTarget = getContextElements(ctx).target;
+        if (isForegroundContext(ctx) && currentTarget) safeSetHTML(currentTarget, errorHtml);
+        await saveAssistantMessageAsync(
+            [],
+            resolveResponseMeta(buildMetaFromStreamingState({}), ctx),
+            {
+                sessionId,
+                forceBackground: ctx.task?.isDetached === true,
+                isError: true,
+                errorData: errorObj,
+                errorHtml
+            }
+        );
         return;
     }
 
     // 更新进度文本（仅替换文本，DOM 节点保留），首流首 token 到来后会被 updateStreamingMessage
     // 覆盖渲染流式内容；progress bar 在所有流完成后由 renderReplyWithSelector 清理
-    const existingProgress = state.currentAssistantMessage.querySelector('.multi-reply-progress');
+    const existingProgress = isForegroundContext(ctx)
+        ? getContextElements(ctx).target?.querySelector('.multi-reply-progress')
+        : null;
     if (existingProgress) {
         existingProgress.textContent = `正在接收 ${validResponses.length} 个回复的流式数据...`;
     }
@@ -133,7 +172,14 @@ export async function handleMultiStreamResponses(ctx) {
     // 并行解析所有流，第一个流 showRealtime 走全局 UI 进度，其余后台
     // abortController.signal 透传到每个 parser，用户点"停止"时同时取消所有并发流
     const streamPromises = validResponses.map((item, idx) =>
-        parseReplyStream(adapter, item.response, idx === 0, abortController?.signal || null)
+        parseReplyStream(
+            adapter,
+            item.response,
+            idx === 0,
+            abortController?.signal || null,
+            ctx.task,
+            target
+        )
     );
     const streamResults = await Promise.allSettled(streamPromises);
 
@@ -177,13 +223,16 @@ export async function handleMultiStreamResponses(ctx) {
     }
 
     if (allReplies.length > 0) {
-        state.currentReplies = allReplies;
-        state.selectedReplyIndex = 0;
+        const canonicalReplies = buildCanonicalReplies(allReplies);
+        if (isForegroundContext(ctx)) {
+            state.currentReplies = canonicalReplies;
+            state.selectedReplyIndex = 0;
+        }
 
         const reply0 = allReplies[0];
 
         // 同步第一个回复的统计到全局（供 DOM 渲染）
-        if (reply0.stats) reply0.stats.syncToGlobal();
+        if (isForegroundContext(ctx) && reply0.stats) reply0.stats.syncToGlobal();
 
         // 多回复模式下被 BufferedSink 拦截的工具调用：标 'skipped' 状态。
         // adapter.partsToAPIMessages 看到 ToolState.SKIPPED 整条 tool_call 跳过不下发
@@ -197,7 +246,7 @@ export async function handleMultiStreamResponses(ctx) {
               }))
             : undefined;
 
-        const messageIndex = saveAssistantMessage(
+        const messageIndex = await saveAssistantMessageAsync(
             buildPartsFromStreamingState({
                 textContent: reply0.content || '',
                 thinkingContent: reply0.thinkingContent,
@@ -211,28 +260,37 @@ export async function handleMultiStreamResponses(ctx) {
                 toolCalls: skippedToolCalls,
                 signatureFormat: reply0.signatureFormat
             }),
-            buildMetaFromStreamingState({
-                thoughtSignature: reply0.thoughtSignature || reply0.thinkingSignature,
-                encryptedContent: reply0.encryptedContent,
-                reasoningItemId: reply0.reasoningItemId,
-                reasoningItems: reply0.reasoningItems,
-                groundingMetadata: reply0.groundingMetadata,
-                streamStats: reply0.stats ? reply0.stats.getData() : null
-            }),
+            resolveResponseMeta(
+                buildMetaFromStreamingState({
+                    thoughtSignature: reply0.thoughtSignature || reply0.thinkingSignature,
+                    encryptedContent: reply0.encryptedContent,
+                    reasoningItemId: reply0.reasoningItemId,
+                    reasoningItems: reply0.reasoningItems,
+                    groundingMetadata: reply0.groundingMetadata,
+                    streamStats: reply0.stats ? reply0.stats.getData() : null
+                }),
+                ctx
+            ),
             {
                 sessionId,
-                allReplies,
+                forceBackground: ctx.task?.isDetached === true,
+                isContinuation: ctx.task?.isSavingContinuation === true,
+                allReplies: canonicalReplies,
                 selectedReplyIndex: 0
             }
         );
 
-        setCurrentMessageIndex(messageIndex);
+        const foregroundAtCommit = isForegroundContext(ctx);
+        const currentMessageElement = getContextElements(ctx).messageElement;
+        if (foregroundAtCommit) setCurrentMessageIndex(messageIndex);
 
         // 渲染回复选择器
-        renderReplyWithSelector(allReplies, 0, assistantMessageEl);
+        if (foregroundAtCommit) {
+            renderReplyWithSelector(canonicalReplies, 0, currentMessageElement);
+        }
 
         // 添加统计信息
-        appendStreamStats();
+        if (foregroundAtCommit) appendStreamStats();
     } else {
         // 所有流都失败了，显示详细错误信息
         let errorObj;
@@ -266,9 +324,20 @@ export async function handleMultiStreamResponses(ctx) {
             errorObj = { error: { type: 'empty_response', message: '没有收到有效回复' } };
         }
 
-        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
-        state.currentAssistantMessage.innerHTML = renderHumanizedError(errorObj, 0);
-        saveErrorMessage(errorObj, 0, renderHumanizedError);
+        const errorHtml = renderHumanizedError(errorObj, 0);
+        const currentTarget = getContextElements(ctx).target;
+        if (isForegroundContext(ctx) && currentTarget) safeSetHTML(currentTarget, errorHtml);
+        await saveAssistantMessageAsync(
+            [],
+            resolveResponseMeta(buildMetaFromStreamingState({}), ctx),
+            {
+                sessionId,
+                forceBackground: ctx.task?.isDetached === true,
+                isError: true,
+                errorData: errorObj,
+                errorHtml
+            }
+        );
     }
 }
 
@@ -282,12 +351,19 @@ export async function handleMultiStreamResponses(ctx) {
  * @param {AbortSignal|null} signal - 透传给 parser.parse，abort 时主动 cancel reader
  * @returns {Promise<Object>} reply 对象（content/thinkingContent/stats/格式特有字段）
  */
-async function parseReplyStream(adapter, response, showRealtime, signal = null) {
+async function parseReplyStream(
+    adapter,
+    response,
+    showRealtime,
+    signal = null,
+    task = null,
+    target = null
+) {
     if (!response.body) {
         throw new Error('响应体为空（代理可能返回了空响应）');
     }
     const reader = response.body.getReader();
-    const sink = new BufferedSink({ showRealtime });
+    const sink = new BufferedSink({ showRealtime, task, target });
 
     // sessionId=null：BufferedSink.commit 是 no-op，无需会话归属
     const parser = await adapter.streamParser(reader, null, sink, signal);

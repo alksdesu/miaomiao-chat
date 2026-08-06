@@ -267,7 +267,7 @@ function partsToAPIMessages(msgs, _opts = {}) {
     const out = [];
 
     for (const msg of msgs) {
-        if (msg.error || msg.isError) continue;
+        if (msg.error) continue;
         if (msg.role === Role.SYSTEM) continue; // system 由顶级参数处理
 
         // 旧消息/导入数据可能缺 part.idMap，主动补齐再走转换，避免 partsToClaudeContent
@@ -311,10 +311,10 @@ function partsToAPIMessages(msgs, _opts = {}) {
 
 // ========== parseResponse ==========
 
-function parseResponse(data) {
+function parseResponse(data, options = {}) {
     if (data.error) return null;
     if (!data.content || data.content.length === 0) return null;
-    const xmlMode = state.xmlToolCallingEnabled;
+    const xmlMode = options.isXmlMode ?? state.xmlToolCallingEnabled;
 
     // 1. 优先检测原生工具调用 — 不早 return，下方统一抽取 thinking blocks/signatures/items
     // 让 saveAssistantMessage 落库的 part 含完整 thinking，下轮 resendWithToolResults 重发时
@@ -598,7 +598,8 @@ function resolveEndpoint(baseEndpoint, _model, _isStreaming) {
 /**
  * Claude headers：x-api-key + anthropic-version + 智能合并 beta features
  */
-function buildHeaders(apiKey, _ctx) {
+function buildHeaders(apiKey, ctx = {}) {
+    const stateRef = ctx.state || state;
     const headers = {
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
@@ -607,14 +608,14 @@ function buildHeaders(apiKey, _ctx) {
 
     // 智能合并 beta headers
     const betaFeaturesToAdd = [];
-    if (state.codeExecutionEnabled) {
+    if (stateRef.codeExecutionEnabled) {
         betaFeaturesToAdd.push('code-execution-2025-08-25');
         betaFeaturesToAdd.push('advanced-tool-use-2025-11-20');
         // Code Execution 需要 Files API 支持（用于 container_upload）
         betaFeaturesToAdd.push('files-api-2025-04-14');
     }
     // Computer Use beta（仅 Electron 环境）— 与 computer 工具版本对齐到最新
-    if (state.computerUseEnabled && isElectron()) {
+    if (stateRef.computerUseEnabled && isElectron()) {
         betaFeaturesToAdd.push('computer-use-2025-11-24');
     }
 

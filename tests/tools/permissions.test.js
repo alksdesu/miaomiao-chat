@@ -11,12 +11,18 @@ vi.mock('../../js/core/state.js', () => ({
             whitelist: [],
             blacklist: [],
             requireConfirmation: false
-        }
+        },
+        currentSessionId: 'session-a',
+        bashConfig: { requireConfirmation: false }
     }
 }));
 
 vi.mock('../../js/state/sessions.js', () => ({
     debouncedSaveSession: vi.fn()
+}));
+
+vi.mock('../../js/utils/dialogs.js', () => ({
+    showConfirmDialog: vi.fn(async () => ({ confirmed: true, persistForSession: false }))
 }));
 
 import { state } from '../../js/core/state.js';
@@ -35,10 +41,14 @@ import {
     importPermissions,
     getPermissionStats,
     setWhitelist,
-    setBlacklist
+    setBlacklist,
+    confirmToolExecutionIfRequired,
+    resetSessionGrants
 } from '../../js/tools/permissions.js';
+import { showConfirmDialog } from '../../js/utils/dialogs.js';
 
 beforeEach(() => {
+    vi.clearAllMocks();
     state.toolPermissions = {
         enabled: false,
         mode: 'whitelist',
@@ -46,6 +56,11 @@ beforeEach(() => {
         blacklist: [],
         requireConfirmation: false
     };
+    state.currentSessionId = 'session-a';
+    state.bashConfig = { requireConfirmation: false };
+    resetSessionGrants('session-a');
+    resetSessionGrants('session-b');
+    showConfirmDialog.mockResolvedValue({ confirmed: true, persistForSession: false });
 });
 
 // ========== checkToolPermission ==========
@@ -205,6 +220,109 @@ describe('setRequireConfirmation', () => {
     it('设置确认', () => {
         setRequireConfirmation(true);
         expect(state.toolPermissions.requireConfirmation).toBe(true);
+    });
+});
+
+describe('工具确认作用域', () => {
+    it('会话内授权不会泄漏到其他会话', async () => {
+        state.toolPermissions.requireConfirmation = true;
+        showConfirmDialog.mockResolvedValue({ confirmed: true, persistForSession: true });
+
+        await confirmToolExecutionIfRequired(
+            'search',
+            'search',
+            {},
+            {
+                sessionId: 'session-a',
+                turnId: 'turn-a'
+            }
+        );
+        await confirmToolExecutionIfRequired(
+            'search',
+            'search',
+            {},
+            {
+                sessionId: 'session-a',
+                turnId: 'turn-b'
+            }
+        );
+        await confirmToolExecutionIfRequired(
+            'search',
+            'search',
+            {},
+            {
+                sessionId: 'session-b',
+                turnId: 'turn-a'
+            }
+        );
+
+        expect(showConfirmDialog).toHaveBeenCalledTimes(2);
+    });
+
+    it('不同请求不会共享拒绝缓存', async () => {
+        state.toolPermissions.requireConfirmation = true;
+        showConfirmDialog
+            .mockResolvedValueOnce({ confirmed: false, persistForSession: false })
+            .mockResolvedValueOnce({ confirmed: true, persistForSession: false });
+
+        const first = await confirmToolExecutionIfRequired(
+            'search',
+            'search',
+            { q: 'x' },
+            {
+                sessionId: 'session-a',
+                turnId: 'turn-a'
+            }
+        );
+        const second = await confirmToolExecutionIfRequired(
+            'search',
+            'search',
+            { q: 'x' },
+            {
+                sessionId: 'session-a',
+                turnId: 'turn-b'
+            }
+        );
+
+        expect(first).toBe(false);
+        expect(second).toBe(true);
+        expect(showConfirmDialog).toHaveBeenCalledTimes(2);
+    });
+
+    it('确认结果返回前任务被取消时不授予会话权限', async () => {
+        state.toolPermissions.requireConfirmation = true;
+        const controller = new AbortController();
+        let resolveDialog;
+        showConfirmDialog.mockReturnValueOnce(
+            new Promise((resolve) => {
+                resolveDialog = resolve;
+            })
+        );
+
+        const pending = confirmToolExecutionIfRequired(
+            'search',
+            'search',
+            {},
+            {
+                sessionId: 'session-a',
+                turnId: 'turn-aborted',
+                signal: controller.signal
+            }
+        );
+        controller.abort();
+        resolveDialog({ confirmed: true, persistForSession: true });
+
+        await expect(pending).resolves.toBe(false);
+        await confirmToolExecutionIfRequired(
+            'search',
+            'search',
+            {},
+            {
+                sessionId: 'session-a',
+                turnId: 'turn-next'
+            }
+        );
+        expect(showConfirmDialog).toHaveBeenCalledTimes(2);
     });
 });
 

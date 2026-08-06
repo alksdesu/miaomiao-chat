@@ -15,6 +15,9 @@ vi.mock('../../js/core/state.js', () => ({
         apiFormat: 'openai',
         isToolCallPending: false,
         currentAssistantMessage: null,
+        currentSessionId: 'session-a',
+        backgroundTasks: new Map(),
+        sessions: [],
         messages: []
     }
 }));
@@ -32,8 +35,18 @@ vi.mock('../../js/core/state-mutations.js', async () => {
 });
 
 vi.mock('../../js/core/request-state-machine.js', () => ({
-    requestStateMachine: { transition: vi.fn(), forceReset: vi.fn() },
-    RequestState: { TOOL_CALLING: 'TOOL_CALLING' }
+    requestStateMachine: {
+        transition: vi.fn(),
+        transitionFor: vi.fn(),
+        forceReset: vi.fn()
+    },
+    RequestState: {
+        TOOL_CALLING: 'tool_calling',
+        CONTINUATION: 'continuation',
+        COMPLETED: 'completed',
+        ERROR: 'error',
+        CANCELLED: 'cancelled'
+    }
 }));
 
 vi.mock('../../js/tools/executor.js', () => ({
@@ -55,24 +68,76 @@ vi.mock('../../js/providers/manager.js', () => ({
 }));
 
 vi.mock('../../js/messages/schema.js', () => ({
-    validateToolPairings: vi.fn(() => ({ valid: true, orphans: [] }))
+    validateToolPairings: vi.fn(() => ({ valid: true, orphans: [] })),
+    Role: { ASSISTANT: 'assistant' },
+    PartType: { TOOL_CALL: 'tool_call' },
+    ToolState: { DONE: 'done', ERROR: 'error' }
 }));
 
 vi.mock('../../js/messages/sync.js', () => ({
-    writeToolResultsToBackgroundSession: vi.fn(async () => {})
+    writeToolResultsToBackgroundSession: vi.fn(async () => 1)
 }));
 
 vi.mock('../../js/api/handler.js', () => ({
     resendWithToolResults: vi.fn(async () => {})
 }));
 
-import { executeToolCalls, writeToolResultsBackToState } from '../../js/tools/orchestrator.js';
+import {
+    executeToolCalls,
+    handleToolCallStream,
+    writeToolResultsBackToState
+} from '../../js/tools/orchestrator.js';
 import { executeTool } from '../../js/tools/executor.js';
 import { createToolCallUI, updateToolCallStatus } from '../../js/ui/tool-display.js';
 import { state } from '../../js/core/state.js';
+import { requestTaskRegistry } from '../../js/core/request-task-registry.js';
+import { writeToolResultsToBackgroundSession } from '../../js/messages/sync.js';
+import { resendWithToolResults } from '../../js/api/handler.js';
 
 beforeEach(() => {
     vi.clearAllMocks();
+    state.currentSessionId = 'session-a';
+    state.backgroundTasks = new Map();
+    state.isToolCallPending = false;
+    requestTaskRegistry.clearForTests();
+});
+
+describe('handleToolCallStream 跨会话归属', () => {
+    it('task 已 detach 但 currentSessionId 尚未切换时走后台写回', async () => {
+        const task = requestTaskRegistry.create({
+            sessionId: 'session-a',
+            abortController: new AbortController()
+        });
+        requestTaskRegistry.detach(task);
+        state.messages = [
+            {
+                role: 'assistant',
+                parts: [
+                    {
+                        type: 'tool_call',
+                        id: 'tc_detached',
+                        name: 'search',
+                        args: {},
+                        state: 'pending'
+                    }
+                ]
+            }
+        ];
+        executeTool.mockResolvedValueOnce({ text: 'done' });
+
+        await handleToolCallStream([{ id: 'tc_detached', name: 'search', arguments: {} }], {
+            sourceSessionId: 'session-a',
+            task
+        });
+
+        expect(writeToolResultsToBackgroundSession).toHaveBeenCalledWith(
+            'session-a',
+            expect.arrayContaining([expect.objectContaining({ id: 'tc_detached' })])
+        );
+        expect(resendWithToolResults).toHaveBeenCalledWith(null, task);
+        expect(state.messages[0].parts[0].state).toBe('pending');
+        expect(state.isToolCallPending).toBe(false);
+    });
 });
 
 // ========== executeToolCalls ==========
@@ -149,6 +214,38 @@ describe('executeToolCalls', () => {
         const results = await executeToolCalls(toolCalls);
 
         expect(results[0].isError).toBe(false);
+    });
+
+    it('后台执行不创建前台工具 UI 或撤销快照', async () => {
+        const { snapshotBeforeToolCall } = await import('../../js/tools/undo.js');
+        await executeToolCalls([{ id: 'tc_bg', name: 'search', arguments: {} }], {
+            captureUndo: false,
+            resolveTargetContainer: () => null,
+            sessionId: 'session-a'
+        });
+
+        expect(createToolCallUI).not.toHaveBeenCalled();
+        expect(updateToolCallStatus).not.toHaveBeenCalled();
+        expect(snapshotBeforeToolCall).not.toHaveBeenCalled();
+    });
+
+    it('把发起时格式快照和会话传给执行器', async () => {
+        await executeToolCalls([{ id: 'tc_profile', name: 'computer', arguments: {} }], {
+            sessionId: 'session-a',
+            turnId: 'request-a',
+            requestProfile: { providerApiFormat: 'claude', isXmlMode: true }
+        });
+
+        expect(executeTool).toHaveBeenCalledWith(
+            'computer',
+            {},
+            expect.objectContaining({
+                apiFormat: 'claude',
+                isXmlMode: true,
+                sessionId: 'session-a',
+                turnId: 'request-a'
+            })
+        );
     });
 });
 

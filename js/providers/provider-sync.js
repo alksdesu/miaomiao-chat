@@ -8,6 +8,11 @@ import { eventBus } from '../core/events.js';
 import { EVENTS } from '../core/events-registry.js';
 import { logger } from '../utils/logger.js';
 import { clearForeignSignatures, clearProviderSpecificRawMeta } from '../api/format-converter.js';
+import {
+    hasLazyMessages,
+    materializeSessionMessages
+} from '../state/session-message-repository.js';
+import { saveSessionMessages } from '../state/storage.js';
 
 // 把 provider.apiFormat 折叠到 signature 维度（openai-chat / openai-responses 共享 'openai' 槽）
 function apiFormatToSignatureFormat(apiFormat) {
@@ -21,10 +26,46 @@ function apiFormatToSignatureFormat(apiFormat) {
 // 单 pending cleanup：连续切换 N 次只保留最后一次的目标，避免历史回调堆积乱写
 let _pendingCleanup = null;
 let _pendingCleanupBound = false;
+let _historyCleanupPromise = Promise.resolve();
 function _runPendingCleanup() {
     const fn = _pendingCleanup;
     _pendingCleanup = null;
     if (fn) fn();
+}
+
+export function waitForProviderHistoryCleanup() {
+    return _historyCleanupPromise;
+}
+
+function schedulePagedHistoryCleanup({ clearSignatures, signatureFormat, clearRawMeta }) {
+    const sessionId = state.currentSessionId;
+    if (!sessionId || !hasLazyMessages(state.messages)) return;
+    let messageWindow;
+    try {
+        messageWindow = structuredClone(state.messages);
+    } catch (error) {
+        logger.warn('[syncProviderState] 无法复制分页消息窗口:', error);
+        return;
+    }
+
+    _historyCleanupPromise = _historyCleanupPromise
+        .then(async () => {
+            const messages = await materializeSessionMessages(sessionId, messageWindow);
+            if (messages === messageWindow) return;
+            let cleared = 0;
+            if (clearSignatures) {
+                cleared += clearForeignSignatures(messages, signatureFormat);
+            }
+            if (clearRawMeta) {
+                cleared += clearProviderSpecificRawMeta(messages);
+            }
+            if (cleared === 0) return;
+            await saveSessionMessages(sessionId, { messages });
+            logger.debug(`[syncProviderState] 已清理分页历史中的 ${cleared} 处提供商上下文`);
+        })
+        .catch((error) => {
+            logger.warn('[syncProviderState] 分页历史清理失败:', error);
+        });
 }
 
 /**
@@ -56,13 +97,20 @@ export function syncProviderState(provider) {
     const streamingInFlight = state.isLoading || state.isSending;
 
     const performSignatureCleanup = () => {
-        if (
+        const clearSignatures =
             prevSignatureFormat &&
             nextSignatureFormat &&
-            prevSignatureFormat !== nextSignatureFormat &&
-            Array.isArray(state.messages) &&
-            state.messages.length > 0
-        ) {
+            prevSignatureFormat !== nextSignatureFormat;
+        const providerIdChanged =
+            state.currentProviderId && state.currentProviderId !== provider.id;
+
+        schedulePagedHistoryCleanup({
+            clearSignatures,
+            signatureFormat: nextSignatureFormat,
+            clearRawMeta: providerIdChanged
+        });
+
+        if (clearSignatures && Array.isArray(state.messages) && state.messages.length > 0) {
             const cleared = clearForeignSignatures(state.messages, nextSignatureFormat);
             if (cleared > 0) {
                 logger.info(
@@ -75,8 +123,6 @@ export function syncProviderState(provider) {
         // 跨 provider 切换（即使同 apiFormat，如 OpenAI proxy A → proxy B）：
         // encrypted_content / reasoningItems 是 provider 服务端私有 HMAC，跨账号下发
         // 触发 reasoning_id_not_found 400。同 provider 自切（id 不变）走早期 return
-        const providerIdChanged =
-            state.currentProviderId && state.currentProviderId !== provider.id;
         if (providerIdChanged && Array.isArray(state.messages) && state.messages.length > 0) {
             const cleared = clearProviderSpecificRawMeta(state.messages);
             if (cleared > 0) {

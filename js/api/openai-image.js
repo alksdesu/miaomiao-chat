@@ -6,12 +6,16 @@ export async function sendOpenAIImageRequest(
     apiKey,
     model,
     signal = null,
-    adapter = null
+    adapter = null,
+    requestContext = null
 ) {
     return executeRequest(adapter || getAdapter('openai-image'), {
         endpoint,
         apiKey,
         model,
-        signal
+        signal,
+        sessionId: requestContext?.sessionId,
+        sourceMessages: requestContext?.sourceMessages,
+        requestProfile: requestContext?.requestProfile
     });
 }

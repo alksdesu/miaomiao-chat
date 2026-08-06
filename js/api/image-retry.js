@@ -5,10 +5,13 @@
 
 import { logger } from '../utils/logger.js';
 import { state } from '../core/state.js';
-import { getCurrentProvider } from './current.js';
 import { isImageSizeError, compressImagesInMessages } from '../utils/images.js';
 import { replaceAllMessages, setImageRetry, clearImageRetry } from '../core/state-mutations.js';
 import { renderImageRetryLoading } from './handler-loading-dots.js';
+import { materializeSessionMessages } from '../state/session-message-repository.js';
+import { resolveMessagesMediaForApi } from '../state/media-blob-store.js';
+import { loadSessionMessages } from '../state/storage.js';
+import { requestTaskRegistry } from '../core/request-task-registry.js';
 
 /**
  * 把多形态错误输入归一为统一 schema `{error:{message,type,status?}}`。
@@ -41,7 +44,12 @@ export function normalizeImageRetryInput(input) {
  * @param {string} sessionId - 触发重试的会话 ID（必传：防止跨会话锁错位 + retry 期间会话漂移）
  * @returns {boolean} 是否已触发重试（调用方应 return 跳过后续错误处理）
  */
-export async function attemptImageCompressionRetry(input, assistantMessageEl, sessionId) {
+export async function attemptImageCompressionRetry(
+    input,
+    assistantMessageEl,
+    sessionId,
+    task = null
+) {
     if (!sessionId) {
         // 强制必传：缺省 fallback 到 state.currentSessionId 会让 retry 期间用户切会话后
         // 锁记到错误的 session 上，下次同会话首次 retry 被误锁失败
@@ -50,19 +58,20 @@ export async function attemptImageCompressionRetry(input, assistantMessageEl, se
     }
 
     const errorData = normalizeImageRetryInput(input);
+    const isForeground = () =>
+        sessionId === state.currentSessionId &&
+        (!task || (requestTaskRegistry.owns(task) && !task.isDetached));
 
-    if (!isImageSizeError(errorData) || state._imageCompressionRetriedSessions.has(sessionId)) {
+    if (
+        !isImageSizeError(errorData) ||
+        task?.imageRetryAttempted ||
+        state._imageCompressionRetriedSessions.has(sessionId)
+    ) {
         return false;
     }
 
-    // 跨会话守卫：调用方 sessionId 与 state.currentSessionId 不一致时，
-    // 退出，因 compressImagesInMessages 读 state.messages（=当前会话）会把另一会话的内容压成 sid 的
-    // 让 sendError 路径走错误降级（写回 backgroundSession），不污染另一会话
-    if (sessionId !== state.currentSessionId) {
-        logger.warn(
-            `[ImageRetry] 跨会话场景跳过 retry: sourceSession=${sessionId} current=${state.currentSessionId}`
-        );
-        // 仍设置 retry 锁，防止 backgroundTask 完成后再次触发
+    if (task && !requestTaskRegistry.owns(task)) return false;
+    if (!task && sessionId !== state.currentSessionId) {
         state._imageCompressionRetriedSessions.add(sessionId);
         return false;
     }
@@ -71,27 +80,45 @@ export async function attemptImageCompressionRetry(input, assistantMessageEl, se
 
     // 防止无限循环（per-sessionId 锁；跨会话切换不会误锁后一会话的首次重试机会）
     state._imageCompressionRetriedSessions.add(sessionId);
+    if (task) task.imageRetryAttempted = true;
 
-    // 压缩消息中的图片
-    const provider = getCurrentProvider();
-    const apiFormat = provider?.apiFormat || 'openai';
-    const fastMode = state.fastImageCompression || false;
+    const apiFormat = task?.requestProfile?.providerApiFormat || 'openai';
+    const fastMode =
+        task?.requestProfile?.state?.fastImageCompression ?? state.fastImageCompression;
 
-    if (state.messages && state.messages.length > 0) {
-        const compressed = await compressImagesInMessages(state.messages, apiFormat, fastMode);
-        replaceAllMessages(compressed);
+    let sourceMessages =
+        task?.requestContext?.sourceMessages ||
+        (isForeground() ? state.messageStore?.toArray?.() || [...(state.messages || [])] : null);
+    if (!Array.isArray(sourceMessages)) {
+        sourceMessages = (await loadSessionMessages(sessionId))?.messages || [];
+    } else {
+        sourceMessages = await materializeSessionMessages(sessionId, sourceMessages);
+    }
+    if (task && !requestTaskRegistry.owns(task)) return false;
+
+    if (sourceMessages.length > 0) {
+        const messages = await resolveMessagesMediaForApi(sourceMessages);
+        if (task && !requestTaskRegistry.owns(task)) return false;
+        const compressed = await compressImagesInMessages(messages, apiFormat, fastMode);
+        if (task && !requestTaskRegistry.owns(task)) return false;
+        if (task) task.retryMessages = compressed;
+        if (isForeground()) replaceAllMessages(compressed);
     }
 
     logger.debug('[ImageRetry] 图片压缩完成，准备重新发送请求...');
 
     // 设置重试标志并绑定要复用的消息元素 + 发起会话 ID（resolver 跨会话守卫读取）
-    setImageRetry(assistantMessageEl, sessionId);
+    if (task) task.isImageRetry = true;
+    if (isForeground()) setImageRetry(assistantMessageEl, sessionId);
 
     // 显示加载提示（DOM 工厂构造，零裸 innerHTML）
-    if (state.currentAssistantMessage) {
-        state.currentAssistantMessage.replaceChildren();
+    const contentElement = assistantMessageEl?.classList?.contains('message-content')
+        ? assistantMessageEl
+        : assistantMessageEl?.querySelector?.('.message-content') || state.currentAssistantMessage;
+    if (isForeground() && contentElement) {
+        contentElement.replaceChildren();
         const fragment = renderImageRetryLoading();
-        state.currentAssistantMessage.appendChild(fragment);
+        contentElement.appendChild(fragment);
     }
 
     return true;
@@ -104,11 +131,16 @@ export async function attemptImageCompressionRetry(input, assistantMessageEl, se
  *
  * @param {string} sessionId - 要清除锁的会话 ID（必传：避免 fallback 误清当前会话锁）
  */
-export function resetAllImageRetryState(sessionId) {
+export function resetAllImageRetryState(sessionId, task = null) {
     if (!sessionId) {
         logger.error('[ImageRetry] resetAllImageRetryState: sessionId 必传');
         return;
     }
     state._imageCompressionRetriedSessions.delete(sessionId);
-    clearImageRetry();
+    if (task) {
+        task.isImageRetry = false;
+        task.imageRetryAttempted = false;
+        task.retryMessages = null;
+    }
+    if (!state.imageRetrySessionId || state.imageRetrySessionId === sessionId) clearImageRetry();
 }

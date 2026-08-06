@@ -45,7 +45,8 @@ export function classifyError(error, ctx) {
         error?.name === 'TimeoutError' ||
         (error?.name === 'AbortError' &&
             ctx.abortController?.signal?.reason?.name === 'TimeoutError');
-    const isCrossSession = ctx.sessionId !== state.currentSessionId;
+    const isCrossSession =
+        ctx.sessionId !== state.currentSessionId || ctx.task?.isDetached === true;
 
     // user-abort 必须最先判（早期 return），cleanupAfterSend 在 finally 兜底
     if (error?.name === 'AbortError' && !isTimeoutAbort) {

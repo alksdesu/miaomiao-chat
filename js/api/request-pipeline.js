@@ -12,7 +12,7 @@ import { logger } from '../utils/logger.js';
 import { state } from '../core/state.js';
 import { processVariables } from '../utils/variables.js';
 import { filterMessagesByCapabilities } from '../utils/message-filter.js';
-import { getCurrentModelCapabilities } from './current.js';
+import { getCurrentModelCapabilities, getCurrentProvider, getModelDisplayName } from './current.js';
 import { getPrefillMessages, getOpeningMessages } from '../utils/prefill.js';
 import {
     buildModelParams,
@@ -22,12 +22,81 @@ import {
 } from './params.js';
 import { buildDevToolsContext } from '../devtools/context-builder.js';
 import { getToolsForAPI } from '../tools/manager.js';
+import { materializeSessionMessages } from '../state/session-message-repository.js';
+import { resolveMessagesMediaForApi } from '../state/media-blob-store.js';
+import { waitForProviderHistoryCleanup } from '../providers/provider-sync.js';
+import { loadSessionMessages } from '../state/storage.js';
+
+function cloneValue(value) {
+    if (value === undefined) return undefined;
+    try {
+        return structuredClone(value);
+    } catch {
+        return value;
+    }
+}
+
+export function captureRequestProfile(adapter, model) {
+    let provider = null;
+    let capabilities = null;
+    let modelDisplayName = model || '';
+    try {
+        provider = getCurrentProvider();
+        capabilities = getCurrentModelCapabilities();
+        modelDisplayName = getModelDisplayName(model || '', provider);
+    } catch (error) {
+        logger.warn('[RequestProfile] 提供商快照读取失败，使用请求参数兜底:', error);
+    }
+    const stateSnapshot = {
+        streamEnabled: !!state.streamEnabled,
+        codeExecutionEnabled: !!state.codeExecutionEnabled,
+        webSearchEnabled: !!state.webSearchEnabled,
+        computerUseEnabled: !!state.computerUseEnabled,
+        computerUsePermissions: cloneValue(state.computerUsePermissions),
+        xmlToolCallingEnabled: !!state.xmlToolCallingEnabled,
+        geminiApiKeyInHeader: !!state.geminiApiKeyInHeader,
+        fastImageCompression: !!state.fastImageCompression,
+        streamIdleTimeout: state.streamIdleTimeout,
+        requestTimeout: state.requestTimeout
+    };
+    const systemCtx = buildSystemContext();
+    const prefill =
+        adapter.requestFeatures?.prefill === false ? null : collectPrefill(adapter.apiFormat);
+    const tools =
+        adapter.requestFeatures?.tools === false ? [] : collectTools(adapter, stateSnapshot);
+
+    return {
+        state: stateSnapshot,
+        streamEnabled: stateSnapshot.streamEnabled,
+        replyCount: Number.isInteger(state.replyCount) ? state.replyCount : 1,
+        capabilities: cloneValue(capabilities),
+        modelParams: cloneValue(buildModelParams(adapter.apiFormat)),
+        thinkingCfg:
+            adapter.requestFeatures?.thinking === false
+                ? null
+                : cloneValue(buildThinkingConfig(adapter.apiFormat, model)),
+        verbosityCfg:
+            adapter.requestFeatures?.verbosity === false
+                ? null
+                : cloneValue(buildVerbosityConfig()),
+        customHeaders: cloneValue(getCustomHeadersObject()),
+        systemCtx: cloneValue(systemCtx),
+        prefill: cloneValue(prefill),
+        tools: cloneValue(tools),
+        isXmlMode: stateSnapshot.xmlToolCallingEnabled,
+        providerId: provider?.id || null,
+        providerName: provider?.name || 'Unknown',
+        providerApiFormat: provider?.apiFormat || adapter.apiFormat,
+        modelDisplayName,
+        providerHistoryCleanup: waitForProviderHistoryCleanup()
+    };
+}
 
 /**
  * 构造 SystemContext：systemPrompt + monitor 上下文 + Gemini 多段 system parts
  * @returns {Promise<import('./adapters/format-adapter-types.js').SystemContext>}
  */
-async function buildSystemContext() {
+function buildSystemContext() {
     const ctx = {
         systemPrompt: null,
         monitorContext: null,
@@ -78,8 +147,8 @@ function collectPrefill(apiFormat) {
 /**
  * 收集工具列表：adapter.collectBuiltinTools + getToolsForAPI + adapter.formatSystemTools
  */
-async function collectTools(adapter) {
-    const tools = [...adapter.collectBuiltinTools(state)];
+function collectTools(adapter, stateRef = state) {
+    const tools = [...adapter.collectBuiltinTools(stateRef)];
     try {
         const systemTools = getToolsForAPI(adapter.apiFormat);
         tools.push(...adapter.formatSystemTools(systemTools));
@@ -98,22 +167,33 @@ async function collectTools(adapter) {
  * filterMessagesByCapabilities 同时支持新格式 parts 和旧格式 content，
  * 两种过滤时机都安全；保留差异是为了 1:1 等价于原 send 函数行为。
  */
-function filterAndConvertMessages(adapter) {
-    const filtered = state.messages.filter((m) => !m.isError && !m.error);
-    const capabilities = getCurrentModelCapabilities();
+async function filterAndConvertMessages(adapter, requestProfile, sessionId, sourceSnapshot) {
+    await requestProfile.providerHistoryCleanup;
+    let sourceMessages = sourceSnapshot;
+    if (!Array.isArray(sourceMessages)) {
+        const stored = await loadSessionMessages(sessionId);
+        sourceMessages = stored?.messages || [];
+    } else {
+        sourceMessages = await materializeSessionMessages(sessionId, sourceMessages);
+    }
+    sourceMessages = await resolveMessagesMediaForApi(sourceMessages);
+    const filtered = sourceMessages.filter((message) => !message.error);
+    const capabilities = requestProfile.capabilities;
 
     if (adapter.filterPosition === 'before') {
         const beforeFiltered = capabilities
             ? filterMessagesByCapabilities(filtered, capabilities)
             : filtered;
         return adapter.partsToAPIMessages(beforeFiltered, {
-            injectReasoning: adapter.apiFormat === 'openai-responses'
+            injectReasoning: adapter.apiFormat === 'openai-responses',
+            isXmlMode: requestProfile.isXmlMode
         });
     }
 
     // 'after' 路径（OpenAI Chat / Responses）：先转换再过滤
     let messages = adapter.partsToAPIMessages(filtered, {
-        injectReasoning: adapter.apiFormat === 'openai-responses'
+        injectReasoning: adapter.apiFormat === 'openai-responses',
+        isXmlMode: requestProfile.isXmlMode
     });
     if (capabilities) {
         messages = filterMessagesByCapabilities(messages, capabilities);
@@ -137,41 +217,64 @@ function filterAndConvertMessages(adapter) {
  * @param {AbortSignal|null} [ctx.signal]
  * @returns {Promise<Response>}
  */
-export async function executeRequest(adapter, { endpoint, apiKey, model, signal = null }) {
+export async function executeRequest(
+    adapter,
+    {
+        endpoint,
+        apiKey,
+        model,
+        signal = null,
+        sessionId = state.currentSessionId,
+        sourceMessages = null,
+        requestProfile = captureRequestProfile(adapter, model)
+    }
+) {
     const features = adapter.requestFeatures || {};
-    const messages = filterAndConvertMessages(adapter);
-    const systemCtx = features.system === false ? {} : await buildSystemContext();
-    const prefill = features.prefill === false ? null : collectPrefill(adapter.apiFormat);
-    const tools = features.tools === false ? [] : await collectTools(adapter);
+    const effectiveSourceMessages = Array.isArray(sourceMessages)
+        ? sourceMessages
+        : !sessionId || sessionId === state.currentSessionId
+          ? state.messageStore?.toArray?.() || [...(state.messages || [])]
+          : null;
+    const messages = await filterAndConvertMessages(
+        adapter,
+        requestProfile,
+        sessionId,
+        effectiveSourceMessages
+    );
+    const systemCtx = features.system === false ? {} : requestProfile.systemCtx;
+    const prefill = features.prefill === false ? null : requestProfile.prefill;
+    const tools = features.tools === false ? [] : requestProfile.tools;
 
     const requestBody = await adapter.buildRequestBody({
         messages,
         model,
-        modelParams: buildModelParams(adapter.apiFormat),
-        thinkingCfg:
-            features.thinking === false ? null : buildThinkingConfig(adapter.apiFormat, model),
-        verbosityCfg: features.verbosity === false ? null : buildVerbosityConfig(),
+        modelParams: requestProfile.modelParams,
+        thinkingCfg: features.thinking === false ? null : requestProfile.thinkingCfg,
+        verbosityCfg: features.verbosity === false ? null : requestProfile.verbosityCfg,
         systemCtx,
         prefill,
         tools,
-        isXmlMode: state.xmlToolCallingEnabled,
-        state,
+        isXmlMode: requestProfile.isXmlMode,
+        state: requestProfile.state,
         endpoint // Gemini Vertex vs AI Studio safetySettings 需要看 endpoint
     });
 
     const finalEndpoint = adapter.resolveEndpoint(
         endpoint,
         model,
-        state.streamEnabled,
+        requestProfile.streamEnabled,
         requestBody,
-        { state }
+        { state: requestProfile.state, requestProfile }
     );
     const headers = {
         'Content-Type': 'application/json',
-        ...adapter.buildHeaders(apiKey, { state, tools }),
-        ...getCustomHeadersObject()
+        ...adapter.buildHeaders(apiKey, { state: requestProfile.state, tools, requestProfile }),
+        ...requestProfile.customHeaders
     };
-    const queryString = adapter.buildQueryString(apiKey, { state });
+    const queryString = adapter.buildQueryString(apiKey, {
+        state: requestProfile.state,
+        requestProfile
+    });
     const fullUrl = queryString ? `${finalEndpoint}?${queryString}` : finalEndpoint;
 
     const logBody = adapter.sanitizeRequestForLogging

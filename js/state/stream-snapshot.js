@@ -12,6 +12,29 @@ const SNAPSHOT_INTERVAL_MS = 4000;
 
 // 每会话独立节流时间戳；写失败也计入间隔，warn 日志天然限频
 const _lastWriteTs = new Map();
+const _pendingWrites = new Map();
+const _closedSnapshotKeys = new Set();
+const MAX_CLOSED_KEYS = 512;
+
+function closeSnapshotKey(snapshotKey) {
+    _closedSnapshotKeys.add(snapshotKey);
+    if (_closedSnapshotKeys.size > MAX_CLOSED_KEYS) {
+        _closedSnapshotKeys.delete(_closedSnapshotKeys.values().next().value);
+    }
+}
+
+function trackSnapshotWrite(snapshotKey, promise) {
+    let pending = _pendingWrites.get(snapshotKey);
+    if (!pending) {
+        pending = new Set();
+        _pendingWrites.set(snapshotKey, pending);
+    }
+    pending.add(promise);
+    promise.finally(() => {
+        pending.delete(promise);
+        if (pending.size === 0) _pendingWrites.delete(snapshotKey);
+    });
+}
 
 function hasSnapshotStore() {
     const db = getDB();
@@ -25,28 +48,42 @@ function hasSnapshotStore() {
  * @param {string} textContent - 已累积正文
  * @param {string} thinkingContent - 已累积思维链
  */
-export function saveStreamSnapshotThrottled(sessionId, textContent, thinkingContent) {
+export function saveStreamSnapshotThrottled(
+    sessionId,
+    textContent,
+    thinkingContent,
+    requestId = null,
+    requestProfile = null
+) {
     try {
         if (!sessionId || !hasSnapshotStore()) return;
         if (!textContent && !thinkingContent) return;
         const now = Date.now();
-        const last = _lastWriteTs.get(sessionId) || 0;
+        const snapshotKey = requestId ? `${sessionId}:${requestId}` : sessionId;
+        if (_closedSnapshotKeys.has(snapshotKey)) return;
+        const last = _lastWriteTs.get(snapshotKey) || 0;
         if (now - last < SNAPSHOT_INTERVAL_MS) return;
-        _lastWriteTs.set(sessionId, now);
+        _lastWriteTs.set(snapshotKey, now);
 
-        const provider = getCurrentProvider();
+        const provider = requestProfile ? null : getCurrentProvider();
         const payload = {
             streaming: true,
             sessionId,
             textContent: textContent || '',
             thinkingContent: thinkingContent || '',
-            model: getModelDisplayName(state.selectedModel || '', provider),
-            provider: provider?.name || '',
+            requestId,
+            model:
+                requestProfile?.modelDisplayName ||
+                getModelDisplayName(state.selectedModel || '', provider),
+            provider: requestProfile?.providerName || provider?.name || '',
             ts: now
         };
-        saveToStore(STORES.STREAM_SNAPSHOTS, sessionId, payload).catch((e) => {
-            logger.warn('[StreamSnapshot] 快照写入失败:', e);
-        });
+        const writePromise = saveToStore(STORES.STREAM_SNAPSHOTS, snapshotKey, payload).catch(
+            (e) => {
+                logger.warn('[StreamSnapshot] 快照写入失败:', e);
+            }
+        );
+        trackSnapshotWrite(snapshotKey, writePromise);
     } catch (e) {
         logger.warn('[StreamSnapshot] 快照构建失败:', e);
     }
@@ -57,13 +94,18 @@ export function saveStreamSnapshotThrottled(sessionId, textContent, thinkingCont
  * 仅当本 tab 写过该会话快照才发 IDB delete；启动残留由 recoverStreamSnapshots 负责。
  * @param {string|null} sessionId
  */
-export function clearStreamSnapshot(sessionId) {
+export function clearStreamSnapshot(sessionId, requestId = null) {
     if (!sessionId) return;
-    const hadWrite = _lastWriteTs.delete(sessionId);
+    const snapshotKey = requestId ? `${sessionId}:${requestId}` : sessionId;
+    if (requestId) closeSnapshotKey(snapshotKey);
+    const hadWrite = _lastWriteTs.delete(snapshotKey);
     if (!hadWrite || !hasSnapshotStore()) return;
-    deleteFromStore(STORES.STREAM_SNAPSHOTS, sessionId).catch((e) => {
-        logger.warn('[StreamSnapshot] 快照清理失败:', e);
-    });
+    const pending = [...(_pendingWrites.get(snapshotKey) || [])];
+    Promise.allSettled(pending)
+        .then(() => deleteFromStore(STORES.STREAM_SNAPSHOTS, snapshotKey))
+        .catch((e) => {
+            logger.warn('[StreamSnapshot] 快照清理失败:', e);
+        });
 }
 
 /**
@@ -97,8 +139,9 @@ export async function recoverStreamSnapshots() {
         ]);
 
         for (const record of records) {
-            const sessionId = record?.key;
+            const snapshotKey = record?.key;
             const snap = record?.value;
+            const sessionId = snap?.sessionId || snapshotKey;
             if (!sessionId) continue;
             try {
                 const hasContent = !!(
@@ -138,7 +181,7 @@ export async function recoverStreamSnapshots() {
                 logger.warn('[StreamSnapshot] 遗留快照恢复失败:', e);
             }
             try {
-                await deleteFromStore(STORES.STREAM_SNAPSHOTS, sessionId);
+                await deleteFromStore(STORES.STREAM_SNAPSHOTS, snapshotKey);
             } catch (e) {
                 logger.warn('[StreamSnapshot] 遗留快照删除失败:', e);
             }

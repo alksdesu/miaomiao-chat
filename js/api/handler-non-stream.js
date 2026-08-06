@@ -10,15 +10,12 @@
 
 import { state } from '../core/state.js';
 import { executeRequest } from './request-pipeline.js';
-import {
-    finalizeStreamStats,
-    getCurrentStreamStatsData,
-    appendStreamStats
-} from '../stream/stats.js';
-import { saveAssistantMessage } from '../messages/sync.js';
+import { appendStreamStats } from '../stream/stats.js';
+import { saveAssistantMessageAsync } from '../messages/sync.js';
 import {
     buildPartsFromStreamingState,
-    buildMetaFromStreamingState
+    buildMetaFromStreamingState,
+    buildCanonicalReplies
 } from '../messages/parts-builder.js';
 import { setCurrentMessageIndex } from '../messages/dom-sync.js';
 import { renderHumanizedError } from '../utils/errors.js';
@@ -27,6 +24,30 @@ import { renderReplyWithSelector } from '../messages/renderer.js';
 import { handleToolCallStream, startPauseTurnContinuation } from '../tools/orchestrator.js';
 import { safeSetHTML } from '../utils/helpers.js';
 import { logger } from '../utils/logger.js';
+import { requestTaskRegistry } from '../core/request-task-registry.js';
+
+function isForegroundContext(ctx) {
+    return (
+        ctx.sessionId === state.currentSessionId &&
+        (!ctx.task || (requestTaskRegistry.owns(ctx.task) && !ctx.task.isDetached))
+    );
+}
+
+function getContextTarget(ctx) {
+    const element = ctx.task?.assistantMessageEl || ctx.assistantMessageEl;
+    if (!element) return null;
+    return element.classList?.contains('message-content')
+        ? element
+        : element.querySelector?.('.message-content') || null;
+}
+
+function resolveResponseMeta(meta, ctx, responseModel = null) {
+    return {
+        ...meta,
+        model: responseModel || ctx.requestProfile?.modelDisplayName || meta?.model,
+        provider: ctx.requestProfile?.providerName || meta?.provider
+    };
+}
 
 /**
  * 把响应或 throw 出的 error 归一为 `{message, type, code?, fullError?}` 结构
@@ -56,12 +77,13 @@ function buildErrorReply(err) {
  * 处理工具调用早期返回：落库 + 触发 orchestrator
  * @returns {boolean} 是否触发了工具调用（true 表示调用方应直接 return）
  */
-function tryHandleToolCalls(reply, adapter, sessionId, assistantMessageEl, responseModel) {
+async function tryHandleToolCalls(reply, ctx, responseModel) {
     if (!(reply?.hasToolCalls && reply?.toolCalls)) return false;
+    const { adapter, sessionId, assistantMessageEl, task } = ctx;
 
     logger.info('[NonStream] 检测到工具调用:', reply.toolCalls);
 
-    const messageIndex = saveAssistantMessage(
+    const messageIndex = await saveAssistantMessageAsync(
         buildPartsFromStreamingState({
             textContent: reply.content || '(调用工具)',
             thinkingContent: reply.thinkingContent,
@@ -72,22 +94,32 @@ function tryHandleToolCalls(reply, adapter, sessionId, assistantMessageEl, respo
             toolCalls: reply.toolCalls,
             signatureFormat: adapter.signatureFormat || null
         }),
-        buildMetaFromStreamingState({
-            encryptedContent: reply.encryptedContent,
-            reasoningItemId: reply.reasoningItemId,
-            reasoningItems: reply.reasoningItems,
-            streamStats: getCurrentStreamStatsData(),
-            // 代理可能改写 model（如 OpenRouter 'auto' → 真实路由模型），
-            // 优先用响应侧 model 让用户看到实际执行路径 + 统计计费准确
-            responseModel: responseModel || null
-        }),
-        { sessionId, toolCalls: reply.toolCalls }
+        resolveResponseMeta(
+            buildMetaFromStreamingState({
+                encryptedContent: reply.encryptedContent,
+                reasoningItemId: reply.reasoningItemId,
+                reasoningItems: reply.reasoningItems,
+                streamStats: ctx.requestStats?.getPartialData?.() || null,
+                // 代理可能改写 model（如 OpenRouter 'auto' → 真实路由模型），
+                // 优先用响应侧 model 让用户看到实际执行路径 + 统计计费准确
+                responseModel: responseModel || null
+            }),
+            ctx,
+            responseModel
+        ),
+        {
+            sessionId,
+            forceBackground: task?.isDetached === true,
+            isContinuation: task?.isSavingContinuation === true,
+            toolCalls: reply.toolCalls
+        }
     );
-    setCurrentMessageIndex(messageIndex);
+    if (isForegroundContext(ctx)) setCurrentMessageIndex(messageIndex);
 
     handleToolCallStream(reply.toolCalls, {
         assistantMessageEl,
-        sourceSessionId: sessionId
+        sourceSessionId: sessionId,
+        task
     });
 
     return true;
@@ -108,7 +140,15 @@ async function fetchAdditionalReplies(ctx, replyCount) {
     const promises = [];
     for (let i = 1; i < replyCount; i++) {
         promises.push(
-            executeRequest(adapter, { endpoint, apiKey, model, signal })
+            executeRequest(adapter, {
+                endpoint,
+                apiKey,
+                model,
+                signal,
+                sessionId: ctx.sessionId,
+                sourceMessages: ctx.sourceMessages,
+                requestProfile: ctx.requestProfile
+            })
                 .then((res) => res.json())
                 .catch((err) => {
                     if (err?.name !== 'AbortError') {
@@ -136,7 +176,9 @@ async function fetchAdditionalReplies(ctx, replyCount) {
                 errors.push({ index: requestIndex, error: result.value.error });
                 replies.push(buildErrorReply(result.value.error));
             } else {
-                const reply = adapter.parseResponse(result.value);
+                const reply = adapter.parseResponse(result.value, {
+                    isXmlMode: ctx.requestProfile?.isXmlMode
+                });
                 if (reply) replies.push(reply);
             }
         } else if (result.status === 'rejected') {
@@ -156,7 +198,9 @@ async function fetchAdditionalReplies(ctx, replyCount) {
 /**
  * 单回复渲染：错误回复走 humanized error；contentParts 含媒体走 renderFinalContentWithThinking
  */
-function renderSingleReply(reply0) {
+function renderSingleReply(reply0, ctx) {
+    if (!isForegroundContext(ctx)) return;
+    const target = getContextTarget(ctx);
     if (reply0.isError) {
         const errorObj = {
             error: {
@@ -165,8 +209,8 @@ function renderSingleReply(reply0) {
             }
         };
         const errorHtml = renderHumanizedError(errorObj, null, true);
-        if (state.currentAssistantMessage) {
-            safeSetHTML(state.currentAssistantMessage, errorHtml);
+        if (target) {
+            safeSetHTML(target, errorHtml);
         }
         return;
     }
@@ -175,13 +219,17 @@ function renderSingleReply(reply0) {
         renderFinalContentWithThinking(
             reply0.contentParts,
             reply0.thinkingContent,
-            reply0.groundingMetadata
+            reply0.groundingMetadata,
+            target,
+            ctx.task || target
         );
     } else {
         renderFinalTextWithThinking(
             reply0.content || '',
             reply0.thinkingContent,
-            reply0.groundingMetadata
+            reply0.groundingMetadata,
+            target,
+            ctx.task || target
         );
     }
 }
@@ -225,13 +273,14 @@ function aggregateErrorsAndThrow(requestErrors) {
  */
 export async function handleNonStreamResponse(response, ctx) {
     const { assistantMessageEl, sessionId, adapter } = ctx;
-    const replyCount = adapter.supportsMultipleReplies === false ? 1 : state.replyCount || 1;
+    const replyCount = adapter.supportsMultipleReplies === false ? 1 : ctx.replyCount || 1;
     const requestErrors = [];
 
     // 多回复模式显示进度提示
-    if (replyCount > 1 && state.currentAssistantMessage) {
+    const initialTarget = getContextTarget(ctx);
+    if (replyCount > 1 && isForegroundContext(ctx) && initialTarget) {
         safeSetHTML(
-            state.currentAssistantMessage,
+            initialTarget,
             `<div class="multi-reply-progress">正在生成 ${replyCount} 个回复中...</div>`
         );
     }
@@ -250,9 +299,11 @@ export async function handleNonStreamResponse(response, ctx) {
             requestErrors.push({ index: 1, error: data.error });
             allReplies.push(buildErrorReply(data.error));
         } else {
-            const reply = adapter.parseResponse(data);
+            const reply = adapter.parseResponse(data, {
+                isXmlMode: ctx.requestProfile?.isXmlMode
+            });
             if (reply) {
-                if (tryHandleToolCalls(reply, adapter, sessionId, assistantMessageEl, data.model)) {
+                if (await tryHandleToolCalls(reply, ctx, data.model)) {
                     return; // 工具调用早期返回，由 orchestrator 接管
                 }
                 allReplies.push(reply);
@@ -279,12 +330,15 @@ export async function handleNonStreamResponse(response, ctx) {
             aggregateErrorsAndThrow(requestErrors);
         }
 
-        state.currentReplies = allReplies;
-        state.selectedReplyIndex = 0;
-        finalizeStreamStats();
+        const canonicalReplies = buildCanonicalReplies(allReplies);
+        if (isForegroundContext(ctx)) {
+            state.currentReplies = canonicalReplies;
+            state.selectedReplyIndex = 0;
+            ctx.requestStats?.finalize?.();
+        }
 
         const reply0 = allReplies[0];
-        const messageIndex = saveAssistantMessage(
+        const messageIndex = await saveAssistantMessageAsync(
             buildPartsFromStreamingState({
                 textContent: reply0.content || '',
                 thinkingContent: reply0.thinkingContent,
@@ -294,33 +348,49 @@ export async function handleNonStreamResponse(response, ctx) {
                 contentParts: reply0.contentParts,
                 signatureFormat: adapter.signatureFormat || null
             }),
-            buildMetaFromStreamingState({
-                thoughtSignature: reply0.thoughtSignature,
-                encryptedContent: reply0.encryptedContent,
-                reasoningItemId: reply0.reasoningItemId,
-                reasoningItems: reply0.reasoningItems,
-                // 透传 Gemini webSearch groundingMetadata 到 meta.raw.gemini，
-                // 否则刷新会话时 restore.js 拿不到引用，搜索来源卡片消失
-                groundingMetadata: reply0.groundingMetadata,
-                usage: reply0.usage,
-                streamStats: getCurrentStreamStatsData()
-            }),
-            { sessionId, allReplies, selectedReplyIndex: 0 }
+            resolveResponseMeta(
+                buildMetaFromStreamingState({
+                    thoughtSignature: reply0.thoughtSignature,
+                    encryptedContent: reply0.encryptedContent,
+                    reasoningItemId: reply0.reasoningItemId,
+                    reasoningItems: reply0.reasoningItems,
+                    // 透传 Gemini webSearch groundingMetadata 到 meta.raw.gemini，
+                    // 否则刷新会话时 restore.js 拿不到引用，搜索来源卡片消失
+                    groundingMetadata: reply0.groundingMetadata,
+                    usage: reply0.usage,
+                    streamStats: ctx.requestStats?.getData?.() || null,
+                    responseModel: data.model || null
+                }),
+                ctx,
+                data.model
+            ),
+            {
+                sessionId,
+                forceBackground: ctx.task?.isDetached === true,
+                isContinuation: ctx.task?.isSavingContinuation === true,
+                allReplies: canonicalReplies,
+                selectedReplyIndex: 0
+            }
         );
-        setCurrentMessageIndex(messageIndex);
+        const foreground = isForegroundContext(ctx);
+        const currentAssistantMessageEl = ctx.task?.messageElement || assistantMessageEl;
+        if (foreground) setCurrentMessageIndex(messageIndex);
 
-        if (allReplies.length > 1) {
-            renderReplyWithSelector(allReplies, 0, assistantMessageEl);
-        } else {
-            renderSingleReply(reply0);
+        if (foreground && canonicalReplies.length > 1) {
+            renderReplyWithSelector(canonicalReplies, 0, currentAssistantMessageEl);
+        } else if (foreground) {
+            renderSingleReply(reply0, ctx);
         }
 
-        appendStreamStats();
+        if (foreground) {
+            ctx.requestStats?.syncToGlobal?.();
+            appendStreamStats();
+        }
 
         // Claude pause_turn：服务端工具执行后需要 continuation
         if (reply0.pauseTurn) {
             logger.debug('[Handler] 非流式 pause_turn，发起 continuation');
-            startPauseTurnContinuation(assistantMessageEl, state.currentSessionId);
+            startPauseTurnContinuation(assistantMessageEl, sessionId, ctx.task);
         }
     } catch (error) {
         logger.error('Non-stream response parsing error:', error);

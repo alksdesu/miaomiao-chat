@@ -103,6 +103,7 @@ export function buildConfigObject() {
         imageSize: state?.imageSize ?? '2K', // 使用 ?? 保留空字符串
         pdfMode: state?.pdfMode ?? 'standard', // PDF 处理模式
         replyCount: state?.replyCount ?? 1,
+        longChatRenderingMode: state?.longChatRenderingMode ?? 'auto',
 
         // 功能开关
         streamEnabled: state.streamEnabled,
@@ -457,6 +458,11 @@ export function applyConfigToState(config) {
             elements.replyCountSelect.value = config.replyCount;
         }
     }
+    state.longChatRenderingMode = ['auto', 'compatibility', 'virtual'].includes(
+        config.longChatRenderingMode
+    )
+        ? config.longChatRenderingMode
+        : 'auto';
 
     // 新增功能开关 (带默认值兜底)
     state.streamEnabled = config.streamEnabled ?? true;

@@ -12,6 +12,7 @@ import { state } from '../core/state.js';
 import { requestStateMachine, RequestState } from '../core/request-state-machine.js';
 import { setToolCallContinuation } from '../core/state-mutations.js';
 import { logger } from '../utils/logger.js';
+import { requestTaskRegistry } from '../core/request-task-registry.js';
 
 /**
  * 清理 loading 指示元素（thinking-dots / continuation-loading / retry-loading）
@@ -42,18 +43,35 @@ function appendContinuationErrorNode(assistantMessageEl, errorMessage) {
     contentDiv.appendChild(errEl);
 }
 
+function isTaskForeground(task, sessionId) {
+    return (
+        sessionId === state.currentSessionId &&
+        (!task ||
+            (!task.isDetached &&
+                (requestTaskRegistry.owns(task) || requestStateMachine.owns(task))))
+    );
+}
+
 /**
  * @param {HTMLElement|null} assistantMessageEl - 要复用的助手消息元素
  */
-export async function resendWithToolResults(assistantMessageEl = null) {
+export async function resendWithToolResults(assistantMessageEl = null, task = null) {
     logger.info('[Handler] 发送工具结果消息...');
-    const sessionId = state.currentSessionId;
+    const sessionId = task?.sessionId || state.currentSessionId;
 
-    // 标记 continuation 并绑定要复用的元素 + 当前会话 ID（跨会话守卫见 placeholder-resolver）
-    setToolCallContinuation(assistantMessageEl, sessionId);
+    if (task && requestTaskRegistry.owns(task)) {
+        task.isSavingContinuation = true;
+        task.isToolCallPending = false;
+        requestTaskRegistry.setPhase(task, RequestState.CONTINUATION);
+    }
+    if (isTaskForeground(task, sessionId)) {
+        state.isToolCallPending = false;
+        if (assistantMessageEl) setToolCallContinuation(assistantMessageEl, sessionId);
+    }
 
-    // 状态机：TOOL_CALLING → CONTINUATION（必须在 sendToAPI 之前转换，否则状态非法）
-    if (requestStateMachine.canTransition(RequestState.CONTINUATION)) {
+    if (task) {
+        requestStateMachine.transitionFor(task, RequestState.CONTINUATION, { assistantMessageEl });
+    } else if (requestStateMachine.canTransition(RequestState.CONTINUATION)) {
         requestStateMachine.transition(RequestState.CONTINUATION, { assistantMessageEl });
     }
 
@@ -61,23 +79,25 @@ export async function resendWithToolResults(assistantMessageEl = null) {
     const { sendToAPI } = await import('./handler.js');
 
     try {
-        await sendToAPI();
+        await sendToAPI(task ? { task } : undefined);
         logger.debug('[Handler] Continuation 请求完成');
     } catch (error) {
         // sendToAPI 内部 dispatchErrorHandler 已处理常规错误（含状态机 transition→ERROR），
         // 此 catch 仅兜底「handler 自身抛二次异常」等极端情况
         logger.error('[Handler] Continuation 请求失败:', error);
-        state.isToolCallPending = false;
-        if (state.currentSessionId === sessionId) {
+        if (task && requestTaskRegistry.owns(task)) task.isToolCallPending = false;
+        if (isTaskForeground(task, sessionId)) state.isToolCallPending = false;
+        if (isTaskForeground(task, sessionId)) {
             appendContinuationErrorNode(assistantMessageEl, error.message);
         }
         throw error;
     } finally {
-        state.isSavingContinuation = false;
+        if (task && requestTaskRegistry.owns(task)) task.isSavingContinuation = false;
+        if (isTaskForeground(task, sessionId)) state.isSavingContinuation = false;
 
-        if (!state.isToolCallPending) {
+        if (!task?.isToolCallPending && isTaskForeground(task, sessionId)) {
             removeLoadingIndicators(assistantMessageEl);
-        } else {
+        } else if (task?.isToolCallPending) {
             logger.debug('[Handler] 检测到新的工具调用，保留 loading 等待下一轮工具执行');
         }
         // sendButton / cancelButton / isLoading 由状态机 _updateUI hook 接管

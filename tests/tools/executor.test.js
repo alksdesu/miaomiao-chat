@@ -22,7 +22,8 @@ vi.mock('../../js/utils/platform.js', () => ({
 }));
 
 vi.mock('../../js/tools/permissions.js', () => ({
-    checkToolPermission: vi.fn(() => ({ allowed: true, reason: 'permissions_disabled' }))
+    checkToolPermission: vi.fn(() => ({ allowed: true, reason: 'permissions_disabled' })),
+    confirmToolExecutionIfRequired: vi.fn(async () => true)
 }));
 
 vi.mock('../../js/tools/history.js', () => ({
@@ -38,6 +39,7 @@ vi.mock('../../js/core/state.js', () => ({
 
 import { getTool } from '../../js/tools/manager.js';
 import { safeValidate } from '../../js/tools/validator.js';
+import { recordToolCall } from '../../js/tools/history.js';
 import {
     executeTool,
     executeToolsBatch,
@@ -122,6 +124,31 @@ describe('executeTool', () => {
 
         const result = await executeTool('server/tool', {});
         expect(result).toEqual({ ok: true });
+    });
+
+    it('使用请求快照判定 Claude XML 工具并记录源会话', async () => {
+        const call = vi.fn().mockResolvedValue({ ok: true });
+        getTool.mockReturnValue({
+            id: 'computer',
+            name: 'computer',
+            enabled: true,
+            call,
+            inputSchema: { type: 'object', properties: {} }
+        });
+        await executeTool(
+            'computer',
+            {},
+            {
+                apiFormat: 'claude',
+                isXmlMode: true,
+                sessionId: 'source-session'
+            }
+        );
+
+        expect(call).toHaveBeenCalled();
+        expect(recordToolCall).toHaveBeenCalledWith(
+            expect.objectContaining({ sessionId: 'source-session', toolId: 'computer' })
+        );
     });
 });
 

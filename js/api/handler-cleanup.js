@@ -10,19 +10,25 @@ import { state } from '../core/state.js';
 import { eventBus } from '../core/events.js';
 import { resetAllImageRetryState } from './image-retry.js';
 import { clearStreamSnapshot } from '../state/stream-snapshot.js';
+import { requestTaskRegistry } from '../core/request-task-registry.js';
+import { RequestState } from '../core/request-state-machine.js';
 
 /**
  * 后台任务清理 + 跨会话完成通知
  */
-function flushBackgroundTask(sessionId, requestSucceeded) {
-    if (!sessionId || !state.backgroundTasks.has(sessionId)) return;
+function finishTask(task, requestSucceeded) {
+    if (!task || !requestTaskRegistry.owns(task) || task.isToolCallPending) return;
 
-    const task = state.backgroundTasks.get(sessionId);
-    if (task?.cleanupTimer) clearTimeout(task.cleanupTimer);
-    state.backgroundTasks.delete(sessionId);
-    eventBus.emit('sessions:updated', { sessions: state.sessions });
+    const sessionId = task.sessionId;
+    const wasDetached = task.isDetached || sessionId !== state.currentSessionId;
+    const phase = requestSucceeded
+        ? RequestState.COMPLETED
+        : task.abortController?.signal?.aborted
+          ? RequestState.CANCELLED
+          : RequestState.ERROR;
+    requestTaskRegistry.finish(task, phase);
 
-    if (sessionId === state.currentSessionId) return;
+    if (!wasDetached) return;
 
     const session = state.sessions.find((s) => s.id === sessionId);
     const sessionName = session?.name || '会话';
@@ -40,18 +46,22 @@ function flushBackgroundTask(sessionId, requestSucceeded) {
  * @param {boolean} requestSucceeded
  */
 export function cleanupAfterSend(ctx, requestSucceeded) {
-    const { sessionId, timeoutId } = ctx;
+    const { sessionId, timeoutId, task } = ctx;
     if (timeoutId) clearTimeout(timeoutId);
 
-    flushBackgroundTask(sessionId, requestSucceeded);
+    const wasForeground =
+        sessionId === state.currentSessionId &&
+        (!task || (requestTaskRegistry.owns(task) && !task.isDetached));
 
-    state.isSavingContinuation = false;
-    resetAllImageRetryState(sessionId);
+    if (task && requestTaskRegistry.owns(task)) task.isSavingContinuation = false;
+    finishTask(task, requestSucceeded);
+
+    resetAllImageRetryState(sessionId, task);
 
     // sink.commit 未执行的异常路径（parse 冒泡到 handler）会残留流式快照，此处兜底清理
-    clearStreamSnapshot(sessionId);
+    clearStreamSnapshot(sessionId, task?.id || null);
 
-    if (sessionId === state.currentSessionId && !state.isToolCallPending) {
+    if (wasForeground && !task?.isToolCallPending) {
         state.currentAssistantMessage = null;
     }
 }

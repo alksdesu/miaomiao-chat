@@ -14,28 +14,16 @@ import { renderCapabilityBadgesText } from '../utils/capability-badges.js';
 import { renderHumanizedError } from '../utils/errors.js';
 import { categorizeFile, truncateFileName } from '../utils/file-helpers.js';
 import { lazyImageManager } from '../utils/lazy-image.js';
-import { isVideoMimeType, isAudioMimeType, isVideoUrl } from '../utils/media.js';
-import {
-    PartType,
-    MediaKind,
-    hasParts,
-    isSchemaFormatParts,
-    getTextContent,
-    getThinkingContent,
-    partsToToolCallRestoreFormat
-} from './schema.js';
-import {
-    renderImageCard as renderImageMedia,
-    renderVideoCard as renderVideoMedia,
-    renderAudioCard as renderAudioMedia,
-    renderMediaCard as renderMediaBlock
-} from '../ui/media-cards.js';
+import { PartType, MediaKind, partsToToolCallRestoreFormat } from './schema.js';
+import { renderMediaCard as renderMediaBlock } from '../ui/media-cards.js';
 
 // 从子模块导入并 re-export，保持外部 import 兼容
 import {
     enhanceCodeBlocks,
     updateCodeBlockInMessage,
-    bindImageClickEvents
+    bindImageClickEvents,
+    captureExpandedCodeBlockState,
+    restoreExpandedCodeBlockState
 } from './render-code.js';
 import {
     renderThinkingBlock,
@@ -46,10 +34,23 @@ import {
     restoreExpandedThinkingState
 } from './render-thinking.js';
 import { renderSearchGrounding } from './render-search.js';
-import { logger } from '../utils/logger.js';
+import { getMessageUiState, updateMessageUiState } from './message-ui-state.js';
 
-export { enhanceCodeBlocks, updateCodeBlockInMessage, bindImageClickEvents };
-export { renderThinkingBlock, clearThinkingCache, enhanceThinkingBlocks };
+export {
+    enhanceCodeBlocks,
+    updateCodeBlockInMessage,
+    bindImageClickEvents,
+    captureExpandedCodeBlockState,
+    restoreExpandedCodeBlockState
+};
+export {
+    renderThinkingBlock,
+    clearThinkingCache,
+    enhanceThinkingBlocks,
+    purgeThinkingCacheInElement,
+    captureExpandedThinkingState,
+    restoreExpandedThinkingState
+};
 export { renderSearchGrounding };
 
 /**
@@ -144,6 +145,8 @@ export function createMessageElement(
                 imgEl.alt = file.name;
                 imgEl.title = '点击查看大图';
                 imgEl.className = 'lazy-image';
+                imgEl.loading = 'lazy';
+                imgEl.decoding = 'async';
                 imgEl.onclick = () => {
                     eventBus.emit('ui:open-image-viewer', { url: file.data });
                 };
@@ -277,6 +280,7 @@ export function renderReplyWithSelector(replies, selectedIndex, assistantMessage
 
     const messageIndex = assistantMessageEl.dataset.messageIndex;
     const msgIdx = messageIndex !== undefined ? parseInt(messageIndex) : null;
+    const messageId = assistantMessageEl.dataset.messageId || null;
 
     const loadingIndicator = contentDiv.querySelector('.loading-indicator, .thinking-dots');
     if (loadingIndicator) loadingIndicator.remove();
@@ -298,19 +302,21 @@ export function renderReplyWithSelector(replies, selectedIndex, assistantMessage
             const tab = document.createElement('button');
             const classList = ['reply-tab'];
             if (index === selectedIndex) classList.push('active');
-            // reply.isError 在 multi-stream.js:142 / handler.js:114 落入；让 tab 视觉直接区分
-            // 失败回复，避免用户必须点进去才知道哪个 reply 失败
-            if (reply.isError) classList.push('reply-tab-error');
+            if (reply.error) classList.push('reply-tab-error');
             tab.className = classList.join(' ');
             tab.textContent = index + 1;
-            const tabLabel = reply.isError ? `回复 ${index + 1}（失败）` : `回复 ${index + 1}`;
+            const tabLabel = reply.error ? `回复 ${index + 1}（失败）` : `回复 ${index + 1}`;
             tab.title = tabLabel;
             tab.setAttribute('aria-label', tabLabel);
             if (index === selectedIndex) {
                 tab.setAttribute('aria-current', 'true');
             }
             tab.onclick = () => {
-                eventBus.emit('reply:select-requested', { index, messageIndex: msgIdx });
+                eventBus.emit('reply:select-requested', {
+                    index,
+                    messageIndex: msgIdx,
+                    messageId
+                });
             };
             selectorEl.appendChild(tab);
         });
@@ -318,63 +324,11 @@ export function renderReplyWithSelector(replies, selectedIndex, assistantMessage
 
     const reply = replies[selectedIndex] || replies[0];
     if (!reply) return;
-    let html = '';
+    let html = renderCanonicalParts(reply.parts, 'assistant');
+    if (reply.error) html += renderHumanizedError({ error: reply.error }, null, true);
 
-    if (reply.isError) {
-        // 错误 reply 可能带流中断前已接收的内容，先渲染内容再附错误提示
-        const errThinking = getThinkingContent(reply);
-        if (errThinking) {
-            html += renderThinkingBlock(errThinking);
-        }
-        const errText = getTextContent(reply);
-        if (errText) {
-            html += safeMarkedParse(errText);
-        }
-        const errorObj = {
-            error: {
-                type: reply.errorType || 'unknown',
-                message: reply.errorMessage || 'Unknown error'
-            }
-        };
-        html += renderHumanizedError(errorObj, null, true);
-    } else if (isSchemaFormatParts(reply.parts)) {
-        for (const part of reply.parts) {
-            if (part.type === PartType.THINKING) {
-                html += renderThinkingBlock(part.text);
-            } else if (part.type === PartType.TEXT && part.text && part.text !== '(调用工具)') {
-                html += safeMarkedParse(part.text);
-            } else if (part.type === PartType.MEDIA && part.url) {
-                if (part.media === MediaKind.VIDEO) {
-                    html += renderVideoMedia(part.url, part.mime);
-                } else if (part.media === MediaKind.AUDIO) {
-                    html += renderAudioMedia(part.url, part.mime);
-                } else {
-                    html += renderImageMedia(part.url);
-                }
-            }
-        }
-    } else {
-        // 旧格式回退（旧格式兜底，未迁移数据需要）：用 schema.js 工具函数提取
-        const replyThinking = getThinkingContent(reply);
-        if (replyThinking) {
-            html += renderThinkingBlock(replyThinking);
-        }
-
-        if (reply.contentParts && reply.contentParts.length > 0) {
-            // 旧格式兜底，未迁移数据需要
-            html += renderContentParts(reply.contentParts); // 旧格式兜底
-        } else if (state.apiFormat === 'gemini' && reply.parts) {
-            html += renderGeminiParts(reply.parts);
-            if (reply.groundingMetadata) {
-                html += renderSearchGrounding(reply.groundingMetadata);
-            }
-        } else {
-            const replyText = getTextContent(reply);
-            if (replyText) {
-                html += safeMarkedParse(replyText);
-            }
-        }
-    }
+    const groundingMetadata = reply.meta?.raw?.gemini?.groundingMetadata;
+    if (groundingMetadata) html += renderSearchGrounding(groundingMetadata);
 
     // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     contentDiv.innerHTML = html;
@@ -389,92 +343,6 @@ export function renderReplyWithSelector(replies, selectedIndex, assistantMessage
     }
 
     scrollToBottom();
-}
-
-/**
- * 渲染 Gemini parts
- */
-function renderGeminiParts(parts) {
-    let html = '';
-    for (const part of parts) {
-        if (part.thought) continue;
-
-        if (part.text) {
-            html += safeMarkedParse(part.text);
-        } else if (part.inlineData || part.inline_data) {
-            const inlineData = part.inlineData || part.inline_data;
-            const mimeType = inlineData.mimeType || inlineData.mime_type;
-            const dataUrl = `data:${mimeType};base64,${inlineData.data}`;
-            let mediaType;
-            if (isVideoMimeType(mimeType)) mediaType = 'video';
-            else if (isAudioMimeType(mimeType)) mediaType = 'audio';
-            else mediaType = 'image';
-            html += renderMediaBlock(dataUrl, mediaType, mimeType);
-        }
-    }
-    return html;
-}
-
-/**
- * 渲染内容（OpenAI/Claude 格式）
- */
-function renderContent(content) {
-    if (Array.isArray(content)) {
-        let html = '';
-        for (const part of content) {
-            if (part.type === 'text') {
-                html += safeMarkedParse(part.text);
-            } else if (part.type === 'video_url') {
-                const url = part.video_url?.url || part.url;
-                html += renderMediaBlock(
-                    url,
-                    'video',
-                    part.mime_type ||
-                        part.mimeType ||
-                        part.video_url?.mime_type ||
-                        part.video_url?.mimeType
-                );
-            } else if (part.type === 'audio_url') {
-                const url = part.audio_url?.url || part.url;
-                html += renderMediaBlock(url, 'audio', part.mime_type || part.mimeType);
-            } else if (part.type === 'image_url' && part.image_url?.url) {
-                const url = part.image_url.url;
-                const mediaType = isVideoUrl(url) ? 'video' : 'image';
-                html += renderMediaBlock(url, mediaType);
-            }
-        }
-        return html;
-    } else {
-        return safeMarkedParse(content);
-    }
-}
-
-/**
- * 渲染 contentParts 数组（包含文本、图片和思维链）
- * @param {Array} contentParts - 内容部分数组
- * @returns {string} HTML字符串
- */
-export function renderContentParts(contentParts) {
-    let html = '';
-    for (const part of contentParts) {
-        if (part.type === PartType.THINKING) {
-            html += renderThinkingBlock(part.text, false);
-        } else if (part.type === PartType.TEXT) {
-            if (part.text && part.text !== '(调用工具)') {
-                html += safeMarkedParse(part.text);
-            }
-        } else if (part.type === 'video_url' && part.complete && part.url) {
-            html += renderMediaBlock(part.url, 'video', part.mimeType || part.mime_type);
-        } else if (part.type === 'audio_url' && part.complete && part.url) {
-            html += renderMediaBlock(part.url, 'audio', part.mimeType || part.mime_type);
-        } else if (part.type === 'image_url' && part.complete && part.url) {
-            const mediaType = isVideoUrl(part.url, part.mimeType || part.mime_type)
-                ? 'video'
-                : 'image';
-            html += renderMediaBlock(part.url, mediaType, part.mimeType || part.mime_type);
-        }
-    }
-    return html;
 }
 
 /**
@@ -507,6 +375,9 @@ function syncCurrentAssistantMessageReference() {
 }
 
 // 文件附件卡片 HTML（pdf / 文本类），与 createMessageElement 的附件渲染保持一致
+const LAZY_IMAGE_PLACEHOLDER =
+    'data:image/svg+xml,%3Csvg width="400" height="300" xmlns="http://www.w3.org/2000/svg"%3E%3Crect width="100%25" height="100%25" fill="%23f5f5f5"/%3E%3C/svg%3E';
+
 function renderFilePartCard(name, mime) {
     const isPdf = mime === 'application/pdf';
     const isMarkdown = mime === 'text/markdown' || (name || '').endsWith('.md');
@@ -525,78 +396,49 @@ function renderFilePartCard(name, mime) {
     );
 }
 
+export function renderCanonicalParts(parts, role = 'assistant', { lazyImages = false } = {}) {
+    if (!Array.isArray(parts)) return '';
+
+    let html = '';
+    for (const part of parts) {
+        if (part.type === PartType.THINKING) {
+            html += renderThinkingBlock(part.text);
+        } else if (part.type === PartType.TEXT && part.text && part.text !== '(调用工具)') {
+            html += role === 'assistant' ? safeMarkedParse(part.text) : escapeHtml(part.text);
+        } else if (part.type === PartType.MEDIA && part.url) {
+            const category = categorizeFile(part.mime);
+            if (category === 'text' || category === 'pdf') {
+                html += renderFilePartCard(part.name, part.mime);
+            } else if (lazyImages && part.media === MediaKind.IMAGE) {
+                html += `<div class="image-wrapper"><img src="${LAZY_IMAGE_PLACEHOLDER}" data-src="${escapeHtml(part.url)}" alt="Generated image" class="lazy-image" loading="lazy" decoding="async" style="cursor:pointer;"></div>`;
+            } else {
+                const mediaType =
+                    part.media === MediaKind.VIDEO
+                        ? 'video'
+                        : part.media === MediaKind.AUDIO
+                          ? 'audio'
+                          : 'image';
+                html += renderMediaBlock(part.url, mediaType, part.mime);
+            }
+        } else if (part.type === PartType.FILE) {
+            html += renderFilePartCard(part.name, part.mime);
+        }
+    }
+    return html;
+}
+
 function buildMessageHtml(message, role) {
     if (!message) {
         return '';
     }
 
-    if (hasParts(message)) {
-        let htmlContent = '';
-        for (const part of message.parts) {
-            if (part.type === PartType.THINKING) {
-                htmlContent += renderThinkingBlock(part.text);
-            } else if (part.type === PartType.TEXT && part.text && part.text !== '(调用工具)') {
-                htmlContent +=
-                    role === 'assistant' ? safeMarkedParse(part.text) : escapeHtml(part.text);
-            } else if (part.type === PartType.MEDIA && part.url) {
-                // 旧数据兜底：MEDIA 但 mime 不是可视媒体（如被错存的 txt）→ 当文件卡片渲染，避免破图占位块
-                const cat = categorizeFile(part.mime);
-                if (cat === 'text' || cat === 'pdf') {
-                    htmlContent += renderFilePartCard(part.name, part.mime);
-                } else {
-                    const mediaType =
-                        part.media === MediaKind.VIDEO
-                            ? 'video'
-                            : part.media === MediaKind.AUDIO
-                              ? 'audio'
-                              : 'image';
-                    htmlContent += renderMediaBlock(part.url, mediaType, part.mime);
-                }
-            } else if (part.type === PartType.FILE) {
-                htmlContent += renderFilePartCard(part.name, part.mime);
-            }
-        }
-
-        if (htmlContent) {
-            return htmlContent;
-        }
-    }
-
-    // 旧格式回退（旧格式兜底，未迁移数据需要）：contentParts 含媒体数据
-    if (message?.contentParts?.length > 0) {
-        logger.warn('[Renderer] 命中旧格式回退: contentParts');
-        const validParts = message.contentParts.filter(
-            (part) => !(part.type === PartType.TEXT && part.text === '(调用工具)')
-        );
-        if (validParts.length > 0) {
-            return renderContentParts(validParts);
-        }
-    }
-
-    // 旧格式回退：用 schema.js 工具函数提取
-    const thinkingFallback = getThinkingContent(message);
-    const textFallback = getTextContent(message);
-    if (role === 'assistant' && thinkingFallback) {
-        let html = renderThinkingBlock(thinkingFallback);
-        if (textFallback) {
-            html += safeMarkedParse(textFallback);
-        } else if (Array.isArray(message.content)) {
-            html += renderContent(message.content);
-        }
-        return html;
-    }
-
-    if (textFallback) {
-        return role === 'assistant' ? safeMarkedParse(textFallback) : escapeHtml(textFallback);
-    }
-
-    return message?.content ? renderContent(message.content) : '';
+    return renderCanonicalParts(message.parts, role);
 }
 
-export function rerenderMessageContent(messageEl, index, role) {
+export function rerenderMessageContent(messageEl, index, role, messageOverride = null) {
     const contentWrapper = messageEl?.querySelector('.message-content-wrapper');
     const contentDiv = contentWrapper?.querySelector('.message-content');
-    const message = state.messages[index];
+    const message = messageOverride || state.messages[index];
 
     if (!contentWrapper || !contentDiv || !message) {
         return false;
@@ -610,7 +452,15 @@ export function rerenderMessageContent(messageEl, index, role) {
 
     // 重渲会清掉用户展开的 thinking-block；先捕获展开状态，重渲后按位置索引还原，
     // 避免长会话每次工具调用/编辑都强制折叠所有思维链导致用户反复展开
+    const messageId = messageEl.dataset.messageId;
     const expandedThinking = captureExpandedThinkingState(contentDiv);
+    const expandedCodeBlocks = captureExpandedCodeBlockState(contentDiv);
+    if (messageId) {
+        updateMessageUiState(messageId, {
+            thinkingExpanded: expandedThinking,
+            codeBlocksExpanded: expandedCodeBlocks
+        });
+    }
 
     // 清理旧 thinking-id 缓存，避免重渲后旧 tid 永久泄漏（100k thinking × N 次重渲 → MB 级累积）
     purgeThinkingCacheInElement(contentDiv);
@@ -620,7 +470,13 @@ export function rerenderMessageContent(messageEl, index, role) {
     syncCurrentAssistantMessageReference();
 
     enhanceCodeBlocks(messageEl);
-    restoreExpandedThinkingState(contentDiv, expandedThinking, (block) => enhanceCodeBlocks(block));
+    const uiState = messageId ? getMessageUiState(messageId) : null;
+    restoreExpandedThinkingState(
+        contentDiv,
+        uiState?.thinkingExpanded || expandedThinking,
+        (block) => enhanceCodeBlocks(block)
+    );
+    restoreExpandedCodeBlockState(contentDiv, uiState?.codeBlocksExpanded || expandedCodeBlocks);
 
     if (role === 'assistant') {
         restoreToolCallsFromMessage(message, contentDiv);
@@ -651,6 +507,6 @@ export function restoreToolCallsFromMessage(message, contentDiv) {
 
 // 事件监听
 
-eventBus.on('message:content-updated', ({ messageEl, index, role }) => {
-    rerenderMessageContent(messageEl, index, role);
+eventBus.on('message:content-updated', ({ messageEl, index, role, messageOverride }) => {
+    rerenderMessageContent(messageEl, index, role, messageOverride);
 });

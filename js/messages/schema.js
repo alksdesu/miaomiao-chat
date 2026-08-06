@@ -126,6 +126,10 @@ export function thinkingPart(text, signature = null, opts = {}) {
 export function mediaPart(kind, url, mime = '', opts = {}) {
     const part = { type: PartType.MEDIA, media: kind, url, mime };
     if (opts.name) part.name = opts.name;
+    if (opts.mediaId) {
+        part.mediaId = opts.mediaId;
+        if (!url) delete part.url;
+    }
     applyPartOpts(part, opts);
     return part;
 }
@@ -136,7 +140,7 @@ export function mediaPart(kind, url, mime = '', opts = {}) {
  * @param {Object} args - 调用参数
  * @param {Object} [opts] - { state?, result?, mode?, idMap?, server?, call_id?, responseItemId?,
  *                            thoughtSignature?, error?, duration?, _turn?, _edited? }
- *   state 默认 PENDING；mode 默认 NATIVE（兼容 Stage 1 前历史消息）；
+ *   state 默认 PENDING；mode 默认 NATIVE（兼容缺少 mode 的历史消息）；
  *   idMap 缺省时由 parts-builder/migration 用 generateIdSet(id) 兜底；
  *   call_id/responseItemId 用于 OpenAI Responses；
  *   thoughtSignature 用于 Gemini functionCall；server=true 标记服务端工具调用
@@ -176,6 +180,10 @@ export function filePart(name, mime, url, opts = {}) {
         url,
         encoding: opts.encoding || 'base64'
     };
+    if (opts.mediaId) {
+        part.mediaId = opts.mediaId;
+        if (!url) delete part.url;
+    }
     applyPartOpts(part, opts);
     return part;
 }
@@ -195,34 +203,21 @@ export function filterParts(parts, type) {
 }
 
 /**
- * 提取文本内容（带旧格式兜底）
+ * 提取标准消息中的文本内容
  */
 export function getTextContent(msg) {
-    if (hasParts(msg)) {
-        return filterParts(msg.parts, PartType.TEXT)
-            .map((p) => p.text)
-            .join('');
-    }
-    if (typeof msg.content === 'string') return msg.content;
-    if (Array.isArray(msg.content)) {
-        return msg.content
-            .filter((p) => p?.type === 'text')
-            .map((p) => p.text || '')
-            .join('');
-    }
-    return '';
+    return filterParts(msg?.parts, PartType.TEXT)
+        .map((p) => p.text)
+        .join('');
 }
 
 /**
- * 提取思维链内容（带旧格式兜底）
+ * 提取标准消息中的思维链内容
  */
 export function getThinkingContent(msg) {
-    if (hasParts(msg)) {
-        return filterParts(msg.parts, PartType.THINKING)
-            .map((p) => p.text)
-            .join('');
-    }
-    return msg.thinkingContent || ''; // 旧格式兜底，未迁移数据需要
+    return filterParts(msg?.parts, PartType.THINKING)
+        .map((p) => p.text)
+        .join('');
 }
 
 /**
@@ -356,14 +351,14 @@ export function validateMessage(msg) {
             case PartType.MEDIA:
                 if (!VALID_MEDIA_KINDS.has(p.media))
                     errors.push(`parts[${i}] 无效的 media: ${p.media}`);
-                if (!p.url) errors.push(`parts[${i}] 缺少 url`);
+                if (!p.url && !p.mediaId) errors.push(`parts[${i}] 缺少 url 或 mediaId`);
                 break;
             case PartType.TOOL_CALL:
                 if (p.id == null) errors.push(`parts[${i}] 缺少 tool_call id`);
                 if (!p.name) errors.push(`parts[${i}] 缺少 tool_call name`);
                 if (!VALID_TOOL_STATES.has(p.state))
                     errors.push(`parts[${i}] 无效的 state: ${p.state}`);
-                // mode 字段缺失视为合法（兼容 Stage 1 前历史消息，消费端按 NATIVE 兜底）
+                // mode 缺失的历史消息按 NATIVE 处理
                 if (p.mode !== undefined && p.mode !== null && !VALID_TOOL_MODES.has(p.mode)) {
                     errors.push(`parts[${i}] 无效的 mode: ${p.mode}`);
                 }

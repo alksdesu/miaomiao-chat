@@ -7,41 +7,26 @@ import { state, elements } from '../core/state.js';
 import { eventBus } from '../core/events.js';
 import { updateMessageAt } from '../core/state-mutations.js';
 import { debouncedSaveSession } from '../state/sessions.js';
-import { safeMarkedParse } from '../utils/markdown.js';
-import { escapeHtml } from '../utils/helpers.js';
-import {
-    PartType,
-    MediaKind,
-    textPart,
-    thinkingPart,
-    mediaPart,
-    isSchemaFormatParts,
-    getTextContent,
-    getThinkingContent
-} from './schema.js';
-import {
-    renderThinkingBlock,
-    enhanceCodeBlocks,
-    renderContentParts,
-    restoreToolCallsFromMessage
-} from './renderer.js';
-import { renderSearchGrounding } from './render-search.js';
-import { renderHumanizedError } from '../utils/errors.js';
-import { isVideoMimeType } from '../utils/media.js';
-import {
-    renderImageCard as renderImageBlock,
-    renderVideoCard as renderVideoBlock
-} from '../ui/media-cards.js';
+import { PartType } from './schema.js';
+import { renderReplyWithSelector } from './renderer.js';
 import { logger } from '../utils/logger.js';
+import { updateMessageUiState } from './message-ui-state.js';
+import { hasStoredMedia, resolveMessagesMediaForApi } from '../state/media-blob-store.js';
 
 /**
  * 选择回复（支持两种调用方式：直接索引或带消息索引）
  * @param {number} replyIndex - 回复索引
  * @param {number|null} messageIndex - 消息索引
+ * @param {string|null} messageId - 消息 ID
  */
-export function selectReply(replyIndex, messageIndex = null) {
+export async function selectReply(replyIndex, messageIndex = null, messageId = null) {
     let replies;
     let messageEl;
+
+    if (messageId) {
+        const resolvedIndex = state.messageStore.findIndexById(messageId);
+        if (resolvedIndex >= 0) messageIndex = resolvedIndex;
+    }
 
     // 如果提供了消息索引，从消息历史中获取回复
     if (messageIndex !== null) {
@@ -49,7 +34,10 @@ export function selectReply(replyIndex, messageIndex = null) {
         if (!msg) return;
         replies = msg.replies?.all;
         if (!replies) return;
-        messageEl = elements.messagesArea.querySelector(
+        messageEl = Array.from(
+            elements.messagesArea.querySelectorAll('.message[data-message-id]')
+        ).find((element) => element.dataset.messageId === msg.id);
+        messageEl ||= elements.messagesArea.querySelector(
             `.message[data-message-index="${messageIndex}"]`
         );
 
@@ -77,16 +65,26 @@ export function selectReply(replyIndex, messageIndex = null) {
     if (!messageEl) return; // Bug 2 添加最终检查
     if (!replies || replyIndex < 0 || replyIndex >= replies.length) return;
 
-    const reply = replies[replyIndex];
+    const resolvedMessageId = messageId || messageEl.dataset.messageId;
+    if (resolvedMessageId) {
+        updateMessageUiState(resolvedMessageId, { selectedReply: replyIndex });
+    }
+
+    const storedReply = replies[replyIndex];
+    let reply = storedReply;
+    if (hasStoredMedia(storedReply)) {
+        try {
+            [reply] = await resolveMessagesMediaForApi([storedReply]);
+        } catch (error) {
+            logger.error('[ReplySelector] 加载回复媒体失败:', error);
+            eventBus.emit('ui:notification', { message: '回复媒体加载失败', type: 'error' });
+            return;
+        }
+    }
 
     // 更新消息历史中的选中索引 - 通过安全函数同步
     if (messageIndex !== null) {
-        // 用 schema.js 工具函数提取文本（内部已处理新/旧格式回退）
-        const textContent = getTextContent(reply);
-
-        applyReplyToMessage(messageIndex, reply, textContent, {
-            replyIndex
-        });
+        applyReplyToMessage(messageIndex, storedReply, replyIndex);
 
         debouncedSaveSession();
     } else {
@@ -94,128 +92,11 @@ export function selectReply(replyIndex, messageIndex = null) {
         updateMessageHistoryWithSelectedReply();
     }
 
-    // 更新显示的内容
-    if (messageEl) {
-        const wrapper = messageEl.querySelector('.message-content-wrapper');
-        const contentDiv = messageEl.querySelector('.message-content');
-
-        if (wrapper && contentDiv) {
-            // 更新选择器
-            const selectorEl = wrapper.querySelector('.reply-selector');
-            if (selectorEl) {
-                selectorEl.querySelectorAll('.reply-tab').forEach((tab, i) => {
-                    tab.classList.toggle('active', i === replyIndex);
-                    if (i === replyIndex) {
-                        tab.setAttribute('aria-current', 'true');
-                    } else {
-                        tab.removeAttribute('aria-current');
-                    }
-                });
-            }
-
-            // 更新内容
-            let html = '';
-
-            // 检查是否是错误回复
-            if (reply.isError) {
-                // 错误 reply 可能带流中断前已接收的内容，先渲染内容再附错误提示
-                const errThinking = getThinkingContent(reply);
-                if (errThinking) {
-                    html += renderThinkingBlock(errThinking);
-                }
-                const errText = getTextContent(reply);
-                if (errText) {
-                    html += safeMarkedParse(errText);
-                }
-                const errorObj = {
-                    error: {
-                        type: reply.errorType || 'unknown',
-                        message: reply.errorMessage || 'Unknown error'
-                    }
-                };
-                html += renderHumanizedError(errorObj, null, true);
-            } else {
-                // 新格式 parts[] 优先
-                if (isSchemaFormatParts(reply.parts)) {
-                    for (const part of reply.parts) {
-                        if (part.type === PartType.THINKING) {
-                            html += renderThinkingBlock(part.text);
-                        } else if (
-                            part.type === PartType.TEXT &&
-                            part.text &&
-                            part.text !== '(调用工具)'
-                        ) {
-                            html += safeMarkedParse(part.text);
-                        } else if (part.type === PartType.MEDIA && part.url) {
-                            if (part.media === MediaKind.VIDEO) {
-                                html += renderVideoBlock(part.url, part.mime);
-                            } else if (part.media === MediaKind.AUDIO) {
-                                html += `<div class="audio-wrapper"><audio src="${escapeHtml(part.url)}" controls preload="metadata"></audio></div>`;
-                            } else {
-                                html += renderImageBlock(part.url);
-                            }
-                        }
-                    }
-                }
-                // 旧格式回退链（旧格式兜底，未迁移数据需要）
-                else {
-                    // 思维链（已用 schema.js 工具函数）
-                    const replyThinking = getThinkingContent(reply);
-                    if (replyThinking) {
-                        html += renderThinkingBlock(replyThinking);
-                    }
-                    // contentParts（旧格式含媒体数据）
-                    if (reply.contentParts && reply.contentParts.length > 0) {
-                        html += renderContentParts(reply.contentParts); // 旧格式兜底
-                    }
-                    // Gemini 原始格式
-                    else if (state.apiFormat === 'gemini' && reply.parts) {
-                        for (const part of reply.parts) {
-                            if (part.thought) continue;
-                            if (part.text) {
-                                html += safeMarkedParse(part.text);
-                            } else if (part.inlineData || part.inline_data) {
-                                const inlineData = part.inlineData || part.inline_data;
-                                const mimeType = inlineData.mimeType || inlineData.mime_type;
-                                const dataUrl = `data:${mimeType};base64,${inlineData.data}`;
-                                if (isVideoMimeType(mimeType)) {
-                                    html += renderVideoBlock(dataUrl, mimeType);
-                                } else {
-                                    html += renderImageBlock(dataUrl);
-                                }
-                            }
-                        }
-                        if (reply.groundingMetadata) {
-                            html += renderSearchGrounding(reply.groundingMetadata);
-                        }
-                    }
-                    // 文本回退（用 schema.js 工具函数，覆盖 content 字符串/数组）
-                    else {
-                        const replyText = getTextContent(reply);
-                        if (replyText) {
-                            html += safeMarkedParse(replyText);
-                        }
-                    }
-                }
-            }
-            // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
-            contentDiv.innerHTML = html;
-
-            // 不再需要手动绑定图片事件（已使用内联 onclick）
-
-            // 增强代码块（绑定复制按钮、表格导出、思维链折叠等）
-            enhanceCodeBlocks(messageEl);
-
-            // innerHTML 覆盖会抹掉 tool-calls-group 节点，从当前消息 parts 重建
-            const resolvedMsgIndex =
-                messageIndex !== null
-                    ? messageIndex
-                    : parseInt(messageEl.dataset?.messageIndex ?? '', 10);
-            if (Number.isInteger(resolvedMsgIndex)) {
-                restoreToolCallsFromMessage(state.messages[resolvedMsgIndex], contentDiv);
-            }
-        }
-    }
+    const displayReplies =
+        reply === storedReply
+            ? replies
+            : replies.map((item, index) => (index === replyIndex ? reply : item));
+    renderReplyWithSelector(displayReplies, replyIndex, messageEl);
 }
 
 // 已删除 bindImageClickEvents 函数（改用内联 onclick，与其他渲染函数保持一致）
@@ -224,75 +105,33 @@ export function selectReply(replyIndex, messageIndex = null) {
  * 将回复数据应用到指定索引的消息
  * @param {number} index - 消息索引
  * @param {Object} reply - 回复对象
- * @param {string} textContent - 文本内容
- * @param {Object} extraOpenai - 额外字段（selectedReplyIndex, allReplies 等）
+ * @param {number} selectedIndex - 选中的回复索引
+ * @param {Array|null} replies - 可选的完整回复列表
  */
-function applyReplyToMessage(index, reply, textContent, extraOpenai = {}) {
-    // 优先使用回复自身的 parts（新格式）
-    let parts;
-    if (isSchemaFormatParts(reply.parts)) {
-        // 新格式：直接使用 reply.parts（去掉 tool_call/file，后面从 existingMsg 补回）
-        parts = reply.parts.filter(
-            (p) => p.type !== PartType.TOOL_CALL && p.type !== PartType.FILE
-        );
-    } else {
-        // 旧格式回退：从旧字段重建 parts
-        parts = [];
-        const replyThinking = getThinkingContent(reply);
-        if (replyThinking) {
-            parts.push(
-                thinkingPart(
-                    replyThinking,
-                    reply.thinkingSignature || reply.thoughtSignature || null
-                )
-            );
-        }
-        if (textContent) {
-            parts.push(textPart(textContent));
-        }
-        // 旧格式 contentParts 中的媒体 → 新格式 mediaPart（旧格式兜底，未迁移数据需要）
-        if (reply.contentParts && reply.contentParts.length > 0) {
-            for (const cp of reply.contentParts) {
-                // 旧格式兜底，未迁移数据需要
-                if (cp.type === 'image' || cp.type === 'image_url') {
-                    const url = cp.url || cp.image_url?.url;
-                    if (url) parts.push(mediaPart(MediaKind.IMAGE, url));
-                } else if (cp.type === 'video' || cp.type === 'video_url') {
-                    const url = cp.url || cp.video_url?.url;
-                    if (url)
-                        parts.push(mediaPart(MediaKind.VIDEO, url, cp.mime_type || cp.mimeType));
-                }
-            }
-        }
-    }
-
-    // 保留原始消息中的 tool_call 和 file parts（深拷贝避免 reply.parts 与 state.messages[i].parts 共享引用）
+export function applyReplyToMessage(index, reply, selectedIndex, replies = null) {
     const existingMsg = state.messages[index];
-    if (existingMsg?.parts && Array.isArray(existingMsg.parts)) {
-        for (const p of existingMsg.parts) {
-            if (p.type === PartType.TOOL_CALL || p.type === PartType.FILE) {
-                parts.push(structuredClone(p));
-            }
+    const parts = reply.parts
+        .filter((part) => part.type !== PartType.TOOL_CALL && part.type !== PartType.FILE)
+        .map((part) => structuredClone(part));
+    for (const part of existingMsg?.parts || []) {
+        if (part.type === PartType.TOOL_CALL || part.type === PartType.FILE) {
+            parts.push(structuredClone(part));
         }
     }
-
-    const updates = {
-        parts,
-        ...extraOpenai
-    };
+    const updates = { parts, error: reply.error || null };
 
     // 同步 reply 的 meta 到顶层（模型名、统计、provider-specific 数据）
     if (reply.meta) {
         updates.meta = reply.meta;
     }
 
-    // 同步更新 replies.selected
-    const replyIdx = extraOpenai.replyIndex ?? extraOpenai.selectedReplyIndex;
-    if (replyIdx !== undefined) {
-        const existingReplies = existingMsg?.replies;
-        if (existingReplies) {
-            updates.replies = { ...existingReplies, selected: replyIdx };
-        }
+    const existingReplies = existingMsg?.replies;
+    if ((existingReplies || replies) && Number.isInteger(selectedIndex)) {
+        updates.replies = {
+            ...(existingReplies || {}),
+            all: replies || existingReplies.all,
+            selected: selectedIndex
+        };
     }
 
     updateMessageAt(index, updates);
@@ -305,19 +144,12 @@ function updateMessageHistoryWithSelectedReply() {
     if (state.currentReplies.length === 0) return;
 
     const reply = state.currentReplies[state.selectedReplyIndex];
-    // 用 schema.js 工具函数提取文本（内部已处理新/旧格式回退）
-    const textContent = getTextContent(reply);
     const lastIndex = state.messages.length - 1;
 
     if (lastIndex < 0) return;
     if (state.messages[lastIndex].role !== 'assistant') return;
 
-    const shared = {
-        replies: { all: state.currentReplies, selected: state.selectedReplyIndex },
-        replyIndex: state.selectedReplyIndex
-    };
-
-    applyReplyToMessage(lastIndex, reply, textContent, shared);
+    applyReplyToMessage(lastIndex, reply, state.selectedReplyIndex, state.currentReplies);
 
     debouncedSaveSession();
 }
@@ -327,8 +159,8 @@ function updateMessageHistoryWithSelectedReply() {
  */
 export function initReplySelector() {
     // 监听回复选择请求事件
-    eventBus.on('reply:select-requested', ({ index, messageIndex }) => {
-        selectReply(index, messageIndex);
+    eventBus.on('reply:select-requested', ({ index, messageIndex, messageId }) => {
+        void selectReply(index, messageIndex, messageId);
     });
 
     logger.debug('Reply selector initialized');

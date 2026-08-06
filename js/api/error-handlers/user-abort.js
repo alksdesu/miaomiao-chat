@@ -20,6 +20,7 @@ import { requestStateMachine } from '../../core/request-state-machine.js';
 import { clearToolCallContinuation } from '../../core/state-mutations.js';
 import { safeSetHTML } from '../../utils/helpers.js';
 import { logger } from '../../utils/logger.js';
+import { requestTaskRegistry } from '../../core/request-task-registry.js';
 
 /**
  * @param {import('../error-classifier.js').ClassifiedError} classification
@@ -29,26 +30,29 @@ import { logger } from '../../utils/logger.js';
 export async function handleUserAbort(classification, ctx) {
     const { isCrossSession, displayError } = classification;
     const partialSaved = displayError?.partialSaved === true;
-    const ownsStateMachine =
-        !!ctx.abortController && ctx.abortController === requestStateMachine.abortController;
+    const ownsStateMachine = ctx.task
+        ? requestStateMachine.owns(ctx.task)
+        : !!ctx.abortController && ctx.abortController === requestStateMachine.abortController;
 
     if (isCrossSession) {
         logger.debug(`[ErrorHandler/user-abort] 跨会话 abort 跳过 UI 操作: ${ctx.sessionId}`);
         if (ownsStateMachine) {
             requestStateMachine.cancel();
         }
+        if (ctx.task && requestTaskRegistry.owns(ctx.task)) {
+            ctx.task.isToolCallPending = false;
+        }
         return { handled: true };
     }
 
-    if (!partialSaved && state.currentAssistantMessage) {
-        safeSetHTML(
-            state.currentAssistantMessage,
-            '<div class="error-message">[!] 请求已取消</div>'
-        );
+    const target = ctx.assistantMessageEl?.querySelector?.('.message-content') || null;
+    if (!partialSaved && target) {
+        safeSetHTML(target, '<div class="error-message">[!] 请求已取消</div>');
     }
     eventBus.emit('ui:notification', { message: '请求已取消', type: 'info' });
 
     state.isToolCallPending = false;
+    if (ctx.task && requestTaskRegistry.owns(ctx.task)) ctx.task.isToolCallPending = false;
     clearToolCallContinuation();
     // 部分保存路径的 commitError 已发 stream:error 驱动状态机走 ERROR → IDLE，
     // 再 cancel 会触发非法状态转换日志

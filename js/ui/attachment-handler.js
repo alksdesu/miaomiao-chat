@@ -14,6 +14,10 @@ import {
     AUTO_DOCUMENT_TOKEN_THRESHOLD
 } from '../utils/constants.js';
 import { estimateTokenCount } from '../stream/stats.js';
+import {
+    estimateTokensInWorker,
+    LONG_CHAT_WORKER_TEXT_THRESHOLD
+} from '../utils/long-chat-worker-client.js';
 import { renderPdfToImages } from '../utils/pdf.js';
 import { logger } from '../utils/logger.js';
 
@@ -91,6 +95,21 @@ const TEXT_FILE_EXTENSIONS = new Set([
     'makefile'
 ]);
 
+function captureAttachmentContext() {
+    return {
+        sessionId: state.currentSessionId,
+        draft: state.uploadedImages
+    };
+}
+
+function isAttachmentContextActive(context) {
+    return (
+        context.sessionId === state.currentSessionId &&
+        context.draft === state.uploadedImages &&
+        !state.isSwitchingSession
+    );
+}
+
 /**
  * 获取文件类别
  * @param {string} mimeType - MIME 类型
@@ -141,6 +160,8 @@ export function handleAttachFile() {
         return;
     }
 
+    const context = captureAttachmentContext();
+    if (!isAttachmentContextActive(context)) return;
     const input = document.createElement('input');
     input.type = 'file';
     input.accept =
@@ -148,6 +169,7 @@ export function handleAttachFile() {
     input.multiple = true;
 
     input.onchange = async (e) => {
+        if (!isAttachmentContextActive(context)) return;
         const files = Array.from(e.target.files);
         const remaining = MAX_ATTACHMENTS - state.uploadedImages.length;
 
@@ -158,6 +180,7 @@ export function handleAttachFile() {
         const filesToProcess = files.slice(0, remaining);
 
         for (const file of filesToProcess) {
+            if (!isAttachmentContextActive(context)) return;
             if (state.uploadedImages.length >= MAX_ATTACHMENTS) {
                 showNotification(`已达到附件上限 ${MAX_ATTACHMENTS}，跳过剩余文件`, 'warning');
                 break;
@@ -188,6 +211,7 @@ export function handleAttachFile() {
             try {
                 if (fileCategory === 'text') {
                     const textContent = await fileToText(file);
+                    if (!isAttachmentContextActive(context)) return;
                     state.uploadedImages.push({
                         name: file.name,
                         type: fileType,
@@ -200,6 +224,7 @@ export function handleAttachFile() {
                     );
                 } else {
                     const base64 = await fileToBase64(file);
+                    if (!isAttachmentContextActive(context)) return;
 
                     if (fileCategory === 'image') {
                         state.uploadedImages.push({
@@ -231,6 +256,7 @@ export function handleAttachFile() {
                                     quality: 0.85,
                                     maxPages: Math.min(20, canAdd)
                                 });
+                                if (!isAttachmentContextActive(context)) return;
 
                                 for (const img of renderedImages) {
                                     state.uploadedImages.push(img);
@@ -266,11 +292,12 @@ export function handleAttachFile() {
                     }
                 }
             } catch (err) {
+                if (!isAttachmentContextActive(context)) return;
                 logger.error(`[Attachment] 读取文件失败: ${file.name}`, err);
                 showNotification(`读取文件 "${file.name}" 失败`, 'error');
             }
         }
-        updateImagePreview();
+        if (isAttachmentContextActive(context)) updateImagePreview();
     };
 
     input.click();
@@ -376,6 +403,8 @@ export function updateImagePreview(onQuoteStyleUpdate) {
 export async function handlePaste(e, onPreviewUpdate) {
     const clipboardData = e.clipboardData;
     if (!clipboardData) return;
+    const context = captureAttachmentContext();
+    if (!isAttachmentContextActive(context)) return;
 
     const items = Array.from(clipboardData.items);
     const imageItems = items.filter((item) => item.type.startsWith('image/'));
@@ -383,9 +412,17 @@ export async function handlePaste(e, onPreviewUpdate) {
     if (imageItems.length === 0) {
         const pastedText = clipboardData.getData('text/plain');
         if (pastedText) {
-            setTimeout(() => {
+            setTimeout(async () => {
+                if (!isAttachmentContextActive(context)) return;
                 const fullText = elements.userInput.value;
-                const tokenCount = estimateTokenCount(fullText);
+                const tokenCount =
+                    fullText.length >= LONG_CHAT_WORKER_TEXT_THRESHOLD
+                        ? await estimateTokensInWorker(fullText)
+                        : estimateTokenCount(fullText);
+
+                if (!isAttachmentContextActive(context) || elements.userInput.value !== fullText) {
+                    return;
+                }
 
                 if (tokenCount > AUTO_DOCUMENT_TOKEN_THRESHOLD) {
                     showNotification(
@@ -424,6 +461,7 @@ export async function handlePaste(e, onPreviewUpdate) {
 
         try {
             const base64 = await fileToBase64(file);
+            if (!isAttachmentContextActive(context)) return;
 
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
             const fileName = `pasted-image-${timestamp}.${file.type.split('/')[1] || 'png'}`;
@@ -441,11 +479,13 @@ export async function handlePaste(e, onPreviewUpdate) {
                 `[Input] 已粘贴图片: ${fileName} (${(file.size / 1024 / 1024).toFixed(2)} MB)`
             );
         } catch (error) {
+            if (!isAttachmentContextActive(context)) return;
             logger.error('[Input] 处理粘贴图片失败:', error);
             showNotification('粘贴图片失败', 'error');
         }
     }
 
+    if (!isAttachmentContextActive(context)) return;
     if (onPreviewUpdate) onPreviewUpdate();
     if (pastedCount > 0) {
         showNotification(`已粘贴 ${pastedCount} 张图片`, 'success');

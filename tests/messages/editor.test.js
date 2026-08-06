@@ -67,7 +67,11 @@ vi.mock('../../js/utils/logger.js', () => ({
 }));
 
 import { PartType, MediaKind } from '../../js/messages/schema.js';
-import { preserveStructuralParts, ensureTurnConsistency } from '../../js/messages/editor.js';
+import {
+    buildAttachmentParts,
+    preserveStructuralParts,
+    ensureTurnConsistency
+} from '../../js/messages/editor.js';
 
 // ============================================================
 // preserveStructuralParts
@@ -174,6 +178,29 @@ describe('preserveStructuralParts', () => {
         expect(out.find((p) => p.type === PartType.TEXT)).toMatchObject({ text: 't' });
     });
 
+    it('保留外置图片的 mediaId，不把临时 Blob URL 写回消息', () => {
+        const out = preserveStructuralParts(
+            [{ type: PartType.MEDIA, media: MediaKind.IMAGE, mediaId: 'media-1' }],
+            {
+                newText: 'edited',
+                newImages: [
+                    {
+                        dataUrl: 'blob:temporary-preview',
+                        mimeType: 'image/png',
+                        mediaId: 'media-1'
+                    }
+                ]
+            }
+        );
+
+        expect(out.find((part) => part.type === PartType.MEDIA)).toEqual({
+            type: PartType.MEDIA,
+            media: MediaKind.IMAGE,
+            mime: 'image/png',
+            mediaId: 'media-1'
+        });
+    });
+
     it('prepends thinking when no thinking exists in oldParts', () => {
         const oldParts = [{ type: PartType.TEXT, text: 'old' }];
         const out = preserveStructuralParts(oldParts, {
@@ -223,6 +250,30 @@ describe('preserveStructuralParts', () => {
         expect(out[1]).toMatchObject({ type: PartType.TOOL_CALL, id: 'tc_1', name: 'web_search' });
         expect(out[1].result).toBe('r');
         expect(out[2]).toMatchObject({ type: PartType.TEXT, text: 'NEW-ANSWER' });
+    });
+});
+
+describe('buildAttachmentParts', () => {
+    it('保留外置文件引用', () => {
+        const parts = buildAttachmentParts([
+            {
+                name: 'notes.txt',
+                type: 'text/plain',
+                category: 'text',
+                data: 'blob:temporary-preview',
+                mediaId: 'media-file'
+            }
+        ]);
+
+        expect(parts).toEqual([
+            {
+                type: PartType.FILE,
+                name: 'notes.txt',
+                mime: 'text/plain',
+                encoding: 'text',
+                mediaId: 'media-file'
+            }
+        ]);
     });
 });
 

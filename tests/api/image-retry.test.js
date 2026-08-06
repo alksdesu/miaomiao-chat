@@ -12,7 +12,9 @@ vi.mock('../../js/core/state.js', () => ({
         fastImageCompression: false,
         messages: [],
         currentAssistantMessage: null,
-        currentSessionId: 'test-session'
+        currentSessionId: 'test-session',
+        sessions: [],
+        backgroundTasks: new Map()
     }
 }));
 
@@ -44,6 +46,7 @@ import {
     rebuildMessageIdMap,
     replaceAllMessages
 } from '../../js/core/state-mutations.js';
+import { requestTaskRegistry } from '../../js/core/request-task-registry.js';
 
 let isImageSizeError, compressImagesInMessages;
 
@@ -54,6 +57,7 @@ beforeEach(async () => {
     state.messages = [];
     state.currentAssistantMessage = null;
     state.currentSessionId = 'test-session';
+    requestTaskRegistry.clearForTests();
 
     const images = await import('../../js/utils/images.js');
     isImageSizeError = images.isImageSizeError;
@@ -135,6 +139,38 @@ describe('attemptImageCompressionRetry', () => {
         // 源会话仍上锁防 backgroundTask 再次触发
         expect(state._imageCompressionRetriedSessions.has('session-source-other')).toBe(true);
         expect(compressImagesInMessages).not.toHaveBeenCalled();
+    });
+
+    it('压缩期间切换会话只更新源任务快照，不替换新会话消息', async () => {
+        isImageSizeError.mockReturnValue(true);
+        let resolveCompression;
+        compressImagesInMessages.mockImplementation(
+            () => new Promise((resolve) => (resolveCompression = resolve))
+        );
+        const task = requestTaskRegistry.create({
+            sessionId: 'test-session',
+            abortController: new AbortController()
+        });
+        task.requestProfile = {
+            providerApiFormat: 'openai',
+            state: { fastImageCompression: false }
+        };
+        task.requestContext = { sourceMessages: [{ role: 'user', content: 'image' }] };
+
+        const retryPromise = attemptImageCompressionRetry(
+            { code: 413 },
+            document.createElement('div'),
+            'test-session',
+            task
+        );
+        await vi.waitFor(() => expect(resolveCompression).toBeTypeOf('function'));
+        state.currentSessionId = 'other-session';
+        resolveCompression([{ role: 'user', content: 'compressed' }]);
+
+        await expect(retryPromise).resolves.toBe(true);
+        expect(task.retryMessages).toEqual([{ role: 'user', content: 'compressed' }]);
+        expect(replaceAllMessages).not.toHaveBeenCalled();
+        expect(setImageRetry).not.toHaveBeenCalled();
     });
 });
 

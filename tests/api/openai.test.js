@@ -155,9 +155,13 @@ describe('openai API', () => {
 
     it('过滤错误消息', async () => {
         state.messages = [
-            { role: 'user', content: 'Hello' },
-            { role: 'assistant', content: 'err', isError: true },
-            { role: 'user', content: 'Retry' }
+            { role: 'user', parts: [{ type: 'text', text: 'Hello' }], error: null },
+            {
+                role: 'assistant',
+                parts: [{ type: 'text', text: 'err' }],
+                error: { type: 'api', message: 'failed' }
+            },
+            { role: 'user', parts: [{ type: 'text', text: 'Retry' }], error: null }
         ];
         await sendOpenAIRequest('https://api.openai.com/v1/chat/completions', 'sk-test', 'gpt-4');
 

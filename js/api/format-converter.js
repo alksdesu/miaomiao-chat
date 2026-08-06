@@ -159,27 +159,16 @@ export function getMappedId(part, format) {
  * @param {number} toolCallIndex
  * @returns {string|null}
  */
-export function extractThoughtSignature(message, toolCallIndex = 0) {
+export function extractThoughtSignature(message) {
     if (message.role !== 'assistant') return null;
 
-    // 新格式：parts 中的 thinking part signature
-    if (message.parts && Array.isArray(message.parts)) {
+    if (Array.isArray(message.parts)) {
         for (const p of message.parts) {
             if (p.type === PartType.THINKING && p.signature) {
                 return p.signature;
             }
         }
     }
-
-    // 旧格式兜底
-    if (message.tool_calls) {
-        const toolCall = message.tool_calls[toolCallIndex];
-        if (toolCall?._thoughtSignature) {
-            return toolCall._thoughtSignature;
-        }
-    }
-    if (message.thoughtSignature) return message.thoughtSignature;
-    if (message.thinkingSignature) return message.thinkingSignature;
 
     return null;
 }
@@ -194,31 +183,13 @@ export function clearThoughtSignatures(messages, fromIndex) {
         const msg = messages[i];
         if (msg.role !== 'assistant') continue;
 
-        if (msg.parts && Array.isArray(msg.parts)) {
+        if (Array.isArray(msg.parts)) {
             for (const p of msg.parts) {
                 if (p.type === PartType.THINKING && p.signature) {
                     delete p.signature;
                     count++;
                 }
             }
-        }
-
-        if (msg.tool_calls) {
-            for (const tc of msg.tool_calls) {
-                if (tc._thoughtSignature) {
-                    delete tc._thoughtSignature;
-                    count++;
-                }
-            }
-        }
-
-        if (msg.thoughtSignature) {
-            delete msg.thoughtSignature;
-            count++;
-        }
-        if (msg.thinkingSignature) {
-            delete msg.thinkingSignature;
-            count++;
         }
     }
 
@@ -276,8 +247,7 @@ export function clearProviderSpecificRawMeta(messages, fromIndex = 0) {
 }
 
 /**
- * 清除所有不属于 currentFormat 的跨格式 signature（含 thinking part.signature +
- * 旧格式 tool_calls._thoughtSignature + 顶层 thoughtSignature/thinkingSignature）。
+ * 清除所有不属于 currentFormat 的 thinking part.signature。
  *
  * adapter.partsToAPIMessages 已有 part.signatureFormat 守门作为运行时防线，此 helper
  * 作为切换 apiFormat 时的主动清理（providers:switched 监听调用），物理删除残留签名
@@ -413,7 +383,7 @@ function deepClone(obj) {
  * 过滤消息中的私有字段（用于导出）
  *
  * stripPrivateFields 已改为递归 in-place 修改，必须深克隆整条 message 避免污染
- * 原 state.messages（之前浅克隆 + 嵌套 mapClone 只对 parts/tool_calls/replies.all
+ * 原 state.messages（之前浅克隆 + 嵌套 mapClone 只对 parts/replies.all
  * 三处生效，meta.raw.openai.reasoningItems 之类嵌套结构仍会被 in-place 修改）。
  *
  * idMap 是公共 derive 字段，保留以便跨格式重导入不丢配对。

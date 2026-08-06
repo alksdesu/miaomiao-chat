@@ -211,83 +211,10 @@ export async function compressImagesInMessages(messages, apiFormat, fastMode = f
     for (const msg of messages) {
         const compressedMsg = { ...msg };
 
-        // 处理不同格式的图片
-        if (msg.content && Array.isArray(msg.content)) {
-            // OpenAI/Claude 格式：content 是数组
-            compressedMsg.content = [];
-            for (const part of msg.content) {
-                if (part.type === 'image_url' && part.image_url?.url) {
-                    // OpenAI 格式
-                    const url = part.image_url.url;
-                    const match = url.match(/^data:([^;]+);base64,(.+)$/);
-                    if (match) {
-                        const [, mimeType, base64Data] = match;
-                        const compressed = await compressImage(base64Data, mimeType, {
-                            fastMode,
-                            apiFormat
-                        });
-                        compressedMsg.content.push({
-                            ...part,
-                            image_url: {
-                                ...part.image_url,
-                                url: `data:${compressed.mimeType};base64,${compressed.data}`
-                            }
-                        });
-                        logger.debug(
-                            `[重试] 压缩图片: ${(compressed.originalSize / 1024 / 1024).toFixed(2)}MB → ${(compressed.compressedSize / 1024 / 1024).toFixed(2)}MB`
-                        );
-                    } else {
-                        compressedMsg.content.push(part);
-                    }
-                } else if (part.type === 'image' && part.source?.data) {
-                    // Claude 格式
-                    const compressed = await compressImage(
-                        part.source.data,
-                        part.source.media_type,
-                        { fastMode, apiFormat }
-                    );
-                    compressedMsg.content.push({
-                        ...part,
-                        source: {
-                            ...part.source,
-                            media_type: compressed.mimeType,
-                            data: compressed.data
-                        }
-                    });
-                    logger.debug(
-                        `[重试] 压缩图片: ${(compressed.originalSize / 1024 / 1024).toFixed(2)}MB → ${(compressed.compressedSize / 1024 / 1024).toFixed(2)}MB`
-                    );
-                } else {
-                    compressedMsg.content.push(part);
-                }
-            }
-        } else if (msg.parts && Array.isArray(msg.parts)) {
-            // 新格式 or Gemini 格式：parts 数组
+        if (Array.isArray(msg.parts)) {
             compressedMsg.parts = [];
             for (const part of msg.parts) {
-                if (part.inlineData) {
-                    // Gemini 格式
-                    const compressed = await compressImage(
-                        part.inlineData.data,
-                        part.inlineData.mimeType,
-                        { fastMode, apiFormat }
-                    );
-                    compressedMsg.parts.push({
-                        ...part,
-                        inlineData: {
-                            mimeType: compressed.mimeType,
-                            data: compressed.data
-                        }
-                    });
-                    logger.debug(
-                        `[重试] 压缩图片: ${(compressed.originalSize / 1024 / 1024).toFixed(2)}MB → ${(compressed.compressedSize / 1024 / 1024).toFixed(2)}MB`
-                    );
-                } else if (
-                    part.type === PartType.MEDIA &&
-                    part.media === MediaKind.IMAGE &&
-                    part.url
-                ) {
-                    // 新格式：{type:'media', media:'image', url:'data:...'}
+                if (part.type === PartType.MEDIA && part.media === MediaKind.IMAGE && part.url) {
                     const match = part.url.match(/^data:([^;]+);base64,(.+)$/);
                     if (match) {
                         const [, mimeType, base64Data] = match;

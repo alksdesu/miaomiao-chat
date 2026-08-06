@@ -102,7 +102,7 @@ describe('Part 工厂函数', () => {
         expect(p.args).toEqual({ q: 'test' });
         expect(p.state).toBe('pending');
         expect(p.result).toBeNull();
-        // 缺省 mode = 'native'（兼容 Stage 1 前历史消息）
+        // 缺省 mode = 'native'（兼容缺少 mode 的历史消息）
         expect(p.mode).toBe('native');
     });
 
@@ -151,20 +151,8 @@ describe('getTextContent', () => {
         expect(getTextContent(msg)).toBe('Hello World');
     });
 
-    it('从旧格式 msg.content 字符串回退', () => {
-        const msg = { content: '旧格式文本' };
-        expect(getTextContent(msg)).toBe('旧格式文本');
-    });
-
-    it('从旧格式 msg.content 数组回退', () => {
-        const msg = {
-            content: [
-                { type: 'text', text: 'a' },
-                { type: 'image_url' },
-                { type: 'text', text: 'b' }
-            ]
-        };
-        expect(getTextContent(msg)).toBe('ab');
+    it('不读取兼容层之外的旧字段', () => {
+        expect(getTextContent({ content: '旧格式文本' })).toBe('');
     });
 
     it('无内容返回空字符串', () => {
@@ -185,9 +173,8 @@ describe('getThinkingContent', () => {
         expect(getThinkingContent(msg)).toBe('step1step2');
     });
 
-    it('从旧格式 thinkingContent 回退', () => {
-        const msg = { thinkingContent: '旧思维链' };
-        expect(getThinkingContent(msg)).toBe('旧思维链');
+    it('不读取兼容层之外的旧字段', () => {
+        expect(getThinkingContent({ thinkingContent: '旧思维链' })).toBe('');
     });
 
     it('无思维链返回空字符串', () => {
@@ -218,6 +205,13 @@ describe('格式检测', () => {
 describe('validateMessage', () => {
     it('合法消息返回空错误数组', () => {
         const msg = createMessage(Role.USER, [textPart('hi')]);
+        expect(validateMessage(msg)).toEqual([]);
+    });
+
+    it('允许持久化媒体仅包含 mediaId', () => {
+        const msg = createMessage(Role.USER, [
+            { type: PartType.MEDIA, media: MediaKind.IMAGE, mediaId: 'media-1' }
+        ]);
         expect(validateMessage(msg)).toEqual([]);
     });
 

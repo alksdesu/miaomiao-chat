@@ -20,6 +20,8 @@ import {
     getCurrentProvider
 } from './current.js';
 import { getAdapter } from './adapters/index.js';
+import { captureRequestProfile } from './request-pipeline.js';
+import { applyToolResultsToMessages } from '../messages/tool-results.js';
 
 /**
  * @typedef {Object} HandlerContext
@@ -40,22 +42,45 @@ import { getAdapter } from './adapters/index.js';
 /**
  * @returns {HandlerContext}
  */
-export function createHandlerContext() {
+export function createHandlerContext(task = null) {
     // requestFormat/adapter 与 endpoint/apiKey/model 一同快照：请求往返期间用户切 provider 时，
     // 响应侧仍用发起时锁定的 adapter 解析，避免 Claude 流被 OpenAI parser 解成空流
-    const requestFormat = getCurrentProvider()?.apiFormat || 'openai';
+    const origin = task?.requestOrigin || null;
+    const requestFormat = origin?.requestFormat || getCurrentProvider()?.apiFormat || 'openai';
+    const adapter = origin?.adapter || getAdapter(requestFormat);
+    const endpoint = origin?.endpoint || getCurrentEndpoint();
+    const apiKey = origin?.apiKey ?? getCurrentApiKey();
+    const model = origin?.model || getCurrentModel();
+    const sessionId = task?.sessionId || state.currentSessionId;
+    const requestProfile = task?.requestProfile || captureRequestProfile(adapter, model);
+    let sourceMessages =
+        task?.retryMessages ||
+        (sessionId === state.currentSessionId && !task?.isDetached
+            ? state.messageStore?.toArray?.() || [...(state.messages || [])]
+            : null);
+    if (Array.isArray(sourceMessages) && task?.pendingToolResults) {
+        sourceMessages = applyToolResultsToMessages(
+            sourceMessages,
+            task.pendingToolResults
+        ).messages;
+    }
     return {
-        endpoint: getCurrentEndpoint(),
-        apiKey: getCurrentApiKey(),
-        model: getCurrentModel(),
+        endpoint,
+        apiKey,
+        model,
         requestFormat,
-        adapter: getAdapter(requestFormat),
+        adapter,
         abortController: new AbortController(),
-        sessionId: state.currentSessionId,
-        timeoutMs: state.requestTimeout,
+        sessionId,
+        timeoutMs: requestProfile.state?.requestTimeout ?? state.requestTimeout,
         timeoutId: null,
         assistantMessageEl: null,
         isContinuationMode: false,
-        isImageRetryMode: false
+        isImageRetryMode: false,
+        task,
+        requestProfile,
+        sourceMessages,
+        streamEnabled: requestProfile.streamEnabled,
+        replyCount: requestProfile.replyCount
     };
 }

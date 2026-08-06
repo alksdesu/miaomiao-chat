@@ -9,20 +9,14 @@
 import { state } from '../core/state.js';
 import { eventBus } from '../core/events.js';
 import { pushMessage, updateMessageAt } from '../core/state-mutations.js';
-import {
-    createMessage,
-    createMeta,
-    Role,
-    PartType,
-    ToolState,
-    filterParts,
-    isNewFormat
-} from './schema.js';
-import { buildPartsFromReply, buildMetaFromReply } from './parts-builder.js';
+import { createMessage, createMeta, Role, PartType, ToolState, filterParts } from './schema.js';
+import { buildCanonicalReplies } from './parts-builder.js';
+import { applyToolResultsToMessages } from './tool-results.js';
 import { isSessionDeleted, debouncedSaveSession } from '../state/sessions.js';
 import { loadSessionMessages, saveSessionAtomic, SessionConflictError } from '../state/storage.js';
 import { broadcastEvent } from '../state/tab-sync.js';
 import { logger } from '../utils/logger.js';
+import { withSessionWriteLock } from '../state/session-write-queue.js';
 
 // ========== 辅助函数 ==========
 
@@ -47,7 +41,7 @@ function deduplicateMediaParts(parts) {
     const seen = new Set();
     return parts.filter((p) => {
         if (p.type === PartType.MEDIA) {
-            const key = simpleHash(p.url);
+            const key = `${p.media || ''}:${p.mediaId || simpleHash(p.url)}`;
             if (seen.has(key)) return false;
             seen.add(key);
         }
@@ -59,22 +53,35 @@ function deduplicateMediaParts(parts) {
  * 多回复对象数组 → schema 形态的 replies
  * reply 可能是新格式（含 parts）或旧格式（thinkingContent / contentParts / content）
  */
-function buildReplies(parts, meta, allReplies, selectedReplyIndex, ts) {
+function buildReplies(allReplies, selectedReplyIndex, ts) {
     if (allReplies && allReplies.length > 0) {
-        const newAll = allReplies.map((r) => ({
-            parts: r.parts || buildPartsFromReply(r),
-            meta: r.meta || buildMetaFromReply(r),
-            ts: r.timestamp || ts,
-            isOriginal: r.isOriginal,
-            isError: r.isError,
-            errorType: r.errorType,
-            errorMessage: r.errorMessage
-        }));
+        const newAll = buildCanonicalReplies(allReplies, ts);
         return { all: newAll, selected: selectedReplyIndex || 0 };
     }
 
     // 单回复不创建 replies（避免复制 parts 浪费内存）
     return null;
+}
+
+function upsertCurrentMessage(savedMessage) {
+    const store = state.messageStore;
+    if (store?.findIndexById && store?.replaceAt && store?.push) {
+        const currentIndex = store.findIndexById(savedMessage.id);
+        const index =
+            currentIndex >= 0
+                ? (store.replaceAt(currentIndex, savedMessage), currentIndex)
+                : store.push(savedMessage);
+        return { index, updated: currentIndex >= 0 };
+    }
+
+    const currentIndex = (state.messages || []).findIndex(
+        (message) => message?.id === savedMessage.id
+    );
+    if (currentIndex >= 0) {
+        updateMessageAt(currentIndex, savedMessage);
+        return { index: currentIndex, updated: true };
+    }
+    return { index: pushMessage(savedMessage), updated: false };
 }
 
 // ========== 主要导出函数 ==========
@@ -98,25 +105,29 @@ function _saveCore(parts, meta, opts) {
 
     // 会话切换检查 — 走 background 路径并透传 continuation/error opts，避免新切到的
     // 会话被原会话的消息污染，同时让 background 路径能正确合并 continuation 或落错误
-    if (sessionId && sessionId !== state.currentSessionId) {
+    if (opts.forceBackground || (sessionId && sessionId !== state.currentSessionId)) {
         logger.warn(
             `[sync] 会话已切换（${sessionId} → ${state.currentSessionId}），将消息保存到原会话`
         );
-        saveToBackgroundSession(sessionId, parts, meta, allReplies, selectedReplyIndex, ts, {
-            isContinuation: isContinuation || state.isSavingContinuation,
-            isError,
-            errorData,
-            errorHtml
-        });
-        if (state.isSavingContinuation) state.isSavingContinuation = false;
-        return;
+        const savePromise = saveToBackgroundSession(
+            sessionId,
+            parts,
+            meta,
+            allReplies,
+            selectedReplyIndex,
+            ts,
+            {
+                isContinuation,
+                isError,
+                errorData,
+                errorHtml
+            }
+        );
+        return savePromise;
     }
 
     // Continuation 模式
-    const shouldMerge = isContinuation || state.isSavingContinuation;
-    if (state.isSavingContinuation) state.isSavingContinuation = false;
-
-    if (shouldMerge) {
+    if (isContinuation) {
         const mergeIndex = findMergeTarget();
         if (mergeIndex >= 0) {
             return mergeContinuation(mergeIndex, parts, meta, toolCalls);
@@ -124,7 +135,7 @@ function _saveCore(parts, meta, opts) {
     }
 
     // 构建 replies
-    const replies = buildReplies(parts, meta, allReplies, selectedReplyIndex, ts);
+    const replies = buildReplies(allReplies, selectedReplyIndex, ts);
 
     // 创建新消息
     const msg = createMessage(Role.ASSISTANT, parts, { ts, meta, replies });
@@ -133,9 +144,9 @@ function _saveCore(parts, meta, opts) {
     if (isError && errorData) {
         msg.error = {
             type: errorData.code || errorData.error?.type || 'unknown',
-            message: errorData.message || errorData.error?.message || 'Unknown error'
+            message: errorData.message || errorData.error?.message || 'Unknown error',
+            ...(errorHtml ? { html: errorHtml } : {})
         };
-        if (errorHtml) msg.errorHtml = errorHtml;
     }
 
     // 推入状态
@@ -159,6 +170,10 @@ function _saveCore(parts, meta, opts) {
  */
 export function saveAssistantMessage(parts, meta, opts = {}) {
     return _saveCore(parts, meta, opts);
+}
+
+export async function saveAssistantMessageAsync(parts, meta, opts = {}) {
+    return await _saveCore(parts, meta, opts);
 }
 
 // ========== Continuation 合并逻辑 ==========
@@ -187,35 +202,13 @@ function findMergeTarget() {
         const msg = state.messages[i];
         if (!msg || msg.role !== 'assistant') continue;
 
-        // 新格式消息：检查是否有实质内容
-        if (isNewFormat(msg)) {
-            const hasContent = msg.parts?.some(
-                (p) =>
-                    p.type === PartType.TEXT ||
-                    p.type === PartType.THINKING ||
-                    p.type === PartType.MEDIA
-            );
-            if (!hasContent) continue; // 跳过纯 tool_call 占位
-            return i;
-        }
-
-        // 旧格式兼容（旧格式兜底，未迁移数据需要；迁移后不应触发）
-        logger.warn('[Sync] findMergeTarget 命中旧格式消息:', i);
-        const hasTextContent =
-            typeof msg.content === 'string'
-                ? msg.content.trim().length > 0
-                : Array.isArray(msg.content)
-                  ? msg.content.some((p) => p?.type === 'text' && (p.text || '').trim().length > 0)
-                  : false;
-        const hasContentParts = Array.isArray(msg.contentParts) && msg.contentParts.length > 0; // 旧格式兜底
-        const hasThinking = !!msg.thinkingContent; // 旧格式兜底
-        const isToolCallsOnly =
-            ((Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) ||
-                (Array.isArray(msg.toolCalls) && msg.toolCalls.length > 0)) &&
-            !hasTextContent &&
-            !hasContentParts &&
-            !hasThinking;
-        if (isToolCallsOnly) continue;
+        const hasContent = msg.parts?.some(
+            (p) =>
+                p.type === PartType.TEXT ||
+                p.type === PartType.THINKING ||
+                p.type === PartType.MEDIA
+        );
+        if (!hasContent) continue;
         return i;
     }
 
@@ -422,18 +415,40 @@ async function saveToBackgroundSession(
     ts,
     opts = {}
 ) {
+    return await withSessionWriteLock(sessionId, () =>
+        saveToBackgroundSessionUnlocked(
+            sessionId,
+            parts,
+            meta,
+            allReplies,
+            selectedReplyIndex,
+            ts,
+            opts
+        )
+    );
+}
+
+async function saveToBackgroundSessionUnlocked(
+    sessionId,
+    parts,
+    meta,
+    allReplies,
+    selectedReplyIndex,
+    ts,
+    opts = {}
+) {
     const { isContinuation = false, isError = false, errorData = null, errorHtml = null } = opts;
 
     // 已删除会话的异步保存请求一律丢弃，防止 IDB 中重建死会话
     if (isSessionDeleted(sessionId)) {
         logger.warn(`[sync] 跳过已删除会话的后台保存: ${sessionId}`);
-        return;
+        return false;
     }
 
     const targetSession = state.sessions.find((s) => s.id === sessionId);
     if (!targetSession) {
         logger.warn(`[sync] 后台保存目标会话不存在: ${sessionId}`);
-        return;
+        return false;
     }
 
     try {
@@ -469,15 +484,15 @@ async function saveToBackgroundSession(
             const msg = createMessage(Role.ASSISTANT, parts, {
                 ts,
                 meta,
-                replies: buildReplies(parts, meta, allReplies, selectedReplyIndex, ts)
+                replies: buildReplies(allReplies, selectedReplyIndex, ts)
             });
 
             if (isError && errorData) {
                 msg.error = {
                     type: errorData.code || errorData.error?.type || 'unknown',
-                    message: errorData.message || errorData.error?.message || 'Unknown error'
+                    message: errorData.message || errorData.error?.message || 'Unknown error',
+                    ...(errorHtml ? { html: errorHtml } : {})
                 };
-                if (errorHtml) msg.errorHtml = errorHtml;
             }
 
             existing.messages.push(msg);
@@ -550,12 +565,22 @@ async function saveToBackgroundSession(
             message: `消息已保存到会话"${sessionName}"`,
             type: 'info'
         });
+        if (state.currentSessionId === sessionId && savedMessage) {
+            const { index, updated } = upsertCurrentMessage(savedMessage);
+            eventBus.emit('messages:changed', {
+                action: updated ? 'assistant_updated' : 'assistant_added',
+                index
+            });
+            return index;
+        }
+        return savedMessage?.id || true;
     } catch (e) {
         logger.error('[sync] 保存后台会话消息失败:', e);
         eventBus.emit('ui:notification', {
             message: '消息保存失败，请检查存储空间',
             type: 'error'
         });
+        throw e;
     }
 }
 
@@ -590,6 +615,12 @@ export function saveAssistantMessageToBackground(sessionId, parts, meta, opts = 
  * @returns {Promise<number>} 匹配并写入的 part 数量
  */
 export async function writeToolResultsToBackgroundSession(sessionId, toolResults) {
+    return await withSessionWriteLock(sessionId, () =>
+        writeToolResultsToBackgroundSessionUnlocked(sessionId, toolResults)
+    );
+}
+
+async function writeToolResultsToBackgroundSessionUnlocked(sessionId, toolResults) {
     if (!sessionId || !Array.isArray(toolResults) || toolResults.length === 0) return 0;
 
     if (isSessionDeleted(sessionId)) {
@@ -606,34 +637,9 @@ export async function writeToolResultsToBackgroundSession(sessionId, toolResults
     try {
         const existing = (await loadSessionMessages(sessionId)) || { messages: [] };
 
-        let matched = 0;
-        // 全量遍历所有含 tool_call 的 assistant 消息：多轮 continuation 在后台跑完时
-        // 同一会话会沉淀多条 assistant 都带 tool_call，按 part.id 全量配对避免漏写
-        // 改 immutable 写法：与 orchestrator.writeToolResultsBackToState 路径对齐
-        for (let i = existing.messages.length - 1; i >= 0; i--) {
-            const msg = existing.messages[i];
-            if (msg.role !== 'assistant' || !Array.isArray(msg.parts)) continue;
-            const hasToolCall = msg.parts.some((p) => p.type === PartType.TOOL_CALL);
-            if (!hasToolCall) continue;
-
-            const newParts = msg.parts.map((part) => {
-                if (part.type !== PartType.TOOL_CALL || !part.id) return part;
-                const r = toolResults.find((x) => x.id && x.id === part.id);
-                if (!r) return part;
-                // 老化为 ERROR 的占位 result 残留 is_error/interrupted 字段需先清，
-                // 否则真实工具结果覆盖时 UI 渲染会混合新旧两套语义字段
-                matched++;
-                return {
-                    ...part,
-                    result: r.result,
-                    state: r.isError ? 'error' : 'done'
-                };
-            });
-
-            if (newParts !== msg.parts) {
-                existing.messages[i] = { ...msg, parts: newParts };
-            }
-        }
+        const applied = applyToolResultsToMessages(existing.messages, toolResults);
+        const matched = applied.matched;
+        existing.messages = applied.messages;
 
         if (matched === 0) {
             logger.warn(
@@ -674,6 +680,19 @@ export async function writeToolResultsToBackgroundSession(sessionId, toolResults
         targetSession.updatedAt = newUpdatedAt;
         targetSession.messageCount = existing.messages.length;
         state._lastKnownSessionUpdatedAt?.set(sessionId, newUpdatedAt);
+
+        if (sessionId === state.currentSessionId) {
+            const current = applyToolResultsToMessages(state.messages, toolResults);
+            for (const index of current.changedIndexes) {
+                updateMessageAt(index, { parts: current.messages[index].parts });
+            }
+            if (current.matched > 0) {
+                eventBus.emit('messages:changed', {
+                    action: 'tool_results_updated',
+                    sessionId
+                });
+            }
+        }
 
         // 广播给其他 tab 让它们同步元数据并触发 storage:remote-updated
         broadcastEvent('session-updated', {
@@ -740,9 +759,9 @@ export function saveErrorMessage(errorData, httpStatus = null, renderHumanizedEr
     msg.error = {
         type: errorData?.error?.type || 'unknown',
         message: errorData?.error?.message || 'Unknown error',
-        status: httpStatus
+        status: httpStatus,
+        ...(errorHtml ? { html: errorHtml } : {})
     };
-    msg.errorHtml = errorHtml;
 
     const messageIndex = pushMessage(msg);
 
@@ -757,15 +776,10 @@ export function saveErrorMessage(errorData, httpStatus = null, renderHumanizedEr
  * 复制消息元数据（旧 API，保留用于 sessionToMarkdown）
  */
 export function copyMessageMetadata(source, target) {
-    // 新格式字段
+    if (source.id) target.id = source.id;
     if (source.meta) target.meta = source.meta;
     if (source.replies) target.replies = source.replies;
     if (source.error) target.error = source.error;
-    // 保留的标识字段
-    const preserveKeys = ['id', 'errorHtml', 'isError'];
-    preserveKeys.forEach((key) => {
-        if (source[key] !== undefined) target[key] = source[key];
-    });
     return target;
 }
 

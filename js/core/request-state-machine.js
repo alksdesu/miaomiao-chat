@@ -36,6 +36,7 @@ const VALID_TRANSITIONS = {
         RequestState.COMPLETED
     ],
     [RequestState.STREAMING]: [
+        RequestState.SENDING,
         RequestState.TOOL_CALLING,
         RequestState.COMPLETED,
         RequestState.ERROR,
@@ -69,6 +70,7 @@ export class RequestStateMachine {
         this.abortController = null;
         this.assistantMessageEl = null;
         this.sessionId = null;
+        this.requestId = null;
         this.sendLockTimeout = null;
         this._autoIdleTimer = null;
         this.stateHistory = []; // 用于调试
@@ -196,6 +198,7 @@ export class RequestStateMachine {
         this.abortController = null;
         this.assistantMessageEl = null;
         this.sessionId = null;
+        this.requestId = null;
 
         // 清理发送锁
         if (this.sendLockTimeout) {
@@ -220,14 +223,16 @@ export class RequestStateMachine {
      * SENDING 状态钩子
      */
     _onSending(metadata) {
-        const { abortController, sessionId } = metadata;
+        const { abortController, sessionId, requestId = null, timeoutMs = null } = metadata;
 
         this.abortController = abortController;
         this.sessionId = sessionId;
+        this.requestId = requestId;
 
         // 发送锁兜底必须晚于 fetch 超时（state.requestTimeout）触发，
         // 否则无 reason 的 abort 会被 classifyError 误判为用户取消
-        const sendLockMs = Math.max((state.requestTimeout || 0) + 30000, 240000);
+        const requestTimeoutMs = Number.isFinite(timeoutMs) ? timeoutMs : state.requestTimeout || 0;
+        const sendLockMs = Math.max(requestTimeoutMs + 30000, 240000);
         if (this.sendLockTimeout) {
             clearTimeout(this.sendLockTimeout);
         }
@@ -437,6 +442,83 @@ export class RequestStateMachine {
                 type: 'success'
             });
         }
+    }
+
+    owns(task) {
+        if (!task) return false;
+        return (
+            this.requestId === task.id &&
+            this.sessionId === task.sessionId &&
+            this.abortController === task.abortController
+        );
+    }
+
+    transitionFor(task, newState, metadata = {}) {
+        if (!this.owns(task)) {
+            logger.debug('[StateMachine] 忽略非当前任务状态转换', {
+                requestId: task?.id,
+                sessionId: task?.sessionId,
+                newState
+            });
+            return false;
+        }
+        return this.transition(newState, metadata);
+    }
+
+    detach(task) {
+        if (!this.owns(task)) return false;
+
+        if (this._autoIdleTimer) {
+            clearTimeout(this._autoIdleTimer);
+            this._autoIdleTimer = null;
+        }
+        this.clearSendLockTimeout();
+
+        const oldState = this.state;
+        this.state = RequestState.IDLE;
+        this.abortController = null;
+        this.assistantMessageEl = null;
+        this.sessionId = null;
+        this.requestId = null;
+        state.isLoading = false;
+        state.isSending = false;
+        this._updateUI({
+            sendButtonDisabled: false,
+            sendButtonVisible: true,
+            cancelButtonVisible: false
+        });
+        this.stateHistory.push({
+            from: oldState,
+            to: RequestState.IDLE,
+            timestamp: Date.now(),
+            meta: { type: 'object', keys: 'detached' }
+        });
+        if (this.stateHistory.length > this.maxHistorySize) this.stateHistory.shift();
+        return true;
+    }
+
+    attach(task, assistantMessageEl = null) {
+        if (!task || !task.abortController || task.abortController.signal.aborted) return false;
+
+        if (this._autoIdleTimer) {
+            clearTimeout(this._autoIdleTimer);
+            this._autoIdleTimer = null;
+        }
+        this.clearSendLockTimeout();
+
+        this.state = task.phase || RequestState.STREAMING;
+        this.abortController = task.abortController;
+        this.sessionId = task.sessionId;
+        this.requestId = task.id;
+        this.assistantMessageEl = assistantMessageEl || task.assistantMessageEl || null;
+        state.isLoading = this.isBusy();
+        state.isSending = this.state === RequestState.SENDING;
+        this._updateUI({
+            sendButtonDisabled: true,
+            sendButtonVisible: false,
+            cancelButtonVisible: true
+        });
+        return true;
     }
 
     /**

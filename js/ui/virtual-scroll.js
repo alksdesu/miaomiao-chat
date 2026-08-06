@@ -1,131 +1,213 @@
-/**
- * 长会话渲染优化模块
- *
- * 使用浏览器原生 content-visibility:auto + contain-intrinsic-size，
- * 让屏幕外的消息节点跳过 layout/paint，但 DOM 仍真实挂载，
- * 因此 scrollIntoView 等 API 永远可用，不会出现"末尾消息渲染不出"自锁。
- *
- * 启用条件：messages.length 达到智能阈值（含图片时降低阈值）。
- */
-
 import { state } from '../core/state.js';
 import { elements } from '../core/elements.js';
 import { eventBus } from '../core/events.js';
-import { PartType, MediaKind, hasParts } from '../messages/schema.js';
+import { EVENTS } from '../core/events-registry.js';
+import { PartType, MediaKind } from '../messages/schema.js';
 import { logger } from '../utils/logger.js';
+import { longChatPerformance } from '../utils/long-chat-performance.js';
+import { lazyImageManager } from '../utils/lazy-image.js';
+import { MessageVirtualizer } from './message-virtualizer.js';
 
 const VIRTUAL_SCROLL_CONFIG = {
     threshold: 50,
-    activeClass: 'virtual-scroll-active'
+    activeClass: 'virtual-scroll-active',
+    estimateHeight: 160,
+    overscan: 1200
 };
 
 let isActive = false;
+let strategy = 'none';
+let activeVirtualizer = null;
+let activeOptions = null;
+let pendingMessageRefresh = false;
 
-/**
- * 智能阈值：图片密度越高，越早启用 content-visibility 优化
- */
+function getMessagesArea() {
+    return elements.messagesArea || elements.chatWindow || null;
+}
+
 function calculateSmartThreshold(messages) {
-    let imageCount = 0;
-
-    for (const msg of messages) {
-        if (hasParts(msg)) {
-            imageCount += msg.parts.filter(
-                (p) => p.type === PartType.MEDIA && p.media === MediaKind.IMAGE
-            ).length;
-            imageCount += msg.parts.filter((p) => p.inlineData).length;
-        }
-        if (Array.isArray(msg.content)) {
-            imageCount += msg.content.filter(
-                (p) => p.type === 'image_url' || p.type === 'image'
-            ).length;
-        }
-    }
-
-    if (imageCount === 0) {
+    if (!Array.isArray(messages) || messages.length === 0) {
         return VIRTUAL_SCROLL_CONFIG.threshold;
     }
+    let imageCount = 0;
+    for (const msg of messages) {
+        if (Array.isArray(msg.parts)) {
+            imageCount += msg.parts.filter(
+                (part) => part.type === PartType.MEDIA && part.media === MediaKind.IMAGE
+            ).length;
+        }
+    }
 
+    if (imageCount === 0) return VIRTUAL_SCROLL_CONFIG.threshold;
     const imageRatio = imageCount / messages.length;
-    if (imageRatio > 0.3) {
-        return Math.max(30, Math.floor(VIRTUAL_SCROLL_CONFIG.threshold * 0.3));
-    }
-    if (imageRatio > 0.1) {
-        return Math.max(50, Math.floor(VIRTUAL_SCROLL_CONFIG.threshold * 0.5));
-    }
+    if (imageRatio > 0.3) return Math.max(15, Math.floor(VIRTUAL_SCROLL_CONFIG.threshold * 0.3));
+    if (imageRatio > 0.1) return Math.max(25, Math.floor(VIRTUAL_SCROLL_CONFIG.threshold * 0.5));
     return Math.max(40, Math.floor(VIRTUAL_SCROLL_CONFIG.threshold * 0.75));
 }
 
-/**
- * 初始化（决定是否启用 content-visibility 优化）
- * @param {boolean|null} force - 强制启用/禁用；null 时按阈值判断
- */
-export function initVirtualScroll(force = null) {
-    if (!elements.messagesArea) {
-        return;
-    }
+export function initVirtualScroll(force = null, options = null) {
+    const messagesArea = getMessagesArea();
+    if (!messagesArea) return false;
 
-    const messages = state.messages;
+    const messages = options?.messages || state.messages || [];
     const threshold = calculateSmartThreshold(messages);
-    const shouldEnable = force !== null ? force : messages.length >= threshold;
+    const renderingMode = state.longChatRenderingMode || 'auto';
+    const shouldEnable =
+        force !== null
+            ? force
+            : renderingMode === 'virtual' ||
+              (renderingMode === 'auto' && messages.length >= threshold);
+    longChatPerformance.setGauge('virtualScrollThreshold', threshold);
 
-    if (shouldEnable && !isActive) {
-        elements.messagesArea.classList.add(VIRTUAL_SCROLL_CONFIG.activeClass);
-        isActive = true;
-        logger.debug(
-            `[VirtualScroll] content-visibility 优化已启用（${messages.length} 条 / 阈值 ${threshold}）`
-        );
-    } else if (!shouldEnable && isActive) {
-        disableVirtualScroll();
-    }
-}
+    disableVirtualScroll();
+    activeOptions = options;
 
-/**
- * 关闭 content-visibility 优化（切换会话清理时使用）
- */
-export function disableVirtualScroll() {
-    if (!isActive) {
-        return;
+    if (shouldEnable && typeof options?.renderItem === 'function') {
+        try {
+            activeVirtualizer = new MessageVirtualizer({
+                root: messagesArea,
+                renderItem: options.renderItem,
+                onUnmount: options.onUnmount,
+                estimateHeight: options.estimateHeight || VIRTUAL_SCROLL_CONFIG.estimateHeight,
+                overscan: options.overscan || VIRTUAL_SCROLL_CONFIG.overscan
+            });
+            activeVirtualizer.init(messages, {
+                initialIndex: options.initialIndex,
+                estimates: options.estimates
+            });
+            messagesArea.classList.add(VIRTUAL_SCROLL_CONFIG.activeClass);
+            isActive = true;
+            strategy = 'variable-height';
+            options.handled = true;
+            longChatPerformance.setGauge('virtualScrollActive', 1);
+            logger.debug(`[VirtualScroll] 可变高度虚拟列表已启用（${messages.length} 条）`);
+            return true;
+        } catch (error) {
+            logger.error('[VirtualScroll] 初始化失败，回退完整渲染:', error);
+            activeVirtualizer?.destroy();
+            activeVirtualizer = null;
+        }
     }
-    elements.messagesArea?.classList.remove(VIRTUAL_SCROLL_CONFIG.activeClass);
+
+    options?.renderAll?.();
+    if (options) options.handled = true;
+    strategy = messages.length > 0 ? 'content-visibility-fallback' : 'none';
+    if (messages.length > 0) {
+        messagesArea.classList.add(VIRTUAL_SCROLL_CONFIG.activeClass);
+    }
     isActive = false;
-    logger.debug('[VirtualScroll] content-visibility 优化已关闭');
+    longChatPerformance.setGauge('virtualScrollActive', 0);
+    return false;
 }
 
-/**
- * 滚动到指定消息索引
- * @param {number} index - 消息索引（对应 .message[data-message-index]）
- * @param {ScrollBehavior} behavior - 滚动行为
- */
+export function disableVirtualScroll() {
+    activeVirtualizer?.destroy();
+    activeVirtualizer = null;
+    activeOptions = null;
+    pendingMessageRefresh = false;
+    getMessagesArea()?.classList.remove(VIRTUAL_SCROLL_CONFIG.activeClass);
+    isActive = false;
+    strategy = 'none';
+    longChatPerformance.setGauge('virtualScrollActive', 0);
+}
+
+export function refreshVirtualScroll({ focusIndex = null } = {}) {
+    if (!activeOptions) return false;
+    const messages = state.messages || [];
+    if (activeVirtualizer) {
+        const firstMounted = activeVirtualizer.getElement(activeVirtualizer.range.start);
+        const anchorId = firstMounted?.dataset.messageId;
+        const anchorIndex = anchorId ? state.messageStore?.findIndexById(anchorId) : -1;
+        const initialIndex = Number.isInteger(focusIndex)
+            ? focusIndex
+            : anchorIndex >= 0
+              ? anchorIndex
+              : Math.max(0, messages.length - 1);
+        activeOptions.messages = messages;
+        activeVirtualizer.init(messages, {
+            initialIndex,
+            estimates: activeOptions.getEstimates?.()
+        });
+        return true;
+    }
+
+    activeOptions.beforeRerender?.();
+    activeOptions.renderAll?.();
+    return true;
+}
+
+export function ensureMessageMounted(index) {
+    if (activeVirtualizer) return activeVirtualizer.ensureMounted(index);
+    return getMessagesArea()?.querySelector(`[data-message-index="${index}"]`) || null;
+}
+
+export function getMountedMessageElement(index) {
+    if (activeVirtualizer) return activeVirtualizer.getElement(index);
+    return getMessagesArea()?.querySelector(`[data-message-index="${index}"]`) || null;
+}
+
+export function isVirtualScrollManaged() {
+    return activeOptions !== null;
+}
+
 export function scrollToMessage(index, behavior = 'smooth') {
-    if (!Number.isInteger(index) || index < 0 || index >= state.messages.length) {
-        return false;
+    if (!Number.isInteger(index) || index < 0 || index >= state.messages.length) return false;
+    if (activeVirtualizer) {
+        const scrolled = activeVirtualizer.scrollToIndex(index, behavior, 'center');
+        if (scrolled) {
+            const stats = activeVirtualizer.getStats();
+            lazyImageManager.unloadOutsideRange(
+                Math.max(0, stats.visibleRange.start - 5),
+                Math.min(state.messages.length - 1, stats.visibleRange.end + 5),
+                getMessagesArea()
+            );
+        }
+        return scrolled;
     }
-    const messageEl = elements.messagesArea?.querySelector(`[data-message-index="${index}"]`);
-    if (!messageEl) {
-        return false;
-    }
+    const messageEl = getMountedMessageElement(index);
+    if (!messageEl) return false;
     messageEl.scrollIntoView({ behavior, block: 'center' });
     return true;
 }
 
-/**
- * 滚动到底部（保留以维持现有调用方语义）
- */
 export function scrollToBottom(behavior = 'smooth') {
     return scrollToMessage(state.messages.length - 1, behavior);
 }
 
-/**
- * 调试用统计（保留导出签名，避免破坏潜在调用方）
- */
 export function getVirtualScrollStats() {
+    const virtualStats = activeVirtualizer?.getStats() || {
+        renderedMessages: getMessagesArea()?.querySelectorAll?.('.message').length || 0,
+        visibleRange: { start: 0, end: state.messages.length - 1 },
+        measuredHeights: 0,
+        estimatedTotalHeight: 0
+    };
     return {
         isActive,
-        strategy: 'content-visibility',
-        totalMessages: state.messages.length
+        strategy,
+        totalMessages: state.messages.length,
+        ...virtualStats
     };
 }
 
-// restore.js 通过事件解耦，避免 messages 层直接 import UI 层
-eventBus.on('restore:disable-virtual-scroll', () => disableVirtualScroll());
-eventBus.on('restore:init-virtual-scroll', () => initVirtualScroll());
+eventBus.on(EVENTS.RESTORE_DISABLE_VIRTUAL_SCROLL, () => disableVirtualScroll());
+eventBus.on(EVENTS.RESTORE_INIT_VIRTUAL_SCROLL, (options) => initVirtualScroll(null, options));
+eventBus.on(EVENTS.LONG_CHAT_RENDERING_MODE_CHANGED, () => {
+    if (!activeOptions) return;
+    const options = activeOptions;
+    options.beforeRerender?.();
+    initVirtualScroll(null, options);
+});
+eventBus.on(EVENTS.MESSAGES_CHANGED, ({ action }) => {
+    if (state.isLoading && action !== 'user_sent') {
+        pendingMessageRefresh = true;
+        return;
+    }
+    const focusIndex =
+        action === 'retry' || action === 'removed_after' ? state.messages.length - 1 : null;
+    refreshVirtualScroll({ focusIndex });
+});
+eventBus.on('state:isLoading', ({ newValue }) => {
+    if (newValue || !pendingMessageRefresh) return;
+    pendingMessageRefresh = false;
+    refreshVirtualScroll({ focusIndex: state.messages.length - 1 });
+});

@@ -10,6 +10,7 @@ import { eventBus } from '../core/events.js';
 import { renderCapabilityBadgesText } from '../utils/capability-badges.js';
 import { updateMobileHeaderTitle } from './mobile-overflow-menu.js';
 import { logger } from '../utils/logger.js';
+import { syncProviderState } from '../providers/provider-sync.js';
 
 /**
  * 填充模型下拉列表（从提供商聚合）
@@ -108,14 +109,14 @@ export function initModels() {
 
         // 根据 providerId 查找提供商（而不是模型名）
         const provider = state.providers.find((p) => p.id === providerId);
+        const formatChanged = Boolean(provider && provider.apiFormat !== state.apiFormat);
 
-        if (provider && provider.apiFormat !== state.apiFormat) {
+        if (provider) syncProviderState(provider);
+
+        if (formatChanged) {
             logger.debug(
                 `🔄 模型切换: ${selectedModel} (${provider.name}) -> 自动切换到 ${provider.apiFormat} 格式`
             );
-
-            // 更新 apiFormat (不触发格式切换事件,避免重复刷新模型列表)
-            state.apiFormat = provider.apiFormat;
 
             // 显示/隐藏对应的配置面板：只显示当前格式对应的配置面板
             document.querySelectorAll('.api-config').forEach((panel) => {

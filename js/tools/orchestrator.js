@@ -10,15 +10,16 @@
 
 import { logger } from '../utils/logger.js';
 import { eventBus } from '../core/events.js';
-import { EVENTS } from '../core/events-registry.js';
 import { executeTool } from './executor.js';
 import { snapshotBeforeToolCall } from './undo.js';
 import { createToolCallUI, updateToolCallStatus } from '../ui/tool-display.js';
 import { state } from '../core/state.js';
 import { updateMessageAt } from '../core/state-mutations.js';
 import { requestStateMachine, RequestState } from '../core/request-state-machine.js';
+import { requestTaskRegistry } from '../core/request-task-registry.js';
 import { TOOL_INLINE_IMAGE_MAX, TOOL_INLINE_IMAGE_TOTAL_MAX } from '../utils/constants.js';
 import { validateToolPairings } from '../messages/schema.js';
+import { applyToolResultsToMessages } from '../messages/tool-results.js';
 import { writeToolResultsToBackgroundSession } from '../messages/sync.js';
 import { getCurrentProvider, getCurrentActiveApiKey } from '../api/current.js';
 
@@ -26,12 +27,14 @@ import { getCurrentProvider, getCurrentActiveApiKey } from '../api/current.js';
 // 所有读 .signal/.aborted 必须走 handleToolCallStream 内的局部 ctrl，杜绝 await 让出后被覆盖/清空的 null 竞态
 // （sink.js 非 await 触发 + resend 链路套娃 → 同模块并发两个 handleToolCallStream 确有发生）
 let currentAbortController = null;
+const taskAbortControllers = new Map();
 
 /**
  * 取消正在进行的工具执行
  */
-export function abortToolExecution() {
-    currentAbortController?.abort();
+export function abortToolExecution(task = null) {
+    const controller = task ? taskAbortControllers.get(task.id) : currentAbortController;
+    controller?.abort();
 }
 
 /**
@@ -333,18 +336,39 @@ async function downloadClaudeFile(fileId) {
 export async function executeToolCalls(toolCalls, options = {}) {
     logger.debug(`[Orchestrator] 🔧 并行执行 ${toolCalls.length} 个工具调用`);
     const externalSignal = options.signal || null;
+    const hasScopedRenderer = typeof options.resolveTargetContainer === 'function';
+    const resolveTargetContainer = () => {
+        const target = hasScopedRenderer
+            ? options.resolveTargetContainer()
+            : options.targetContainer || null;
+        return target?.isConnected === false ? null : target;
+    };
+    const useLegacyUiFallback = !hasScopedRenderer && options.targetContainer === undefined;
+    const renderTools = options.renderTools !== false;
+    const updateToolUi = (id, status, data) => {
+        if (!renderTools) return;
+        const scope = resolveTargetContainer();
+        if (scope) {
+            updateToolCallStatus(id, status, data, scope);
+        } else if (useLegacyUiFallback) {
+            updateToolCallStatus(id, status, data);
+        }
+    };
 
-    // 创建撤销快照（在执行工具前）
-    try {
-        snapshotBeforeToolCall(
-            toolCalls.map((tc) => ({
-                id: tc.id,
-                name: tc.name,
-                arguments: tc.arguments
-            }))
-        );
-    } catch (err) {
-        logger.warn('[Orchestrator] 创建撤销快照失败:', err);
+    if (options.captureUndo !== false) {
+        try {
+            snapshotBeforeToolCall(
+                toolCalls.map((tc) => ({
+                    id: tc.id,
+                    name: tc.name,
+                    arguments: tc.arguments
+                }))
+            );
+        } catch (err) {
+            logger.warn('[Orchestrator] 创建撤销快照失败:', err);
+        }
+    } else {
+        logger.debug('[Orchestrator] 后台工具调用不创建前台撤销快照');
     }
 
     // 第一步：为所有工具创建 UI 并发布检测事件
@@ -354,11 +378,15 @@ export async function executeToolCalls(toolCalls, options = {}) {
         logger.debug(`[Orchestrator] 准备执行工具: ${name}`, args);
 
         // 创建工具调用 UI
-        await createToolCallUI({
-            id,
-            name,
-            args
-        });
+        if (renderTools) {
+            const target = resolveTargetContainer();
+            const toolUi = { id, name, args };
+            if (target) {
+                await createToolCallUI(toolUi, target);
+            } else if (useLegacyUiFallback) {
+                await createToolCallUI(toolUi);
+            }
+        }
     }
 
     // 第二步：并行执行所有工具
@@ -372,7 +400,7 @@ export async function executeToolCalls(toolCalls, options = {}) {
                 parseErrorMessage,
                 rawArguments
             });
-            updateToolCallStatus(id, 'failed', {
+            updateToolUi(id, 'failed', {
                 error: `参数 JSON 解析失败: ${parseErrorMessage}`,
                 errorCode: 'arguments_parse_error',
                 toolName: name,
@@ -399,7 +427,13 @@ export async function executeToolCalls(toolCalls, options = {}) {
             // 执行工具
             // 使用工具名称查找执行，id 仅用于跟踪和结果回传；signal 透传让 cancelCurrentRequest
             // 真能打断长跑工具（fetch / MCP / bash），否则 abort 后用户必须等工具自己超时
-            const result = await executeTool(name, args, { signal: externalSignal });
+            const result = await executeTool(name, args, {
+                signal: externalSignal,
+                apiFormat: options.requestProfile?.providerApiFormat,
+                isXmlMode: options.requestProfile?.isXmlMode,
+                sessionId: options.sessionId,
+                turnId: options.turnId
+            });
 
             logger.debug(`[Orchestrator] 工具执行成功: ${name}`, result);
 
@@ -409,7 +443,7 @@ export async function executeToolCalls(toolCalls, options = {}) {
             // 更新 UI 为成功状态（使用 enriched 结果以正确渲染图片）
             try {
                 logger.debug(`[Orchestrator] 准备更新工具UI状态为completed: ${id}`);
-                updateToolCallStatus(id, 'completed', { result: enrichedResult });
+                updateToolUi(id, 'completed', { result: enrichedResult });
                 logger.debug(`[Orchestrator] 工具UI状态更新完成`);
             } catch (uiError) {
                 logger.error(`[Orchestrator] ❌ 更新工具UI失败:`, uiError);
@@ -434,7 +468,7 @@ export async function executeToolCalls(toolCalls, options = {}) {
             });
 
             // 更新 UI 为失败状态
-            updateToolCallStatus(id, 'failed', {
+            updateToolUi(id, 'failed', {
                 error: error.message,
                 errorCode: error.code,
                 toolName: name,
@@ -528,31 +562,11 @@ export async function executeToolCalls(toolCalls, options = {}) {
  * @returns {number} matched - 成功写回的 part 数量
  */
 export function writeToolResultsBackToState(toolResults) {
-    let matched = 0;
-    for (let i = 0; i < state.messages.length; i++) {
-        const msg = state.messages[i];
-        if (msg.role !== 'assistant' || !Array.isArray(msg.parts)) continue;
-        // 跳过不含 tool_call 的 assistant（pause_turn 后落的纯 thinking、纯文本、被编辑过的消息）
-        const hasToolCall = msg.parts.some((p) => p.type === 'tool_call');
-        if (!hasToolCall) continue;
-
-        // immutable：构建新 parts 数组而非 in-place 改 part 字段，统一走 updateMessageAt mutator，
-        // 确保所有写路径经收敛层，MessageStore 引入后可观察化
-        let msgMatched = 0;
-        const newParts = msg.parts.map((part) => {
-            if (part.type !== 'tool_call') return part;
-            // 显式校验 id 非空，避免 find(id==='') 与空 id part 错配
-            if (!part.id) return part;
-            const r = toolResults.find((x) => x.id && x.id === part.id);
-            if (!r) return part;
-            msgMatched++;
-            return { ...part, result: r.result, state: r.isError ? 'error' : 'done' };
-        });
-        if (msgMatched > 0) {
-            updateMessageAt(i, { parts: newParts });
-            matched += msgMatched;
-        }
+    const result = applyToolResultsToMessages(state.messages, toolResults);
+    for (const index of result.changedIndexes) {
+        updateMessageAt(index, { parts: result.messages[index].parts });
     }
+    const { matched } = result;
     if (matched === 0 && toolResults.length > 0) {
         logger.warn(
             `[Orchestrator] writeBack: 未匹配任何 tool_call part（toolResults=${toolResults.length}），重发将携带 pending tool_call`
@@ -561,6 +575,31 @@ export function writeToolResultsBackToState(toolResults) {
         logger.debug(`[Orchestrator] writeBack: matched ${matched}/${toolResults.length} parts`);
     }
     return matched;
+}
+
+function isTaskForeground(task, sessionId) {
+    return (
+        sessionId === state.currentSessionId &&
+        (!task || (requestTaskRegistry.owns(task) && !task.isDetached))
+    );
+}
+
+function setTaskToolPending(task, pending) {
+    if (task && requestTaskRegistry.owns(task)) {
+        task.isToolCallPending = pending;
+        requestTaskRegistry.setPhase(task, pending ? RequestState.TOOL_CALLING : task.phase);
+    }
+    if (isTaskForeground(task, task?.sessionId || state.currentSessionId)) {
+        state.isToolCallPending = pending;
+    }
+}
+
+function finishToolTask(task, phase, detail = null) {
+    setTaskToolPending(task, false);
+    if (!task || !requestTaskRegistry.owns(task)) return;
+    requestTaskRegistry.setPhase(task, phase);
+    requestStateMachine.transitionFor(task, phase, detail ? { error: detail } : {});
+    requestTaskRegistry.finish(task, phase, detail);
 }
 
 /**
@@ -591,19 +630,35 @@ export async function handleToolCallStream(toolCalls, context = {}) {
         logger.debug('[Orchestrator] 保存消息元素引用用于 continuation');
     }
     const sourceSessionId = context.sourceSessionId ?? state.currentSessionId;
+    const task = context.task || requestTaskRegistry.getBySession(sourceSessionId);
+    const resolveTargetContainer = () => {
+        if (!isTaskForeground(task, sourceSessionId)) return null;
+        const messageEl = task?.messageElement || assistantMessageEl;
+        if (!messageEl?.isConnected) return null;
+        return messageEl.classList?.contains('message-content')
+            ? messageEl
+            : messageEl.querySelector?.('.message-content') || null;
+    };
 
     // try 外提升：finally 需访问本次调用持有的 ctrl 做自指清理
     // （局部持有 ctrl 而非读模块变量是修 .signal 读到 null 的关键，模块变量随时可能被并发调用覆盖/置空）
     const ctrl = new AbortController();
     currentAbortController = ctrl;
+    if (task) {
+        taskAbortControllers.set(task.id, ctrl);
+        requestTaskRegistry.setToolAbortController(task, ctrl);
+        setTaskToolPending(task, true);
+    }
 
     try {
         // 入口诊断：执行前扫描历史 tool_call 配对状态，孤儿 part 仅日志不阻断
         // （帮助定位多轮 continuation 累积的 pending/running 残留）
         try {
-            const v = validateToolPairings(state.messages);
-            if (!v.valid) {
-                logger.warn('[Orchestrator] 入口检测到 tool_call 孤儿:', v.orphans);
+            if (isTaskForeground(task, sourceSessionId)) {
+                const v = validateToolPairings(state.messages);
+                if (!v.valid) {
+                    logger.warn('[Orchestrator] 入口检测到 tool_call 孤儿:', v.orphans);
+                }
             }
         } catch (e) {
             logger.warn('[Orchestrator] validateToolPairings 调用失败:', e);
@@ -612,8 +667,14 @@ export async function handleToolCallStream(toolCalls, context = {}) {
         // 1. 执行所有工具调用（透传 signal 让 abortToolExecution 真能打断 fetch/MCP/bash）
         // ctrl 在 try 外提升声明，此处仅消费
         const toolResults = await executeToolCalls(toolCalls, {
-            signal: ctrl.signal
+            signal: ctrl.signal,
+            sessionId: sourceSessionId,
+            turnId: task?.id || null,
+            requestProfile: task?.requestProfile || null,
+            resolveTargetContainer,
+            captureUndo: !!resolveTargetContainer()
         });
+        if (task && requestTaskRegistry.owns(task)) task.pendingToolResults = toolResults;
 
         // 执行完成后检查是否被取消
         if (ctrl.signal.aborted) {
@@ -621,7 +682,7 @@ export async function handleToolCallStream(toolCalls, context = {}) {
             // toolResults 已含各工具的取消 result，必须写回收口为 error，
             // 否则 tool_call parts 残留 pending/running 永久转圈
             try {
-                if (sourceSessionId !== state.currentSessionId) {
+                if (!isTaskForeground(task, sourceSessionId)) {
                     await writeToolResultsToBackgroundSession(sourceSessionId, toolResults);
                 } else {
                     writeToolResultsBackToState(toolResults);
@@ -629,38 +690,32 @@ export async function handleToolCallStream(toolCalls, context = {}) {
             } catch (e) {
                 logger.error('[Orchestrator] 取消后写回工具结果失败:', e);
             }
-            state.isToolCallPending = false;
-            // 状态机可能已被当前会话新请求占用，仅归属本请求会话时才重置
-            if (requestStateMachine.sessionId === sourceSessionId) {
-                requestStateMachine.forceReset({ silent: true });
-            }
-            eventBus.emit('ui:reset-input-buttons');
+            finishToolTask(task, RequestState.CANCELLED, { reason: 'tool-aborted' });
             return;
         }
 
         // 2. 写回 state.messages：把 toolResults 写到对应 tool_call part 的 result/state
         // 跨会话场景：state.messages 已被切换会话替换，writeBack 会找不到对应 part →
         // 改走 IDB 写回原会话，让用户切回时看到完成状态而非永久 pending
-        const isCrossSession = sourceSessionId !== state.currentSessionId;
+        const isCrossSession = !isTaskForeground(task, sourceSessionId);
         if (isCrossSession) {
             logger.warn(
                 `[Orchestrator] 跨会话: ${sourceSessionId} → ${state.currentSessionId}，写回 IDB 而非前台 state`
             );
+            let matched = 0;
             try {
-                await writeToolResultsToBackgroundSession(sourceSessionId, toolResults);
+                matched = await writeToolResultsToBackgroundSession(sourceSessionId, toolResults);
             } catch (e) {
                 logger.error('[Orchestrator] 跨会话写回 IDB 失败:', e);
             }
-            state.isToolCallPending = false;
-            // 状态机可能已被当前会话新请求占用，仅归属本请求会话时才重置
-            if (requestStateMachine.sessionId === sourceSessionId) {
-                requestStateMachine.forceReset({ silent: true });
+            if (matched === 0 && toolResults.length > 0) {
+                finishToolTask(task, RequestState.ERROR, {
+                    message: '工具结果未能写回源会话'
+                });
+                return;
             }
-            eventBus.emit(EVENTS.UI_NOTIFICATION, {
-                message: '会话切换导致回复中断，请重发获取完整回复',
-                type: 'warning'
-            });
-            eventBus.emit('ui:reset-input-buttons');
+            const { resendWithToolResults } = await import('../api/handler.js');
+            await resendWithToolResults(null, task);
             return;
         }
 
@@ -680,9 +735,9 @@ export async function handleToolCallStream(toolCalls, context = {}) {
         //    触发 Claude 'tool_use without tool_result' / OpenAI 'function_call without output' 400
         if (matched === 0 && toolResults.length > 0) {
             logger.error('[Orchestrator] writeBack 未匹配任何 part，跳过 resend 防止 API 校验失败');
-            state.isToolCallPending = false;
-            requestStateMachine.forceReset();
-            eventBus.emit('ui:reset-input-buttons');
+            finishToolTask(task, RequestState.ERROR, {
+                message: '工具结果写回失败'
+            });
             eventBus.emit('ui:notification', {
                 message: '工具结果写回失败，请检查消息是否被编辑',
                 type: 'error'
@@ -694,51 +749,36 @@ export async function handleToolCallStream(toolCalls, context = {}) {
         //    handler 静态 import orchestrator → orchestrator 反向需 handler.resendWithToolResults，
         //    用动态 import 打破 ESM 循环（resendWithToolResults 与 sendToAPI 同模块绑死无法外迁）
         const { resendWithToolResults } = await import('../api/handler.js');
-        await resendWithToolResults(assistantMessageEl);
+        await resendWithToolResults(assistantMessageEl, task);
     } catch (error) {
         logger.error('[Orchestrator] 工具调用流程失败:', error);
 
-        // 将未完成的 tool_call parts 标记为 error，防止下次重发产生孤立 tool_use
-        // 与 writeToolResultsBackToState 对称：遍历所有含 tool_call 的 assistant 全量兜底
-        // （多轮 continuation 场景下旧轮 part 可能也处于 pending/running，需统一收口为 error）
-        // immutable：构建新 parts 走 updateMessageAt，与 writeToolResultsBackToState 同源
-        const messages = state.messages || [];
-        for (let i = 0; i < messages.length; i++) {
-            const msg = messages[i];
-            if (msg.role !== 'assistant' || !Array.isArray(msg.parts)) continue;
-            const hasToolCall = msg.parts.some((p) => p.type === 'tool_call');
-            if (!hasToolCall) continue;
-            let touched = false;
-            const newParts = msg.parts.map((part) => {
-                if (part.type !== 'tool_call') return part;
-                if (part.state === 'done') return part; // 保留已成功写入的 result
-                touched = true;
-                return {
-                    ...part,
-                    state: 'error',
-                    result: { content: error.message, is_error: true }
-                };
-            });
-            if (touched) updateMessageAt(i, { parts: newParts });
+        const errorResults = toolCalls.map((toolCall) => ({
+            id: toolCall.id,
+            name: toolCall.name,
+            result: { content: error.message, is_error: true },
+            isError: true
+        }));
+        if (!isTaskForeground(task, sourceSessionId)) {
+            await writeToolResultsToBackgroundSession(sourceSessionId, errorResults);
+        } else {
+            writeToolResultsBackToState(errorResults);
         }
 
-        // 清理工具调用标志，防止状态泄漏
-        state.isToolCallPending = false;
-
-        // 重置请求状态机，防止永久卡在 TOOL_CALLING 状态
-        requestStateMachine.forceReset();
+        finishToolTask(task, RequestState.ERROR, error);
 
         eventBus.emit('ui:notification', {
             message: `工具调用失败: ${error.message}`,
             type: 'error'
         });
-
-        // 强制重置按钮状态
-        eventBus.emit('ui:reset-input-buttons');
     } finally {
         // 仅清自己写入的那个；并发场景下若已被后到者覆盖，保留对方的指针让 abortToolExecution 仍可工作
         if (currentAbortController && currentAbortController === ctrl) {
             currentAbortController = null;
+        }
+        if (task && taskAbortControllers.get(task.id) === ctrl) {
+            taskAbortControllers.delete(task.id);
+            requestTaskRegistry.setToolAbortController(task, null);
         }
     }
 }
@@ -754,50 +794,27 @@ export async function handleToolCallStream(toolCalls, context = {}) {
  * @param {string|null} [sourceSessionId] - 调用时捕获的会话 ID，跨会话守卫
  * @returns {Promise<void>}
  */
-export async function startPauseTurnContinuation(assistantMessageEl, sourceSessionId = null) {
+export async function startPauseTurnContinuation(
+    assistantMessageEl,
+    sourceSessionId = null,
+    task = null
+) {
     const capturedSessionId = sourceSessionId ?? state.currentSessionId ?? null;
+    const activeTask = task || requestTaskRegistry.getBySession(capturedSessionId);
     logger.debug(`[Orchestrator] 开始 pause_turn continuation (session=${capturedSessionId})`);
-    requestStateMachine.transition(RequestState.TOOL_CALLING);
-    state.isToolCallPending = true;
+    setTaskToolPending(activeTask, true);
+    if (activeTask) {
+        requestStateMachine.transitionFor(activeTask, RequestState.TOOL_CALLING);
+    } else {
+        requestStateMachine.transition(RequestState.TOOL_CALLING);
+    }
 
     try {
         const { resendWithToolResults } = await import('../api/handler.js');
-        // 跨会话守卫：await microtask 后 state.currentSessionId 可能已被 switchToSession 改写
-        // 不一致时不发起重发，避免把 pause_turn 后续上下文写入另一会话破坏 tool_use/tool_result 配对
-        if (capturedSessionId && capturedSessionId !== state.currentSessionId) {
-            logger.warn(
-                `[Orchestrator] pause_turn 跨会话跳过: source=${capturedSessionId} current=${state.currentSessionId}`
-            );
-            state.isToolCallPending = false;
-            // 状态机可能已被当前会话新请求占用，仅归属本请求会话时才重置
-            if (requestStateMachine.sessionId === capturedSessionId) {
-                requestStateMachine.forceReset({ silent: true });
-            }
-            eventBus.emit(EVENTS.UI_NOTIFICATION, {
-                message: '会话切换导致回复中断，请重发获取完整回复',
-                type: 'warning'
-            });
-            return;
-        }
-        // assistantMessageEl 在原会话被 restore.js innerHTML='' 清空后已脱离 DOM
-        if (assistantMessageEl && !assistantMessageEl.isConnected) {
-            logger.warn('[Orchestrator] pause_turn 跳过：assistantMessageEl 已脱离 DOM');
-            state.isToolCallPending = false;
-            // 状态机可能已被当前会话新请求占用，仅归属本请求会话时才重置
-            if (requestStateMachine.sessionId === capturedSessionId) {
-                requestStateMachine.forceReset({ silent: true });
-            }
-            eventBus.emit(EVENTS.UI_NOTIFICATION, {
-                message: '会话切换导致回复中断，请重发获取完整回复',
-                type: 'warning'
-            });
-            return;
-        }
-        await resendWithToolResults(assistantMessageEl);
+        const reusableElement = assistantMessageEl?.isConnected ? assistantMessageEl : null;
+        await resendWithToolResults(reusableElement, activeTask);
     } catch (error) {
         logger.error('[Orchestrator] pause_turn continuation 失败:', error);
-        state.isToolCallPending = false;
-        requestStateMachine.forceReset();
-        eventBus.emit('ui:reset-input-buttons');
+        finishToolTask(activeTask, RequestState.ERROR, error);
     }
 }

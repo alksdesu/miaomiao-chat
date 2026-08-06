@@ -6,7 +6,6 @@
 import { logger } from '../utils/logger.js';
 import { BaseStreamParser } from './base-parser.js';
 
-import { state } from '../core/state.js';
 import { eventBus } from '../core/events.js';
 import { ToolMode } from '../messages/schema.js';
 import {
@@ -333,8 +332,7 @@ export class ClaudeStreamParser extends BaseStreamParser {
             {}
         );
 
-        const assistantMessageEl = state.currentAssistantMessage?.closest('.message');
-        this.sink.triggerPauseTurnResend(assistantMessageEl);
+        this.sink.triggerPauseTurnResend(null);
 
         return true;
     }

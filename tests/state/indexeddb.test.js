@@ -47,6 +47,10 @@ describe('indexeddb', () => {
             expect(STORES.MESSAGES).toBe('messages');
             expect(STORES.SEARCH_INDEXES).toBe('sessionSearchIndexes');
             expect(STORES.THEMES).toBe('themes');
+            expect(STORES.MESSAGE_PAGES).toBe('messagePages');
+            expect(STORES.MESSAGE_MANIFESTS).toBe('messageManifests');
+            expect(STORES.MEDIA_BLOBS).toBe('mediaBlobs');
+            expect(STORES.MEDIA_REFS).toBe('mediaRefs');
         });
     });
 

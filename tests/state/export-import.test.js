@@ -39,7 +39,8 @@ vi.mock('../../js/state/config.js', () => ({
 }));
 
 vi.mock('../../js/state/sessions.js', () => ({
-    loadSessions: vi.fn(() => Promise.resolve())
+    loadSessions: vi.fn(() => Promise.resolve()),
+    reloadCurrentSessionMessages: vi.fn(() => Promise.resolve())
 }));
 
 vi.mock('../../js/ui/notifications.js', () => ({
@@ -55,7 +56,8 @@ vi.mock('../../js/api/format-converter.js', () => ({
         const clean = { ...msg };
         delete clean._private;
         return clean;
-    })
+    }),
+    ensureIdMap: vi.fn(() => false)
 }));
 
 vi.mock('../../js/utils/file-helpers.js', () => ({
@@ -67,35 +69,17 @@ vi.mock('../../js/utils/file-helpers.js', () => ({
     })
 }));
 
-vi.mock('../../js/messages/schema.js', () => ({
-    SCHEMA_VERSION: 2,
-    isSchemaFormatParts: vi.fn((msg) => !!msg?.parts),
-    getTextContent: vi.fn((msg) => {
-        if (msg?.parts) {
-            const textPart = msg.parts.find((p) => p.type === 'text');
-            return textPart?.text || '';
-        }
-        return msg?.content || '';
-    }),
-    getThinkingContent: vi.fn((msg) => {
-        if (msg?.parts) {
-            const tp = msg.parts.find((p) => p.type === 'thinking');
-            return tp?.text || '';
-        }
-        return msg?.thinkingContent || '';
-    })
-}));
-
-vi.mock('../../js/messages/migration.js', () => ({
-    migrateSession: vi.fn((messages) => ({
-        messages: messages.map((m) => ({ ...m, _schemaVersion: 2 })),
-        errors: [],
-        toolMsgCount: 0
-    }))
-}));
+vi.mock('../../js/messages/migration.js', async (importOriginal) => {
+    const actual = await importOriginal();
+    return { ...actual, migrateSession: vi.fn(actual.migrateSession) };
+});
 
 vi.mock('../../js/utils/logger.js', () => ({
     logger: { warn: vi.fn(), debug: vi.fn(), error: vi.fn(), info: vi.fn() }
+}));
+
+vi.mock('../../js/state/media-blob-store.js', () => ({
+    resolveMessagesMediaForApi: vi.fn(async (messages) => messages)
 }));
 
 import {
@@ -130,8 +114,8 @@ describe('export-import', () => {
             const session = {
                 name: 'Test Chat',
                 messages: [
-                    { role: 'user', content: 'Hello' },
-                    { role: 'assistant', content: 'Hi there' }
+                    { role: 'user', parts: [{ type: 'text', text: 'Hello' }] },
+                    { role: 'assistant', parts: [{ type: 'text', text: 'Hi there' }] }
                 ]
             };
             const md = sessionToMarkdown(session);
@@ -144,8 +128,8 @@ describe('export-import', () => {
             const session = {
                 name: 'Chat',
                 messages: [
-                    { role: 'system', content: 'You are helpful' },
-                    { role: 'user', content: 'Hi' }
+                    { role: 'system', parts: [{ type: 'text', text: 'You are helpful' }] },
+                    { role: 'user', parts: [{ type: 'text', text: 'Hi' }] }
                 ]
             };
             const md = sessionToMarkdown(session);
@@ -191,7 +175,7 @@ describe('export-import', () => {
 
         it('无名称使用默认', () => {
             const session = {
-                messages: [{ role: 'user', content: 'Hello' }]
+                messages: [{ role: 'user', parts: [{ type: 'text', text: 'Hello' }] }]
             };
             const md = sessionToMarkdown(session);
             expect(md).toContain('Untitled Session');
@@ -200,7 +184,7 @@ describe('export-import', () => {
         it('无内容显示占位', () => {
             const session = {
                 name: 'Empty',
-                messages: [{ role: 'assistant' }]
+                messages: [{ role: 'assistant', parts: [] }]
             };
             const md = sessionToMarkdown(session);
             expect(md).toContain('[无文本内容]');

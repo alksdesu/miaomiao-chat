@@ -6,6 +6,7 @@
 import { safeMarkedParse } from '../utils/markdown.js';
 import { state } from '../core/state.js';
 import { getThinkingContent } from './schema.js';
+import { updateMessageUiState } from './message-ui-state.js';
 
 // 思维链块分隔符
 const THINKING_BLOCK_SEPARATOR = '\n\n---\n\n';
@@ -41,13 +42,10 @@ function resolveThinkingFromState(block) {
     const messageEl = block.closest('.message');
     if (!messageEl) return null;
 
-    let msg = null;
-    const idx = parseInt(messageEl.dataset.messageIndex, 10);
-    if (Number.isInteger(idx) && state.messages[idx]) {
-        msg = state.messages[idx];
-    }
-    if (!msg && messageEl.dataset.messageId) {
-        msg = state.messages.find((m) => m?.id === messageEl.dataset.messageId) || null;
+    let msg = state.messageStore.findById(messageEl.dataset.messageId) || null;
+    if (!msg) {
+        const idx = parseInt(messageEl.dataset.messageIndex, 10);
+        if (Number.isInteger(idx) && state.messages[idx]) msg = state.messages[idx];
     }
     if (!msg) return null;
 
@@ -258,6 +256,13 @@ export function enhanceThinkingBlocks(container, enhanceCodeBlocksFn) {
             const icon = header.querySelector('.thinking-toggle-icon');
             if (icon) {
                 icon.textContent = isCollapsed ? '▶' : '▼';
+            }
+
+            const messageEl = block.closest('.message[data-message-id]');
+            if (messageEl) {
+                updateMessageUiState(messageEl.dataset.messageId, {
+                    thinkingExpanded: captureExpandedThinkingState(messageEl)
+                });
             }
         };
 

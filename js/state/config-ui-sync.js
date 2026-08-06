@@ -216,6 +216,11 @@ export function syncUIWithState() {
     const fastImageCompression = document.getElementById('fast-image-compression');
     if (fastImageCompression) fastImageCompression.checked = state.fastImageCompression || false;
 
+    const longChatRenderingMode = document.getElementById('long-chat-rendering-mode');
+    if (longChatRenderingMode) {
+        longChatRenderingMode.value = state.longChatRenderingMode || 'auto';
+    }
+
     // Code Execution
     const codeExecutionEnabled = document.getElementById('code-execution-enabled');
     if (codeExecutionEnabled) codeExecutionEnabled.checked = state.codeExecutionEnabled || false;

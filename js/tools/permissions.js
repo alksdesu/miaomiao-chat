@@ -36,12 +36,30 @@ import { TOOL_CONFIRM_DIALOG_TIMEOUT } from '../utils/constants.js';
 // Claude computer-use 的 3 件原生工具：bashConfig.requireConfirmation 仅对它们生效
 const NATIVE_TOOL_IDS = new Set(['computer', 'bash', 'str_replace_based_edit_tool']);
 
-// 本会话内用户已勾选"全部允许"的工具集合，整会话内免询问
-const sessionGrantedTools = new Set();
+const sessionGrantedTools = new Map();
+const turnApprovalCaches = new Map();
+let legacyTurnId = null;
 
-// 同 turn 同 toolName+args 哈希只确认一次；拒绝结果同样缓存，避免一轮内反复弹窗逼降意志
-const turnApprovalCache = new Map();
-let currentTurnId = null;
+function getSessionKey(sessionId) {
+    return sessionId || '__global__';
+}
+
+function getSessionGrants(sessionId) {
+    const key = getSessionKey(sessionId);
+    if (!sessionGrantedTools.has(key)) sessionGrantedTools.set(key, new Set());
+    return sessionGrantedTools.get(key);
+}
+
+function getTurnCache(sessionId, turnId) {
+    const key = `${getSessionKey(sessionId)}:${turnId || legacyTurnId || '__turn__'}`;
+    if (!turnApprovalCaches.has(key)) {
+        if (turnApprovalCaches.size >= 64) {
+            turnApprovalCaches.delete(turnApprovalCaches.keys().next().value);
+        }
+        turnApprovalCaches.set(key, new Map());
+    }
+    return turnApprovalCaches.get(key);
+}
 
 // 必须对完整序列化串哈希：截断会让不同长参数共享同一批准结果，确认 gate 失效
 function hashArgs(args) {
@@ -67,9 +85,9 @@ function hashArgs(args) {
  * @param {string|number} turnId - 本轮请求的唯一标识
  */
 export function resetTurnApprovalCache(turnId) {
-    if (turnId !== currentTurnId) {
-        turnApprovalCache.clear();
-        currentTurnId = turnId;
+    if (turnId !== legacyTurnId) {
+        turnApprovalCaches.clear();
+        legacyTurnId = turnId;
     }
 }
 
@@ -77,10 +95,12 @@ export function resetTurnApprovalCache(turnId) {
  * 切换会话时调用，清空"本次会话全部允许"集合 + turn 缓存
  * 避免授权跨会话残留，符合"会话级"语义
  */
-export function resetSessionGrants() {
-    sessionGrantedTools.clear();
-    turnApprovalCache.clear();
-    currentTurnId = null;
+export function resetSessionGrants(sessionId = state.currentSessionId) {
+    const sessionKey = getSessionKey(sessionId);
+    sessionGrantedTools.delete(sessionKey);
+    for (const key of turnApprovalCaches.keys()) {
+        if (key.startsWith(`${sessionKey}:`)) turnApprovalCaches.delete(key);
+    }
 }
 
 /**
@@ -106,8 +126,11 @@ export function resetSessionGrants() {
  * @returns {Promise<boolean>} true = 批准执行，false = 用户拒绝/超时/abort
  */
 export async function confirmToolExecutionIfRequired(toolId, toolName, args, options = {}) {
+    const sessionId = options.sessionId ?? state.currentSessionId;
+    const grants = getSessionGrants(sessionId);
+    const approvalCache = getTurnCache(sessionId, options.turnId);
     // 本会话已授权 → 直接放行（不进缓存判定，省一次 hash 计算）
-    if (sessionGrantedTools.has(toolName) || sessionGrantedTools.has(toolId)) return true;
+    if (grants.has(toolName) || grants.has(toolId)) return true;
 
     const isNative = NATIVE_TOOL_IDS.has(toolId) || NATIVE_TOOL_IDS.has(toolName);
     const needConfirm =
@@ -117,7 +140,7 @@ export async function confirmToolExecutionIfRequired(toolId, toolName, args, opt
 
     // 同 turn 同参数复用历史决定（含拒绝）
     const cacheKey = toolName + ':' + hashArgs(args);
-    if (turnApprovalCache.has(cacheKey)) return turnApprovalCache.get(cacheKey);
+    if (approvalCache.has(cacheKey)) return approvalCache.get(cacheKey);
 
     let argsSummary = '';
     try {
@@ -141,16 +164,18 @@ export async function confirmToolExecutionIfRequired(toolId, toolName, args, opt
     );
 
     // 兼容 dialog 两种返回形态：boolean（未传 option）/ {confirmed, persistForSession}（传了 option）
-    const confirmed = typeof result === 'object' && result !== null ? !!result.confirmed : !!result;
+    const confirmed =
+        !options.signal?.aborted &&
+        (typeof result === 'object' && result !== null ? !!result.confirmed : !!result);
     const persistForSession =
         typeof result === 'object' && result !== null ? !!result.persistForSession : false;
 
     if (confirmed && persistForSession) {
-        sessionGrantedTools.add(toolName);
+        grants.add(toolName);
         logger.debug(`[Permissions] 本会话已授权工具: ${toolName}`);
     }
 
-    turnApprovalCache.set(cacheKey, confirmed);
+    approvalCache.set(cacheKey, confirmed);
     return confirmed;
 }
 

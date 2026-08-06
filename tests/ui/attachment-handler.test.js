@@ -7,7 +7,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../js/core/state.js', () => ({
     state: {
         uploadedImages: [],
-        pdfMode: 'raw'
+        pdfMode: 'raw',
+        currentSessionId: 'session-a',
+        isSwitchingSession: false
     },
     elements: {
         imagePreview: null,
@@ -52,13 +54,20 @@ vi.mock('../../js/utils/logger.js', () => ({
 }));
 
 import { state } from '../../js/core/state.js';
-import { getFileCategory, fileToBase64, fileToText } from '../../js/ui/attachment-handler.js';
+import {
+    getFileCategory,
+    fileToBase64,
+    fileToText,
+    handlePaste
+} from '../../js/ui/attachment-handler.js';
 
 describe('attachment-handler', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         state.uploadedImages = [];
         state.pdfMode = 'raw';
+        state.currentSessionId = 'session-a';
+        state.isSwitchingSession = false;
     });
 
     // ========== getFileCategory ==========
@@ -126,5 +135,22 @@ describe('attachment-handler', () => {
             const result = await fileToText(file);
             expect(result).toBe('你好世界');
         });
+    });
+
+    it('图片读取期间切换会话不会把附件写入新会话', async () => {
+        const file = new File(['image'], 'test.png', { type: 'image/png' });
+        const event = {
+            clipboardData: {
+                items: [{ type: 'image/png', getAsFile: () => file }]
+            },
+            preventDefault: vi.fn()
+        };
+
+        const pending = handlePaste(event);
+        state.currentSessionId = 'session-b';
+        state.uploadedImages = [];
+        await pending;
+
+        expect(state.uploadedImages).toEqual([]);
     });
 });

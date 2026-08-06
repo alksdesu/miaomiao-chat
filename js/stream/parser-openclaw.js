@@ -56,10 +56,13 @@ export async function handleOpenClawStream(sessionId, sink = null, signal = null
         let abortListener = null;
         let settled = false;
         let idleTimerId = null;
+        const configuredIdleTimeout = sink?.task?.requestProfile?.state?.streamIdleTimeout;
         const idleTimeoutMs =
-            typeof state.streamIdleTimeout === 'number' && state.streamIdleTimeout > 0
-                ? state.streamIdleTimeout
-                : STREAM_IDLE_TIMEOUT_DEFAULT;
+            typeof configuredIdleTimeout === 'number' && configuredIdleTimeout > 0
+                ? configuredIdleTimeout
+                : typeof state.streamIdleTimeout === 'number' && state.streamIdleTimeout > 0
+                  ? state.streamIdleTimeout
+                  : STREAM_IDLE_TIMEOUT_DEFAULT;
         const cleanup = () => {
             removeAllListeners();
             if (idleTimerId) {
@@ -84,7 +87,10 @@ export async function handleOpenClawStream(sessionId, sink = null, signal = null
             settle(() => {
                 logger.error(`[OpenClaw Parser] 流错误 (${errorCode}):`, errorMessage);
 
-                if (state.isToolCallPending) state.isToolCallPending = false;
+                if (sink?.task) sink.task.isToolCallPending = false;
+                if (!sink.isBackground() && state.isToolCallPending) {
+                    state.isToolCallPending = false;
+                }
                 stats.finalize();
 
                 const remaining = thinkTagParser.flush();
@@ -137,6 +143,7 @@ export async function handleOpenClawStream(sessionId, sink = null, signal = null
 
         // chat.delta - 流式文本/思维链
         addListener('openclaw:chat-delta', (payload) => {
+            if (payload?.sessionKey && payload.sessionKey !== sessionId) return;
             resetIdleTimer();
             if (!payload) return;
 
@@ -163,6 +170,7 @@ export async function handleOpenClawStream(sessionId, sink = null, signal = null
 
         // agent.event - 工具调用、屏幕截图等
         addListener('openclaw:agent-event', (payload) => {
+            if (payload?.sessionKey && payload.sessionKey !== sessionId) return;
             resetIdleTimer();
             if (!payload) return;
 
@@ -204,7 +212,8 @@ export async function handleOpenClawStream(sessionId, sink = null, signal = null
         });
 
         // chat.done - 完成
-        addListener('openclaw:chat-done', () => {
+        addListener('openclaw:chat-done', (payload) => {
+            if (payload?.sessionKey && payload.sessionKey !== sessionId) return;
             settle(() => {
                 // 处理 <think> 标签剩余内容
                 const remaining = thinkTagParser.flush();
@@ -310,7 +319,8 @@ export async function handleOpenClawStream(sessionId, sink = null, signal = null
  * 完成 OpenClaw 流处理
  */
 function finalizeOpenClawStream(textContent, thinkingContent, sessionId, stats, sink) {
-    if (state.isToolCallPending) {
+    if (sink?.task) sink.task.isToolCallPending = false;
+    if (!sink.isBackground() && state.isToolCallPending) {
         state.isToolCallPending = false;
     }
 

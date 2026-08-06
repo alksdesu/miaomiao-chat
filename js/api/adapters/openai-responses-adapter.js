@@ -40,7 +40,7 @@ function partsToAPIMessages(msgs, opts = {}) {
     const injectReasoning = opts.injectReasoning !== false; // 默认开启
 
     for (const msg of msgs) {
-        if (msg.error || msg.isError) continue;
+        if (msg.error) continue;
 
         const role = msg.role;
 
@@ -179,10 +179,10 @@ function partsToAPIMessages(msgs, opts = {}) {
 
 // ========== parseResponse ==========
 
-function parseResponse(data) {
+function parseResponse(data, options = {}) {
     // 响应结构: { output: [...], output_text: "..." }
     if (data.error) return null;
-    const xmlMode = state.xmlToolCallingEnabled;
+    const xmlMode = options.isXmlMode ?? state.xmlToolCallingEnabled;
 
     // 1. 优先检测工具调用（function_call 类型）
     if (data.output && Array.isArray(data.output)) {

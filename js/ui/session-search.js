@@ -14,9 +14,11 @@ import {
 } from '../state/storage.js';
 import {
     buildSessionSearchIndex,
+    buildSessionSearchIndexAsync,
     isSessionSearchIndexUsable
 } from '../state/session-search-index.js';
 import { logger } from '../utils/logger.js';
+import { hasLazyMessages } from '../state/session-message-repository.js';
 
 const SEARCH_DEBOUNCE_DELAY = 300;
 const SEARCH_REFRESH_DELAY = 120;
@@ -451,7 +453,12 @@ async function buildAndPersistSessionSearchIndex(session) {
     let messages = [];
 
     if (session.id === state.currentSessionId) {
-        messages = state.messages;
+        if (hasLazyMessages()) {
+            const storedMessages = await loadSessionMessages(session.id);
+            messages = storedMessages?.messages || [];
+        } else {
+            messages = state.messages;
+        }
     } else {
         const storedMessages = await loadSessionMessages(session.id);
         if (storedMessages?.messages) {
@@ -463,7 +470,7 @@ async function buildAndPersistSessionSearchIndex(session) {
         }
     }
 
-    const searchIndex = buildSessionSearchIndex(messages);
+    const searchIndex = await buildSessionSearchIndexAsync(messages);
     searchIndexStore.set(session.id, {
         sessionId: session.id,
         ...searchIndex
@@ -491,6 +498,10 @@ function syncCurrentSessionSearchIndex() {
     const currentSession = state.sessions.find((session) => session.id === state.currentSessionId);
     if (!currentSession) {
         return null;
+    }
+
+    if (hasLazyMessages()) {
+        return searchIndexStore.get(state.currentSessionId) || null;
     }
 
     const searchIndex = buildSessionSearchIndex(state.messages);

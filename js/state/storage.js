@@ -23,7 +23,9 @@ export {
     deleteFromStore,
     loadAllFromStore,
     hasMessagesStore,
-    hasSearchIndexStore
+    hasSearchIndexStore,
+    hasMessagePageStore,
+    hasMediaBlobStore
 } from './indexeddb.js';
 
 // re-export 偏好设置 API
@@ -37,14 +39,61 @@ import {
     getDB,
     hasMessagesStore,
     hasSearchIndexStore,
+    hasMessagePageStore,
+    hasMediaBlobStore,
     saveToStore,
     loadFromStore,
     safeLocalStorageGet,
     safeLocalStorageSet
 } from './indexeddb.js';
 import { logger } from '../utils/logger.js';
+import { normalizeSessionRecord } from '../messages/compat/gateway.js';
+import { CompatibilityStatus } from '../messages/compat/result.js';
+import {
+    deleteMessagePages,
+    loadAllPagedSessionMessages,
+    putMessagePages
+} from './message-page-repository.js';
+import {
+    deleteSessionMediaReferences,
+    externalizeMessagesMedia,
+    putSessionMediaReferences
+} from './media-blob-store.js';
+
+export {
+    loadSessionMessageRange,
+    migrateMessagesToPages,
+    migrateSessionMessagesToPages,
+    loadMessageManifest,
+    loadMessagePage
+} from './message-page-repository.js';
 
 const STORE_NAME = 'sessions';
+
+function normalizeStoredMessages(sessionId, data, source) {
+    const result = normalizeSessionRecord(
+        {
+            sessionId,
+            messages: Array.isArray(data?.messages) ? data.messages : [],
+            geminiContents: data?.geminiContents || [],
+            claudeContents: data?.claudeContents || [],
+            messageSchemaVersion: data?.messageSchemaVersion ?? data?.manifest?.messageSchemaVersion
+        },
+        { source }
+    );
+    if (result.status === CompatibilityStatus.FAILED) {
+        throw new Error(`会话 ${sessionId} 消息格式无法恢复`);
+    }
+    return result;
+}
+
+function scheduleCompatibilityWriteBack(sessionId, messages) {
+    setTimeout(() => {
+        saveSessionMessages(sessionId, { messages }).catch((error) => {
+            logger.warn(`[Storage] 会话 ${sessionId} 兼容结果写回失败:`, error);
+        });
+    }, 0);
+}
 
 /**
  * 保存单个会话到 IndexedDB
@@ -169,6 +218,10 @@ export async function deleteSessionFromDB(sessionId) {
             const storeNames = [STORE_NAME];
             if (hasMessagesStore()) storeNames.push(STORES.MESSAGES);
             if (hasSearchIndexStore()) storeNames.push(STORES.SEARCH_INDEXES);
+            if (hasMessagePageStore()) {
+                storeNames.push(STORES.MESSAGE_PAGES, STORES.MESSAGE_MANIFESTS);
+            }
+            if (hasMediaBlobStore()) storeNames.push(STORES.MEDIA_REFS);
 
             const transaction = getDB().transaction(storeNames, 'readwrite');
             transaction.objectStore(STORE_NAME).delete(sessionId);
@@ -177,6 +230,8 @@ export async function deleteSessionFromDB(sessionId) {
             }
             if (hasSearchIndexStore())
                 transaction.objectStore(STORES.SEARCH_INDEXES).delete(sessionId);
+            if (hasMessagePageStore()) deleteMessagePages(transaction, sessionId);
+            if (hasMediaBlobStore()) deleteSessionMediaReferences(transaction, sessionId);
 
             transaction.oncomplete = () => resolve();
             transaction.onerror = () => {
@@ -193,7 +248,7 @@ export async function deleteSessionFromDB(sessionId) {
  * 保存会话消息到独立的 messages store
  */
 export async function saveSessionMessages(sessionId, data) {
-    return withDBLock(`webchat-msg-${sessionId}`, async () => {
+    return withDBLock(`webchat-session-${sessionId}`, async () => {
         if (!getDB()) {
             try {
                 await initDB();
@@ -202,21 +257,36 @@ export async function saveSessionMessages(sessionId, data) {
             }
             if (!getDB()) throw new Error('数据库未初始化且重连失败');
         }
+        const compatibility = normalizeStoredMessages(sessionId, data, 'session-save');
+        const sourceMessages = compatibility.messages;
+        const persisted = await externalizeMessagesMedia(sourceMessages);
+        const messages = persisted.messages;
         return new Promise((resolve, reject) => {
-            const messages = Array.isArray(data?.messages) ? data.messages : [];
             const searchIndex = createSessionSearchIndexRecord(
                 sessionId,
                 messages,
                 data?.searchIndex || null
             );
             const storeNames = [STORES.MESSAGES];
+            if (hasMessagePageStore()) {
+                storeNames.push(STORES.MESSAGE_PAGES, STORES.MESSAGE_MANIFESTS);
+            }
             if (hasSearchIndexStore()) {
                 storeNames.push(STORES.SEARCH_INDEXES);
             }
+            if (hasMediaBlobStore()) storeNames.push(STORES.MEDIA_REFS);
 
             const transaction = getDB().transaction(storeNames, 'readwrite');
             const messagesStore = transaction.objectStore(STORES.MESSAGES);
-            messagesStore.put({ sessionId, messages });
+            messagesStore.put({
+                sessionId,
+                messages,
+                messageSchemaVersion: compatibility.targetVersion
+            });
+            if (hasMessagePageStore()) putMessagePages(transaction, sessionId, messages);
+            if (hasMediaBlobStore()) {
+                putSessionMediaReferences(transaction, sessionId, persisted.mediaIds);
+            }
 
             if (hasSearchIndexStore()) {
                 transaction.objectStore(STORES.SEARCH_INDEXES).put(searchIndex);
@@ -285,8 +355,16 @@ export async function saveSessionAtomic(sessionMeta, messagesData, opts = {}) {
             if (!getDB()) throw new Error('数据库未初始化且重连失败');
         }
 
+        const compatibility = normalizeStoredMessages(
+            sessionMeta.id,
+            messagesData,
+            'session-atomic-save'
+        );
+        const sourceMessages = compatibility.messages;
+        const persisted = await externalizeMessagesMedia(sourceMessages);
+        const messages = persisted.messages;
+
         return new Promise((resolve, reject) => {
-            const messages = Array.isArray(messagesData?.messages) ? messagesData.messages : [];
             const searchIndex = skipSearchIndex
                 ? null
                 : createSessionSearchIndexRecord(
@@ -296,9 +374,13 @@ export async function saveSessionAtomic(sessionMeta, messagesData, opts = {}) {
                   );
             const useSearchStore = !skipSearchIndex && hasSearchIndexStore();
             const storeNames = [STORE_NAME, STORES.MESSAGES];
+            if (hasMessagePageStore()) {
+                storeNames.push(STORES.MESSAGE_PAGES, STORES.MESSAGE_MANIFESTS);
+            }
             if (useSearchStore) {
                 storeNames.push(STORES.SEARCH_INDEXES);
             }
+            if (hasMediaBlobStore()) storeNames.push(STORES.MEDIA_REFS);
 
             // 同事务内 get → compare → put：让 IDB 自身的 readwrite 隔离保证 read-modify-write
             // 原子性，跨 tab 抢占场景下另一 tab 的 commit 不会插入到我们的 get 与 put 之间
@@ -312,7 +394,19 @@ export async function saveSessionAtomic(sessionMeta, messagesData, opts = {}) {
                 : null;
 
             const proceedWithWrite = () => {
-                messagesStore.put({ sessionId: sessionMeta.id, messages });
+                messagesStore.put({
+                    sessionId: sessionMeta.id,
+                    messages,
+                    messageSchemaVersion: compatibility.targetVersion
+                });
+                if (hasMessagePageStore()) {
+                    putMessagePages(transaction, sessionMeta.id, messages, {
+                        updatedAt: sessionMeta.updatedAt
+                    });
+                }
+                if (hasMediaBlobStore()) {
+                    putSessionMediaReferences(transaction, sessionMeta.id, persisted.mediaIds);
+                }
                 sessionStore.put(sessionMeta);
                 if (searchStore) searchStore.put(searchIndex);
             };
@@ -384,13 +478,40 @@ export async function loadSessionMessages(sessionId) {
         }
         if (!getDB()) throw new Error('数据库未初始化且重连失败');
     }
-    return new Promise((resolve, reject) => {
+    if (hasMessagePageStore()) {
+        const paged = await loadAllPagedSessionMessages(sessionId);
+        if (paged) {
+            const compatibility = normalizeStoredMessages(
+                sessionId,
+                {
+                    messages: paged.messages,
+                    messageSchemaVersion: paged.manifest.messageSchemaVersion
+                },
+                'message-page-read'
+            );
+            if (compatibility.writeBackRequired) {
+                scheduleCompatibilityWriteBack(sessionId, compatibility.messages);
+            }
+            return {
+                messages: compatibility.messages,
+                manifest: paged.manifest,
+                compatibility
+            };
+        }
+    }
+    const record = await new Promise((resolve, reject) => {
         const transaction = getDB().transaction([STORES.MESSAGES], 'readonly');
         const store = transaction.objectStore(STORES.MESSAGES);
         const request = store.get(sessionId);
         request.onsuccess = () => resolve(request.result || null);
         request.onerror = () => reject(request.error);
     });
+    if (!record) return null;
+    const compatibility = normalizeStoredMessages(sessionId, record, 'message-record-read');
+    if (compatibility.writeBackRequired || hasMessagePageStore()) {
+        scheduleCompatibilityWriteBack(sessionId, compatibility.messages);
+    }
+    return { ...record, messages: compatibility.messages, compatibility };
 }
 
 /**
@@ -473,11 +594,19 @@ export async function deleteSessionMessages(sessionId) {
         if (!getDB()) throw new Error('数据库未初始化且重连失败');
     }
     return new Promise((resolve, reject) => {
-        const transaction = getDB().transaction([STORES.MESSAGES], 'readwrite');
+        const stores = [STORES.MESSAGES];
+        if (hasMessagePageStore()) {
+            stores.push(STORES.MESSAGE_PAGES, STORES.MESSAGE_MANIFESTS);
+        }
+        if (hasMediaBlobStore()) stores.push(STORES.MEDIA_REFS);
+        const transaction = getDB().transaction(stores, 'readwrite');
         const store = transaction.objectStore(STORES.MESSAGES);
         const request = store.delete(sessionId);
-        request.onsuccess = () => resolve();
+        if (hasMessagePageStore()) deleteMessagePages(transaction, sessionId);
+        if (hasMediaBlobStore()) deleteSessionMediaReferences(transaction, sessionId);
+        transaction.oncomplete = () => resolve();
         request.onerror = () => reject(request.error);
+        transaction.onerror = () => reject(transaction.error);
     });
 }
 
@@ -610,9 +739,15 @@ function stripLargeDataUrls(value) {
 export function saveEmergencySessionSnapshot(sessionMeta, messages) {
     if (!sessionMeta?.id) return false;
     try {
-        const strippedMessages = stripLargeDataUrls(Array.isArray(messages) ? messages : []);
+        const compatibility = normalizeStoredMessages(
+            sessionMeta.id,
+            { messages },
+            'emergency-save'
+        );
+        const strippedMessages = stripLargeDataUrls(compatibility.messages);
         const payload = {
             version: 1,
+            messageSchemaVersion: compatibility.targetVersion,
             savedAt: Date.now(),
             session: {
                 ...stripLargeDataUrls({ ...sessionMeta }),
@@ -635,7 +770,7 @@ export function saveEmergencySessionSnapshot(sessionMeta, messages) {
 }
 
 /**
- * 读取会话应急槽（数据损坏时清槽返回 null）
+ * 读取会话应急槽（数据损坏时保留原始槽并返回 null）
  * @returns {Object|null} { savedAt, session, messages, truncated? }
  */
 export function loadEmergencySessionSnapshot() {
@@ -644,13 +779,20 @@ export function loadEmergencySessionSnapshot() {
     try {
         const snap = JSON.parse(raw);
         if (!snap?.session?.id || !Array.isArray(snap.messages)) {
-            clearEmergencySessionSnapshot();
+            logger.warn('[Storage] 会话应急槽结构损坏，保留原始数据等待人工恢复');
             return null;
         }
-        return snap;
+        const compatibility = normalizeStoredMessages(
+            snap.session.id,
+            {
+                messages: snap.messages,
+                messageSchemaVersion: snap.messageSchemaVersion
+            },
+            'emergency-read'
+        );
+        return { ...snap, messages: compatibility.messages, compatibility };
     } catch (e) {
-        logger.warn('[Storage] 会话应急槽数据损坏，已丢弃:', e);
-        clearEmergencySessionSnapshot();
+        logger.warn('[Storage] 会话应急槽数据损坏，已保留原始数据:', e);
         return null;
     }
 }

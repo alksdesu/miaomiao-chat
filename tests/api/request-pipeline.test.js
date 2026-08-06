@@ -35,7 +35,10 @@ vi.mock('../../js/utils/message-filter.js', () => ({
 }));
 
 vi.mock('../../js/providers/manager.js', () => ({
-    getCurrentModelCapabilities: vi.fn(() => null)
+    getCurrentModelCapabilities: vi.fn(() => null),
+    getCurrentProvider: vi.fn(() => ({ id: 'provider-1', name: 'Provider', apiFormat: 'stub' })),
+    getModelDisplayName: vi.fn((model) => model),
+    getActiveApiKey: vi.fn(() => 'key')
 }));
 
 vi.mock('../../js/utils/prefill.js', () => ({
@@ -298,7 +301,10 @@ describe('adapter 请求能力声明', () => {
             'custom-image-model',
             true,
             expect.any(Object),
-            { state }
+            expect.objectContaining({
+                state: expect.objectContaining({ streamEnabled: true }),
+                requestProfile: expect.any(Object)
+            })
         );
     });
 });
@@ -373,7 +379,8 @@ describe('filterPosition 分支', () => {
             model: 'm'
         });
         expect(responsesAdapter.partsToAPIMessages.mock.calls[0][1]).toEqual({
-            injectReasoning: true
+            injectReasoning: true,
+            isXmlMode: false
         });
 
         const otherAdapter = createStubAdapter({ apiFormat: 'openai' });
@@ -383,16 +390,25 @@ describe('filterPosition 分支', () => {
             model: 'm'
         });
         expect(otherAdapter.partsToAPIMessages.mock.calls[0][1]).toEqual({
-            injectReasoning: false
+            injectReasoning: false,
+            isXmlMode: false
         });
     });
 
-    it('过滤掉 isError / error 消息', async () => {
+    it('过滤掉标准 error 消息', async () => {
         const adapter = createStubAdapter();
         state.messages = [
-            { role: 'user', content: 'ok' },
-            { role: 'assistant', content: 'err', isError: true },
-            { role: 'assistant', content: 'err2', error: { type: 'api' } }
+            { role: 'user', parts: [{ type: 'text', text: 'ok' }], error: null },
+            {
+                role: 'assistant',
+                parts: [{ type: 'text', text: 'err' }],
+                error: { type: 'api' }
+            },
+            {
+                role: 'assistant',
+                parts: [{ type: 'text', text: 'err2' }],
+                error: { type: 'api' }
+            }
         ];
 
         await executeRequest(adapter, {
@@ -403,7 +419,7 @@ describe('filterPosition 分支', () => {
 
         const calledWith = adapter.partsToAPIMessages.mock.calls[0][0];
         expect(calledWith).toHaveLength(1);
-        expect(calledWith[0].content).toBe('ok');
+        expect(calledWith[0].parts[0].text).toBe('ok');
     });
 });
 
@@ -579,7 +595,10 @@ describe('RequestBodyContext 完整字段', () => {
         expect(ctx.thinkingCfg).toBeNull();
         expect(ctx.verbosityCfg).toBeNull();
         expect(ctx.isXmlMode).toBe(true);
-        expect(ctx.state).toBe(state); // 引用同一个 state
+        expect(ctx.state).toEqual(
+            expect.objectContaining({ streamEnabled: true, xmlToolCallingEnabled: true })
+        );
+        expect(ctx.state).not.toBe(state);
         expect(ctx.endpoint).toBe('https://api.example.com/v1');
     });
 });

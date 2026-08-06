@@ -229,12 +229,10 @@ describe('copyMessageMetadata', () => {
         expect(target.error.type).toBe('timeout');
     });
 
-    it('复制保留字段', () => {
+    it('复制消息 id', () => {
         const target = {};
-        copyMessageMetadata({ id: 'msg-1', errorHtml: '<div/>', isError: true }, target);
+        copyMessageMetadata({ id: 'msg-1' }, target);
         expect(target.id).toBe('msg-1');
-        expect(target.errorHtml).toBe('<div/>');
-        expect(target.isError).toBe(true);
     });
 
     it('不复制 undefined 字段', () => {
@@ -539,7 +537,7 @@ describe('saveErrorMessage', () => {
         const msg = pushMessage.mock.calls[0][0];
         expect(msg.error.type).toBe('server_error');
         expect(msg.error.status).toBe(500);
-        expect(msg.errorHtml).toBe('<div>Error</div>');
+        expect(msg.error.html).toBe('<div>Error</div>');
     });
 
     it('errorData 为 null 时使用默认值', () => {

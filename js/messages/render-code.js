@@ -14,10 +14,11 @@ import {
     renderMermaidBlock,
     setMermaidSourcePanelVisible
 } from '../utils/mermaid.js';
-import { PartType, filterParts, getTextContent } from './schema.js';
+import { PartType, filterParts } from './schema.js';
 import { enhanceThinkingBlocks } from './render-thinking.js';
 import { logger } from '../utils/logger.js';
 import { HLJS_MAX_CODE_LENGTH } from '../utils/constants.js';
+import { updateMessageUiState } from './message-ui-state.js';
 
 // 语言检测/标题提取正则只需开头样本即可判定，全文扫描是纯浪费
 const LANG_DETECT_SAMPLE_LENGTH = 4096;
@@ -586,6 +587,13 @@ function bindCollapseEvents(pre, header) {
         if (icon) {
             icon.textContent = isCollapsed ? '▶' : '▼';
         }
+
+        const messageEl = pre.closest('.message[data-message-id]');
+        if (messageEl) {
+            updateMessageUiState(messageEl.dataset.messageId, {
+                codeBlocksExpanded: captureExpandedCodeBlockState(messageEl)
+            });
+        }
     };
 
     header.addEventListener('click', toggle);
@@ -594,6 +602,29 @@ function bindCollapseEvents(pre, header) {
             e.preventDefault();
             toggle();
         }
+    });
+}
+
+export function captureExpandedCodeBlockState(container) {
+    if (!container || typeof container.querySelectorAll !== 'function') return [];
+    const expanded = [];
+    container.querySelectorAll('.code-block-collapsible').forEach((block, index) => {
+        if (!block.classList.contains('collapsed')) expanded.push(index);
+    });
+    return expanded;
+}
+
+export function restoreExpandedCodeBlockState(container, expanded) {
+    if (!container || !Array.isArray(expanded) || expanded.length === 0) return;
+    const blocks = container.querySelectorAll('.code-block-collapsible');
+    expanded.forEach((index) => {
+        const block = blocks[index];
+        if (!block) return;
+        block.classList.remove('collapsed');
+        const header = block.querySelector('.code-collapse-header');
+        header?.setAttribute('aria-expanded', 'true');
+        const icon = header?.querySelector('.code-toggle-icon');
+        if (icon) icon.textContent = '▼';
     });
 }
 
@@ -835,15 +866,12 @@ function exportTableAsCSV(table) {
  * @param {string} newLanguage - 新语言
  */
 export function updateCodeBlockInMessage(messageEl, pre, newCode, newLanguage) {
-    const indexAttr = messageEl.dataset?.messageIndex;
-    const index =
-        indexAttr !== undefined
-            ? parseInt(indexAttr, 10)
-            : Array.from(elements.messagesArea.querySelectorAll('.message')).indexOf(messageEl);
-    if (!Number.isInteger(index) || index < 0) {
+    const hit = state.messageStore.findByEl(messageEl, { messagesArea: elements.messagesArea });
+    if (!hit) {
         logger.error('[更新代码块] 找不到消息索引');
         return;
     }
+    const { index } = hit;
 
     let originalMarkdown = getMessageMarkdown(index);
     if (!originalMarkdown) {
@@ -931,19 +959,13 @@ function getMessageMarkdown(index) {
     const message = state.messages[index];
     if (!message) return '';
 
-    if (message.parts && Array.isArray(message.parts)) {
+    if (Array.isArray(message.parts)) {
         const textParts = filterParts(message.parts, PartType.TEXT);
         if (textParts.length > 0) {
             return textParts.map((p) => p.text).join('\n');
         }
     }
-
-    if (typeof message.content === 'string') {
-        return message.content;
-    }
-
-    // 旧格式 content 数组：用 getTextContent 统一提取
-    return getTextContent(message);
+    return '';
 }
 
 function updateMessageMarkdown(index, newMarkdown) {

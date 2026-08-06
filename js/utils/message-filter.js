@@ -4,7 +4,7 @@
  */
 
 import { logger } from './logger.js';
-import { PartType, MediaKind, hasParts, textPart, mediaPart } from '../messages/schema.js';
+import { PartType, MediaKind, textPart, mediaPart } from '../messages/schema.js';
 
 /**
  * 根据模型能力过滤和转换消息
@@ -24,8 +24,7 @@ export function filterMessagesByCapabilities(messages, modelCapabilities) {
         // 只处理 assistant 和 user 消息，system 消息保持不变
         if (msg.role === 'system') return msg;
 
-        // 检查消息是否包含图片（新格式优先）
-        const hasImages = hasParts(msg) ? hasImageInParts(msg.parts) : hasImageContent(msg.content);
+        const hasImages = hasImageInParts(msg.parts);
         if (!hasImages) return msg;
 
         // 根据角色和能力决定转换策略
@@ -97,33 +96,15 @@ function convertAssistantImageToUser(msg, messageIndex) {
     const imageParts = [];
     const thinkingParts = [];
 
-    // 新格式：从 parts 读取
-    if (hasParts(msg)) {
+    if (Array.isArray(msg.parts)) {
         for (const p of msg.parts) {
             if (p.type === PartType.TEXT) textParts.push(p.text);
             else if (p.type === PartType.THINKING) thinkingParts.push(p.text);
             else if (p.type === PartType.MEDIA && p.media === MediaKind.IMAGE) {
-                imageParts.push({ type: 'image_url', image_url: { url: p.url } });
+                imageParts.push(p);
             }
         }
     }
-    // 旧格式：从 content 读取
-    else if (Array.isArray(msg.content)) {
-        msg.content.forEach((part) => {
-            if (part.type === 'text') {
-                textParts.push(part.text);
-            } else if (part.type === 'thinking') {
-                thinkingParts.push(part.text);
-            } else if (part.type === 'image_url') {
-                imageParts.push(part);
-            }
-        });
-    } else if (typeof msg.content === 'string') {
-        textParts.push(msg.content);
-    }
-
-    // 构建转换后的内容
-    const newContent = [];
 
     // 添加占位符说明
     let placeholder = `[*] 第 ${messageIndex + 1} 条消息中 AI 的回复已转为你的消息（当前模型不支持图片输出）\n\n`;
@@ -143,26 +124,22 @@ function convertAssistantImageToUser(msg, messageIndex) {
         placeholder += `\n\nAI 生成的图片（${imageParts.length} 张）：`;
     }
 
-    newContent.push({ type: 'text', text: placeholder });
-
-    // 添加图片
-    imageParts.forEach((img) => {
-        newContent.push(img);
-    });
-
-    // 同步重建 parts[] 与 content 字段一致 — Claude/Gemini 的 partsToAPIMessages
-    // 只迭代 msg.parts，若 delete result.parts 转换后的 user 消息整条丢失
     const newParts = [textPart(placeholder)];
-    for (const img of imageParts) {
-        const url = img.image_url?.url;
-        if (url) newParts.push(mediaPart(MediaKind.IMAGE, url, ''));
+    for (const image of imageParts) {
+        if (image.url) {
+            newParts.push(
+                mediaPart(MediaKind.IMAGE, image.url, image.mime || '', {
+                    name: image.name,
+                    mediaId: image.mediaId
+                })
+            );
+        }
     }
 
     // 返回转换后的 user 消息（保留原消息的 id 等字段）
     return {
         ...msg,
         role: 'user',
-        content: newContent,
         parts: newParts,
         _converted: true,
         _originalRole: 'assistant',
@@ -181,27 +158,12 @@ function removeImagesFromMessage(msg, role) {
     const thinkingParts = [];
     let imageCount = 0;
 
-    // 新格式：从 parts 读取
-    if (hasParts(msg)) {
+    if (Array.isArray(msg.parts)) {
         for (const p of msg.parts) {
             if (p.type === PartType.TEXT) textParts.push(p.text);
             else if (p.type === PartType.THINKING) thinkingParts.push(p.text);
             else if (p.type === PartType.MEDIA && p.media === MediaKind.IMAGE) imageCount++;
         }
-    }
-    // 旧格式：从 content 读取
-    else if (Array.isArray(msg.content)) {
-        msg.content.forEach((part) => {
-            if (part.type === 'text') {
-                textParts.push(part.text);
-            } else if (part.type === 'thinking') {
-                thinkingParts.push(part.text);
-            } else if (part.type === 'image_url') {
-                imageCount++;
-            }
-        });
-    } else if (typeof msg.content === 'string') {
-        return msg; // 纯文本消息，无需处理
     }
 
     // 如果没有图片，返回原消息
@@ -230,26 +192,10 @@ function removeImagesFromMessage(msg, role) {
 
     newText = (newText + placeholder).trim();
 
-    // 简化为字符串格式 + 同步重建 parts[] 让 Claude/Gemini partsToAPIMessages
-    // 走 parts 路径时也能拿到合并后的文本（之前只覆写首个 TEXT 不处理多 TEXT/THINKING 合并）
-    const newParts = [textPart(newText)];
     return {
         ...msg,
-        content: newText,
-        parts: newParts
+        parts: [textPart(newText)]
     };
-}
-
-/**
- * 检查消息内容是否包含图片
- * @param {string|Array} content - 消息内容
- * @returns {boolean} 是否包含图片
- */
-function hasImageContent(content) {
-    if (Array.isArray(content)) {
-        return content.some((part) => part.type === 'image_url');
-    }
-    return false;
 }
 
 /**

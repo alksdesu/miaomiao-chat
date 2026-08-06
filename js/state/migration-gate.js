@@ -7,7 +7,9 @@
  */
 
 import { SCHEMA_VERSION } from '../messages/schema.js';
-import { migrateSession, validateMigration } from '../messages/migration.js';
+import { validateMigration } from '../messages/migration.js';
+import { normalizeSessionRecord } from '../messages/compat/gateway.js';
+import { CompatibilityStatus } from '../messages/compat/result.js';
 import { validateMessages } from '../messages/schema.js';
 import {
     loadAllSessionsFromDB,
@@ -121,27 +123,32 @@ async function doMigration(result) {
                 continue;
             }
 
-            if (msgData.messages[0]?._schemaVersion >= SCHEMA_VERSION) {
-                continue;
-            }
-
-            const migrated = migrateSession(
-                msgData.messages,
-                msgData.geminiContents || [],
-                msgData.claudeContents || []
+            const compatibility = normalizeSessionRecord(
+                {
+                    sessionId: session.id,
+                    messages: msgData.messages,
+                    geminiContents: msgData.geminiContents || [],
+                    claudeContents: msgData.claudeContents || [],
+                    messageSchemaVersion: msgData.messageSchemaVersion
+                },
+                { source: 'startup-migration' }
             );
+            if (compatibility.status === CompatibilityStatus.FAILED) {
+                throw new Error(`会话 ${session.id} 迁移后仍不符合标准消息结构`);
+            }
+            if (!compatibility.writeBackRequired) continue;
 
             const countCheck = validateMigration(
                 msgData.messages.length,
-                migrated.messages.length,
-                migrated.toolMsgCount
+                compatibility.messages.length,
+                compatibility.toolMessageCount
             );
 
             if (!countCheck.valid) {
                 logger.warn(`[migration-gate] 会话 ${session.id} 数量校验失败:`, countCheck.error);
             }
 
-            const validation = validateMessages(migrated.messages);
+            const validation = validateMessages(compatibility.messages);
             if (!validation.valid) {
                 logger.warn(
                     `[migration-gate] 会话 ${session.id} 有 ${validation.errors.length} 条消息校验警告`
@@ -150,17 +157,18 @@ async function doMigration(result) {
             }
 
             await saveSessionMessages(session.id, {
-                messages: migrated.messages
+                messages: compatibility.messages,
+                messageSchemaVersion: compatibility.targetVersion
             });
 
             result.count++;
 
-            if (migrated.errors.length > 0) {
+            if (compatibility.errors.length > 0) {
                 result.errors.push({
                     sessionId: session.id,
-                    errors: migrated.errors
+                    errors: compatibility.errors
                 });
-                // migrateSession 的错误是降级处理（createFallbackMessage），不是致命错误
+                // 单条消息的降级恢复不是致命错误
             }
 
             // 每个会话后让出主线程

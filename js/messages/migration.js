@@ -22,11 +22,39 @@ import {
     thinkingPart,
     mediaPart,
     toolCallPart,
-    filePart
+    filePart,
+    isNewFormat,
+    isSchemaFormatParts
 } from './schema.js';
 import { logger } from '../utils/logger.js';
 import { generateIdSet } from '../api/format-converter.js';
 import { TOOL_RESULT_NOT_SAVED_MESSAGE } from '../utils/constants.js';
+
+function cloneForMigration(value) {
+    if (typeof globalThis.structuredClone === 'function') {
+        try {
+            return globalThis.structuredClone(value);
+        } catch {
+            // 循环对象由下方逐字段复制保留可迁移部分
+        }
+    }
+    if (Array.isArray(value)) return value.map(cloneForMigration);
+    if (!value || typeof value !== 'object') return value;
+    if (typeof Blob !== 'undefined' && value instanceof Blob) return value;
+    const copy = {};
+    for (const [key, item] of Object.entries(value)) {
+        copy[key] = cloneForMigration(item);
+    }
+    return copy;
+}
+
+function isCanonicalMessage(message) {
+    return (
+        isNewFormat(message) ||
+        (Array.isArray(message?.parts) &&
+            (message.parts.length === 0 || isSchemaFormatParts(message.parts, message)))
+    );
+}
 
 /**
  * 迁移一个会话的消息数组
@@ -66,7 +94,9 @@ export function migrateSession(openaiMsgs, geminiMsgs = [], claudeMsgs = []) {
                 continue;
             }
 
-            const newMsg = migrateOneMessage(msg, gemini, claude);
+            const newMsg = isCanonicalMessage(msg)
+                ? cloneForMigration(msg)
+                : migrateOneMessage(msg, gemini, claude);
             converted.push(newMsg);
         } catch (err) {
             result.errors.push({ index: i, error: err.message });
@@ -230,11 +260,12 @@ function migrateOneMessage(msg, gemini, claude) {
 
     // 6. 错误消息
     let error = null;
-    if (msg.isError) {
+    if (msg.isError || msg.errorHtml) {
         error = {
             type: msg.errorData?.error?.type || 'unknown',
             message: msg.errorData?.error?.message || msg.content || '',
-            status: msg.httpStatus || 0
+            status: msg.httpStatus || 0,
+            ...(msg.errorHtml ? { html: msg.errorHtml } : {})
         };
     }
 
@@ -246,18 +277,13 @@ function migrateOneMessage(msg, gemini, claude) {
         error
     });
 
-    // errorHtml 保持顶层属性（restore.js 从顶层读取）
-    if (msg.errorHtml) {
-        migratedMsg.errorHtml = msg.errorHtml;
-    }
-
     return migratedMsg;
 }
 
 /**
  * 迁移单个 reply（迁移必须保留：allReplies 中的元素转为新格式）
  */
-function migrateReply(reply) {
+export function migrateReply(reply) {
     const parts = [];
 
     // 思维链（迁移必须保留：读取旧字段）
@@ -280,14 +306,15 @@ function migrateReply(reply) {
     }
 
     // 错误回复
-    if (reply.isError) {
+    if (reply.isError || reply.errorHtml) {
         return {
             parts,
             meta: createMeta(),
             ts: reply.timestamp || 0,
             error: {
                 type: reply.errorType || 'unknown',
-                message: reply.errorMessage || ''
+                message: reply.errorMessage || '',
+                ...(reply.errorHtml ? { html: reply.errorHtml } : {})
             }
         };
     }

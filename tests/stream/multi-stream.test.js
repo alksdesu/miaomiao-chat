@@ -15,6 +15,9 @@ vi.mock('../../js/core/state.js', () => ({
             appendChild: vi.fn()
         },
         apiFormat: 'openai',
+        currentSessionId: 'session-1',
+        sessions: [],
+        backgroundTasks: new Map(),
         currentReplies: [],
         selectedReplyIndex: 0
     }
@@ -33,8 +36,7 @@ vi.mock('../../js/stream/helpers.js', () => ({
 }));
 
 vi.mock('../../js/messages/sync.js', () => ({
-    saveAssistantMessage: vi.fn(() => 0),
-    saveErrorMessage: vi.fn()
+    saveAssistantMessageAsync: vi.fn(async () => 0)
 }));
 
 vi.mock('../../js/messages/dom-sync.js', () => ({
@@ -94,15 +96,27 @@ vi.mock('../../js/api/request-pipeline.js', () => ({
 
 vi.mock('../../js/messages/parts-builder.js', () => ({
     buildPartsFromStreamingState: vi.fn(() => []),
-    buildMetaFromStreamingState: vi.fn(() => ({}))
+    buildMetaFromStreamingState: vi.fn(() => ({})),
+    buildCanonicalReplies: vi.fn((replies) =>
+        replies.map((reply) => ({
+            parts: reply.content ? [{ type: 'text', text: reply.content }] : [],
+            meta: {},
+            ts: 1,
+            error: reply.isError ? { type: 'stream', message: reply.errorMessage || '' } : null
+        }))
+    )
 }));
 
 vi.mock('../../js/stream/sink.js', () => ({
-    BufferedSink: vi.fn().mockImplementation(() => ({
-        errorInfo: null,
-        skippedToolCalls: null,
-        commit: vi.fn()
-    }))
+    BufferedSink: vi.fn(
+        class BufferedSinkMock {
+            constructor() {
+                this.errorInfo = null;
+                this.skippedToolCalls = null;
+                this.commit = vi.fn();
+            }
+        }
+    )
 }));
 
 vi.mock('../../js/utils/media.js', () => ({
@@ -126,14 +140,19 @@ function createSimpleMockReader() {
 
 import { handleMultiStreamResponses } from '../../js/stream/multi-stream.js';
 import { state } from '../../js/core/state.js';
-import { saveAssistantMessage, saveErrorMessage } from '../../js/messages/sync.js';
+import { saveAssistantMessageAsync } from '../../js/messages/sync.js';
 import { renderReplyWithSelector } from '../../js/messages/renderer.js';
 import { renderHumanizedError } from '../../js/utils/errors.js';
 import { appendStreamStats } from '../../js/stream/stats.js';
 import { executeRequest } from '../../js/api/request-pipeline.js';
 import { getAdapter } from '../../js/api/adapters/index.js';
+import { requestTaskRegistry } from '../../js/core/request-task-registry.js';
 
 function makeCtx(overrides = {}) {
+    const assistantMessageEl = document.createElement('div');
+    const content = document.createElement('div');
+    content.className = 'message-content';
+    assistantMessageEl.appendChild(content);
     return {
         endpoint: 'http://api.test',
         apiKey: 'key',
@@ -141,14 +160,22 @@ function makeCtx(overrides = {}) {
         requestFormat: 'openai',
         adapter: getAdapter('openai'),
         abortController: new AbortController(),
-        assistantMessageEl: document.createElement('div'),
+        assistantMessageEl,
         sessionId: 'session-1',
+        replyCount: state.replyCount,
+        requestProfile: {
+            modelDisplayName: 'model',
+            providerName: 'Provider',
+            streamEnabled: true,
+            isXmlMode: false
+        },
         ...overrides
     };
 }
 
 beforeEach(() => {
     vi.clearAllMocks();
+    requestTaskRegistry.clearForTests();
     state.replyCount = 2;
     state.currentAssistantMessage = {
         innerHTML: '',
@@ -172,7 +199,7 @@ describe('handleMultiStreamResponses - 成功流', () => {
         expect(appendStreamStats).toHaveBeenCalled();
         expect(state.currentReplies.length).toBeGreaterThan(0);
         expect(state.selectedReplyIndex).toBe(0);
-        expect(saveAssistantMessage).toHaveBeenCalled();
+        expect(saveAssistantMessageAsync).toHaveBeenCalled();
         expect(renderReplyWithSelector).toHaveBeenCalled();
     });
 
@@ -186,7 +213,29 @@ describe('handleMultiStreamResponses - 成功流', () => {
         await handleMultiStreamResponses(makeCtx());
 
         expect(executeRequest).toHaveBeenCalledTimes(1);
-        expect(saveAssistantMessage).toHaveBeenCalled();
+        expect(saveAssistantMessageAsync).toHaveBeenCalled();
+    });
+
+    it('detach 窗口内按后台路径保存且不更新前台回复状态', async () => {
+        executeRequest.mockImplementation(async () => ({
+            ok: true,
+            body: { getReader: () => createSimpleMockReader() }
+        }));
+        const task = requestTaskRegistry.create({
+            sessionId: 'session-1',
+            abortController: new AbortController()
+        });
+        task.isDetached = true;
+
+        await handleMultiStreamResponses(makeCtx({ task }));
+
+        expect(saveAssistantMessageAsync).toHaveBeenCalledWith(
+            expect.any(Array),
+            expect.any(Object),
+            expect.objectContaining({ forceBackground: true })
+        );
+        expect(state.currentReplies).toEqual([]);
+        requestTaskRegistry.finish(task, 'completed');
     });
 });
 
@@ -203,7 +252,7 @@ describe('handleMultiStreamResponses - 所有请求失败', () => {
         await handleMultiStreamResponses(makeCtx());
 
         expect(renderHumanizedError).toHaveBeenCalled();
-        expect(saveErrorMessage).toHaveBeenCalled();
+        expect(saveAssistantMessageAsync).toHaveBeenCalled();
     });
 
     it('所有请求网络错误', async () => {
@@ -240,6 +289,6 @@ describe('handleMultiStreamResponses - 部分成功', () => {
         await handleMultiStreamResponses(makeCtx());
 
         // 仍然应保存成功的回复
-        expect(saveAssistantMessage).toHaveBeenCalled();
+        expect(saveAssistantMessageAsync).toHaveBeenCalled();
     });
 });

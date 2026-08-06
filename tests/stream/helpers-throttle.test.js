@@ -99,6 +99,24 @@ afterEach(() => {
 });
 
 describe('stream/helpers.js - 三层节流 + scroll 锁', () => {
+    it('不同请求的渲染缓冲不会覆盖彼此目标', () => {
+        const targetA = document.createElement('div');
+        const targetB = document.createElement('div');
+        const keyA = {};
+        const keyB = {};
+        elements.messagesArea.append(targetA, targetB);
+
+        updateStreamingMessage('request-a-content', '', targetA, keyA);
+        updateStreamingMessage('request-b-content', '', targetB, keyB);
+        flushPendingRender(targetA, keyA);
+        flushPendingRender(targetB, keyB);
+
+        expect(targetA.textContent).toContain('request-a-content');
+        expect(targetA.textContent).not.toContain('request-b-content');
+        expect(targetB.textContent).toContain('request-b-content');
+        expect(targetB.textContent).not.toContain('request-a-content');
+    });
+
     it('阈值未触发时 doRender 跳过（requestAnimationFrame 未被排队）', () => {
         const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame');
 
