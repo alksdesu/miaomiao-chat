@@ -621,9 +621,10 @@ export function removeMessagesAfterAll(index) {
 }
 
 /**
- * 重试功能（重新生成最后一条助手消息）
+ * 重试功能（重新生成助手消息）
+ * @param {HTMLElement} [messageEl] - 目标助手消息元素，省略时重发最后一条
  */
-export async function handleRetry() {
+export async function handleRetry(messageEl = null) {
     if (state.isLoading) return;
 
     // 清空当前的多回复状态
@@ -633,8 +634,14 @@ export async function handleRetry() {
     // 检查是否有内容可以重试
     if (state.messages.length === 0) return;
 
-    // 移除最后一条助手消息
-    popLastAssistantMessage();
+    // 重发目标之后的消息都基于旧回复产生，必须一并移除；
+    // 定位失败或目标位于首条（无输入可重发）时回退到"重发最后一条"
+    const hit = messageEl ? resolveMessageHit(messageEl) : null;
+    if (hit && hit.index > 0 && hit.msg?.role === 'assistant') {
+        removeMessagesAfter(hit.index - 1);
+    } else {
+        popLastAssistantMessage();
+    }
 
     // 通知会话保存
     eventBus.emit('messages:changed', {
@@ -765,8 +772,8 @@ eventBus.on('message:delete-requested', ({ messageEl }) => {
 });
 
 // 监听重试请求
-eventBus.on('message:retry-requested', () => {
-    handleRetry();
+eventBus.on('message:retry-requested', ({ messageEl } = {}) => {
+    handleRetry(messageEl);
 });
 
 // 监听复制全文请求：用 getTextContent 抽出新格式 parts 的 TEXT 合并文本（旧格式有兜底）

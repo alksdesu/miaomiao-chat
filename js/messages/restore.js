@@ -44,6 +44,26 @@ import {
 
 const messageMediaIds = new WeakMap();
 
+function renderWelcomeMessage() {
+    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
+    elements.messagesArea.innerHTML = `
+            <div class="welcome-message glass">
+                <div class="gemini-logo">
+                    <svg width="64" height="64" viewBox="0 0 64 64">
+                        <defs>
+                            <linearGradient id="gemini-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                                <stop offset="0%" style="stop-color:#9168c0"/>
+                                <stop offset="100%" style="stop-color:#a8c7fa"/>
+                            </linearGradient>
+                        </defs>
+                        <circle cx="32" cy="32" r="28" fill="url(#gemini-gradient)"/>
+                    </svg>
+                </div>
+                <h2>你好，我是 AI 助手</h2>
+            </div>
+        `;
+}
+
 /**
  * 渲染会话消息
  */
@@ -68,33 +88,8 @@ export function renderSessionMessages() {
     // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     elements.messagesArea.innerHTML = '';
 
-    // 检查是否有消息
-    const messages = state.messages;
-
-    if (messages.length === 0) {
-        // 显示欢迎消息
-        // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
-        elements.messagesArea.innerHTML = `
-            <div class="welcome-message glass">
-                <div class="gemini-logo">
-                    <svg width="64" height="64" viewBox="0 0 64 64">
-                        <defs>
-                            <linearGradient id="gemini-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
-                                <stop offset="0%" style="stop-color:#9168c0"/>
-                                <stop offset="100%" style="stop-color:#a8c7fa"/>
-                            </linearGradient>
-                        </defs>
-                        <circle cx="32" cy="32" r="28" fill="url(#gemini-gradient)"/>
-                    </svg>
-                </div>
-                <h2>你好，我是 AI 助手</h2>
-            </div>
-        `;
-        longChatPerformance.setGauge('messageDomCount', 0);
-        finishShellRender({ domCount: 0 });
-        finishRestore({ domCount: 0 });
-        return;
-    }
+    // 空会话不在此直接 return：提前退出会跳过末尾的 INIT_VIRTUAL_SCROLL，
+    // 让 activeOptions 停在 null，后续删除/重新生成的 DOM 同步就此断链
 
     // 批量补充缺少 ID 的旧消息
     ensureMessageIds();
@@ -205,6 +200,10 @@ export function renderSessionMessages() {
     };
 
     const renderAll = () => {
+        if (state.messages.length === 0) {
+            renderWelcomeMessage();
+            return;
+        }
         const fragment = document.createDocumentFragment();
         state.messages.forEach((message, index) =>
             fragment.appendChild(renderMessage(message, index))
@@ -457,3 +456,9 @@ function enhanceAssistantMessage(_messageEl, msg, { isError = false } = {}) {
     );
     restoreExpandedCodeBlockState(contentDiv, uiState.codeBlocksExpanded);
 }
+
+// 虚拟滚动缺渲染上下文时的兜底：按当前 state.messages 全量重建，避免孤儿 DOM 残留
+eventBus.on(EVENTS.RESTORE_RERENDER_REQUESTED, () => {
+    if (!elements.messagesArea) return;
+    renderSessionMessages();
+});

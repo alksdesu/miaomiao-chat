@@ -84,6 +84,7 @@ export const EVENTS = Object.freeze({
     // 会话恢复阶段
     RESTORE_DISABLE_VIRTUAL_SCROLL: 'restore:disable-virtual-scroll',
     RESTORE_INIT_VIRTUAL_SCROLL: 'restore:init-virtual-scroll',
+    RESTORE_RERENDER_REQUESTED: 'restore:rerender-requested',
     RESTORE_TOOL_CALLS: 'restore:tool-calls',
     LONG_CHAT_RENDERING_MODE_CHANGED: 'long-chat:rendering-mode-changed',
 

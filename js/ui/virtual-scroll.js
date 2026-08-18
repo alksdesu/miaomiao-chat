@@ -52,11 +52,13 @@ export function initVirtualScroll(force = null, options = null) {
     const messages = options?.messages || state.messages || [];
     const threshold = calculateSmartThreshold(messages);
     const renderingMode = state.longChatRenderingMode || 'auto';
+    // 空列表一律不虚拟化：虚拟化器 init 会 replaceChildren 成 spacer，把欢迎消息冲掉
     const shouldEnable =
-        force !== null
+        messages.length > 0 &&
+        (force !== null
             ? force
             : renderingMode === 'virtual' ||
-              (renderingMode === 'auto' && messages.length >= threshold);
+              (renderingMode === 'auto' && messages.length >= threshold));
     longChatPerformance.setGauge('virtualScrollThreshold', threshold);
 
     disableVirtualScroll();
@@ -112,7 +114,12 @@ export function disableVirtualScroll() {
 }
 
 export function refreshVirtualScroll({ focusIndex = null } = {}) {
-    if (!activeOptions) return false;
+    // 消息 DOM 的移除全靠这里重建，静默返回会让删除/重新生成只改数据留下孤儿 DOM，
+    // 缺渲染上下文时请求上游全量重渲染兜底
+    if (!activeOptions) {
+        eventBus.emit(EVENTS.RESTORE_RERENDER_REQUESTED, { focusIndex });
+        return false;
+    }
     const messages = state.messages || [];
     if (activeVirtualizer) {
         const firstMounted = activeVirtualizer.getElement(activeVirtualizer.range.start);
