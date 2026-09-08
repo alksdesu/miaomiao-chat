@@ -5,6 +5,10 @@
 
 import { logger } from '../utils/logger.js';
 import { state } from '../core/state.js';
+import {
+    CLAUDE_DEFAULT_MAX_TOKENS_STREAM,
+    CLAUDE_DEFAULT_MAX_TOKENS_NON_STREAM
+} from '../utils/constants.js';
 import { buildOpenAIImageParams } from './image-params.js';
 
 /**
@@ -48,12 +52,13 @@ export function buildModelParams(format) {
             break;
 
         case 'claude': {
-            // adaptive thinking 下由模型按 effort 自决输出长度，传 max_tokens 会挤占思考预算导致截断，故一律不传；
-            // 非 adaptive 时仅在用户显式设置时传（beta Messages API 已将 max_tokens 改为可选）
-            const claudeAdaptive = state.thinkingEnabled && state.claudeAdaptiveThinking;
-            if (!claudeAdaptive && params.max_tokens !== null) {
-                result.max_tokens = params.max_tokens;
-            }
+            // Messages API 要求 max_tokens 必填，缺失直接 400；它是 thinking 与正文共享的总输出上限
+            result.max_tokens =
+                params.max_tokens !== null
+                    ? params.max_tokens
+                    : state.streamEnabled
+                      ? CLAUDE_DEFAULT_MAX_TOKENS_STREAM
+                      : CLAUDE_DEFAULT_MAX_TOKENS_NON_STREAM;
             if (params.temperature !== null) result.temperature = params.temperature;
             if (params.top_p !== null) result.top_p = params.top_p;
             // Extended Thinking 要求 temperature 必须为 1

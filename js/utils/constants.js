@@ -41,6 +41,12 @@ export const XML_MAX_TOOL_CONTENT_LENGTH = 10000;
 /** 工具 ID 计数器循环阈值 */
 export const TOOL_ID_COUNTER_MAX = 10000;
 
+/** Claude max_tokens 兜底（流式）：Messages API 要求必填，流式无 HTTP 超时约束故放宽 */
+export const CLAUDE_DEFAULT_MAX_TOKENS_STREAM = 64000;
+
+/** Claude max_tokens 兜底（非流式）：取值偏保守，避免长响应触发 HTTP 超时 */
+export const CLAUDE_DEFAULT_MAX_TOKENS_NON_STREAM = 16000;
+
 // ========== 流式/网络 ==========
 
 /** 默认流式空闲超时（毫秒），用户偏好覆盖 state.streamIdleTimeout */

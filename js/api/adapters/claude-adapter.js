@@ -559,7 +559,7 @@ function buildRequestBody(ctx) {
         model: model,
         messages: claudeMessages,
         stream: stateRef.streamEnabled,
-        ...modelParams // max_tokens（仅非 adaptive 且用户显式设置时存在）及其他参数
+        ...modelParams // max_tokens（必填，buildModelParams 保证存在）及其他参数
     };
 
     // Claude 的 system 是顶层参数（独立于预填充开关）

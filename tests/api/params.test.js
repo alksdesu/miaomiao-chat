@@ -207,23 +207,30 @@ describe('buildModelParams', () => {
     });
 
     describe('claude 格式', () => {
-        it('max_tokens 未设置时不传', () => {
+        it('max_tokens 未设置时回落流式默认值', () => {
+            state.streamEnabled = true;
             const result = buildModelParams('claude');
-            expect(result).toEqual({});
+            expect(result.max_tokens).toBe(64000);
         });
 
-        it('max_tokens 显式设置且非 adaptive 时传', () => {
+        it('max_tokens 未设置且非流式时回落较保守的默认值', () => {
+            state.streamEnabled = false;
+            const result = buildModelParams('claude');
+            expect(result.max_tokens).toBe(16000);
+        });
+
+        it('max_tokens 显式设置时优先使用', () => {
             state.modelParams.claude.max_tokens = 4096;
             const result = buildModelParams('claude');
             expect(result.max_tokens).toBe(4096);
         });
 
-        it('adaptive thinking 开启时一律不传 max_tokens（即使用户设置了）', () => {
+        it('adaptive thinking 开启时仍然发送 max_tokens（Messages API 必填）', () => {
             state.thinkingEnabled = true;
             state.claudeAdaptiveThinking = true;
             state.modelParams.claude.max_tokens = 4096;
             const result = buildModelParams('claude');
-            expect(result.max_tokens).toBeUndefined();
+            expect(result.max_tokens).toBe(4096);
         });
 
         it('temperature 非 null 时包含', () => {
