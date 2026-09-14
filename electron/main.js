@@ -29,8 +29,24 @@ function isSafeExternalUrl(url) {
         return false;
     }
 }
+
+function isTrustedRenderer(event) {
+    if (!event?.senderFrame || !mainWindow || mainWindow.isDestroyed()) return false;
+    if (event.sender !== mainWindow.webContents) return false;
+    try {
+        const senderPath = fileURLToPath(event.senderFrame.url);
+        return path.resolve(senderPath) === path.resolve(path.join(__dirname, '..', 'index.html'));
+    } catch {
+        return false;
+    }
+}
+
+function requireTrustedRenderer(event) {
+    if (!isTrustedRenderer(event)) throw new Error('拒绝来自非应用页面的 IPC 请求');
+}
 const VIDEO_STORAGE_DIR_NAME = 'message-videos';
 const MAX_VIDEO_BASE64_LENGTH = 1024 * 1024 * 256; // 256MB base64 字符串上限
+const MAX_VIDEO_BYTES = Math.floor((MAX_VIDEO_BASE64_LENGTH * 3) / 4);
 let resolvedVideoStorageDir = null;
 
 const VIDEO_MIME_TO_EXT = {
@@ -205,7 +221,15 @@ function createWindow() {
     // 防止点击消息中的超链接导致应用窗口导航离开
     windowInstance.webContents.setWindowOpenHandler(({ url }) => {
         // 允许 Network 独立窗口
-        if (url.includes('network-window.html')) {
+        let isNetworkWindow = false;
+        try {
+            const target = new URL(url);
+            const expected = pathToFileURL(path.join(__dirname, '..', 'network-window.html'));
+            isNetworkWindow = target.protocol === 'file:' && target.href === expected.href;
+        } catch {
+            isNetworkWindow = false;
+        }
+        if (isNetworkWindow) {
             return {
                 action: 'allow',
                 overrideBrowserWindowOptions: {
@@ -262,6 +286,7 @@ function startChiiServer() {
         if (!fs.existsSync(chiiDir)) {
             return reject(new Error(`chii directory not found: ${chiiDir}`));
         }
+        const realChiiDir = fs.realpathSync(chiiDir);
         const mimeTypes = {
             '.html': 'text/html',
             '.js': 'application/javascript',
@@ -273,24 +298,38 @@ function startChiiServer() {
             '.woff': 'font/woff'
         };
         const server = http.createServer((req, res) => {
-            const urlPath = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+            let urlPath;
+            try {
+                urlPath = decodeURIComponent(new URL(req.url || '/', 'http://localhost').pathname);
+            } catch {
+                res.writeHead(400);
+                res.end();
+                return;
+            }
             const filePath = path.resolve(chiiDir, urlPath.replace(/^\//, ''));
-            if (!filePath.startsWith(chiiDir)) {
+            if (!isPathInsideDirectory(filePath, chiiDir)) {
                 res.writeHead(403);
                 res.end();
                 return;
             }
-            fs.readFile(filePath, (err, data) => {
-                if (err) {
-                    res.writeHead(404);
+            fs.realpath(filePath, (realPathError, realFilePath) => {
+                if (realPathError || !isPathInsideDirectory(realFilePath, realChiiDir)) {
+                    res.writeHead(403);
                     res.end();
                     return;
                 }
-                const ext = path.extname(filePath);
-                res.writeHead(200, {
-                    'Content-Type': mimeTypes[ext] || 'application/octet-stream'
+                fs.readFile(realFilePath, (err, data) => {
+                    if (err) {
+                        res.writeHead(404);
+                        res.end();
+                        return;
+                    }
+                    const ext = path.extname(realFilePath);
+                    res.writeHead(200, {
+                        'Content-Type': mimeTypes[ext] || 'application/octet-stream'
+                    });
+                    res.end(data);
                 });
-                res.end(data);
             });
         });
         server.on('error', reject);
@@ -314,6 +353,7 @@ app.whenReady().then(async () => {
     // 等待渲染进程通过 IPC 发送初始化设置
     ipcMain.handle('init-settings', (event, settings) => {
         if (updaterInitialized) return { success: true };
+        requireTrustedRenderer(event);
         updaterInitialized = true;
         clearTimeout(initFallbackTimer);
         console.log('[Main] 收到渲染进程的初始化设置:', settings);
@@ -346,11 +386,13 @@ app.whenReady().then(async () => {
 });
 
 // ========== 窗口控制 IPC ==========
-ipcMain.on('window:minimize', () => {
+ipcMain.on('window:minimize', (event) => {
+    if (!isTrustedRenderer(event)) return;
     mainWindow?.minimize();
 });
 
-ipcMain.on('window:maximize', () => {
+ipcMain.on('window:maximize', (event) => {
+    if (!isTrustedRenderer(event)) return;
     if (mainWindow?.isMaximized()) {
         mainWindow.unmaximize();
     } else {
@@ -358,26 +400,31 @@ ipcMain.on('window:maximize', () => {
     }
 });
 
-ipcMain.on('window:close', () => {
+ipcMain.on('window:close', (event) => {
+    if (!isTrustedRenderer(event)) return;
     mainWindow?.close();
 });
 
-ipcMain.on('window:toggle-devtools', () => {
+ipcMain.on('window:toggle-devtools', (event) => {
+    if (!isTrustedRenderer(event)) return;
     mainWindow?.webContents.toggleDevTools();
 });
 
 // ✅ IPC：手动检查更新
-ipcMain.on('check-for-updates', () => {
+ipcMain.on('check-for-updates', (event) => {
+    if (!isTrustedRenderer(event)) return;
     checkForUpdatesManually();
 });
 
 // ✅ IPC：设置静默更新模式
 ipcMain.on('set-silent-update', (event, enabled) => {
+    if (!isTrustedRenderer(event)) return;
     setSilentUpdate(enabled);
 });
 
 // ✅ IPC：保存设置
 ipcMain.on('save-settings', (event, settings) => {
+    if (!isTrustedRenderer(event)) return;
     // 立即应用静默更新设置
     if (typeof settings.silentUpdate === 'boolean') {
         setSilentUpdate(settings.silentUpdate);
@@ -386,28 +433,33 @@ ipcMain.on('save-settings', (event, settings) => {
 });
 
 // ✅ IPC：获取应用版本号
-ipcMain.handle('get-app-version', () => {
+ipcMain.handle('get-app-version', (event) => {
+    requireTrustedRenderer(event);
     return app.getVersion();
 });
 
-ipcMain.handle('get-chii-port', () => {
+ipcMain.handle('get-chii-port', (event) => {
+    requireTrustedRenderer(event);
     return chiiPort;
 });
 
 // ✅ IPC：下载更新（立刻更新）
-ipcMain.on('download-update', () => {
+ipcMain.on('download-update', (event) => {
+    if (!isTrustedRenderer(event)) return;
     console.log('[Main] 用户选择：立刻更新');
     downloadUpdate({ silent: false, triggerSource: 'renderer' });
 });
 
 // ✅ IPC：下载更新（静默模式）
-ipcMain.on('download-update-silent', () => {
+ipcMain.on('download-update-silent', (event) => {
+    if (!isTrustedRenderer(event)) return;
     console.log('[Main] 用户选择：静默更新');
     downloadUpdate({ silent: true, triggerSource: 'renderer' });
 });
 
 // ✅ IPC：立即安装更新并重启
-ipcMain.on('install-update', () => {
+ipcMain.on('install-update', (event) => {
+    if (!isTrustedRenderer(event)) return;
     console.log('[Main] 用户选择：立即安装更新');
     quitAndInstall(); // ✅ 调用 updater.js 的导出函数
 });
@@ -462,7 +514,8 @@ function normalizeMcpTools(rawPayload) {
  */
 ipcMain.handle('mcp:connect', async (event, config) => {
     try {
-        console.log('[Main] MCP 连接请求:', config);
+        requireTrustedRenderer(event);
+        console.log('[Main] MCP 连接请求:', config?.serverId);
         const result = await mcpManager.startServer(config);
         return result;
     } catch (error) {
@@ -476,6 +529,7 @@ ipcMain.handle('mcp:connect', async (event, config) => {
  */
 ipcMain.handle('mcp:disconnect', async (event, { serverId }) => {
     try {
+        requireTrustedRenderer(event);
         console.log('[Main] MCP 断开请求:', serverId);
         await mcpManager.stopServer(serverId);
         return { success: true };
@@ -490,6 +544,7 @@ ipcMain.handle('mcp:disconnect', async (event, { serverId }) => {
  */
 ipcMain.handle('mcp:list-tools', async (event, { serverId }) => {
     try {
+        requireTrustedRenderer(event);
         console.log('[Main] MCP 列出工具:', serverId);
         const result = await mcpManager.sendRequest(serverId, 'tools/list');
         const tools = normalizeMcpTools(result);
@@ -505,6 +560,7 @@ ipcMain.handle('mcp:list-tools', async (event, { serverId }) => {
  */
 ipcMain.handle('mcp:call-tool', async (event, { serverId, toolName, arguments: args }) => {
     try {
+        requireTrustedRenderer(event);
         console.log('[Main] MCP 调用工具:', { serverId, toolName });
         const result = await mcpManager.sendRequest(serverId, 'tools/call', {
             name: toolName,
@@ -522,6 +578,7 @@ ipcMain.handle('mcp:call-tool', async (event, { serverId, toolName, arguments: a
  */
 ipcMain.handle('mcp:status', async (event, { serverId }) => {
     try {
+        requireTrustedRenderer(event);
         if (serverId) {
             const status = mcpManager.getStatus(serverId);
             return { success: true, status };
@@ -540,7 +597,8 @@ ipcMain.handle('mcp:status', async (event, { serverId }) => {
  */
 ipcMain.handle('mcp:store-video', async (event, payload = {}) => {
     try {
-        const { dataUrl = '', base64 = '', mimeType = '', extension = '' } = payload || {};
+        requireTrustedRenderer(event);
+        const { dataUrl = '', base64 = '', mimeType = '' } = payload || {};
 
         let parsed = null;
         if (typeof dataUrl === 'string' && dataUrl.startsWith('data:')) {
@@ -565,10 +623,7 @@ ipcMain.handle('mcp:store-video', async (event, payload = {}) => {
         }
 
         const directoryPath = await resolveVideoStorageDirectory();
-        const fileExtension = (extension || getVideoExtensionByMimeType(finalMimeType)).replace(
-            /^\./,
-            ''
-        );
+        const fileExtension = getVideoExtensionByMimeType(finalMimeType);
         const fileName = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}.${fileExtension}`;
         const filePath = path.join(directoryPath, fileName);
 
@@ -595,6 +650,7 @@ ipcMain.handle('mcp:store-video', async (event, payload = {}) => {
  */
 ipcMain.handle('mcp:read-media-file', async (event, payload = {}) => {
     try {
+        requireTrustedRenderer(event);
         const { fileUrl = '' } = payload || {};
         if (!fileUrl || typeof fileUrl !== 'string') {
             return { success: false, error: '缺少 fileUrl 参数' };
@@ -614,15 +670,30 @@ ipcMain.handle('mcp:read-media-file', async (event, payload = {}) => {
             new Set([preferredDirectory, ...getVideoStorageCandidates()])
         );
 
-        const isAllowed = allowedDirectories.some((directoryPath) =>
-            isPathInsideDirectory(filePath, directoryPath)
+        let realFilePath;
+        try {
+            realFilePath = await fs.promises.realpath(filePath);
+        } catch {
+            return { success: false, error: '媒体文件不存在或无法访问' };
+        }
+        const realDirectories = await Promise.all(
+            allowedDirectories.map((directoryPath) =>
+                fs.promises.realpath(directoryPath).catch(() => null)
+            )
+        );
+        const isAllowed = realDirectories.some(
+            (directoryPath) => directoryPath && isPathInsideDirectory(realFilePath, directoryPath)
         );
         if (!isAllowed) {
             return { success: false, error: '拒绝访问非媒体目录文件' };
         }
 
-        const fileBuffer = await fs.promises.readFile(filePath);
-        const mimeType = getVideoMimeTypeByExtension(filePath);
+        const fileStats = await fs.promises.stat(realFilePath);
+        if (!fileStats.isFile() || fileStats.size > MAX_VIDEO_BYTES) {
+            return { success: false, error: '媒体文件过大或不是普通文件' };
+        }
+        const fileBuffer = await fs.promises.readFile(realFilePath);
+        const mimeType = getVideoMimeTypeByExtension(realFilePath);
 
         return {
             success: true,
@@ -708,6 +779,10 @@ function getComputerUse() {
  */
 ipcMain.handle('computer-use:update-permissions', async (event, permissions) => {
     try {
+        requireTrustedRenderer(event);
+        if (!permissions || typeof permissions !== 'object' || Array.isArray(permissions)) {
+            throw new Error('Computer Use 权限配置格式无效');
+        }
         getComputerUse().updatePermissions(permissions);
         return { success: true };
     } catch (error) {
@@ -721,6 +796,10 @@ ipcMain.handle('computer-use:update-permissions', async (event, permissions) => 
  */
 ipcMain.handle('computer-use:update-bash-config', async (event, config) => {
     try {
+        requireTrustedRenderer(event);
+        if (!config || typeof config !== 'object' || Array.isArray(config)) {
+            throw new Error('Bash 配置格式无效');
+        }
         getComputerUse().updateBashConfig(config);
         return { success: true };
     } catch (error) {
@@ -732,8 +811,9 @@ ipcMain.handle('computer-use:update-bash-config', async (event, config) => {
 /**
  * IPC: 截图
  */
-ipcMain.handle('computer-use:screenshot', async () => {
+ipcMain.handle('computer-use:screenshot', async (event) => {
     try {
+        requireTrustedRenderer(event);
         const result = await getComputerUse().captureScreen();
         return { success: true, ...result };
     } catch (error) {
@@ -747,6 +827,7 @@ ipcMain.handle('computer-use:screenshot', async () => {
  */
 ipcMain.handle('computer-use:zoom', async (event, { x1, y1, x2, y2 }) => {
     try {
+        requireTrustedRenderer(event);
         const result = await getComputerUse().zoomRegion(x1, y1, x2, y2);
         return { success: true, ...result };
     } catch (error) {
@@ -760,6 +841,7 @@ ipcMain.handle('computer-use:zoom', async (event, { x1, y1, x2, y2 }) => {
  */
 ipcMain.handle('computer-use:mouse-move', async (event, { x, y }) => {
     try {
+        requireTrustedRenderer(event);
         const result = await getComputerUse().moveMouse(x, y);
         return { success: true, ...result };
     } catch (error) {
@@ -773,6 +855,7 @@ ipcMain.handle('computer-use:mouse-move', async (event, { x, y }) => {
  */
 ipcMain.handle('computer-use:mouse-click', async (event, { button }) => {
     try {
+        requireTrustedRenderer(event);
         await getComputerUse().clickMouse(button);
         return { success: true };
     } catch (error) {
@@ -786,6 +869,7 @@ ipcMain.handle('computer-use:mouse-click', async (event, { button }) => {
  */
 ipcMain.handle('computer-use:mouse-double-click', async (event, { button }) => {
     try {
+        requireTrustedRenderer(event);
         await getComputerUse().doubleClickMouse(button);
         return { success: true };
     } catch (error) {
@@ -799,6 +883,7 @@ ipcMain.handle('computer-use:mouse-double-click', async (event, { button }) => {
  */
 ipcMain.handle('computer-use:mouse-triple-click', async (event, { button }) => {
     try {
+        requireTrustedRenderer(event);
         await getComputerUse().tripleClickMouse(button);
         return { success: true };
     } catch (error) {
@@ -812,6 +897,7 @@ ipcMain.handle('computer-use:mouse-triple-click', async (event, { button }) => {
  */
 ipcMain.handle('computer-use:mouse-drag', async (event, { fromX, fromY, toX, toY }) => {
     try {
+        requireTrustedRenderer(event);
         await getComputerUse().dragMouse(fromX, fromY, toX, toY);
         return { success: true };
     } catch (error) {
@@ -825,6 +911,7 @@ ipcMain.handle('computer-use:mouse-drag', async (event, { fromX, fromY, toX, toY
  */
 ipcMain.handle('computer-use:mouse-scroll', async (event, { amount }) => {
     try {
+        requireTrustedRenderer(event);
         await getComputerUse().scrollMouse(amount);
         return { success: true };
     } catch (error) {
@@ -838,6 +925,7 @@ ipcMain.handle('computer-use:mouse-scroll', async (event, { amount }) => {
  */
 ipcMain.handle('computer-use:mouse-press-button', async (event, { button }) => {
     try {
+        requireTrustedRenderer(event);
         await getComputerUse().pressMouseButton(button);
         return { success: true };
     } catch (error) {
@@ -851,6 +939,7 @@ ipcMain.handle('computer-use:mouse-press-button', async (event, { button }) => {
  */
 ipcMain.handle('computer-use:mouse-release-button', async (event, { button }) => {
     try {
+        requireTrustedRenderer(event);
         await getComputerUse().releaseMouseButton(button);
         return { success: true };
     } catch (error) {
@@ -864,6 +953,7 @@ ipcMain.handle('computer-use:mouse-release-button', async (event, { button }) =>
  */
 ipcMain.handle('computer-use:keyboard-type', async (event, { text }) => {
     try {
+        requireTrustedRenderer(event);
         await getComputerUse().typeText(text);
         return { success: true };
     } catch (error) {
@@ -877,6 +967,7 @@ ipcMain.handle('computer-use:keyboard-type', async (event, { text }) => {
  */
 ipcMain.handle('computer-use:keyboard-press', async (event, { key, modifiers }) => {
     try {
+        requireTrustedRenderer(event);
         await getComputerUse().pressKey(key, modifiers);
         return { success: true };
     } catch (error) {
@@ -890,6 +981,7 @@ ipcMain.handle('computer-use:keyboard-press', async (event, { key, modifiers }) 
  */
 ipcMain.handle('computer-use:keyboard-hold', async (event, { key }) => {
     try {
+        requireTrustedRenderer(event);
         await getComputerUse().holdKey(key);
         return { success: true };
     } catch (error) {
@@ -903,6 +995,7 @@ ipcMain.handle('computer-use:keyboard-hold', async (event, { key }) => {
  */
 ipcMain.handle('computer-use:keyboard-release', async (event, { key }) => {
     try {
+        requireTrustedRenderer(event);
         await getComputerUse().releaseKey(key);
         return { success: true };
     } catch (error) {
@@ -914,8 +1007,9 @@ ipcMain.handle('computer-use:keyboard-release', async (event, { key }) => {
 /**
  * IPC: 获取显示器信息
  */
-ipcMain.handle('computer-use:get-display-info', async () => {
+ipcMain.handle('computer-use:get-display-info', async (event) => {
     try {
+        requireTrustedRenderer(event);
         const result = await getComputerUse().getDisplayInfo();
         return { success: true, displays: result };
     } catch (error) {
@@ -927,8 +1021,9 @@ ipcMain.handle('computer-use:get-display-info', async () => {
 /**
  * IPC: 获取光标位置
  */
-ipcMain.handle('computer-use:get-cursor-position', async () => {
+ipcMain.handle('computer-use:get-cursor-position', async (event) => {
     try {
+        requireTrustedRenderer(event);
         const result = await getComputerUse().getCursorPosition();
         return { success: true, ...result };
     } catch (error) {
@@ -942,6 +1037,7 @@ ipcMain.handle('computer-use:get-cursor-position', async () => {
  */
 ipcMain.handle('computer-use:bash-execute', async (event, { command }) => {
     try {
+        requireTrustedRenderer(event);
         const result = await getComputerUse().executeBash(command);
         // bash.execute() 已经返回了包含 success 字段的对象，直接返回
         return result;
@@ -954,8 +1050,10 @@ ipcMain.handle('computer-use:bash-execute', async (event, { command }) => {
 /**
  * IPC: 读取文件
  */
-ipcMain.handle('computer-use:file-read', async (event, { path }) => {
+ipcMain.handle('computer-use:file-read', async (event, payload = {}) => {
     try {
+        requireTrustedRenderer(event);
+        const { path } = payload;
         const result = await getComputerUse().readFile(path);
         return { success: true, ...result };
     } catch (error) {
@@ -967,8 +1065,10 @@ ipcMain.handle('computer-use:file-read', async (event, { path }) => {
 /**
  * IPC: 写入文件
  */
-ipcMain.handle('computer-use:file-write', async (event, { path, content }) => {
+ipcMain.handle('computer-use:file-write', async (event, payload = {}) => {
     try {
+        requireTrustedRenderer(event);
+        const { path, content } = payload;
         const result = await getComputerUse().writeFile(path, content);
         return { success: true, ...result };
     } catch (error) {

@@ -11,10 +11,22 @@ export function initMobileOverflowMenu() {
     const menu = document.getElementById('mobile-overflow-menu');
     if (!btn || !menu) return;
 
+    btn.setAttribute('aria-controls', menu.id);
+    btn.setAttribute('aria-expanded', 'false');
+    menu.setAttribute('role', 'menu');
+    menu.querySelectorAll('.mobile-overflow-item').forEach((item) => {
+        item.setAttribute('role', 'menuitem');
+    });
+
+    const setMenuOpen = (isOpen) => {
+        menu.classList.toggle('open', isOpen);
+        btn.setAttribute('aria-expanded', String(isOpen));
+    };
+
     // 切换菜单开关
     btn.addEventListener('click', (e) => {
         e.stopPropagation();
-        menu.classList.toggle('open');
+        setMenuOpen(!menu.classList.contains('open'));
     });
 
     // 菜单项点击 → 触发对应原始按钮
@@ -24,21 +36,21 @@ export function initMobileOverflowMenu() {
             if (targetId) {
                 document.getElementById(targetId)?.click();
             }
-            menu.classList.remove('open');
+            setMenuOpen(false);
         });
     });
 
     // 点击外部关闭
     document.addEventListener('click', (e) => {
         if (!menu.contains(e.target) && e.target !== btn) {
-            menu.classList.remove('open');
+            setMenuOpen(false);
         }
     });
 
     // ESC 关闭
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && menu.classList.contains('open')) {
-            menu.classList.remove('open');
+            setMenuOpen(false);
         }
     });
 }

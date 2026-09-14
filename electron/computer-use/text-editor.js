@@ -6,14 +6,57 @@
 const fs = require('fs').promises;
 const path = require('path');
 
+function assertInsideRoot(rootPath, targetPath) {
+    const relative = path.relative(rootPath, targetPath);
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+        throw new Error('文件路径必须位于 Computer Use 工作目录内');
+    }
+}
+
+async function resolveSafePath(filePath, rootPath = process.cwd(), allowMissing = false) {
+    if (typeof filePath !== 'string' || !filePath.trim()) {
+        throw new Error('文件路径不能为空');
+    }
+    if (typeof rootPath !== 'string' || !rootPath.trim()) {
+        rootPath = process.cwd();
+    }
+
+    const realRoot = await fs.realpath(path.resolve(rootPath));
+    const candidate = path.resolve(realRoot, filePath);
+    assertInsideRoot(realRoot, candidate);
+
+    try {
+        const realTarget = await fs.realpath(candidate);
+        assertInsideRoot(realRoot, realTarget);
+        return realTarget;
+    } catch (error) {
+        if (!allowMissing || error.code !== 'ENOENT') throw error;
+
+        let ancestor = path.dirname(candidate);
+        while (ancestor !== realRoot) {
+            try {
+                const realAncestor = await fs.realpath(ancestor);
+                assertInsideRoot(realRoot, realAncestor);
+                return candidate;
+            } catch (ancestorError) {
+                if (ancestorError.code !== 'ENOENT') throw ancestorError;
+                const parent = path.dirname(ancestor);
+                if (parent === ancestor) break;
+                ancestor = parent;
+            }
+        }
+        return candidate;
+    }
+}
+
 /**
  * 读取文件内容
  * @param {string} filePath - 文件路径
  * @returns {Promise<{content: string, size: number}>}
  */
-async function read(filePath) {
+async function read(filePath, options = {}) {
     try {
-        const absolutePath = path.resolve(filePath);
+        const absolutePath = await resolveSafePath(filePath, options.rootDir);
         const content = await fs.readFile(absolutePath, 'utf-8');
         const stats = await fs.stat(absolutePath);
 
@@ -36,11 +79,10 @@ async function read(filePath) {
  * @param {string} content - 文件内容
  * @returns {Promise<{path: string, size: number}>}
  */
-async function write(filePath, content) {
+async function write(filePath, content, options = {}) {
     try {
-        const absolutePath = path.resolve(filePath);
+        const absolutePath = await resolveSafePath(filePath, options.rootDir, true);
 
-        // 确保目录存在
         const directory = path.dirname(absolutePath);
         await fs.mkdir(directory, { recursive: true });
 
@@ -66,9 +108,9 @@ async function write(filePath, content) {
  * @param {string} filePath - 文件路径
  * @param {string} content - 要追加的内容
  */
-async function append(filePath, content) {
+async function append(filePath, content, options = {}) {
     try {
-        const absolutePath = path.resolve(filePath);
+        const absolutePath = await resolveSafePath(filePath, options.rootDir);
         await fs.appendFile(absolutePath, content, 'utf-8');
 
         const stats = await fs.stat(absolutePath);
@@ -89,9 +131,9 @@ async function append(filePath, content) {
  * 检查文件是否存在
  * @param {string} filePath - 文件路径
  */
-async function exists(filePath) {
+async function exists(filePath, options = {}) {
     try {
-        const absolutePath = path.resolve(filePath);
+        const absolutePath = await resolveSafePath(filePath, options.rootDir);
         await fs.access(absolutePath);
         return true;
     } catch {
@@ -103,9 +145,9 @@ async function exists(filePath) {
  * 删除文件
  * @param {string} filePath - 文件路径
  */
-async function remove(filePath) {
+async function remove(filePath, options = {}) {
     try {
-        const absolutePath = path.resolve(filePath);
+        const absolutePath = await resolveSafePath(filePath, options.rootDir);
         await fs.unlink(absolutePath);
 
         console.log(`[TextEditor] Deleted file: ${absolutePath}`);
@@ -124,9 +166,9 @@ async function remove(filePath) {
  * 获取文件信息
  * @param {string} filePath - 文件路径
  */
-async function getInfo(filePath) {
+async function getInfo(filePath, options = {}) {
     try {
-        const absolutePath = path.resolve(filePath);
+        const absolutePath = await resolveSafePath(filePath, options.rootDir);
         const stats = await fs.stat(absolutePath);
 
         return {

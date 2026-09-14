@@ -230,18 +230,8 @@ const CSS_TEMPLATE = `/* ============================
     background-color: #1a1a2e;
 } */
 
-/* --- 像素装饰元素（云朵/星星/钻石/心形/点阵） --- */
-/* 隐藏全部装饰 */
-/* .pixel-cloud, .pixel-star, .pixel-diamond,
-.pixel-heart, .pixel-dots {
-    display: none;
-} */
-/* 或单独调整 */
-/* .pixel-star { filter: hue-rotate(90deg) brightness(1.5); }
-.pixel-cloud { opacity: 0.3; filter: blur(2px); } */
-
 /* --- 顶部导航栏 --- */
-/* .app-header { background: linear-gradient(135deg, #667eea, #764ba2); }
+/* .app-header { background: var(--color-bg-surface); }
 .app-title { font-family: 'Comic Sans MS', cursive; } */
 
 /* --- 侧边栏 --- */

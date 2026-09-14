@@ -173,7 +173,7 @@ export async function checkPersistentStorage() {
 }
 
 // IDB 升级 spec 边界：另一 tab 持长事务时 db.close() 转 pending close，新 open 永久 blocked 不触发 error/success
-const INIT_DB_TIMEOUT_MS = 30000;
+const INIT_DB_TIMEOUT_MS = 8000;
 
 /**
  * 初始化 IndexedDB

@@ -81,7 +81,10 @@ async function executeComputerTool(args) {
             return await window.electronAPI.computerUse_screenshot();
 
         case 'mouse_move': {
-            const [x, y] = args.coordinate || [0, 0];
+            const [x, y] = args.coordinate || [];
+            if (![x, y].every((value) => Number.isFinite(value) && value >= 0)) {
+                throw new Error('mouse_move 需要非负数 coordinate');
+            }
             return await window.electronAPI.computerUse_moveMouse(x, y);
         }
 
@@ -118,21 +121,26 @@ async function executeComputerTool(args) {
         }
 
         case 'left_mouse_down': {
-            const [x, y] = args.coordinate || [0, 0];
+            const [x, y] = args.coordinate || [];
+            if (![x, y].every((value) => Number.isFinite(value) && value >= 0)) {
+                throw new Error('left_mouse_down 需要非负数 coordinate');
+            }
             await window.electronAPI.computerUse_moveMouse(x, y);
-            // 简单实现：目前Electron API可能不支持单独的down/up
-            logger.warn('[Executor] left_mouse_down 操作：当前简化为移动鼠标');
-            return { success: true };
+            return await window.electronAPI.computerUse_pressMouseButton('left');
         }
 
         case 'left_mouse_up':
-            logger.warn('[Executor] left_mouse_up 操作：当前简化实现');
-            return { success: true };
+            return await window.electronAPI.computerUse_releaseMouseButton('left');
 
         case 'scroll': {
             const direction = args.scroll_direction || 'down';
-            const amount = args.scroll_amount || 1;
-            // 简单实现：使用keyboard模拟滚动
+            const amount = args.scroll_amount ?? 1;
+            if (!Number.isInteger(amount) || amount < 1 || amount > 20) {
+                throw new Error('scroll_amount 必须是 1 到 20 的整数');
+            }
+            if (!['down', 'up', 'left', 'right'].includes(direction)) {
+                throw new Error(`不支持的滚动方向: ${direction}`);
+            }
             const key =
                 direction === 'down' || direction === 'up'
                     ? direction === 'down'
@@ -156,25 +164,27 @@ async function executeComputerTool(args) {
             return await window.electronAPI.computerUse_pressKey(args.key, args.modifiers || []);
 
         case 'hold_key':
-            // 简单实现：暂不支持真正的hold
-            logger.warn('[Executor] hold_key 操作：当前简化为按键');
-            return await window.electronAPI.computerUse_pressKey(args.key, []);
+            return await window.electronAPI.computerUse_holdKey(args.key);
 
         case 'wait': {
-            const duration = args.duration || 1;
+            const duration = args.duration ?? 1;
+            if (!Number.isFinite(duration) || duration < 0 || duration > 300) {
+                throw new Error('wait duration 必须在 0 到 300 秒之间');
+            }
             await new Promise((r) => setTimeout(r, duration * 1000));
             return { success: true };
         }
 
         case 'zoom': {
-            // Opus 4.5专用：缩放功能
-            logger.warn('[Executor] zoom 操作：当前不支持，需要特殊实现');
-            throw new Error('Zoom操作需要特殊的图像处理支持，当前版本暂不支持');
+            const [x1, y1, x2, y2] = [args.x1, args.y1, args.x2, args.y2];
+            if (![x1, y1, x2, y2].every((value) => Number.isFinite(value) && value >= 0)) {
+                throw new Error('zoom 需要非负数坐标');
+            }
+            return await window.electronAPI.computerUse_zoom(x1, y1, x2, y2);
         }
 
         case 'cursor_position':
-            // 获取当前鼠标位置（如果有 API 支持）
-            return { x: 0, y: 0 };
+            return await window.electronAPI.computerUse_getCursorPosition();
 
         default:
             throw new Error(

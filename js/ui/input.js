@@ -60,6 +60,7 @@ export { handleAttachFile, updateImagePreview } from './attachment-handler.js';
  * @param {KeyboardEvent} e - 键盘事件
  */
 function handleKeyDown(e) {
+    if (e.defaultPrevented) return;
     // 中日韩等 IME 合成期间的 Enter 不应触发发送
     // e.isComposing 标记合成中；keyCode 229 是部分浏览器/Electron 的旧式兜底
     if (e.isComposing || e.keyCode === 229) return;

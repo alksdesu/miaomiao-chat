@@ -436,8 +436,19 @@ export async function exportAllData() {
  * @param {Object} data - 导入的数据
  */
 async function importConfig(data) {
-    if (!data.data) {
+    if (!data || !data.data || typeof data.data !== 'object' || Array.isArray(data.data)) {
         throw new Error('配置数据格式错误');
+    }
+    if (
+        data.data.currentConfig !== undefined &&
+        (!data.data.currentConfig ||
+            typeof data.data.currentConfig !== 'object' ||
+            Array.isArray(data.data.currentConfig))
+    ) {
+        throw new Error('当前配置格式错误');
+    }
+    if (data.data.savedConfigs !== undefined && !Array.isArray(data.data.savedConfigs)) {
+        throw new Error('保存的配置必须是数组');
     }
 
     try {

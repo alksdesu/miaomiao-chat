@@ -171,9 +171,14 @@ import { initInputResize, initPanelResize } from './ui/resize.js';
 import { initModels } from './ui/models.js';
 import { initFormatSwitcher } from './ui/format-switcher.js';
 import { initQuickToggles, exposeToggleFunctions } from './ui/quick-toggles.js';
+import { initComposerContext } from './ui/composer-context.js';
+import { initComposerCommands } from './ui/composer-commands.js';
 import { initPasswordToggles, initRippleEffects } from './ui/enhancements.js';
 import { initMobileOverflowMenu } from './ui/mobile-overflow-menu.js';
 import { initAndroidBackHandler } from './ui/android-back-handler.js';
+import { initCommandPalette } from './ui/command-palette.js';
+import { initMessageTouchActions } from './ui/message-touch-actions.js';
+import { initMessageBranching } from './messages/branching.js';
 
 // ========== UI Layer (Deferred — 非首屏，动态加载) ==========
 // settings, viewer, prefill, config-helpers, custom-headers,
@@ -522,13 +527,22 @@ async function init() {
         // 首屏关键 UI
         initTheming();
         initKeyboard();
+        initCommandPalette();
+        initMessageTouchActions();
+        initMessageBranching();
         initPasswordToggles();
         initRippleEffects();
+        initComposerCommands({
+            textarea: document.getElementById('user-input'),
+            menu: document.getElementById('composer-command-menu'),
+            onResize: () => document.getElementById('user-input')?.dispatchEvent(new Event('input'))
+        });
         initInputHandlers();
         initClearChat();
         initModels();
         initFormatSwitcher();
         initQuickToggles();
+        initComposerContext();
         exposeToggleFunctions();
         initSidebar();
         initScrollControl();

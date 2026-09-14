@@ -28,6 +28,8 @@ let mobileAccordionMediaQuery = null;
 let mobileAccordionChangeHandler = null;
 let mobileAccordionBound = false;
 let mobileAccordionApplied = false;
+let mobileAccordionRefreshFrame = null;
+let mobileAccordionMutationObserver = null;
 
 function addManagedListener(cleanupList, target, eventName, handler, options) {
     if (!target) {
@@ -93,6 +95,7 @@ export function toggleSettings() {
     elements.settingsToggle?.setAttribute('aria-expanded', isOpening ? 'true' : 'false');
 
     if (isOpening) {
+        scheduleMobileSettingsAccordionRefresh();
         trapFocus(elements.settingsPanel);
         acquireInert();
         // 等开合动画启动后再移焦点，避免聚焦尚不可见的元素失败
@@ -106,6 +109,33 @@ export function toggleSettings() {
         releaseInert();
         elements.settingsToggle?.focus();
     }
+}
+
+function refreshMobileSettingsAccordionHeights() {
+    if (!mobileAccordionApplied) {
+        return;
+    }
+
+    document
+        .querySelectorAll('.settings-group.accordion.expanded .settings-group-body')
+        .forEach((body) => {
+            const maxHeight = `${body.scrollHeight}px`;
+            if (body.style.maxHeight !== maxHeight) {
+                body.style.maxHeight = maxHeight;
+            }
+        });
+}
+
+function scheduleMobileSettingsAccordionRefresh() {
+    if (!mobileAccordionApplied || mobileAccordionRefreshFrame !== null) {
+        return;
+    }
+
+    const schedule = window.requestAnimationFrame || ((callback) => window.setTimeout(callback, 0));
+    mobileAccordionRefreshFrame = schedule(() => {
+        mobileAccordionRefreshFrame = null;
+        refreshMobileSettingsAccordionHeights();
+    });
 }
 
 function handleSettingsOverlayClick(event) {
@@ -335,9 +365,6 @@ function setupMobileSettingsAccordion() {
         if (index === 0) {
             group.classList.add('expanded');
             label.setAttribute('aria-expanded', 'true');
-            requestAnimationFrame(() => {
-                body.style.maxHeight = `${body.scrollHeight}px`;
-            });
         } else {
             body.classList.add('collapsed');
             label.setAttribute('aria-expanded', 'false');
@@ -357,6 +384,7 @@ function setupMobileSettingsAccordion() {
             body.classList.remove('collapsed');
             body.style.maxHeight = `${body.scrollHeight}px`;
             label.setAttribute('aria-expanded', 'true');
+            scheduleMobileSettingsAccordionRefresh();
         };
 
         const keydownHandler = (event) => {
@@ -371,6 +399,21 @@ function setupMobileSettingsAccordion() {
         label._settingsAccordionClickHandler = clickHandler;
         label._settingsAccordionKeydownHandler = keydownHandler;
     });
+
+    const settingsContent = document.querySelector('.settings-content');
+    if (settingsContent && typeof window.MutationObserver !== 'undefined') {
+        mobileAccordionMutationObserver = new window.MutationObserver(() => {
+            scheduleMobileSettingsAccordionRefresh();
+        });
+        mobileAccordionMutationObserver.observe(settingsContent, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['class', 'hidden', 'open', 'style']
+        });
+    }
+
+    scheduleMobileSettingsAccordionRefresh();
 }
 
 function teardownMobileSettingsAccordion() {
@@ -379,6 +422,14 @@ function teardownMobileSettingsAccordion() {
     }
 
     mobileAccordionApplied = false;
+
+    if (mobileAccordionRefreshFrame !== null) {
+        const cancel = window.cancelAnimationFrame || window.clearTimeout;
+        cancel(mobileAccordionRefreshFrame);
+        mobileAccordionRefreshFrame = null;
+    }
+    mobileAccordionMutationObserver?.disconnect();
+    mobileAccordionMutationObserver = null;
 
     const groups = document.querySelectorAll('.settings-content > .settings-group.accordion');
     groups.forEach((group) => {
@@ -430,6 +481,12 @@ function initMobileSettingsAccordion() {
         };
 
         mobileAccordionMediaQuery.addEventListener('change', mobileAccordionChangeHandler);
+        addManagedListener(
+            settingsCleanupCallbacks,
+            window,
+            'resize',
+            scheduleMobileSettingsAccordionRefresh
+        );
         settingsCleanupCallbacks.push(() => {
             if (mobileAccordionMediaQuery && mobileAccordionChangeHandler) {
                 mobileAccordionMediaQuery.removeEventListener(

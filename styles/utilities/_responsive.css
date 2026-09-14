@@ -73,6 +73,46 @@
         box-shadow: none;
     }
 
+    .composer-context {
+        margin-bottom: 2px;
+        gap: 4px;
+        min-height: 24px;
+    }
+
+    .composer-model-summary {
+        padding: 2px 4px;
+        gap: 4px;
+    }
+
+    .composer-model-name {
+        max-width: 34vw;
+    }
+
+    .composer-provider-name,
+    .composer-shortcut-hint {
+        display: none;
+    }
+
+    .composer-feature-status {
+        gap: 2px;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        scrollbar-width: none;
+    }
+
+    .composer-feature-status::-webkit-scrollbar {
+        display: none;
+    }
+
+    .composer-command-menu {
+        margin-bottom: 4px;
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .composer-command-item {
+        padding: 6px;
+    }
+
     .input-textarea {
         font-size: var(--fs-xl);
         height: 36px;
@@ -173,9 +213,13 @@
         font-size: var(--fs-xl);
     }
 
-    .gemini-logo svg {
-        width: 40px;
-        height: 40px;
+    .welcome-kicker {
+        margin-bottom: var(--sp-5);
+        font-size: var(--fs-2xs);
+    }
+
+    .welcome-message p {
+        font-size: var(--fs-md);
     }
 
     /* ---- 设置/侧边栏 ---- */
@@ -461,8 +505,26 @@
 
     /* ---- 设置面板移动端 ---- */
     .settings-panel {
+        top: auto;
+        right: 0;
+        bottom: 0;
+        width: 100%;
+        min-width: 0;
+        max-width: none;
+        height: min(86dvh, 720px);
+        border-top: var(--border);
+        border-left: 0;
         border-left-width: 1px;
         box-shadow: none;
+        transform: translateY(100%);
+        transition:
+            transform var(--duration-slow) ease-out,
+            visibility 0s linear var(--duration-slow);
+    }
+
+    .settings-panel.open {
+        transform: translateY(0);
+        transition: transform var(--duration-slow) ease-out;
     }
 
     .settings-header {
@@ -976,9 +1038,8 @@
         font-size: var(--fs-lg);
     }
 
-    .gemini-logo svg {
-        width: 36px;
-        height: 36px;
+    .welcome-kicker-line {
+        width: 24px;
     }
 
     .settings-content {

@@ -90,7 +90,7 @@ export async function storeDataUrlMedia(dataUrl) {
     }
     const id = await createMediaId(dataUrl);
     const existing = await loadMediaBlob(id);
-    if (existing) return { id, mime: existing.mime, size: existing.size };
+    if (existing) return { id, mime: existing.mime, size: existing.size, created: false };
 
     const blob = dataUrlToBlob(dataUrl);
     await withDBLock(
@@ -110,7 +110,7 @@ export async function storeDataUrlMedia(dataUrl) {
                 transaction.onerror = () => reject(transaction.error);
             })
     );
-    return { id, mime: blob.type, size: blob.size };
+    return { id, mime: blob.type, size: blob.size, created: true };
 }
 
 export async function loadMediaBlob(mediaId) {
@@ -201,6 +201,7 @@ export async function resolveMessagesMediaForApi(messages) {
 export async function externalizeMessagesMedia(messages) {
     if (!hasMediaBlobStore()) return { messages, mediaIds: [] };
     const mediaIds = new Set();
+    const newMediaIds = new Set();
     const output = [];
     for (const message of messages) {
         collectMessageMediaIds(message, mediaIds);
@@ -218,6 +219,7 @@ export async function externalizeMessagesMedia(messages) {
                     return part;
                 }
                 mediaIds.add(stored.id);
+                if (stored.created) newMediaIds.add(stored.id);
                 const externalized = {
                     ...part,
                     mediaId: stored.id,
@@ -232,7 +234,39 @@ export async function externalizeMessagesMedia(messages) {
         });
         output.push(externalizedMessage);
     }
-    return { messages: output, mediaIds: Array.from(mediaIds) };
+    return {
+        messages: output,
+        mediaIds: Array.from(mediaIds),
+        newMediaIds: Array.from(newMediaIds)
+    };
+}
+
+export async function deleteUnreferencedMedia(mediaIds) {
+    if (!hasMediaBlobStore() || !Array.isArray(mediaIds) || mediaIds.length === 0) return;
+    await withDBLock(
+        'webchat-media-cleanup',
+        () =>
+            new Promise((resolve, reject) => {
+                const transaction = getDB().transaction(
+                    [STORES.MEDIA_REFS, STORES.MEDIA_BLOBS],
+                    'readwrite'
+                );
+                const refs = transaction.objectStore(STORES.MEDIA_REFS);
+                const blobs = transaction.objectStore(STORES.MEDIA_BLOBS);
+                const referenced = new Set();
+                const request = refs.getAll();
+                request.onsuccess = () => {
+                    for (const ref of request.result || []) referenced.add(ref.mediaId);
+                    for (const id of mediaIds) {
+                        if (!referenced.has(id)) blobs.delete(id);
+                    }
+                };
+                transaction.oncomplete = resolve;
+                transaction.onerror = () => reject(transaction.error);
+                transaction.onabort = () =>
+                    reject(transaction.error || new Error('媒体清理事务中止'));
+            })
+    );
 }
 
 export async function updateSessionMediaReferences(sessionId, mediaIds) {

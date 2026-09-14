@@ -17,7 +17,7 @@
 .mermaid-block[data-mermaid-status='syntax-error'],
 .mermaid-block[data-mermaid-status='render-error'] {
     border-color: var(--md-coral);
-    box-shadow: var(--shadow-md), var(--glow-coral);
+    box-shadow: var(--shadow-md);
 }
 
 .mermaid-header,

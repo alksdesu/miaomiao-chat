@@ -130,6 +130,16 @@ async function handleMessage({ data: msg }) {
             }
             break;
         }
+
+        case 'session-pinned': {
+            const sessionId = msg.data?.sessionId;
+            if (!sessionId || typeof msg.data?.pinned !== 'boolean') break;
+            const session = state.sessions.find((item) => item.id === sessionId);
+            if (!session) break;
+            session.pinned = msg.data.pinned;
+            eventBus.emit('sessions:updated', { sessions: state.sessions });
+            break;
+        }
     }
 }
 

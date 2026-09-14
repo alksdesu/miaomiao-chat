@@ -187,6 +187,16 @@
     color: var(--color-text-on-accent, #1a1a1a);
 }
 
+.session-item.pinned {
+    border-left: 3px solid var(--md-yellow);
+}
+
+.session-item.pinned .session-name::before {
+    content: '📌';
+    margin-right: var(--sp-2);
+    font-size: var(--fs-sm);
+}
+
 .session-info {
     display: flex;
     align-items: center;
@@ -241,6 +251,10 @@
     align-items: center;
     justify-content: center;
     transition: all var(--duration-fast) var(--ease);
+}
+
+.session-action-btn.pin-session-btn.pinned {
+    color: var(--md-yellow);
 }
 
 .session-action-btn:hover {

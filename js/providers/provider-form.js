@@ -13,7 +13,8 @@ import {
     updateProvider,
     deleteProvider,
     removeModelFromProvider,
-    getActiveApiKey
+    getActiveApiKey,
+    fetchProviderModels
 } from './manager.js';
 import { openclawClient } from '../api/openclaw.js';
 import { escapeHtml } from '../utils/helpers.js';
@@ -181,6 +182,11 @@ export function showProviderForm(providerId) {
                     : ''
             }
             <button type="button" class="btn-secondary" id="cancel-form-btn">取消</button>
+            ${
+                isEdit
+                    ? '<button type="button" class="btn-secondary provider-test-btn" id="test-provider-btn">检查连接</button>'
+                    : ''
+            }
             <button type="button" class="btn-primary" id="save-provider-btn">保存</button>
         </div>
     `;
@@ -200,6 +206,10 @@ function bindFormEvents(providerId) {
     // 保存
     document.getElementById('save-provider-btn')?.addEventListener('click', () => {
         saveProviderForm(providerId);
+    });
+
+    document.getElementById('test-provider-btn')?.addEventListener('click', () => {
+        void testProviderConnection(providerId);
     });
 
     // 取消
@@ -323,6 +333,35 @@ function bindFormEvents(providerId) {
         });
 
         bindOpenClawConnectionEvents(providerId);
+    }
+}
+
+async function testProviderConnection(providerId) {
+    const provider = state.providers.find((item) => item.id === providerId);
+    const button = document.getElementById('test-provider-btn');
+    if (!provider || !button) return;
+
+    const originalLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = '检查中...';
+
+    try {
+        if (provider.apiFormat === 'openclaw') {
+            const result = await openclawClient.connect(
+                provider.endpoint || 'ws://localhost:18789',
+                getActiveApiKey(providerId)
+            );
+            if (!result.success) throw new Error(result.error || '连接失败');
+            showNotification('OpenClaw 连接成功', 'success');
+        } else {
+            const models = await fetchProviderModels(providerId, true);
+            showNotification(`连接成功，返回 ${models.length} 个模型`, 'success');
+        }
+    } catch (error) {
+        showNotification(`连接失败：${error.message || '请检查端点和密钥'}`, 'error');
+    } finally {
+        button.disabled = false;
+        button.textContent = originalLabel || '检查连接';
     }
 }
 

@@ -167,7 +167,7 @@ export async function handleSaveServer(modal, setFormOpen) {
         }
 
         config.command = command;
-        config.args = argsStr ? argsStr.split(/\s+/) : [];
+        config.args = parseCommandArguments(argsStr);
         if (cwd) {
             config.cwd = cwd;
         }
@@ -262,8 +262,17 @@ function validateServerURL(modal, input) {
         return false;
     }
 
-    const urlPattern = /^(https?|wss?):\/\/.+/i;
-    if (!urlPattern.test(value)) {
+    let parsed;
+    try {
+        parsed = new URL(value);
+    } catch {
+        parsed = null;
+    }
+    if (
+        !parsed ||
+        !['http:', 'https:', 'ws:', 'wss:'].includes(parsed.protocol) ||
+        !parsed.hostname
+    ) {
         setFieldError(
             modal,
             'mcp-server-url',
@@ -274,6 +283,18 @@ function validateServerURL(modal, input) {
 
     clearFieldError(modal, 'mcp-server-url');
     return true;
+}
+
+function parseCommandArguments(value) {
+    if (!value) return [];
+    const args = [];
+    const pattern = /"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|([^\s]+)/g;
+    let match;
+    while ((match = pattern.exec(value))) {
+        const token = match[1] ?? match[2] ?? match[3];
+        args.push(token.replace(/\\([\\"'])/g, '$1'));
+    }
+    return args;
 }
 
 /**

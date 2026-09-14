@@ -270,16 +270,18 @@ export function getToolsForAPI(apiFormat) {
         }
     }
 
-    // 同名去重：多个 MCP server 提供同名工具时 API 不接受重复 name
+    // MCP 工具同名时用 ID 暴露重复项，避免一个服务器的工具被静默丢弃
     const seenNames = new Set();
-    enabledTools = enabledTools.filter((tool) => {
+    enabledTools = enabledTools.map((tool) => {
         const name = tool.name || tool.id;
         if (seenNames.has(name)) {
-            logger.warn(`[Tools] 工具名冲突，已跳过重复项: ${name} (${tool.id})`);
-            return false;
+            const exposedName = tool.id || `${name}_${seenNames.size}`;
+            logger.warn(`[Tools] 工具名冲突，改用唯一名称: ${name} → ${exposedName}`);
+            seenNames.add(exposedName);
+            return { ...tool, name: exposedName };
         }
         seenNames.add(name);
-        return true;
+        return tool;
     });
 
     switch (apiFormat) {

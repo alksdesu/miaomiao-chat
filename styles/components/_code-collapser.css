@@ -12,7 +12,7 @@
 
 .code-block-collapsible:hover {
     transform: var(--hover-offset-sm);
-    box-shadow: var(--shadow-lg), var(--glow-blue);
+    box-shadow: var(--shadow-lg);
 }
 
 /* ========== 折叠头部 ========== */

@@ -56,6 +56,7 @@ import {
 } from './message-page-repository.js';
 import {
     deleteSessionMediaReferences,
+    deleteUnreferencedMedia,
     externalizeMessagesMedia,
     putSessionMediaReferences
 } from './media-blob-store.js';
@@ -262,6 +263,7 @@ export async function saveSessionMessages(sessionId, data) {
         const persisted = await externalizeMessagesMedia(sourceMessages);
         const messages = persisted.messages;
         return new Promise((resolve, reject) => {
+            let transactionFinished = false;
             const searchIndex = createSessionSearchIndexRecord(
                 sessionId,
                 messages,
@@ -293,6 +295,7 @@ export async function saveSessionMessages(sessionId, data) {
             }
 
             transaction.oncomplete = () => {
+                transactionFinished = true;
                 eventBus.emit('session-search:index-updated', {
                     sessionId,
                     searchIndex
@@ -300,6 +303,11 @@ export async function saveSessionMessages(sessionId, data) {
                 resolve();
             };
             transaction.onerror = () => {
+                if (!transactionFinished && persisted.newMediaIds?.length) {
+                    deleteUnreferencedMedia(persisted.newMediaIds).catch((error) =>
+                        logger.warn('[Storage] 清理失败事务产生的媒体失败:', error)
+                    );
+                }
                 const error = transaction.error;
                 if (
                     error &&
@@ -386,6 +394,14 @@ export async function saveSessionAtomic(sessionMeta, messagesData, opts = {}) {
             // 原子性，跨 tab 抢占场景下另一 tab 的 commit 不会插入到我们的 get 与 put 之间
             const transaction = getDB().transaction(storeNames, 'readwrite');
             let conflictError = null;
+            let transactionFinished = false;
+            const cleanupNewMedia = () => {
+                if (transactionFinished || !persisted.newMediaIds?.length) return;
+                transactionFinished = true;
+                deleteUnreferencedMedia(persisted.newMediaIds).catch((error) =>
+                    logger.warn('[Storage] 清理失败事务产生的媒体失败:', error)
+                );
+            };
 
             const sessionStore = transaction.objectStore(STORE_NAME);
             const messagesStore = transaction.objectStore(STORES.MESSAGES);
@@ -415,11 +431,11 @@ export async function saveSessionAtomic(sessionMeta, messagesData, opts = {}) {
                 const getReq = sessionStore.get(sessionMeta.id);
                 getReq.onsuccess = () => {
                     const existing = getReq.result || null;
-                    if (existing && existing.updatedAt !== expectedUpdatedAt) {
+                    if (!existing || existing.updatedAt !== expectedUpdatedAt) {
                         conflictError = new SessionConflictError(
                             sessionMeta.id,
                             expectedUpdatedAt,
-                            existing.updatedAt
+                            existing?.updatedAt ?? null
                         );
                         transaction.abort();
                         return;
@@ -434,6 +450,7 @@ export async function saveSessionAtomic(sessionMeta, messagesData, opts = {}) {
             }
 
             transaction.oncomplete = () => {
+                transactionFinished = true;
                 if (searchIndex) {
                     eventBus.emit('session-search:index-updated', {
                         sessionId: sessionMeta.id,
@@ -443,6 +460,7 @@ export async function saveSessionAtomic(sessionMeta, messagesData, opts = {}) {
                 resolve();
             };
             transaction.onerror = () => {
+                cleanupNewMedia();
                 if (conflictError) {
                     reject(conflictError);
                     return;
@@ -457,6 +475,7 @@ export async function saveSessionAtomic(sessionMeta, messagesData, opts = {}) {
                 reject(error);
             };
             transaction.onabort = () => {
+                cleanupNewMedia();
                 if (conflictError) reject(conflictError);
                 else reject(transaction.error || new Error('Transaction aborted'));
             };

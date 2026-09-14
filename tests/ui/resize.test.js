@@ -40,6 +40,9 @@ describe('resize', () => {
         elements.userInput = null;
         elements.settingsPanel = null;
         elements.sidebar = null;
+        // 用例体末尾的收尾在断言失败时不会执行，状态一律在此重置
+        state.storageMode = 'indexedDB';
+        localStorage.clear();
     });
 
     afterEach(() => {
@@ -95,14 +98,11 @@ describe('resize', () => {
             elements.userInput = textarea;
             state.storageMode = 'localStorage';
 
-            // setup.js polyfill 在实例上挂 getItem 覆盖原型链，spy 走 instance 才命中
-            const spy = vi.spyOn(localStorage, 'getItem').mockReturnValue('150');
+            // 不 spy getItem：jsdom 原生 localStorage 是 Proxy，defineProperty 会被当成存 item 吞掉
+            localStorage.setItem('inputTextareaHeight', '150');
 
             await initInputResize();
             expect(textarea.style.height).toBe('150px');
-
-            spy.mockRestore();
-            state.storageMode = 'indexedDB';
         });
 
         it('mousedown 开始调整', async () => {

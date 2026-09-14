@@ -91,10 +91,10 @@ async function registerBuiltins() {
     const baseCount = 5;
     const cuCount = isElectron() ? 1 : 0;
 
-    // DevTools Monitor 工具
-    registerDevToolsTools();
+    // DevTools Monitor 依赖 Electron 的开发者工具接口
+    if (isElectron()) registerDevToolsTools();
 
-    logger.debug(`[Tools] 已注册 ${baseCount + cuCount + 7} 个内置工具`);
+    logger.debug(`[Tools] 已注册 ${baseCount + cuCount + (isElectron() ? 7 : 0)} 个内置工具`);
 }
 
 /**

@@ -131,9 +131,9 @@ describe('video-persistence', () => {
             const cache = new Map();
             const dataUrl = 'data:video/mp4;base64,AAAA';
             const result = await replaceVideoDataUrlsDeep(dataUrl, cache);
-            // 非平台环境下，persistVideoDataUrl 最终缓存 dataUrl -> dataUrl
+            // 非平台环境下不缓存失败结果，避免后续保存把 data URL 误当成持久化地址
             expect(result).toBe(dataUrl);
-            expect(cache.has(dataUrl)).toBe(true);
+            expect(cache.has(dataUrl)).toBe(false);
         });
 
         it('缓存命中直接返回', async () => {

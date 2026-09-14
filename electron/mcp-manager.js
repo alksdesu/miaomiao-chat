@@ -1,580 +1,419 @@
 /**
- * Electron MCP 管理器
- * 在主进程中管理本地 MCP 服务器的子进程
+ * 本地 MCP 进程、握手与请求生命周期。
  */
-
-const { spawn } = require('child_process');
+const spawn = require('cross-spawn');
 const { EventEmitter } = require('events');
+const { version } = require('../package.json');
 
-/**
- * MCP 服务器进程管理器
- */
+const MAX_FRAME_BYTES = 32 * 1024 * 1024;
+const MAX_HEADER_BYTES = 8192;
+const PROTOCOL_VERSIONS = new Set(['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25']);
+
 class MCPManager extends EventEmitter {
-    constructor() {
+    constructor({ spawnProcess = spawn, requestTimeout = 10000, stopTimeout = 5000 } = {}) {
         super();
-        this.processes = new Map(); // serverId -> process info
-        this.messageHandlers = new Map(); // serverId -> message handler
-        this.requestQueue = new Map(); // requestId -> { serverId, resolve, reject, timeout }
+        this.spawnProcess = spawnProcess;
+        this.requestTimeout = requestTimeout;
+        this.stopTimeout = stopTimeout;
+        this.processes = new Map();
+        this.requestQueue = new Map();
         this.requestIdCounter = 0;
-
-        // ✅ 重启配置
         this.restartConfig = {
-            enabled: true,           // 启用自动重启
-            maxRestarts: 3,          // 最大重启次数（每分钟）
-            resetInterval: 60000,    // 重置计数器时间窗口（1 分钟）
-            restartDelay: 2000       // 重启延迟（2 秒）
+            enabled: true,
+            maxRestarts: 3,
+            resetInterval: 60000,
+            restartDelay: 2000
         };
-
-        // ✅ 重启计数器
-        this.restartCounts = new Map(); // serverId -> { count, lastRestart, config }
+        this.restartCounts = new Map();
+        this.restartTimers = new Map();
+        this.shuttingDown = false;
     }
 
-    /**
-     * Ensure the MCP server completed the initialization handshake (initialize -> initialized).
-     * Per MCP spec, clients must initialize before calling tools/list, tools/call, etc.
-     * @param {string} serverId - Server ID
-     * @returns {Promise<void>}
-     */
-    async ensureInitialized(serverId) {
-        const processInfo = this.processes.get(serverId);
-        if (!processInfo) {
-            throw new Error(`Server not running: ${serverId}`);
+    async startServer(config, { restart = false } = {}) {
+        if (this.shuttingDown) return { success: false, error: '应用正在退出' };
+        const { serverId, command, args = [], env = {}, cwd } = config || {};
+        if (
+            typeof serverId !== 'string' ||
+            !serverId ||
+            typeof command !== 'string' ||
+            !command.trim() ||
+            !Array.isArray(args) ||
+            args.some((arg) => typeof arg !== 'string') ||
+            !env ||
+            typeof env !== 'object' ||
+            Array.isArray(env) ||
+            Object.values(env).some((value) => typeof value !== 'string') ||
+            (cwd !== undefined && typeof cwd !== 'string')
+        ) {
+            return { success: false, error: 'MCP 启动配置格式错误' };
         }
-
-        if (processInfo.status !== 'running') {
-            throw new Error(`Server status not ready: ${processInfo.status}`);
-        }
-
-        if (processInfo.initialized) return;
-
-        if (processInfo.initializing) {
-            await processInfo.initializing;
-            return;
-        }
-
-        processInfo.initializing = (async () => {
-            await this.sendRequest(serverId, 'initialize', {
-                protocolVersion: '2024-11-05',
-                capabilities: {},
-                clientInfo: {
-                    name: 'webchat',
-                    version: '1.1.4'
-                }
+        if (this.processes.has(serverId)) return { success: false, error: '服务器已运行' };
+        if (!restart) {
+            this.cancelRestart(serverId);
+            this.restartCounts.set(serverId, {
+                count: 0,
+                lastRestart: Date.now(),
+                config: { serverId, command, args, env, cwd }
             });
-
-            this._sendNotification(serverId, 'initialized');
-            processInfo.initialized = true;
-        })();
-
+        }
+        let info;
         try {
-            await processInfo.initializing;
-        } finally {
-            processInfo.initializing = null;
-        }
-    }
-
-    /**
-     * Send a JSON-RPC notification (no id, no response expected).
-     * @private
-     */
-    _sendNotification(serverId, method, params) {
-        const processInfo = this.processes.get(serverId);
-        if (!processInfo) {
-            throw new Error(`Server not running: ${serverId}`);
-        }
-
-        if (processInfo.status !== 'running') {
-            throw new Error(`Server status not ready: ${processInfo.status}`);
-        }
-
-        const notification = {
-            jsonrpc: '2.0',
-            method
-        };
-
-        if (params !== undefined) {
-            notification.params = params;
-        }
-
-        const requestStr = JSON.stringify(notification) + '\n';
-        processInfo.process.stdin.write(requestStr);
-        console.log(`[MCP Manager] [${serverId}] Sent notification:`, method);
-    }
-
-    /**
-     * 启动 MCP 服务器
-     * @param {Object} config - 配置
-     * @param {string} config.serverId - 服务器 ID
-     * @param {string} config.command - 命令
-     * @param {string[]} config.args - 参数
-     * @param {Object} [config.env] - 环境变量
-     * @param {string} [config.cwd] - 工作目录
-     * @returns {Promise<{success: boolean, error?: string}>}
-     */
-    async startServer(config) {
-        const { serverId, command, args = [], env = {}, cwd } = config;
-
-        // 检查是否已运行
-        if (this.processes.has(serverId)) {
-            console.warn(`[MCP Manager] 服务器已运行: ${serverId}`);
-            return { success: false, error: '服务器已运行' };
-        }
-
-        try {
-            // 合并环境变量
-            const processEnv = {
-                ...process.env,
-                ...env
-            };
-
-            // 启动子进程
-            const childProcess = spawn(command, args, {
+            const child = this.spawnProcess(command, args, {
                 cwd: cwd || process.cwd(),
-                env: processEnv,
-                stdio: ['pipe', 'pipe', 'pipe'] // stdin, stdout, stderr
+                env: { ...process.env, ...env },
+                stdio: ['pipe', 'pipe', 'pipe'],
+                windowsHide: true
             });
-
-            // 存储进程信息
-            const processInfo = {
-                process: childProcess,
+            info = {
+                process: child,
                 serverId,
                 command,
                 args,
-                env: processEnv,  // ✅ 保存环境变量
-                cwd,              // ✅ 保存工作目录
-                buffer: Buffer.alloc(0), // 用于累积 stdout 数据
+                buffer: Buffer.alloc(0),
                 startTime: Date.now(),
                 status: 'starting',
                 initialized: false,
-                initializing: null
+                initializing: null,
+                ready: false,
+                intentionalStop: false
             };
-
-            this.processes.set(serverId, processInfo);
-
-            // ✅ 初始化重启计数器（保存配置以便重启）
-            if (!this.restartCounts.has(serverId)) {
-                this.restartCounts.set(serverId, {
-                    count: 0,
-                    lastRestart: 0,
-                    config: { serverId, command, args, env, cwd }
-                });
-            }
-
-            // 设置 stdout 处理器
-            childProcess.stdout.on('data', (data) => {
-                this.handleStdout(serverId, data);
+            this.processes.set(serverId, info);
+            child.stdout.on('data', (data) => {
+                if (this.processes.get(serverId) === info) this.handleStdout(serverId, data);
             });
-
-            // 设置 stderr 处理器
-            childProcess.stderr.on('data', (data) => {
-                console.error(`[MCP Manager] [${serverId}] stderr:`, data.toString());
+            child.stderr.on('data', (data) => {
+                this.emit('server-diagnostic', { serverId, bytes: data.length });
             });
-
-            // 设置退出处理器
-            childProcess.on('exit', (code, signal) => {
-                console.log(`[MCP Manager] [${serverId}] 进程退出: code=${code}, signal=${signal}`);
-                this.handleProcessExit(serverId, code, signal);
-            });
-
-            // 设置错误处理器
-            childProcess.on('error', (error) => {
-                console.error(`[MCP Manager] [${serverId}] 进程错误:`, error);
-                processInfo.status = 'error';
-                this.emit('server-error', { serverId, error: error.message });
-            });
-
-            // 等待进程启动
+            child.on('exit', (code, signal) =>
+                this.handleProcessExit(serverId, code, signal, info)
+            );
+            child.on('error', (error) => this.failProcess(serverId, error, info));
+            child.stdin.on('error', (error) => this.failProcess(serverId, error, info));
+            child.stdout.on('error', (error) => this.failProcess(serverId, error, info));
+            child.stderr.on('error', (error) => this.failProcess(serverId, error, info));
             await new Promise((resolve, reject) => {
-                const timeout = setTimeout(() => {
-                    reject(new Error('启动超时'));
-                }, 10000);
-
-                // 假设进程成功启动（实际应等待初始化消息）
-                setTimeout(() => {
-                    clearTimeout(timeout);
-                    processInfo.status = 'running';
-                    resolve();
-                }, 1000);
+                const finish = (error) => {
+                    clearTimeout(timer);
+                    child.removeListener('spawn', onSpawn);
+                    child.removeListener('error', onError);
+                    child.removeListener('exit', onExit);
+                    error ? reject(error) : resolve();
+                };
+                const onSpawn = () => finish();
+                const onError = (error) => finish(error);
+                const onExit = () => finish(new Error('MCP 进程在启动期间退出'));
+                const timer = setTimeout(
+                    () => finish(new Error('MCP 启动超时')),
+                    this.requestTimeout
+                );
+                child.once('spawn', onSpawn);
+                child.once('error', onError);
+                child.once('exit', onExit);
             });
-
-            console.log(`[MCP Manager] ✅ 已启动 MCP 服务器: ${serverId}`);
+            if (info.intentionalStop || this.processes.get(serverId) !== info)
+                throw new Error('MCP 启动已取消');
+            info.status = 'running';
+            await this.ensureInitialized(serverId);
+            if (info.intentionalStop || this.processes.get(serverId) !== info)
+                throw new Error('MCP 启动已取消');
+            info.ready = true;
             this.emit('server-started', { serverId });
-
             return { success: true };
-
         } catch (error) {
-            console.error(`[MCP Manager] ❌ 启动失败: ${serverId}`, error);
-            this.processes.delete(serverId);
+            if (info && this.processes.get(serverId) === info)
+                await this.stopProcess(serverId, info);
             return { success: false, error: error.message };
         }
     }
 
-    /**
-     * 停止 MCP 服务器
-     * @param {string} serverId - 服务器 ID
-     * @returns {Promise<void>}
-     */
-    async stopServer(serverId) {
-        const processInfo = this.processes.get(serverId);
-        if (!processInfo) {
-            console.warn(`[MCP Manager] 服务器未运行: ${serverId}`);
-            return;
-        }
-
-        try {
-            // 发送终止信号
-            processInfo.process.kill('SIGTERM');
-
-            // 等待进程退出（最多5秒）
-            await new Promise((resolve) => {
-                const timeout = setTimeout(() => {
-                    // 强制杀死
-                    console.warn(`[MCP Manager] 强制终止: ${serverId}`);
-                    processInfo.process.kill('SIGKILL');
-                    resolve();
-                }, 5000);
-
-                processInfo.process.on('exit', () => {
-                    clearTimeout(timeout);
-                    resolve();
-                });
+    async ensureInitialized(serverId) {
+        const info = this.processes.get(serverId);
+        if (!info || info.status !== 'running') throw new Error(`服务器未运行: ${serverId}`);
+        if (info.initialized) return;
+        if (info.initializing) return info.initializing;
+        info.initializing = (async () => {
+            const result = await this.sendRequest(serverId, 'initialize', {
+                protocolVersion: '2025-11-25',
+                capabilities: {},
+                clientInfo: { name: 'webchat', version }
             });
-
-            this.processes.delete(serverId);
-            console.log(`[MCP Manager] 🔌 已停止 MCP 服务器: ${serverId}`);
-            this.emit('server-stopped', { serverId });
-
-        } catch (error) {
-            console.error(`[MCP Manager] 停止失败: ${serverId}`, error);
+            if (
+                !result ||
+                !PROTOCOL_VERSIONS.has(result.protocolVersion) ||
+                !result.capabilities ||
+                typeof result.capabilities !== 'object' ||
+                Array.isArray(result.capabilities)
+            ) {
+                throw new Error('MCP 初始化响应无效或协议版本不受支持');
+            }
+            await this.writeMessage(info, { jsonrpc: '2.0', method: 'notifications/initialized' });
+            info.initialized = true;
+        })();
+        try {
+            await info.initializing;
+        } finally {
+            info.initializing = null;
         }
     }
 
-    /**
-     * 发送请求到 MCP 服务器
-     * @param {string} serverId - 服务器 ID
-     * @param {string} method - MCP 方法
-     * @param {Object} [params] - 参数
-     * @returns {Promise<Object>} 响应结果
-     */
-    async sendRequest(serverId, method, params = {}) {
-        // Ensure initialization handshake before calling any non-initialize methods
-        if (method !== 'initialize') {
-            await this.ensureInitialized(serverId);
-        }
-
-        const processInfo = this.processes.get(serverId);
-        if (!processInfo) {
-            throw new Error(`服务器未运行: ${serverId}`);
-        }
-
-        if (processInfo.status !== 'running') {
-            throw new Error(`服务器状态异常: ${processInfo.status}`);
-        }
-
-        // 生成请求 ID
-        const requestId = `req_${++this.requestIdCounter}`;
-
-        // 构建 JSON-RPC 请求
-        const request = {
-            jsonrpc: '2.0',
-            id: requestId,
-            method,
-            params
-        };
-
-        // 创建 Promise
+    writeMessage(info, message) {
         return new Promise((resolve, reject) => {
-            // ✅ 根据方法类型设置超时时间
-            const timeoutDuration = method === 'tools/call' ? 180000 : 10000; // 工具调用 180s，其他 10s
-
-            const timeout = setTimeout(() => {
-                this.requestQueue.delete(requestId);
-                reject(new Error(`请求超时 (${timeoutDuration}ms): ${method}`));
-            }, timeoutDuration);
-
-            // 存储请求回调
-            this.requestQueue.set(requestId, { serverId, resolve, reject, timeout });
-
-            // 发送请求（通过 stdin）
-            try {
-                const requestStr = JSON.stringify(request) + '\n';
-                processInfo.process.stdin.write(requestStr);
-                console.log(`[MCP Manager] [${serverId}] 发送请求:`, method);
-            } catch (error) {
-                clearTimeout(timeout);
-                this.requestQueue.delete(requestId);
-                reject(error);
+            if (
+                info.intentionalStop ||
+                info.process.stdin.destroyed ||
+                !info.process.stdin.writable
+            ) {
+                reject(new Error('MCP 输入流已关闭'));
+                return;
             }
+            const data = JSON.stringify(message) + '\n';
+            if (Buffer.byteLength(data) > MAX_FRAME_BYTES) {
+                reject(new Error('MCP 请求过大'));
+                return;
+            }
+            info.process.stdin.write(data, (error) => (error ? reject(error) : resolve()));
         });
     }
 
-    /**
-     * 处理 stdout 数据
-     * @private
-     */
+    async sendRequest(serverId, method, params = {}) {
+        if (method !== 'initialize') await this.ensureInitialized(serverId);
+        const info = this.processes.get(serverId);
+        if (!info || info.status !== 'running' || info.intentionalStop)
+            throw new Error(`服务器未运行: ${serverId}`);
+        const id = `req_${++this.requestIdCounter}`;
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(
+                () => {
+                    this.requestQueue.delete(id);
+                    reject(new Error(`MCP 请求超时: ${method}`));
+                },
+                method === 'tools/call' ? 180000 : this.requestTimeout
+            );
+            this.requestQueue.set(id, { serverId, resolve, reject, timeout });
+            this.writeMessage(info, { jsonrpc: '2.0', id, method, params }).catch((error) => {
+                clearTimeout(timeout);
+                this.requestQueue.delete(id);
+                reject(error);
+            });
+        });
+    }
+
     handleStdout(serverId, data) {
-        const processInfo = this.processes.get(serverId);
-        if (!processInfo) return;
-
-        const incomingBuffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
-        processInfo.buffer = Buffer.concat([processInfo.buffer, incomingBuffer]);
-
-        while (processInfo.buffer.length > 0) {
-            const headerText = processInfo.buffer.toString('utf8', 0, Math.min(processInfo.buffer.length, 128));
-            const hasContentLengthPrefix = /^content-length\s*:/i.test(headerText);
-
-            // MCP stdio 标准帧格式：Content-Length: <n>\r\n\r\n<json>
-            if (hasContentLengthPrefix) {
-                const headerEndCRLF = processInfo.buffer.indexOf('\r\n\r\n');
-                const headerEndLF = processInfo.buffer.indexOf('\n\n');
-                const headerEnd = headerEndCRLF >= 0 ? headerEndCRLF : headerEndLF;
-                const separatorLength = headerEndCRLF >= 0 ? 4 : 2;
-
-                // 头部还不完整，继续等待
-                if (headerEnd < 0) break;
-
-                const headersRaw = processInfo.buffer.slice(0, headerEnd).toString('utf8');
-                const lengthMatch = headersRaw.match(/content-length\s*:\s*(\d+)/i);
-                if (!lengthMatch) {
-                    console.error(`[MCP Manager] [${serverId}] 缺少 Content-Length 头，丢弃数据块`);
-                    processInfo.buffer = processInfo.buffer.slice(headerEnd + separatorLength);
-                    continue;
+        const info = this.processes.get(serverId);
+        if (!info || info.intentionalStop) return;
+        const incoming = Buffer.from(data);
+        if (info.buffer.length + incoming.length > MAX_FRAME_BYTES + MAX_HEADER_BYTES) {
+            this.failProcess(serverId, new Error('MCP 缓冲区超过大小限制'), info);
+            return;
+        }
+        info.buffer = Buffer.concat([info.buffer, incoming]);
+        while (info.buffer.length) {
+            const prefix = info.buffer.toString('utf8', 0, Math.min(info.buffer.length, 128));
+            let payload;
+            if (/^content-length\s*:/i.test(prefix)) {
+                const crlf = info.buffer.indexOf('\r\n\r\n');
+                const lf = info.buffer.indexOf('\n\n');
+                const headerEnd = crlf >= 0 ? crlf : lf;
+                if (headerEnd < 0 && info.buffer.length <= MAX_HEADER_BYTES) break;
+                const header = headerEnd >= 0 ? info.buffer.toString('utf8', 0, headerEnd) : '';
+                const length = Number(header.match(/^content-length\s*:\s*(\d+)\s*$/im)?.[1]);
+                if (
+                    headerEnd < 0 ||
+                    headerEnd > MAX_HEADER_BYTES ||
+                    !Number.isSafeInteger(length) ||
+                    length <= 0 ||
+                    length > MAX_FRAME_BYTES
+                ) {
+                    this.failProcess(serverId, new Error('MCP 帧长度无效或过大'), info);
+                    return;
                 }
-
-                const contentLength = parseInt(lengthMatch[1], 10);
-                const frameEnd = headerEnd + separatorLength + contentLength;
-                if (processInfo.buffer.length < frameEnd) {
-                    // 消息体未完整到达
+                const start = headerEnd + (crlf >= 0 ? 4 : 2);
+                if (info.buffer.length < start + length) break;
+                payload = info.buffer.subarray(start, start + length);
+                info.buffer = info.buffer.subarray(start + length);
+            } else {
+                const newline = info.buffer.indexOf('\n');
+                if (newline < 0) {
+                    if (info.buffer.length > MAX_FRAME_BYTES)
+                        this.failProcess(serverId, new Error('MCP 消息过大'), info);
                     break;
                 }
-
-                const payloadBuffer = processInfo.buffer.slice(headerEnd + separatorLength, frameEnd);
-                processInfo.buffer = processInfo.buffer.slice(frameEnd);
-
-                try {
-                    const message = JSON.parse(payloadBuffer.toString('utf8'));
-                    this.handleMessage(serverId, message);
-                } catch (error) {
-                    console.error(`[MCP Manager] [${serverId}] Content-Length 帧 JSON 解析失败:`, error);
+                if (newline > MAX_FRAME_BYTES) {
+                    this.failProcess(serverId, new Error('MCP 消息过大'), info);
+                    return;
                 }
-                continue;
+                payload = info.buffer.subarray(0, newline);
+                info.buffer = info.buffer.subarray(newline + 1);
             }
-
-            // 兼容 NDJSON（一行一个 JSON）
-            const newlineIndex = processInfo.buffer.indexOf('\n');
-            if (newlineIndex < 0) break;
-
-            const lineBuffer = processInfo.buffer.slice(0, newlineIndex);
-            processInfo.buffer = processInfo.buffer.slice(newlineIndex + 1);
-
-            const line = lineBuffer.toString('utf8').trim();
-            if (!line) continue;
-
+            const text = payload.toString('utf8').trim();
+            if (!text) continue;
             try {
-                const message = JSON.parse(line);
-                this.handleMessage(serverId, message);
+                this.handleMessage(serverId, JSON.parse(text));
             } catch {
-                console.error(`[MCP Manager] [${serverId}] NDJSON 解析失败:`, line);
+                this.emit('server-diagnostic', { serverId, error: 'MCP 返回无效 JSON' });
             }
         }
     }
 
-    /**
-     * 处理 MCP 消息
-     * @private
-     */
     handleMessage(serverId, message) {
-        console.log(`[MCP Manager] [${serverId}] 收到消息:`, message);
-
-        // 响应消息（包含 id）
-        if (message.id) {
+        // MCP 返回内容可能包含用户数据或凭据，日志只保留协议类型。
+        if (
+            !message ||
+            typeof message !== 'object' ||
+            Array.isArray(message) ||
+            message.jsonrpc !== '2.0'
+        )
+            return;
+        if (Object.hasOwn(message, 'id') && Object.hasOwn(message, 'method')) {
+            const info = this.processes.get(serverId);
+            if (info)
+                this.writeMessage(info, {
+                    jsonrpc: '2.0',
+                    id: message.id,
+                    ...(message.method === 'ping'
+                        ? { result: {} }
+                        : { error: { code: -32601, message: 'Method not supported' } })
+                }).catch(() => {});
+        } else if (Object.hasOwn(message, 'id')) {
             const pending = this.requestQueue.get(message.id);
-            if (pending) {
-                if (pending.serverId && pending.serverId !== serverId) {
-                    console.warn(`[MCP Manager] [${serverId}] Response serverId mismatch, ignoring`, {
-                        messageId: message.id,
-                        pendingServerId: pending.serverId
-                    });
-                    return;
-                }
-
-                clearTimeout(pending.timeout);
-                this.requestQueue.delete(message.id);
-
-                if (message.error) {
-                    pending.reject(new Error(message.error.message || '未知错误'));
-                } else {
-                    pending.resolve(message.result);
-                }
-            }
-        } else {
-            // 通知消息（无 id）
+            if (!pending || pending.serverId !== serverId) return;
+            if (!Object.hasOwn(message, 'result') && !message.error) return;
+            clearTimeout(pending.timeout);
+            this.requestQueue.delete(message.id);
+            message.error
+                ? pending.reject(new Error(message.error.message || 'MCP 请求失败'))
+                : pending.resolve(message.result);
+        } else if (typeof message.method === 'string') {
             this.emit('notification', { serverId, message });
         }
     }
 
-    /**
-     * 处理进程退出
-     * @private
-     */
-    handleProcessExit(serverId, code, signal) {
-        const processInfo = this.processes.get(serverId);
-        if (processInfo) {
-            processInfo.status = 'stopped';
-        }
-
-        // 清理未完成的请求
-        for (const [requestId, pending] of this.requestQueue.entries()) {
+    rejectRequests(serverId, error) {
+        for (const [id, pending] of this.requestQueue) {
             if (pending.serverId !== serverId) continue;
             clearTimeout(pending.timeout);
-            pending.reject(new Error('服务器进程已退出'));
-            this.requestQueue.delete(requestId);
+            this.requestQueue.delete(id);
+            pending.reject(error);
         }
+    }
 
-        console.log(`[MCP Manager] [${serverId}] 进程已退出: code=${code}, signal=${signal}`);
+    failProcess(serverId, error, info) {
+        if (this.processes.get(serverId) !== info || info.intentionalStop) return;
+        this.rejectRequests(serverId, error);
+        this.emit('server-error', { serverId, error: error.message });
+        void this.stopProcess(serverId, info);
+    }
+
+    handleProcessExit(serverId, code, signal, info = this.processes.get(serverId)) {
+        if (!info || this.processes.get(serverId) !== info) return;
+        info.status = 'stopped';
+        this.processes.delete(serverId);
+        this.rejectRequests(serverId, new Error('服务器进程已退出'));
         this.emit('server-exited', { serverId, code, signal });
-
-        // ✅ 检查是否应该自动重启
-        if (this._shouldRestart(serverId, code)) {
-            console.log(`[MCP Manager] [${serverId}] 准备自动重启...`);
-            setTimeout(() => {
-                this._attemptRestart(serverId);
-            }, this.restartConfig.restartDelay);
-        } else {
-            // 不重启，清理进程信息
-            this.processes.delete(serverId);
-        }
+        if (info.ready && !info.intentionalStop && code !== 0) this.scheduleRestart(serverId);
     }
 
-    /**
-     * ✅ 判断是否应该重启
-     * @private
-     */
-    _shouldRestart(serverId, exitCode) {
-        // 退出码 0 = 正常退出，不重启
-        if (exitCode === 0) {
-            console.log(`[MCP Manager] [${serverId}] 正常退出，不重启`);
-            return false;
-        }
-
-        // 未启用自动重启
-        if (!this.restartConfig.enabled) {
-            console.log(`[MCP Manager] [${serverId}] 自动重启已禁用`);
-            return false;
-        }
-
-        const restartInfo = this.restartCounts.get(serverId);
-        if (!restartInfo) {
-            console.log(`[MCP Manager] [${serverId}] 无重启信息，不重启`);
-            return false;
-        }
-
-        const now = Date.now();
-        const timeSinceLastRestart = now - restartInfo.lastRestart;
-
-        // 重置计数器（距上次重启超过重置间隔）
-        if (timeSinceLastRestart > this.restartConfig.resetInterval) {
-            console.log(`[MCP Manager] [${serverId}] 重置重启计数器`);
-            restartInfo.count = 0;
-            restartInfo.lastRestart = now;
-        }
-
-        // 检查最大重启次数（断路器模式）
-        if (restartInfo.count >= this.restartConfig.maxRestarts) {
-            console.error(`[MCP Manager] [${serverId}] 已达最大重启次数 (${this.restartConfig.maxRestarts})，停止重启`);
-            this.emit('restart-limit-exceeded', { serverId, count: restartInfo.count });
-            return false;
-        }
-
-        // 增加重启计数
-        restartInfo.count++;
-        restartInfo.lastRestart = now;
-
-        console.log(`[MCP Manager] [${serverId}] 重启次数: ${restartInfo.count}/${this.restartConfig.maxRestarts}`);
-        return true;
+    cancelRestart(serverId) {
+        clearTimeout(this.restartTimers.get(serverId));
+        this.restartTimers.delete(serverId);
     }
 
-    /**
-     * ✅ 尝试重启服务器
-     * @private
-     */
-    async _attemptRestart(serverId) {
-        const restartInfo = this.restartCounts.get(serverId);
-        if (!restartInfo || !restartInfo.config) {
-            console.error(`[MCP Manager] [${serverId}] 无重启配置`);
+    scheduleRestart(serverId) {
+        const restart = this.restartCounts.get(serverId);
+        if (
+            this.shuttingDown ||
+            !this.restartConfig.enabled ||
+            !restart ||
+            this.restartTimers.has(serverId)
+        )
+            return;
+        if (Date.now() - restart.lastRestart > this.restartConfig.resetInterval) restart.count = 0;
+        if (restart.count >= this.restartConfig.maxRestarts) {
+            this.emit('restart-limit-exceeded', { serverId, count: restart.count });
             return;
         }
-
-        console.log(`[MCP Manager] [${serverId}] 正在重启...`);
-        this.emit('server-restarting', { serverId, attempt: restartInfo.count });
-
-        try {
-            // 先停止旧进程（如果还存在）
-            if (this.processes.has(serverId)) {
-                await this.stopServer(serverId);
+        restart.count++;
+        restart.lastRestart = Date.now();
+        const timer = setTimeout(async () => {
+            this.restartTimers.delete(serverId);
+            if (this.shuttingDown || this.restartCounts.get(serverId) !== restart) return;
+            this.emit('server-restarting', { serverId, attempt: restart.count });
+            const result = await this.startServer(restart.config, { restart: true });
+            if (this.restartCounts.get(serverId) !== restart || this.shuttingDown) return;
+            if (result.success) this.emit('server-restarted', { serverId, attempt: restart.count });
+            else {
+                this.emit('server-restart-failed', {
+                    serverId,
+                    error: result.error,
+                    attempt: restart.count
+                });
+                this.scheduleRestart(serverId);
             }
-
-            // 使用保存的配置重新启动
-            const result = await this.startServer(restartInfo.config);
-
-            if (result.success) {
-                console.log(`[MCP Manager] ✅ [${serverId}] 重启成功`);
-                this.emit('server-restarted', { serverId, attempt: restartInfo.count });
-            } else {
-                console.error(`[MCP Manager] ❌ [${serverId}] 重启失败:`, result.error);
-                this.emit('server-restart-failed', { serverId, error: result.error, attempt: restartInfo.count });
-            }
-        } catch (error) {
-            console.error(`[MCP Manager] ❌ [${serverId}] 重启异常:`, error);
-            this.emit('server-restart-failed', { serverId, error: error.message, attempt: restartInfo.count });
-        }
+        }, this.restartConfig.restartDelay);
+        this.restartTimers.set(serverId, timer);
     }
 
-    /**
-     * 获取服务器状态
-     * @param {string} serverId - 服务器 ID
-     * @returns {Object|null} 状态信息
-     */
+    async stopProcess(serverId, info) {
+        if (info.stopping) return info.stopping;
+        info.intentionalStop = true;
+        info.status = 'stopping';
+        info.buffer = Buffer.alloc(0);
+        this.rejectRequests(serverId, new Error('MCP 服务器已停止'));
+        info.stopping = new Promise((resolve) => {
+            const child = info.process;
+            if (child.exitCode !== null || child.signalCode !== null || !child.pid) {
+                resolve();
+                return;
+            }
+            const done = () => {
+                clearTimeout(timer);
+                child.removeListener('exit', done);
+                resolve();
+            };
+            const timer = setTimeout(() => {
+                child.kill('SIGKILL');
+                done();
+            }, this.stopTimeout);
+            child.once('exit', done);
+            child.kill('SIGTERM');
+        });
+        await info.stopping;
+        if (this.processes.get(serverId) === info) this.processes.delete(serverId);
+    }
+
+    async stopServer(serverId) {
+        this.cancelRestart(serverId);
+        this.restartCounts.delete(serverId);
+        const info = this.processes.get(serverId);
+        if (info) await this.stopProcess(serverId, info);
+        this.emit('server-stopped', { serverId });
+    }
+
     getStatus(serverId) {
-        const processInfo = this.processes.get(serverId);
-        if (!processInfo) return null;
-
-        return {
-            serverId,
-            status: processInfo.status,
-            pid: processInfo.process.pid,
-            uptime: Date.now() - processInfo.startTime,
-            command: processInfo.command,
-            args: processInfo.args
-        };
+        const info = this.processes.get(serverId);
+        return info
+            ? {
+                  serverId,
+                  status: info.status,
+                  pid: info.process.pid,
+                  uptime: Date.now() - info.startTime,
+                  command: info.command
+              }
+            : null;
     }
 
-    /**
-     * 获取所有服务器状态
-     * @returns {Array<Object>} 状态列表
-     */
     getAllStatus() {
-        const statuses = [];
-        for (const serverId of this.processes.keys()) {
-            statuses.push(this.getStatus(serverId));
-        }
-        return statuses;
+        return [...this.processes.keys()].map((id) => this.getStatus(id));
     }
 
-    /**
-     * 停止所有服务器
-     * @returns {Promise<void>}
-     */
     async stopAll() {
-        const promises = [];
-        for (const serverId of this.processes.keys()) {
-            promises.push(this.stopServer(serverId));
-        }
-        await Promise.all(promises);
+        this.shuttingDown = true;
+        await Promise.all(
+            [...new Set([...this.processes.keys(), ...this.restartCounts.keys()])].map((id) =>
+                this.stopServer(id)
+            )
+        );
     }
 }
 
-// 导出单例
-const mcpManager = new MCPManager();
-
-module.exports = { mcpManager };
+module.exports = { MCPManager, mcpManager: new MCPManager() };

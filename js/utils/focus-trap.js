@@ -46,8 +46,8 @@ export function trapFocus(element) {
     const handler = (e) => {
         if (e.key !== 'Tab') return;
         // offsetParent 为 null 即 display:none 隐藏区（如折叠的表单），聚焦它们会让 Tab 丢失
-        const focusable = Array.from(element.querySelectorAll(FOCUSABLE_SELECTOR)).filter(
-            (el) => el.offsetParent !== null
+        const focusable = Array.from(element.querySelectorAll(FOCUSABLE_SELECTOR)).filter((el) =>
+            isVisibleFocusable(el)
         );
         if (focusable.length === 0) return;
         const first = focusable[0];
@@ -64,6 +64,17 @@ export function trapFocus(element) {
 
     element.addEventListener('keydown', handler);
     element._focusTrapHandler = handler;
+}
+
+function isVisibleFocusable(element) {
+    if (element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+    let current = element;
+    while (current && current !== document) {
+        const style = window.getComputedStyle(current);
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+        current = current.parentElement;
+    }
+    return true;
 }
 
 /**

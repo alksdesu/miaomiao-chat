@@ -16,6 +16,16 @@ const { exec } = require('child_process');
 async function execute(command, config = {}) {
     const { workingDirectory = process.cwd(), timeout = 30, permissions } = config;
 
+    if (typeof command !== 'string' || !command.trim()) {
+        throw new Error('Bash 命令不能为空');
+    }
+    if (typeof workingDirectory !== 'string') {
+        throw new Error('Bash 工作目录必须是字符串');
+    }
+    if (!Number.isFinite(timeout) || timeout < 5 || timeout > 300) {
+        throw new Error('Bash 超时时间必须在 5 到 300 秒之间');
+    }
+
     // 主进程兜底闸门：调用方（manager.executeBash）已 checkPermission，此处为双层防御，防止 bash.execute 被绕过 manager 直接调用
     if (permissions && permissions.bash === false) {
         throw new Error('bash 权限未授权（主进程闸门）');
@@ -33,7 +43,7 @@ async function execute(command, config = {}) {
             shell: process.platform === 'win32' ? 'powershell.exe' : '/bin/bash'
         };
 
-        console.log(`[Bash] Executing: ${command}`);
+        console.log(`[Bash] Executing command (${command.length} chars)`);
         console.log(`[Bash] Working directory: ${cwd}`);
         console.log(`[Bash] Timeout: ${timeout}s`);
 

@@ -178,6 +178,41 @@ export function getCurrentModelCapabilities() {
 // ========== 模型管理 ==========
 
 const CACHE_DURATION = 30 * 60 * 1000;
+const MODEL_FETCH_TIMEOUT_MS = 30_000;
+const MAX_GEMINI_MODEL_PAGES = 100;
+
+async function fetchWithTimeout(url, options = {}) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), MODEL_FETCH_TIMEOUT_MS);
+
+    try {
+        return await fetch(url, { ...options, signal: controller.signal });
+    } catch (error) {
+        if (error.name === 'AbortError') {
+            throw new Error('请求模型列表超时，请检查 API 地址或网络连接');
+        }
+        throw error;
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
+function ensureSuccessfulResponse(response) {
+    if (response.ok) return;
+    const error = new Error(`HTTP error! status: ${response.status}`);
+    error.status = response.status;
+    throw error;
+}
+
+function normalizeRemoteModel(model, capabilities) {
+    const modelId = typeof model === 'string' ? model.trim() : model?.id?.trim?.();
+    if (!modelId) return null;
+    return {
+        id: modelId,
+        name: typeof model === 'object' ? model.name || modelId : modelId,
+        capabilities
+    };
+}
 
 /**
  * 添加单个模型到提供商
@@ -391,15 +426,17 @@ async function fetchModelsFromAPI(provider) {
                     if (!result.success) throw new Error(result.error);
                 }
                 const result = await openclawClient.send('models.list');
-                const models = Array.isArray(result) ? result : result?.models || [];
-                return models.map((m) => ({
-                    id: typeof m === 'string' ? m : m.id,
-                    name: typeof m === 'string' ? m : m.name || m.id,
-                    capabilities: getDefaultCapabilities('openai')
-                }));
+                const models = Array.isArray(result)
+                    ? result
+                    : Array.isArray(result?.models)
+                      ? result.models
+                      : [];
+                return models
+                    .map((model) => normalizeRemoteModel(model, getDefaultCapabilities('openai')))
+                    .filter(Boolean);
             } catch (e) {
                 logger.warn('[OpenClaw] 获取模型列表失败:', e.message);
-                return [];
+                throw e;
             }
         } else if (apiFormat === 'gemini') {
             const baseModelsEndpoint = `${effectiveEndpoint.replace(/\/$/, '')}/v1beta/models`;
@@ -412,48 +449,55 @@ async function fetchModelsFromAPI(provider) {
             );
 
             let pageToken = null;
+            let pageCount = 0;
+            const seenPageTokens = new Set();
 
             do {
-                let modelsEndpoint = baseModelsEndpoint;
-                const queryParams = [];
+                pageCount++;
+                if (pageCount > MAX_GEMINI_MODEL_PAGES) {
+                    throw new Error('Gemini 模型列表分页超过上限，请检查 API 返回的分页令牌');
+                }
+                if (pageToken) {
+                    if (seenPageTokens.has(pageToken)) {
+                        throw new Error('Gemini 模型列表分页令牌重复，已停止请求');
+                    }
+                    seenPageTokens.add(pageToken);
+                }
 
                 const headers = {};
                 if (geminiApiKeyInHeader) {
                     headers['x-goog-api-key'] = apiKey;
-                } else {
-                    queryParams.push(`key=${apiKey}`);
                 }
 
-                queryParams.push('pageSize=100');
-                if (pageToken) {
-                    queryParams.push(`pageToken=${pageToken}`);
-                }
+                const query = new URLSearchParams({ pageSize: '100' });
+                if (!geminiApiKeyInHeader) query.set('key', apiKey);
+                if (pageToken) query.set('pageToken', pageToken);
+                const modelsEndpoint = `${baseModelsEndpoint}?${query.toString()}`;
 
-                if (queryParams.length > 0) {
-                    modelsEndpoint += '?' + queryParams.join('&');
-                }
-
-                const response = await fetch(modelsEndpoint, {
+                const response = await fetchWithTimeout(modelsEndpoint, {
                     method: 'GET',
                     headers: headers
                 });
 
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
+                ensureSuccessfulResponse(response);
 
                 const data = await response.json();
-                const models = data.models || [];
+                if (!data || typeof data !== 'object' || !Array.isArray(data.models)) {
+                    throw new Error('Gemini 模型列表响应格式无效');
+                }
+                const models = data.models;
                 allModels = allModels.concat(models);
-                pageToken = data.nextPageToken || null;
+                pageToken = typeof data.nextPageToken === 'string' ? data.nextPageToken : null;
             } while (pageToken);
 
             logger.debug(`Total Gemini models fetched: ${allModels.length}`);
 
             return allModels
-                .map((m) => ({
-                    id: m.name.replace('models/', ''),
-                    supportsChat: m.supportedGenerationMethods?.includes('generateContent') || false
+                .filter((model) => typeof model?.name === 'string' && model.name.trim())
+                .map((model) => ({
+                    id: model.name.replace(/^models\//, ''),
+                    supportsChat:
+                        model.supportedGenerationMethods?.includes('generateContent') || false
                 }))
                 .sort((a, b) => {
                     if (a.supportsChat && !b.supportsChat) return -1;
@@ -469,7 +513,7 @@ async function fetchModelsFromAPI(provider) {
             const modelsEndpoint = deriveOpenAIModelsEndpoint(effectiveEndpoint);
             logger.debug('Fetching Claude models from:', modelsEndpoint);
 
-            const response = await fetch(modelsEndpoint, {
+            const response = await fetchWithTimeout(modelsEndpoint, {
                 method: 'GET',
                 headers: {
                     'x-api-key': apiKey,
@@ -478,39 +522,31 @@ async function fetchModelsFromAPI(provider) {
                 }
             });
 
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
+            ensureSuccessfulResponse(response);
 
             const data = await response.json();
-            const models = data.data || [];
-            return models.map((m) => ({
-                id: m.id,
-                name: m.id,
-                capabilities: getDefaultCapabilities(apiFormat)
-            }));
+            const models = Array.isArray(data?.data) ? data.data : [];
+            return models
+                .map((model) => normalizeRemoteModel(model, getDefaultCapabilities(apiFormat)))
+                .filter(Boolean);
         } else {
             const modelsEndpoint = deriveOpenAIModelsEndpoint(effectiveEndpoint);
             logger.debug('Fetching OpenAI models from:', modelsEndpoint);
 
-            const response = await fetch(modelsEndpoint, {
+            const response = await fetchWithTimeout(modelsEndpoint, {
                 method: 'GET',
                 headers: {
                     Authorization: `Bearer ${apiKey}`
                 }
             });
 
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
+            ensureSuccessfulResponse(response);
 
             const data = await response.json();
-            const models = data.data || [];
-            return models.map((m) => ({
-                id: m.id,
-                name: m.id,
-                capabilities: getDefaultCapabilities(apiFormat)
-            }));
+            const models = Array.isArray(data?.data) ? data.data : [];
+            return models
+                .map((model) => normalizeRemoteModel(model, getDefaultCapabilities(apiFormat)))
+                .filter(Boolean);
         }
     } catch (error) {
         logger.error(`拉取模型失败 (${provider.name}):`, error);

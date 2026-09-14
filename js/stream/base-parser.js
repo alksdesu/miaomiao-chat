@@ -21,6 +21,7 @@ import { DefaultSink } from './sink.js';
 
 // 响应长度限制
 const MAX_RESPONSE_LENGTH = 200000;
+const MAX_UNPARSED_BUFFER_LENGTH = MAX_RESPONSE_LENGTH * 4;
 
 // 流式空闲超时（每次 chunk 之间的最长无数据间隔）。
 // state.requestTimeout 只保护连接 + headers 阶段（fetch abort），
@@ -145,6 +146,14 @@ export class BaseStreamParser {
                 if (done) break;
 
                 this.buffer += this.decoder.decode(value, { stream: true });
+                if (this.buffer.length > MAX_UNPARSED_BUFFER_LENGTH) {
+                    await reader.cancel().catch(() => {});
+                    this._handleStreamReadError(
+                        new Error(`响应行超过 ${MAX_RESPONSE_LENGTH} 字符限制`),
+                        'response_too_large'
+                    );
+                    return;
+                }
                 const lines = this.buffer.split('\n');
                 this.buffer = lines.pop() || '';
 

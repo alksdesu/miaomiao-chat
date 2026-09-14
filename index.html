@@ -129,6 +129,12 @@
                     transform: rotate(360deg);
                 }
             }
+            @media (prefers-reduced-motion: reduce) {
+                #app-skeleton,
+                #app-skeleton * {
+                    animation: none;
+                }
+            }
             @media (min-width: 769px) {
                 #app-skeleton .skel-sidebar {
                     display: block;
@@ -1511,38 +1517,14 @@
             </div>
         </div>
 
-        <!-- 像素装饰元素 -->
-        <div class="pixel-decorations">
-            <!-- 星星 -->
-            <div class="pixel-star"></div>
-            <div class="pixel-star"></div>
-            <div class="pixel-star"></div>
-            <div class="pixel-star"></div>
-            <div class="pixel-star"></div>
-            <!-- 云朵 -->
-            <div class="pixel-cloud"></div>
-            <div class="pixel-cloud"></div>
-            <div class="pixel-cloud"></div>
-            <!-- 心形 -->
-            <div class="pixel-heart"></div>
-            <div class="pixel-heart"></div>
-            <!-- 钻石 -->
-            <div class="pixel-diamond"></div>
-            <div class="pixel-diamond"></div>
-            <div class="pixel-diamond"></div>
-            <!-- 圆点组 -->
-            <div class="pixel-dots">
-                <span></span><span></span><span></span> <span></span><span></span><span></span>
-                <span></span><span></span><span></span>
-            </div>
-            <div class="pixel-dots">
-                <span></span><span></span><span></span> <span></span><span></span><span></span>
-                <span></span><span></span><span></span>
-            </div>
-            <div class="pixel-dots">
-                <span></span><span></span><span></span> <span></span><span></span><span></span>
-                <span></span><span></span><span></span>
-            </div>
+        <div class="pixel-decorations" aria-hidden="true">
+            <span class="pixel-star pixel-star-a"></span>
+            <span class="pixel-star pixel-star-b"></span>
+            <span class="pixel-cloud pixel-cloud-a"></span>
+            <span class="pixel-cloud pixel-cloud-b"></span>
+            <span class="pixel-heart pixel-heart-a"></span>
+            <span class="pixel-diamond pixel-diamond-a"></span>
+            <span class="pixel-dots pixel-dots-a"><i></i><i></i><i></i><i></i></span>
         </div>
 
         <div class="app-container">
@@ -1793,6 +1775,28 @@
                             </svg>
                         </button>
                         <button
+                            id="command-palette-toggle"
+                            class="icon-button"
+                            title="命令菜单 (⌘K / Ctrl+K)"
+                            aria-label="打开命令菜单"
+                            aria-expanded="false"
+                            aria-keyshortcuts="Control+K Meta+K"
+                        >
+                            <svg
+                                aria-hidden="true"
+                                width="24"
+                                height="24"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="1.8"
+                            >
+                                <rect x="3" y="5" width="18" height="14" rx="2" />
+                                <path d="M7 9h2m2 0h2m2 0h2M7 13h2m2 0h6" />
+                                <path d="M8 16h8" />
+                            </svg>
+                        </button>
+                        <button
                             id="clear-chat"
                             class="icon-button"
                             title="清空对话"
@@ -1924,6 +1928,20 @@
                         </svg>
                         <span>主题编辑器</span>
                     </button>
+                    <button class="mobile-overflow-item" data-target="command-palette-toggle">
+                        <svg
+                            width="18"
+                            height="18"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.8"
+                        >
+                            <rect x="3" y="5" width="18" height="14" rx="2" />
+                            <path d="M7 9h2m2 0h2m2 0h2M7 13h2m2 0h6M8 16h8" />
+                        </svg>
+                        <span>命令菜单</span>
+                    </button>
                     <button class="mobile-overflow-item" data-target="network-toggle">
                         <svg
                             width="18"
@@ -2001,25 +2019,15 @@
             <main class="chat-container">
                 <div id="messages" class="messages-area" role="log">
                     <!-- 欢迎消息 -->
-                    <div class="welcome-message glass">
-                        <div class="gemini-logo">
-                            <svg width="64" height="64" viewBox="0 0 64 64">
-                                <defs>
-                                    <linearGradient
-                                        id="gemini-gradient"
-                                        x1="0%"
-                                        y1="0%"
-                                        x2="100%"
-                                        y2="100%"
-                                    >
-                                        <stop offset="0%" style="stop-color: #9168c0" />
-                                        <stop offset="100%" style="stop-color: #a8c7fa" />
-                                    </linearGradient>
-                                </defs>
-                                <circle cx="32" cy="32" r="28" fill="url(#gemini-gradient)" />
-                            </svg>
+                    <div class="welcome-message">
+                        <div class="welcome-kicker">
+                            <span class="welcome-kicker-mark" aria-hidden="true">✦</span>
+                            <span>WEBCHAT</span>
+                            <span class="welcome-kicker-line" aria-hidden="true"></span>
+                            <span class="welcome-kicker-state">READY</span>
                         </div>
-                        <h2>你好，我是 喵喵喵</h2>
+                        <h2>你好，我是 AI 助手</h2>
+                        <p>从一个问题开始，慢慢聊。</p>
                     </div>
                 </div>
                 <!-- 滚动到底部按钮 -->
@@ -2055,6 +2063,34 @@
                     class="input-resize-handle"
                     title="拖拽调整输入框高度"
                 ></div>
+                <div class="composer-context" id="composer-context" aria-label="当前聊天设置">
+                    <button
+                        type="button"
+                        class="composer-model-summary"
+                        id="composer-model-summary"
+                        aria-label="打开模型设置"
+                    >
+                        <span class="composer-context-mark" aria-hidden="true">✦</span>
+                        <span class="composer-model-name" id="composer-model-name">未选择模型</span>
+                        <span class="composer-provider-name" id="composer-provider-name"
+                            >配置模型后开始</span
+                        >
+                        <span class="composer-context-chevron" aria-hidden="true">⌄</span>
+                    </button>
+                    <div
+                        class="composer-feature-status"
+                        id="composer-feature-status"
+                        aria-live="polite"
+                    ></div>
+                    <span class="composer-shortcut-hint">Enter 发送 · Shift+Enter 换行</span>
+                </div>
+                <div
+                    id="composer-command-menu"
+                    class="composer-command-menu"
+                    role="listbox"
+                    aria-label="快捷指令"
+                    hidden
+                ></div>
                 <div class="input-bar-inner" id="input-bar-inner">
                     <span class="char-counter" id="char-counter"></span>
                     <button
@@ -2083,6 +2119,8 @@
                         placeholder="输入消息..."
                         rows="1"
                         aria-label="消息输入框"
+                        aria-controls="composer-command-menu"
+                        aria-autocomplete="list"
                     ></textarea>
                     <button
                         id="save-edit"

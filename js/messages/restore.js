@@ -27,6 +27,7 @@ import { safeSetHTML } from '../utils/helpers.js';
 import { lazyImageManager } from '../utils/lazy-image.js';
 import { PartType, MediaKind, filterParts, partsToToolCallRestoreFormat } from './schema.js';
 import { logger } from '../utils/logger.js';
+import { createWelcomeMessage } from '../ui/welcome-message.js';
 import { longChatPerformance } from '../utils/long-chat-performance.js';
 import { messageRenderController } from './message-render-controller.js';
 import {
@@ -45,23 +46,8 @@ import {
 const messageMediaIds = new WeakMap();
 
 function renderWelcomeMessage() {
-    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
-    elements.messagesArea.innerHTML = `
-            <div class="welcome-message glass">
-                <div class="gemini-logo">
-                    <svg width="64" height="64" viewBox="0 0 64 64">
-                        <defs>
-                            <linearGradient id="gemini-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
-                                <stop offset="0%" style="stop-color:#9168c0"/>
-                                <stop offset="100%" style="stop-color:#a8c7fa"/>
-                            </linearGradient>
-                        </defs>
-                        <circle cx="32" cy="32" r="28" fill="url(#gemini-gradient)"/>
-                    </svg>
-                </div>
-                <h2>你好，我是 AI 助手</h2>
-            </div>
-        `;
+    // eslint-disable-next-line no-restricted-syntax -- createWelcomeMessage 已转义自定义名称
+    elements.messagesArea.innerHTML = createWelcomeMessage();
 }
 
 /**

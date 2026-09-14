@@ -166,11 +166,9 @@ describe('parseGeminiStream - 文本内容', () => {
             '' // 空行结束
         ]);
 
-        await parseGeminiStream(reader);
+        const parser = await parseGeminiStream(reader);
 
-        expect(recordFirstToken).toHaveBeenCalled();
-        expect(recordTokens).toHaveBeenCalledWith('Hello');
-        expect(recordTokens).toHaveBeenCalledWith(' Gemini');
+        expect(parser.textContent).toBe('Hello Gemini');
         expect(saveAssistantMessage).toHaveBeenCalled();
     });
 
@@ -181,9 +179,9 @@ describe('parseGeminiStream - 文本内容', () => {
             'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}'
         ]);
 
-        await parseGeminiStream(reader);
+        const parser = await parseGeminiStream(reader);
 
-        expect(recordTokens).toHaveBeenCalledWith('ok');
+        expect(parser.textContent).toBe('ok');
     });
 
     it('处理 data: [DONE] 信号', async () => {
@@ -202,9 +200,9 @@ describe('parseGeminiStream - 文本内容', () => {
             '{"candidates":[{"content":{"parts":[{"text":"bare json"}]}}]}'
         ]);
 
-        await parseGeminiStream(reader);
+        const parser = await parseGeminiStream(reader);
 
-        expect(recordTokens).toHaveBeenCalledWith('bare json');
+        expect(parser.textContent).toBe('bare json');
     });
 });
 
@@ -215,10 +213,10 @@ describe('parseGeminiStream - 思维链', () => {
             'data: {"candidates":[{"content":{"parts":[{"text":"answer"}]}}]}'
         ]);
 
-        await parseGeminiStream(reader);
+        const parser = await parseGeminiStream(reader);
 
-        expect(recordTokens).toHaveBeenCalledWith('thinking...');
-        expect(recordTokens).toHaveBeenCalledWith('answer');
+        expect(parser.thinkingContent).toBe('thinking...');
+        expect(parser.textContent).toBe('answer');
     });
 
     it('处理 thoughtSignature', async () => {
@@ -230,9 +228,13 @@ describe('parseGeminiStream - 思维链', () => {
         await parseGeminiStream(reader);
 
         expect(saveAssistantMessage).toHaveBeenCalledWith(
+            expect.any(Array),
             expect.objectContaining({
-                thoughtSignature: 'sig123'
-            })
+                raw: expect.objectContaining({
+                    gemini: expect.objectContaining({ thoughtSignature: 'sig123' })
+                })
+            }),
+            expect.any(Object)
         );
     });
 
@@ -241,9 +243,9 @@ describe('parseGeminiStream - 思维链', () => {
             'data: {"candidates":[{"content":{"parts":[{"text":"ans"}]}}],"reasoning":"deep thought"}'
         ]);
 
-        await parseGeminiStream(reader);
+        const parser = await parseGeminiStream(reader);
 
-        expect(recordTokens).toHaveBeenCalledWith('deep thought');
+        expect(parser.thinkingContent).toBe('deep thought');
     });
 
     it('处理 metadata.gemini.reasoning', async () => {
@@ -251,9 +253,9 @@ describe('parseGeminiStream - 思维链', () => {
             'data: {"candidates":[{"content":{"parts":[{"text":"ans"}]}}],"metadata":{"gemini":{"reasoning":"meta reasoning"}}}'
         ]);
 
-        await parseGeminiStream(reader);
+        const parser = await parseGeminiStream(reader);
 
-        expect(recordTokens).toHaveBeenCalledWith('meta reasoning');
+        expect(parser.thinkingContent).toBe('meta reasoning');
     });
 });
 
@@ -268,11 +270,9 @@ describe('parseGeminiStream - 多媒体', () => {
         await parseGeminiStream(reader);
 
         expect(saveAssistantMessage).toHaveBeenCalledWith(
-            expect.objectContaining({
-                contentParts: expect.arrayContaining([
-                    expect.objectContaining({ type: 'image_url' })
-                ])
-            })
+            expect.arrayContaining([expect.objectContaining({ type: 'media', media: 'image' })]),
+            expect.any(Object),
+            expect.any(Object)
         );
     });
 
@@ -285,11 +285,9 @@ describe('parseGeminiStream - 多媒体', () => {
         await parseGeminiStream(reader);
 
         expect(saveAssistantMessage).toHaveBeenCalledWith(
-            expect.objectContaining({
-                contentParts: expect.arrayContaining([
-                    expect.objectContaining({ type: 'video_url' })
-                ])
-            })
+            expect.arrayContaining([expect.objectContaining({ type: 'media', media: 'video' })]),
+            expect.any(Object),
+            expect.any(Object)
         );
     });
 
@@ -326,11 +324,17 @@ describe('parseGeminiStream - 搜索引用', () => {
         await parseGeminiStream(reader);
 
         expect(saveAssistantMessage).toHaveBeenCalledWith(
+            expect.any(Array),
             expect.objectContaining({
-                groundingMetadata: expect.objectContaining({
-                    groundingChunks: expect.any(Array)
+                raw: expect.objectContaining({
+                    gemini: expect.objectContaining({
+                        groundingMetadata: expect.objectContaining({
+                            groundingChunks: expect.any(Array)
+                        })
+                    })
                 })
-            })
+            }),
+            expect.any(Object)
         );
     });
 });

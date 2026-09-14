@@ -8,48 +8,48 @@ const { keyboard, Key } = require('@nut-tree-fork/nut-js');
 // 按键映射表
 const KEY_MAP = {
     // 修饰键
-    'ctrl': Key.LeftControl,
-    'alt': Key.LeftAlt,
-    'shift': Key.LeftShift,
-    'cmd': Key.LeftCmd,
-    'meta': Key.LeftCmd,
-    'win': Key.LeftWin,
+    ctrl: Key.LeftControl,
+    alt: Key.LeftAlt,
+    shift: Key.LeftShift,
+    cmd: Key.LeftCmd,
+    meta: Key.LeftCmd,
+    win: Key.LeftWin,
 
     // 功能键
-    'enter': Key.Enter,
-    'return': Key.Enter,
-    'tab': Key.Tab,
-    'backspace': Key.Backspace,
-    'delete': Key.Delete,
-    'escape': Key.Escape,
-    'esc': Key.Escape,
-    'space': Key.Space,
+    enter: Key.Enter,
+    return: Key.Enter,
+    tab: Key.Tab,
+    backspace: Key.Backspace,
+    delete: Key.Delete,
+    escape: Key.Escape,
+    esc: Key.Escape,
+    space: Key.Space,
 
     // 方向键
-    'up': Key.Up,
-    'down': Key.Down,
-    'left': Key.Left,
-    'right': Key.Right,
+    up: Key.Up,
+    down: Key.Down,
+    left: Key.Left,
+    right: Key.Right,
 
     // Home/End/PageUp/PageDown
-    'home': Key.Home,
-    'end': Key.End,
-    'pageup': Key.PageUp,
-    'pagedown': Key.PageDown,
+    home: Key.Home,
+    end: Key.End,
+    pageup: Key.PageUp,
+    pagedown: Key.PageDown,
 
     // F1-F12
-    'f1': Key.F1,
-    'f2': Key.F2,
-    'f3': Key.F3,
-    'f4': Key.F4,
-    'f5': Key.F5,
-    'f6': Key.F6,
-    'f7': Key.F7,
-    'f8': Key.F8,
-    'f9': Key.F9,
-    'f10': Key.F10,
-    'f11': Key.F11,
-    'f12': Key.F12,
+    f1: Key.F1,
+    f2: Key.F2,
+    f3: Key.F3,
+    f4: Key.F4,
+    f5: Key.F5,
+    f6: Key.F6,
+    f7: Key.F7,
+    f8: Key.F8,
+    f9: Key.F9,
+    f10: Key.F10,
+    f11: Key.F11,
+    f12: Key.F12
 };
 
 /**
@@ -67,7 +67,7 @@ function parseKey(keyString) {
 async function type(text) {
     try {
         await keyboard.type(text);
-        console.log(`[Keyboard] Typed: ${text.substring(0, 50)}${text.length > 50 ? '...' : ''}`);
+        console.log(`[Keyboard] Typed ${text.length} chars`);
     } catch (error) {
         console.error('[Keyboard] Type error:', error);
         throw error;

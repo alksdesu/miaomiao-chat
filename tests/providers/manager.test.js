@@ -388,3 +388,80 @@ describe('OpenAI Image 模型列表', () => {
         vi.unstubAllGlobals();
     });
 });
+
+describe('模型列表请求边界', () => {
+    it('跳过没有有效 id 的远端模型', async () => {
+        state.providers = [
+            {
+                id: 'openai-provider',
+                name: 'OpenAI',
+                apiFormat: 'openai',
+                endpoint: 'https://api.example.com/v1/chat/completions',
+                enabled: true,
+                models: []
+            }
+        ];
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(() =>
+                Promise.resolve(
+                    new Response(JSON.stringify({ data: [{ id: 'valid' }, {}, { id: 42 }] }), {
+                        status: 200
+                    })
+                )
+            )
+        );
+
+        await expect(fetchProviderModels('openai-provider', true)).resolves.toMatchObject([
+            { id: 'valid' }
+        ]);
+        vi.unstubAllGlobals();
+    });
+
+    it('Gemini 分页令牌重复时停止请求', async () => {
+        state.providers = [
+            {
+                id: 'gemini-provider',
+                name: 'Gemini',
+                apiFormat: 'gemini',
+                endpoint: 'https://generativelanguage.googleapis.com',
+                enabled: true,
+                models: []
+            }
+        ];
+        const fetchMock = vi.fn(() =>
+            Promise.resolve(
+                new Response(JSON.stringify({ models: [], nextPageToken: 'same-token' }), {
+                    status: 200
+                })
+            )
+        );
+        vi.stubGlobal('fetch', fetchMock);
+
+        await expect(fetchProviderModels('gemini-provider', true)).rejects.toThrow('重复');
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        vi.unstubAllGlobals();
+    });
+
+    it('请求被中止时返回可读的超时错误', async () => {
+        state.providers = [
+            {
+                id: 'openai-provider',
+                name: 'OpenAI',
+                apiFormat: 'openai',
+                endpoint: 'https://api.example.com/v1/chat/completions',
+                enabled: true,
+                models: []
+            }
+        ];
+        const abortError = new Error('aborted');
+        abortError.name = 'AbortError';
+        vi.stubGlobal(
+            'fetch',
+            vi.fn(() => Promise.reject(abortError))
+        );
+
+        await expect(fetchProviderModels('openai-provider', true)).rejects.toThrow('超时');
+        vi.unstubAllGlobals();
+    });
+});

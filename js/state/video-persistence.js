@@ -96,6 +96,7 @@ const VIDEO_IPC_TIMEOUT_MS = 30000;
 // 短期失败 TTL：避免高频重试时同一 dataUrl 每次都触发 IPC；30 秒后允许重试
 const VIDEO_PERSIST_FAILURE_TTL_MS = 30000;
 const failurePersistTimestamps = new Map();
+const inFlightPersistOperations = new Map();
 function shouldSkipDueToRecentFailure(dataUrl) {
     const ts = failurePersistTimestamps.get(dataUrl);
     if (!ts) return false;
@@ -121,7 +122,7 @@ async function withIpcTimeout(promise, label) {
     ]);
 }
 
-async function persistVideoDataUrl(dataUrl, cache) {
+async function persistVideoDataUrlOnce(dataUrl, cache) {
     if (!VIDEO_DATA_URL_PATTERN.test(dataUrl)) return dataUrl;
 
     if (cache.has(dataUrl)) {
@@ -176,6 +177,20 @@ async function persistVideoDataUrl(dataUrl, cache) {
 
     // 关键修复：失败不写 cache，避免下次 saveCurrentSessionMessages 把 base64 直接写入 IDB 触发 quota
     return dataUrl;
+}
+
+async function persistVideoDataUrl(dataUrl, cache) {
+    const inFlight = inFlightPersistOperations.get(dataUrl);
+    if (inFlight) return inFlight;
+    const operation = persistVideoDataUrlOnce(dataUrl, cache);
+    inFlightPersistOperations.set(dataUrl, operation);
+    try {
+        return await operation;
+    } finally {
+        if (inFlightPersistOperations.get(dataUrl) === operation) {
+            inFlightPersistOperations.delete(dataUrl);
+        }
+    }
 }
 
 /**

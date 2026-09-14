@@ -514,11 +514,9 @@
         transition: max-height var(--duration-slow) var(--ease);
     }
 
-    /* settings.js:338/349/355 给 body 写 inline maxHeight，class 必须用 !important 覆盖
-     * inline 才能强制折叠到 0。优雅做法是 JS 改成纯 class toggle，留作后续重构 */
     /* visibility 延迟到折叠动画结束再 hidden，防止 max-height:0 后控件仍可被 Tab 聚焦 */
     .settings-group-body.collapsed {
-        max-height: 0 !important;
+        max-height: 0;
         visibility: hidden;
         transition:
             max-height var(--duration-slow) var(--ease),

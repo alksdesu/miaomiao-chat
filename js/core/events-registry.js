@@ -43,6 +43,7 @@ export const EVENTS = Object.freeze({
     // 单条消息生命周期
     MESSAGE_CONTENT_UPDATED: 'message:content-updated',
     MESSAGE_COPY_REQUESTED: 'message:copy-requested',
+    MESSAGE_BRANCH_REQUESTED: 'message:branch-requested',
     MESSAGE_DELETE_REQUESTED: 'message:delete-requested',
     MESSAGE_EDIT_REQUESTED: 'message:edit-requested',
     MESSAGE_QUOTE_REQUESTED: 'message:quote-requested',

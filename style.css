@@ -63,6 +63,8 @@
 @import 'styles/components/_openclaw-cron.css';
 @import 'styles/components/_openclaw-status.css';
 @import 'styles/components/_mobile-overflow-menu.css';
+@import 'styles/components/_command-palette.css';
+@import 'styles/components/_message-touch-menu.css';
 @import 'styles/components/_color-picker.css';
 @import 'styles/components/_theme-editor.css';
 @import 'styles/components/_network-panel.css';

@@ -4,32 +4,26 @@
  * 视觉上不再产生渐变位移，因此不再单独消除 transform 属性。
  */
 @media (prefers-reduced-motion: reduce) {
-    *,
-    *::before,
-    *::after {
-        animation-duration: 0.01ms !important;
-        animation-iteration-count: 1 !important;
-        transition-duration: 0.01ms !important;
-    }
-
-    /* 完全隐藏装饰性动画元素 */
-    .pixel-decorations {
-        display: none !important;
+    :root *,
+    :root *::before,
+    :root *::after {
+        animation-duration: 0.01ms;
+        animation-iteration-count: 1;
+        transition-duration: 0.01ms;
     }
 
     /* 保留功能性动画（如loading）但缩短 */
-    .loading-indicator,
-    .loading-dot,
-    .image-loading,
-    .bg-task-icon,
-    .settings-icon-btn.loading::after,
-    .icon-button.loading::after {
-        animation-duration: 0.5s !important;
+    :root .loading-indicator,
+    :root .loading-dot,
+    :root .image-loading,
+    :root .bg-task-icon,
+    :root .settings-icon-btn.loading::after,
+    :root .icon-button.loading::after {
+        animation-duration: 0.5s;
     }
 
-    /* 移除背景动画 */
     .welcome-message::before {
-        animation: none !important;
+        animation: none;
     }
 }
 

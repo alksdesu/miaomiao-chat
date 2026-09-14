@@ -36,6 +36,23 @@ import { TOOL_CONFIRM_DIALOG_TIMEOUT } from '../utils/constants.js';
 // Claude computer-use 的 3 件原生工具：bashConfig.requireConfirmation 仅对它们生效
 const NATIVE_TOOL_IDS = new Set(['computer', 'bash', 'str_replace_based_edit_tool']);
 
+function isPermissionPatch(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    for (const field of ['whitelist', 'blacklist']) {
+        if (
+            value[field] !== undefined &&
+            (!Array.isArray(value[field]) || value[field].some((item) => typeof item !== 'string'))
+        ) {
+            return false;
+        }
+    }
+    return (
+        (value.mode === undefined || ['whitelist', 'blacklist'].includes(value.mode)) &&
+        (value.enabled === undefined || typeof value.enabled === 'boolean') &&
+        (value.requireConfirmation === undefined || typeof value.requireConfirmation === 'boolean')
+    );
+}
+
 const sessionGrantedTools = new Map();
 const turnApprovalCaches = new Map();
 let legacyTurnId = null;
@@ -130,7 +147,7 @@ export async function confirmToolExecutionIfRequired(toolId, toolName, args, opt
     const grants = getSessionGrants(sessionId);
     const approvalCache = getTurnCache(sessionId, options.turnId);
     // 本会话已授权 → 直接放行（不进缓存判定，省一次 hash 计算）
-    if (grants.has(toolName) || grants.has(toolId)) return true;
+    if (grants.has(toolId)) return true;
 
     const isNative = NATIVE_TOOL_IDS.has(toolId) || NATIVE_TOOL_IDS.has(toolName);
     const needConfirm =
@@ -139,7 +156,7 @@ export async function confirmToolExecutionIfRequired(toolId, toolName, args, opt
     if (!needConfirm) return true;
 
     // 同 turn 同参数复用历史决定（含拒绝）
-    const cacheKey = toolName + ':' + hashArgs(args);
+    const cacheKey = toolId + ':' + hashArgs(args);
     if (approvalCache.has(cacheKey)) return approvalCache.get(cacheKey);
 
     let argsSummary = '';
@@ -171,8 +188,8 @@ export async function confirmToolExecutionIfRequired(toolId, toolName, args, opt
         typeof result === 'object' && result !== null ? !!result.persistForSession : false;
 
     if (confirmed && persistForSession) {
-        grants.add(toolName);
-        logger.debug(`[Permissions] 本会话已授权工具: ${toolName}`);
+        grants.add(toolId);
+        logger.debug(`[Permissions] 本会话已授权工具: ${toolId}`);
     }
 
     approvalCache.set(cacheKey, confirmed);
@@ -358,8 +375,11 @@ export function importPermissions(data) {
         const imported = JSON.parse(data);
 
         // 验证数据结构
-        if (typeof imported !== 'object') {
+        if (!imported || typeof imported !== 'object' || Array.isArray(imported)) {
             throw new Error('导入数据必须是对象');
+        }
+        if (!isPermissionPatch(imported)) {
+            throw new Error('权限配置字段类型无效');
         }
 
         // 合并到当前配置
@@ -451,9 +471,11 @@ export async function loadToolPermissions() {
         const saved = await loadPreference('toolPermissions');
         if (!saved) return;
         const parsed = typeof saved === 'string' ? JSON.parse(saved) : saved;
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        if (isPermissionPatch(parsed)) {
             state.toolPermissions = { ...state.toolPermissions, ...parsed };
             logger.debug('[Permissions] 已恢复权限配置');
+        } else {
+            logger.warn('[Permissions] 已忽略无效的已保存权限配置');
         }
     } catch (error) {
         logger.error('[Permissions] 加载权限配置失败:', error);

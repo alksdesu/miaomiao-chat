@@ -87,6 +87,15 @@ export function createAssistantMessagePlaceholder() {
     copyButton.onclick = () => eventBus.emit('message:copy-requested', { messageEl: messageDiv });
     actionsDiv.appendChild(copyButton);
 
+    const branchButton = document.createElement('button');
+    branchButton.className = 'msg-action-btn branch-msg';
+    branchButton.textContent = '⑂';
+    branchButton.title = '从此处创建分支';
+    branchButton.setAttribute('aria-label', '从此处创建分支');
+    branchButton.onclick = () =>
+        eventBus.emit('message:branch-requested', { messageEl: messageDiv });
+    actionsDiv.appendChild(branchButton);
+
     // 删除按钮
     const deleteButton = document.createElement('button');
     deleteButton.className = 'msg-action-btn delete-msg';

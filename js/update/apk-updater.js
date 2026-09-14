@@ -15,10 +15,10 @@ const getFilesystem = () => window.Capacitor?.Plugins?.Filesystem;
 const getAndroidInstaller = () => window.Capacitor?.Plugins?.AndroidInstaller;
 
 // 使用代理 API 拉取更新信息
-const UPDATE_CHECK_URL = 'https://dawn-feather-d2e6.alks2636777.workers.dev';
+const UPDATE_CHECK_URL = 'https://api.github.com/repos/alksdesu/miaomiao-chat/releases/latest';
 
 // 当前应用版本（运行时从 Capacitor 获取）
-const CURRENT_VERSION = '1.1.18'; // 默认值
+const CURRENT_VERSION = '1.2.11'; // 默认值
 
 /**
  * 获取当前应用版本号
@@ -156,15 +156,11 @@ export async function downloadAndInstallAPK(downloadUrl, fileName, onProgress = 
             logger.warn('[APK Updater] Capacitor HTTP 不可用，降级到代理下载:', httpError);
         }
 
-        // 方案2：使用代理下载（绕过 CORS 限制）
-        // GitHub Releases 的直接下载会遇到 CORS 问题
-        // Worker 支持格式: /download/{filename}
-        // 使用传入的 fileName（从 GitHub API 获取的真实文件名）
-        const proxyUrl = `https://dawn-feather-d2e6.alks2636777.workers.dev/download/${fileName}`;
+        // 方案2：直链兜底。公开仓库附件无需鉴权，但 GitHub 不返回 CORS 头，
+        // WebView 下可能被拦；仅在原生 HTTP 插件缺失时才走到这里
+        logger.debug('[APK Updater] 原生下载不可用，改用直链:', downloadUrl);
 
-        logger.debug('[APK Updater] 使用代理下载 APK:', proxyUrl);
-
-        const response = await fetch(proxyUrl, {
+        const response = await fetch(downloadUrl, {
             method: 'GET'
         });
 

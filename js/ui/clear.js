@@ -9,8 +9,8 @@ import { saveCurrentSessionMessages } from '../state/sessions.js';
 import { showConfirmDialog } from '../utils/dialogs.js';
 import { replaceAllMessages } from '../core/state-mutations.js';
 import { clearUndoStack } from '../tools/undo.js';
-import { escapeHtml } from '../utils/helpers.js';
 import { logger } from '../utils/logger.js';
+import { createWelcomeMessage } from './welcome-message.js';
 
 /**
  * 处理清空当前会话
@@ -41,28 +41,8 @@ export async function handleClear() {
         state.editingElement = null;
     }
 
-    // 清空消息区域
-    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
-    elements.messagesArea.innerHTML = '';
-
-    // 恢复欢迎消息
-    // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
-    elements.messagesArea.innerHTML = `
-        <div class="welcome-message glass">
-            <div class="gemini-logo">
-                <svg width="64" height="64" viewBox="0 0 64 64">
-                    <defs>
-                        <linearGradient id="gemini-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
-                            <stop offset="0%" style="stop-color:#9168c0"/>
-                            <stop offset="100%" style="stop-color:#a8c7fa"/>
-                        </linearGradient>
-                    </defs>
-                    <circle cx="32" cy="32" r="28" fill="url(#gemini-gradient)"/>
-                </svg>
-            </div>
-            <h2>你好，我是 ${escapeHtml(state.charName || 'AI')}</h2>
-        </div>
-    `;
+    // eslint-disable-next-line no-restricted-syntax -- createWelcomeMessage 已转义自定义名称
+    elements.messagesArea.innerHTML = createWelcomeMessage();
 
     // 标记脏并立即保存（force=true 确保空消息写入 DB）
     state.sessionDirty = true;

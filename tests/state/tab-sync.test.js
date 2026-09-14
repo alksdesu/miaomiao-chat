@@ -39,6 +39,7 @@ class MockBroadcastChannel {
 }
 
 let tabSyncModule;
+let mockedState;
 
 beforeEach(async () => {
     vi.clearAllMocks();
@@ -49,15 +50,14 @@ beforeEach(async () => {
     vi.resetModules();
 
     // 重新 mock
-    vi.doMock('../../js/core/state.js', () => ({
-        state: {
-            sessions: [
-                { id: 'session-1', updatedAt: 1000 },
-                { id: 'session-2', updatedAt: 2000 }
-            ],
-            currentSessionId: 'session-1'
-        }
-    }));
+    mockedState = {
+        sessions: [
+            { id: 'session-1', updatedAt: 1000 },
+            { id: 'session-2', updatedAt: 2000 }
+        ],
+        currentSessionId: 'session-1'
+    };
+    vi.doMock('../../js/core/state.js', () => ({ state: mockedState }));
 
     vi.doMock('../../js/core/events.js', () => ({
         eventBus: { emit: vi.fn(), on: vi.fn(), off: vi.fn() }
@@ -111,5 +111,33 @@ describe('destroyTabSync', () => {
 
     it('未初始化时不崩溃', () => {
         expect(() => tabSyncModule.destroyTabSync()).not.toThrow();
+    });
+});
+
+describe('session-pinned', () => {
+    it('同步远端会话置顶状态', async () => {
+        tabSyncModule.initTabSync();
+        await MockBroadcastChannel.instances[0].onmessage({
+            data: {
+                type: 'session-pinned',
+                data: { sessionId: 'session-1', pinned: true },
+                tabId: 'remote-tab'
+            }
+        });
+
+        expect(mockedState.sessions[0].pinned).toBe(true);
+    });
+
+    it('忽略不存在的会话', async () => {
+        tabSyncModule.initTabSync();
+        await MockBroadcastChannel.instances[0].onmessage({
+            data: {
+                type: 'session-pinned',
+                data: { sessionId: 'missing', pinned: true },
+                tabId: 'remote-tab'
+            }
+        });
+
+        expect(mockedState.sessions.every((session) => !session.pinned)).toBe(true);
     });
 });

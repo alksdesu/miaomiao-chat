@@ -126,8 +126,7 @@ export function isModalLayerVisible(element) {
         return false;
     }
 
-    const rect = element.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
+    return true;
 }
 
 function compareModalLayerOrder(a, b) {
@@ -153,7 +152,7 @@ function compareModalLayerOrder(a, b) {
     return 0;
 }
 
-function getVisibleModalLayers() {
+function getVisibleModalLayers(extraElement = null) {
     const uniqueLayers = [];
     const seen = new Set();
 
@@ -166,11 +165,15 @@ function getVisibleModalLayers() {
         }
     });
 
+    if (extraElement && !seen.has(extraElement) && isModalLayerVisible(extraElement)) {
+        uniqueLayers.push(extraElement);
+    }
+
     return uniqueLayers;
 }
 
-export function getTopmostModalLayer() {
-    const visibleLayers = getVisibleModalLayers();
+export function getTopmostModalLayer(extraElement = null) {
+    const visibleLayers = getVisibleModalLayers(extraElement);
     if (visibleLayers.length === 0) {
         return null;
     }
@@ -180,7 +183,7 @@ export function getTopmostModalLayer() {
 }
 
 export function isTopmostModalLayer(element) {
-    return getTopmostModalLayer() === element;
+    return getTopmostModalLayer(element) === element;
 }
 
 /**

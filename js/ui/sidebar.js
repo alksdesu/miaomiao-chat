@@ -20,7 +20,7 @@ import { getIcon } from '../utils/icons.js';
 import { showNotification } from './notifications.js';
 import { locateMessageByReference } from './message-location.js';
 // 新增：IndexedDB 偏好设置 API
-import { savePreference, loadSessionMessages } from '../state/storage.js';
+import { savePreference, loadPreference, loadSessionMessages } from '../state/storage.js';
 // 新增：自定义对话框（替代 Electron 中不支持的 prompt/confirm）
 import { showInputDialog, showConfirmDialog } from '../utils/dialogs.js';
 import { logger } from '../utils/logger.js';
@@ -34,11 +34,50 @@ import {
 } from '../state/folders.js';
 import { initSidebarDragAndDrop } from './sidebar-dnd.js';
 import { initFolderContextMenu } from './sidebar-folder-menu.js';
+import { broadcastEvent } from '../state/tab-sync.js';
 
 // 模块状态
 let _initialized = false;
 let _subscriptions = [];
 let _lastSearchActive = false;
+const PINNED_SESSIONS_PREFERENCE = 'pinnedSessionIds';
+
+async function loadPinnedSessions() {
+    try {
+        const pinnedIds = await loadPreference(PINNED_SESSIONS_PREFERENCE);
+        if (!Array.isArray(pinnedIds)) return;
+        const pinnedSet = new Set(pinnedIds.filter((id) => typeof id === 'string'));
+        state.sessions.forEach((session) => {
+            session.pinned = pinnedSet.has(session.id);
+        });
+    } catch (error) {
+        logger.warn('加载置顶会话失败:', error);
+    }
+}
+
+async function persistPinnedSessions() {
+    const pinnedIds = state.sessions
+        .filter((session) => session.pinned)
+        .map((session) => session.id);
+    await savePreference(PINNED_SESSIONS_PREFERENCE, pinnedIds);
+}
+
+async function toggleSessionPinned(sessionId) {
+    const session = state.sessions.find((item) => item.id === sessionId);
+    if (!session) return;
+
+    session.pinned = !session.pinned;
+    try {
+        await persistPinnedSessions();
+        broadcastEvent('session-pinned', { sessionId, pinned: session.pinned });
+        updateSessionList();
+        showNotification(session.pinned ? '会话已置顶' : '已取消置顶', 'success');
+    } catch (error) {
+        session.pinned = !session.pinned;
+        logger.error('保存置顶会话失败:', error);
+        showNotification('保存置顶状态失败', 'error');
+    }
+}
 
 /**
  * 获取用于导出的完整会话数据
@@ -157,6 +196,7 @@ export function updateBackgroundTasksIndicator() {
 function buildSessionElement(session, matchedMessages, currentQuery, isActive, hasBackgroundTask) {
     const sessionEl = document.createElement('div');
     sessionEl.className = `session-item${isActive ? ' active' : ''}`;
+    if (session.pinned) sessionEl.classList.add('pinned');
     sessionEl.dataset.sessionId = session.id;
     sessionEl.draggable = true;
     sessionEl.setAttribute('tabindex', '0');
@@ -174,6 +214,9 @@ function buildSessionElement(session, matchedMessages, currentQuery, isActive, h
             ${hasBackgroundTask ? '<span class="session-generating">生成中...</span>' : ''}
         </div>
         <div class="session-actions">
+            <button class="session-action-btn pin-session-btn${session.pinned ? ' pinned' : ''}" title="${session.pinned ? '取消置顶' : '置顶会话'}" aria-label="${session.pinned ? '取消置顶' : '置顶会话'}">
+                ${getIcon('pin', { size: 14 })}
+            </button>
             <button class="session-action-btn export-session-btn export" title="复制为 Markdown" aria-label="复制此会话为 Markdown">
                 ${getIcon('copy', { size: 14 })}
             </button>
@@ -332,6 +375,14 @@ function bindSessionEvents(element, sessionId) {
         });
     }
 
+    const pinBtn = element.querySelector('.pin-session-btn');
+    if (pinBtn) {
+        pinBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            void toggleSessionPinned(sessionId);
+        });
+    }
+
     const deleteBtn = element.querySelector('.delete-session-btn');
     if (deleteBtn) {
         deleteBtn.addEventListener('click', async (e) => {
@@ -386,9 +437,16 @@ export function updateSessionList() {
 
     const searchState = getSessionSearchState();
     const currentQuery = searchState.query;
-    const sessionsData = searchState.isActive
-        ? searchState.results || []
-        : state.sessions.map((session) => ({ session, matchedMessages: [] }));
+    const sessionsData = (
+        searchState.isActive
+            ? searchState.results || []
+            : state.sessions.map((session) => ({ session, matchedMessages: [] }))
+    ).slice();
+    sessionsData.sort(
+        (a, b) =>
+            Number(Boolean(b.session.pinned)) - Number(Boolean(a.session.pinned)) ||
+            (b.session.updatedAt || 0) - (a.session.updatedAt || 0)
+    );
     _lastSearchActive = searchState.isActive;
 
     if (sessionsData.length === 0 && state.sessions.length === 0) {
@@ -617,6 +675,7 @@ export async function initSidebar() {
 
     // 加载文件夹数据
     await loadFolders();
+    await loadPinnedSessions();
 
     // 初始化 overlay
     const sidebarOverlay = document.querySelector('.sidebar-overlay');

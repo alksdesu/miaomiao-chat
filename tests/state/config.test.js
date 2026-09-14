@@ -282,6 +282,24 @@ describe('getDefaultCapabilities', () => {
 // ========== applyConfigToState ==========
 
 describe('applyConfigToState', () => {
+    it('拒绝越界或错误类型的 Bash 配置', () => {
+        expect(() =>
+            applyConfigToState({
+                configVersion: 2,
+                bashConfig: { timeout: 301 },
+                providers: []
+            })
+        ).toThrow('bashConfig.timeout');
+
+        expect(() =>
+            applyConfigToState({
+                configVersion: 2,
+                bashConfig: { workingDirectory: 42 },
+                providers: []
+            })
+        ).toThrow('workingDirectory');
+    });
+
     it('应用基本功能开关', () => {
         applyConfigToState({
             configVersion: 2,

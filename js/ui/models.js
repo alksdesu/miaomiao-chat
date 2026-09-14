@@ -154,6 +154,7 @@ export function initModels() {
 
         // 更新移动端标题栏
         updateMobileHeaderTitle(selectedModel.split('/').pop() || selectedModel);
+        eventBus.emit('composer:context-updated');
     });
 
     // 初始填充

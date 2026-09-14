@@ -85,6 +85,8 @@ afterEach(() => {
     if (elements.settingsPanel?.classList.contains('open')) {
         toggleSettings();
     }
+    cleanupSettings();
+    vi.useRealTimers();
 });
 
 describe('toggleSettings', () => {
@@ -130,6 +132,79 @@ describe('toggleSettings', () => {
 describe('initSettings', () => {
     it('调用不报错', () => {
         expect(() => initSettings()).not.toThrow();
+    });
+
+    it('移动端首次初始化时只展开第一个设置组', () => {
+        cleanupSettings();
+        window.matchMedia.mockReturnValue({
+            matches: true,
+            media: '(max-width: 768px)',
+            onchange: null,
+            addListener: vi.fn(),
+            removeListener: vi.fn(),
+            addEventListener: vi.fn(),
+            removeEventListener: vi.fn(),
+            dispatchEvent: vi.fn()
+        });
+
+        const settingsContent = document.createElement('div');
+        settingsContent.className = 'settings-content';
+        settingsContent.innerHTML = `
+            <div class="settings-group">
+                <label class="settings-label">模型</label>
+                <select><option>测试模型</option></select>
+            </div>
+            <div class="settings-group">
+                <label class="settings-label">响应模式</label>
+                <select><option>流式</option></select>
+            </div>
+        `;
+        document.body.appendChild(settingsContent);
+
+        initSettings();
+
+        const groups = settingsContent.querySelectorAll('.settings-group');
+        expect(groups[0].classList.contains('expanded')).toBe(true);
+        expect(
+            groups[0].querySelector('.settings-group-body').classList.contains('collapsed')
+        ).toBe(false);
+        expect(groups[1].classList.contains('expanded')).toBe(false);
+        expect(
+            groups[1].querySelector('.settings-group-body').classList.contains('collapsed')
+        ).toBe(true);
+        expect(groups[1].querySelector('.settings-label').getAttribute('aria-expanded')).toBe(
+            'false'
+        );
+    });
+
+    it('打开面板和内容尺寸变化后重新测量已展开设置组', async () => {
+        vi.useFakeTimers();
+        window.matchMedia().matches = true;
+        document.body.innerHTML = `
+            <div class="settings-content">
+                <div class="settings-group">
+                    <label class="settings-label">模型</label>
+                    <div class="settings-row">测试模型</div>
+                </div>
+            </div>
+        `;
+
+        initSettings();
+        const body = document.querySelector('.settings-group-body');
+        let contentHeight = 40;
+        Object.defineProperty(body, 'scrollHeight', { get: () => contentHeight });
+        await vi.runAllTimersAsync();
+        expect(body.style.maxHeight).toBe('40px');
+
+        contentHeight = 80;
+        toggleSettings();
+        await vi.runAllTimersAsync();
+        expect(body.style.maxHeight).toBe('80px');
+
+        contentHeight = 120;
+        body.firstElementChild.style.display = 'block';
+        await vi.runAllTimersAsync();
+        expect(body.style.maxHeight).toBe('120px');
     });
 });
 

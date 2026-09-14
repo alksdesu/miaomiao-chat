@@ -39,7 +39,25 @@ class ComputerUseManager {
      * 更新权限配置
      */
     updatePermissions(newPermissions) {
-        this.permissions = { ...this.permissions, ...newPermissions };
+        if (
+            !newPermissions ||
+            typeof newPermissions !== 'object' ||
+            Array.isArray(newPermissions)
+        ) {
+            throw new Error('Computer Use 权限配置格式无效');
+        }
+        const allowedKeys = Object.keys(this.permissions);
+        const updates = Object.fromEntries(
+            allowedKeys
+                .filter((key) => Object.prototype.hasOwnProperty.call(newPermissions, key))
+                .map((key) => {
+                    if (typeof newPermissions[key] !== 'boolean') {
+                        throw new Error(`Computer Use 权限 ${key} 必须是布尔值`);
+                    }
+                    return [key, newPermissions[key]];
+                })
+        );
+        this.permissions = { ...this.permissions, ...updates };
         logger.info('Manager', 'Permissions updated', this.permissions);
     }
 
@@ -47,16 +65,36 @@ class ComputerUseManager {
      * 更新 Bash 配置
      */
     updateBashConfig(newConfig) {
-        if (newConfig && Object.prototype.hasOwnProperty.call(newConfig, 'requireConfirmation')) {
+        if (!newConfig || typeof newConfig !== 'object' || Array.isArray(newConfig)) {
+            throw new Error('Bash 配置格式无效');
+        }
+
+        const updates = {};
+        if (Object.prototype.hasOwnProperty.call(newConfig, 'workingDirectory')) {
+            if (typeof newConfig.workingDirectory !== 'string') {
+                throw new Error('Bash 工作目录必须是字符串');
+            }
+            updates.workingDirectory = newConfig.workingDirectory;
+        }
+        if (Object.prototype.hasOwnProperty.call(newConfig, 'timeout')) {
+            if (
+                !Number.isFinite(newConfig.timeout) ||
+                newConfig.timeout < 5 ||
+                newConfig.timeout > 300
+            ) {
+                throw new Error('Bash 超时时间必须在 5 到 300 秒之间');
+            }
+            updates.timeout = newConfig.timeout;
+        }
+
+        if (Object.prototype.hasOwnProperty.call(newConfig, 'requireConfirmation')) {
             logger.warn(
                 'Manager',
                 'requireConfirmation 字段已迁移到渲染进程 state.toolPermissions/bashConfig，主进程忽略'
             );
-            const { requireConfirmation: _ignored, ...rest } = newConfig;
-            this.bashConfig = { ...this.bashConfig, ...rest };
-        } else {
-            this.bashConfig = { ...this.bashConfig, ...newConfig };
         }
+
+        this.bashConfig = { ...this.bashConfig, ...updates };
         logger.info('Manager', 'Bash config updated', this.bashConfig);
     }
 
@@ -284,6 +322,9 @@ class ComputerUseManager {
      * 执行 Bash 命令
      */
     async executeBash(command) {
+        if (typeof command !== 'string' || !command.trim()) {
+            throw new Error('Bash 命令不能为空');
+        }
         const startTime = Date.now();
         try {
             if (!this.checkPermission('bash')) {
@@ -300,14 +341,14 @@ class ComputerUseManager {
             });
             await audit.log(
                 'bash',
-                { command },
+                { commandLength: typeof command === 'string' ? command.length : 0 },
                 { success: result.success, duration: Date.now() - startTime }
             );
             return result;
         } catch (error) {
             await audit.log(
                 'bash',
-                { command },
+                { commandLength: typeof command === 'string' ? command.length : 0 },
                 { success: false, error: error.message, duration: Date.now() - startTime }
             );
             throw error;
@@ -321,7 +362,7 @@ class ComputerUseManager {
         if (!this.checkPermission('textEditor')) {
             throw new Error('Text editor permission denied');
         }
-        return await textEditor.read(path);
+        return await textEditor.read(path, { rootDir: this.bashConfig.workingDirectory });
     }
 
     /**
@@ -331,7 +372,7 @@ class ComputerUseManager {
         if (!this.checkPermission('textEditor')) {
             throw new Error('Text editor permission denied');
         }
-        return await textEditor.write(path, content);
+        return await textEditor.write(path, content, { rootDir: this.bashConfig.workingDirectory });
     }
 }
 

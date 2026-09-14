@@ -1,0 +1,43 @@
+.message-touch-menu {
+    position: fixed;
+    left: 50%;
+    bottom: calc(var(--sp-7) + var(--app-safe-bottom));
+    z-index: var(--z-modal-settings-nested);
+    width: min(420px, calc(100vw - var(--sp-10)));
+    display: grid;
+    gap: var(--sp-2);
+    padding: var(--sp-4);
+    transform: translateX(-50%);
+    background: var(--color-bg-elevated);
+    border: var(--border);
+    box-shadow: var(--shadow-lg);
+}
+
+.message-touch-menu-handle {
+    width: var(--sp-12);
+    height: var(--sp-1);
+    margin: 0 auto var(--sp-2);
+    background: var(--color-text-muted);
+}
+
+.message-touch-menu-item {
+    min-height: 44px;
+    padding: var(--sp-4) var(--sp-5);
+    border: 1px solid var(--color-border-secondary);
+    background: var(--color-bg-primary);
+    color: var(--color-text-primary);
+    cursor: pointer;
+    font: inherit;
+    text-align: left;
+}
+
+.message-touch-menu-item:hover,
+.message-touch-menu-item:focus-visible {
+    border-color: var(--md-blue);
+    background: rgba(var(--palette-blue-rgb), 0.1);
+    outline: none;
+}
+
+.message-touch-menu-item.delete-action {
+    color: var(--md-coral);
+}

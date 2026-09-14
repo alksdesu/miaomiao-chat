@@ -390,6 +390,7 @@ export async function loadConfig() {
  * @param {Object} config - 配置对象
  */
 export function applyConfigToState(config) {
+    validateConfigShape(config);
     // ⭐ 配置版本检测和自动升级
     const configVersion = config.configVersion || 1; // 默认为 v1（旧格式）
 
@@ -654,6 +655,84 @@ export function applyConfigToState(config) {
         }
 
         logger.debug(`API格式已恢复为: ${config.apiFormat}`);
+    }
+}
+
+function validateConfigShape(config) {
+    if (!config || typeof config !== 'object' || Array.isArray(config)) {
+        throw new Error('配置数据必须是对象');
+    }
+    const arrayFields = [
+        'customHeaders',
+        'prefillMessages',
+        'savedPrefillPresets',
+        'systemPrefillMessages',
+        'savedSystemPrefillPresets',
+        'geminiSystemParts',
+        'savedGeminiPartsPresets',
+        'quickMessages',
+        'providers'
+    ];
+    for (const field of arrayFields) {
+        if (config[field] !== undefined && !Array.isArray(config[field])) {
+            throw new Error(`配置字段 ${field} 必须是数组`);
+        }
+    }
+    if (config.providers) {
+        for (const provider of config.providers) {
+            if (!provider || typeof provider !== 'object' || Array.isArray(provider)) {
+                throw new Error('提供商配置格式错误');
+            }
+            if (provider.models !== undefined && !Array.isArray(provider.models)) {
+                throw new Error('提供商 models 必须是数组');
+            }
+            if (provider.apiKeys !== undefined && !Array.isArray(provider.apiKeys)) {
+                throw new Error('提供商 apiKeys 必须是数组');
+            }
+        }
+    }
+    if (
+        config.endpoints !== undefined &&
+        (!config.endpoints ||
+            typeof config.endpoints !== 'object' ||
+            Array.isArray(config.endpoints))
+    ) {
+        throw new Error('配置字段 endpoints 必须是对象');
+    }
+    if (
+        config.apiKeys !== undefined &&
+        (!config.apiKeys || typeof config.apiKeys !== 'object' || Array.isArray(config.apiKeys))
+    ) {
+        throw new Error('配置字段 apiKeys 必须是对象');
+    }
+    if (config.bashConfig !== undefined) {
+        if (
+            !config.bashConfig ||
+            typeof config.bashConfig !== 'object' ||
+            Array.isArray(config.bashConfig)
+        ) {
+            throw new Error('配置字段 bashConfig 必须是对象');
+        }
+        if (
+            config.bashConfig.workingDirectory !== undefined &&
+            typeof config.bashConfig.workingDirectory !== 'string'
+        ) {
+            throw new Error('配置字段 bashConfig.workingDirectory 必须是字符串');
+        }
+        if (
+            config.bashConfig.timeout !== undefined &&
+            (!Number.isFinite(config.bashConfig.timeout) ||
+                config.bashConfig.timeout < 5 ||
+                config.bashConfig.timeout > 300)
+        ) {
+            throw new Error('配置字段 bashConfig.timeout 必须在 5 到 300 秒之间');
+        }
+        if (
+            config.bashConfig.requireConfirmation !== undefined &&
+            typeof config.bashConfig.requireConfirmation !== 'boolean'
+        ) {
+            throw new Error('配置字段 bashConfig.requireConfirmation 必须是布尔值');
+        }
     }
 }
 

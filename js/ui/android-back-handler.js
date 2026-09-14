@@ -77,6 +77,17 @@ function markLayerHandled() {
 }
 
 async function dispatchAndroidBack() {
+    const commandPalette = document.getElementById('command-palette');
+    if (isActuallyVisible(commandPalette) && safeClick('#command-palette')) {
+        return markLayerHandled();
+    }
+
+    const messageTouchMenu = document.querySelector('.message-touch-menu');
+    if (isActuallyVisible(messageTouchMenu)) {
+        document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape' }));
+        return markLayerHandled();
+    }
+
     const fullscreenPreviewOverlay = document.getElementById('fullscreen-preview-overlay');
     if (
         isActuallyVisible(fullscreenPreviewOverlay) &&

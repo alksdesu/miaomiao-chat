@@ -7,6 +7,150 @@
     z-index: var(--z-sticky);
 }
 
+.composer-context {
+    max-width: var(--content-max-width);
+    margin: 0 auto var(--sp-3);
+    min-height: 28px;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    color: var(--color-text-inverse);
+    font-size: var(--fs-sm);
+}
+
+.composer-model-summary {
+    min-width: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: var(--sp-1) var(--sp-3);
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--color-text-inverse);
+    cursor: pointer;
+    font: inherit;
+    text-align: left;
+    transition:
+        color var(--duration-fast) var(--ease),
+        background var(--duration-fast) var(--ease);
+}
+
+.composer-model-summary:hover,
+.composer-model-summary:focus-visible {
+    background: rgba(var(--color-bg-surface-rgb), 0.16);
+    border-color: rgba(var(--color-bg-surface-rgb), 0.5);
+    outline: none;
+}
+
+.composer-context-mark {
+    color: var(--md-teal);
+    font-size: var(--fs-base);
+}
+
+.composer-model-name,
+.composer-provider-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.composer-model-name {
+    max-width: 220px;
+    font-family: var(--font-ui-accent);
+    font-weight: 600;
+}
+
+.composer-provider-name {
+    max-width: 140px;
+    color: var(--color-text-inverse);
+    opacity: 0.86;
+}
+
+.composer-context-chevron {
+    color: var(--color-text-inverse);
+    opacity: 0.8;
+    line-height: 1;
+}
+
+.composer-feature-status {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    min-width: 0;
+    flex-wrap: wrap;
+}
+
+.composer-feature-pill,
+.composer-feature-idle {
+    padding: var(--sp-1) var(--sp-2);
+    border: 1px solid var(--md-teal);
+    background: var(--md-teal);
+    color: var(--color-text-on-accent);
+    font-size: var(--fs-xs);
+    line-height: 1.2;
+}
+
+.composer-feature-idle {
+    border-color: rgba(var(--color-bg-surface-rgb), 0.48);
+    background: rgba(var(--color-bg-surface-rgb), 0.12);
+    color: var(--color-text-inverse);
+}
+
+.composer-shortcut-hint {
+    margin-left: auto;
+    white-space: nowrap;
+    color: var(--color-text-inverse);
+    opacity: 0.78;
+    font-size: var(--fs-xs);
+}
+
+.composer-command-menu {
+    max-width: var(--content-max-width);
+    margin: 0 auto var(--sp-3);
+    padding: var(--sp-2);
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: var(--sp-2);
+    background: var(--color-bg-surface);
+    border: var(--border);
+    box-shadow: var(--shadow-md);
+}
+
+.composer-command-menu[hidden] {
+    display: none;
+}
+
+.composer-command-item {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--sp-1);
+    padding: var(--sp-3);
+    border: 1px solid transparent;
+    background: var(--color-bg-primary);
+    color: var(--color-text-primary);
+    cursor: pointer;
+    font: inherit;
+    text-align: left;
+}
+
+.composer-command-item:hover,
+.composer-command-item:focus-visible,
+.composer-command-item[aria-selected='true'] {
+    border-color: var(--md-teal);
+    background: rgba(var(--palette-teal-rgb), 0.08);
+    outline: none;
+}
+
+.composer-command-item strong {
+    color: var(--md-teal);
+}
+
+.composer-command-item span {
+    color: var(--md-muted);
+    font-size: var(--fs-xs);
+}
+
 /* 拖拽调整高度的手柄 */
 .input-resize-handle {
     max-width: var(--content-max-width);
@@ -70,7 +214,7 @@
     color: var(--md-muted);
 }
 
-/* 输入框容器聚焦发光 */
+/* 输入框容器聚焦状态 */
 .input-bar-inner {
     transition: box-shadow var(--duration-slower) var(--ease);
     position: relative;
@@ -79,7 +223,7 @@
 .input-bar-inner:focus-within {
     box-shadow:
         var(--shadow-md),
-        0 0 0 3px rgba(var(--palette-blue-rgb), 0.2),
+        0 0 0 2px rgba(var(--palette-blue-rgb), 0.28),
         var(--glow-blue);
 }
 
@@ -155,9 +299,7 @@
 
 .send-btn:hover {
     transform: translate(3px, -3px);
-    box-shadow:
-        none,
-        0 0 30px rgba(var(--palette-teal-rgb), 0.6);
+    box-shadow: var(--shadow-md), var(--glow-teal);
     background: var(--md-blue);
     color: var(--color-text-on-accent, #1a1a1a);
 }

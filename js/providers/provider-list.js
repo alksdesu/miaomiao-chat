@@ -93,6 +93,15 @@ function renderProviderItem(provider) {
     };
 
     const modelCount = provider.models?.length || 0;
+    const configuredKeys =
+        provider.apiKeys?.some((key) => key.enabled !== false && key.key) || provider.apiKey;
+    const health = !provider.enabled
+        ? { className: 'off', label: '未启用' }
+        : provider.apiFormat === 'openclaw'
+          ? { className: 'pending', label: '待连接' }
+          : configuredKeys
+            ? { className: 'ready', label: '已配置' }
+            : { className: 'warning', label: '缺少密钥' };
 
     return `
         <div class="provider-item ${isSelected ? 'selected' : ''}"
@@ -103,6 +112,7 @@ function renderProviderItem(provider) {
             <div class="provider-item-info">
                 <div class="provider-item-name">${escapeHtml(provider.name)}</div>
                 <div class="provider-item-format">${formatLabels[provider.apiFormat]} · ${modelCount}个模型</div>
+                <div class="provider-item-health ${health.className}"><span class="provider-health-dot"></span>${health.label}</div>
             </div>
             <button class="provider-toggle-btn" data-provider-id="${escapeHtml(provider.id)}" title="${provider.enabled ? '禁用（不显示模型）' : '启用（显示模型）'}">
                 <div class="toggle-switch ${provider.enabled ? 'on' : 'off'}">

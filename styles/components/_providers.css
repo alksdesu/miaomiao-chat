@@ -154,6 +154,42 @@
     color: var(--md-muted);
 }
 
+.provider-item-health {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-1);
+    margin-top: var(--sp-1);
+    color: var(--md-muted);
+    font-size: var(--fs-xs);
+}
+
+.provider-health-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+}
+
+.provider-item-health.ready {
+    color: var(--md-green);
+}
+
+.provider-item-health.pending {
+    color: var(--md-yellow);
+}
+
+.provider-item-health.warning {
+    color: var(--md-coral);
+}
+
+.provider-item-health.off {
+    color: var(--md-muted);
+}
+
+.provider-item.selected .provider-item-health {
+    color: var(--color-text-inverse);
+}
+
 /* 提供商开关按钮 */
 .provider-toggle-btn {
     background: none;
