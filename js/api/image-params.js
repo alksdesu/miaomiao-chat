@@ -1,5 +1,9 @@
+// 可调尺寸的像素范围：下限约 1024×640，上限 3840×2160
+const MIN_IMAGE_PIXELS = 655360;
+const MAX_IMAGE_PIXELS = 3840 * 2160;
+
 const ENUM_PARAMS = Object.freeze({
-    quality: new Set(['auto', 'low', 'medium', 'high']),
+    quality: new Set(['auto', 'low', 'medium', 'high', 'xhigh', 'max']),
     output_format: new Set(['png', 'jpeg', 'webp']),
     background: new Set(['auto', 'opaque', 'transparent']),
     moderation: new Set(['auto', 'low']),
@@ -17,9 +21,11 @@ export function validateOpenAIImageSize(size) {
 
     const ratio = width / height;
     if (ratio < 1 / 3 || ratio > 3) return '宽高比必须在 1:3 到 3:1 之间';
-    if (Math.max(width, height) > 3840 || width * height > 3840 * 2160) {
+    const pixels = width * height;
+    if (Math.max(width, height) > 3840 || pixels > MAX_IMAGE_PIXELS) {
         return '尺寸不能超过 3840×2160 的像素范围';
     }
+    if (pixels < MIN_IMAGE_PIXELS) return '尺寸不能小于 655,360 像素（如 1024×640）';
     return null;
 }
 

@@ -265,6 +265,18 @@ describe('OpenClaw', () => {
 // ========== OpenAI Image ==========
 
 describe('OpenAI Image', () => {
+    it('画质收敛到型号支持的档位，未识别的型号原样发送', () => {
+        const quality = (model) => generate('openai-image', { model, params: { quality: 'max' } });
+        expect(quality('gpt-image-2.5-sunburst').modelParams.quality).toBe('max');
+        expect(quality('my-image-model').modelParams.quality).toBe('max');
+        const legacy = quality('gpt-image-2');
+        expect(legacy.modelParams.quality).toBe('high');
+        expect(legacy.notices).toEqual([expect.objectContaining({ key: 'openai-image.quality' })]);
+        expect(
+            generate('openai-image', { model: 'gpt-image-2', params: { quality: 'auto' } }).notices
+        ).toEqual([]);
+    });
+
     it('使用独立图片参数，不继承聊天采样参数', () => {
         const stateOverrides = {
             settings: { thinkingEnabled: true, verbosityEnabled: true, outputVerbosity: 'low' },
@@ -289,7 +301,8 @@ describe('OpenAI Image', () => {
                 partial_images: 1
             },
             thinkingCfg: null,
-            verbosityCfg: null
+            verbosityCfg: null,
+            notices: []
         });
     });
 

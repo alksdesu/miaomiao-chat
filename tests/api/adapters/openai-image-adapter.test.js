@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { openaiImageAdapter } from '../../../js/api/adapters/openai-image-adapter.js';
 import { MediaKind, PartType, Role } from '../../../js/messages/schema.js';
+import { resolveModelProfile } from '../../../js/api/model-profiles.js';
 
 const userMessage = (parts) => ({ role: Role.USER, parts });
 
@@ -41,6 +42,8 @@ describe('openai-image adapter', () => {
             messages,
             model: 'custom-model',
             modelParams: { input_fidelity: 'high' },
+            profile: resolveModelProfile('openai-image', 'custom-model'),
+            notices: [],
             state: { streamEnabled: true }
         });
 
@@ -132,5 +135,48 @@ describe('openai-image adapter', () => {
                 state: { streamEnabled: false }
             })
         ).toThrow('提示词');
+    });
+});
+
+describe('openai-image adapter 按型号约束', () => {
+    const editMessages = () =>
+        openaiImageAdapter.partsToAPIMessages([
+            userMessage([
+                { type: PartType.TEXT, text: '换成夜景' },
+                { type: PartType.MEDIA, media: MediaKind.IMAGE, url: 'data:image/png;base64,AAAA' }
+            ])
+        ]);
+    const build = (model, messages) => {
+        const notices = [];
+        const body = openaiImageAdapter.buildRequestBody({
+            messages,
+            model,
+            modelParams: { input_fidelity: 'high' },
+            profile: resolveModelProfile('openai-image', model),
+            notices,
+            state: { streamEnabled: false }
+        });
+        return { body, notices };
+    };
+
+    it('gpt-image-2 起图片编辑不发送 input_fidelity 并提示', () => {
+        const { body, notices } = build('gpt-image-2', editMessages());
+        expect(body).not.toHaveProperty('input_fidelity');
+        expect(notices).toEqual([expect.objectContaining({ key: 'openai-image.input-fidelity' })]);
+    });
+
+    it('接受 input_fidelity 的型号图片编辑照常发送', () => {
+        const { body, notices } = build('gpt-image-1.5', editMessages());
+        expect(body.input_fidelity).toBe('high');
+        expect(notices).toEqual([]);
+    });
+
+    it('纯文字生成不发送 input_fidelity，也不提示', () => {
+        const messages = openaiImageAdapter.partsToAPIMessages([
+            userMessage([{ type: PartType.TEXT, text: '一只狐狸' }])
+        ]);
+        const { body, notices } = build('gpt-image-2', messages);
+        expect(body).not.toHaveProperty('input_fidelity');
+        expect(notices).toEqual([]);
     });
 });

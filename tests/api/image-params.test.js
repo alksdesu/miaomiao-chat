@@ -54,3 +54,17 @@ describe('buildOpenAIImageParams', () => {
         ).toThrow('透明背景');
     });
 });
+
+describe('图片参数取值范围', () => {
+    it('自定义尺寸不能低于 655,360 像素', () => {
+        expect(validateOpenAIImageSize('1024x640')).toBeNull();
+        expect(validateOpenAIImageSize('1024x608')).toContain('655,360');
+        expect(validateOpenAIImageSize('512x512')).toContain('655,360');
+    });
+
+    it('画质接受 xhigh / max', () => {
+        expect(buildOpenAIImageParams({ quality: 'xhigh' }).quality).toBe('xhigh');
+        expect(buildOpenAIImageParams({ quality: 'max' }).quality).toBe('max');
+        expect(buildOpenAIImageParams({ quality: 'ultra' })).not.toHaveProperty('quality');
+    });
+});

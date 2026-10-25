@@ -3848,7 +3848,6 @@ exports[`请求体矩阵快照 > image edit gpt-image-2 with input fidelity 1`] 
         "image_url": "data:image/png;base64,QkJCQg==",
       },
     ],
-    "input_fidelity": "high",
     "model": "gpt-image-2",
     "n": 1,
     "partial_images": 0,

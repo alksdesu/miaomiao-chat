@@ -5,6 +5,10 @@ import {
 } from '../../stream/parser-openai-image.js';
 import { buildOpenAIAuthHeaders } from './openai-shared.js';
 import { buildOpenAIImageParams } from '../image-params.js';
+import { clampToSupportedLevel } from '../reasoning.js';
+
+// 画质由低到高；auto 交给服务端决定，不参与收敛
+const IMAGE_QUALITY_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
 
 const OUTPUT_MIME_TYPES = Object.freeze({
     png: 'image/png',
@@ -110,18 +114,32 @@ function formatSystemTools() {
 }
 
 /**
+ * 画质收敛到型号支持的档位，未识别的型号原样发送
  * @param {import('../params.js').GenerationSettings} settings
+ * @param {{ profile: Object }} ctx
  * @returns {import('./format-adapter-types.js').GenerationParams}
  */
-function buildGenerationParams(settings) {
-    return {
-        modelParams: buildOpenAIImageParams(settings.userParams, settings.streamEnabled),
-        thinkingCfg: null,
-        verbosityCfg: null
-    };
+function buildGenerationParams(settings, { profile }) {
+    const notices = [];
+    const modelParams = buildOpenAIImageParams(settings.userParams, settings.streamEnabled);
+    const { quality } = modelParams;
+    if (
+        quality &&
+        quality !== 'auto' &&
+        profile.qualities &&
+        !profile.qualities.includes(quality)
+    ) {
+        const fallback = clampToSupportedLevel(quality, IMAGE_QUALITY_LEVELS, profile.qualities);
+        modelParams.quality = fallback;
+        notices.push({
+            key: 'openai-image.quality',
+            message: `当前模型不支持 ${quality} 画质，已改用 ${fallback}`
+        });
+    }
+    return { modelParams, thinkingCfg: null, verbosityCfg: null, notices };
 }
 
-function buildRequestBody({ messages, model, modelParams, state: stateRef }) {
+function buildRequestBody({ messages, model, modelParams, profile, notices, state: stateRef }) {
     if (typeof model !== 'string' || !model.trim()) {
         throw new Error('请先为图片提供商选择或添加模型');
     }
@@ -140,6 +158,14 @@ function buildRequestBody({ messages, model, modelParams, state: stateRef }) {
 
     if (requestInput.images.length > 0) {
         requestBody.images = requestInput.images.map((imageUrl) => ({ image_url: imageUrl }));
+        // 从 gpt-image-2 起始终按高保真处理输入图片，不再接受 input_fidelity
+        if (requestBody.input_fidelity && profile.inputFidelity === false) {
+            delete requestBody.input_fidelity;
+            notices.push({
+                key: 'openai-image.input-fidelity',
+                message: '当前模型始终高保真处理输入图片，不接受 input_fidelity，已忽略'
+            });
+        }
     } else {
         delete requestBody.input_fidelity;
     }
