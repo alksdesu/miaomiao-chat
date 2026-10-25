@@ -15,6 +15,7 @@ import {
     renderFinalTextWithThinking
 } from './helpers.js';
 import { appendStreamStats } from './stats.js';
+import { appendStopNotice } from '../messages/render-stop-notice.js';
 import { saveStreamSnapshotThrottled, clearStreamSnapshot } from '../state/stream-snapshot.js';
 import { saveAssistantMessage, saveAssistantMessageAsync } from '../messages/sync.js';
 import { setCurrentMessageIndex } from '../messages/dom-sync.js';
@@ -31,6 +32,7 @@ import { requestTaskRegistry } from '../core/request-task-registry.js';
  * @property {(contentParts: Array, thinking: string, grounding?: Object) => void} renderFinalContent
  * @property {(text: string, thinking: string, grounding?: Object) => void} renderFinalText
  * @property {(errorHtml: string) => void} renderError - 错误 HTML 渲染到 DOM（BufferedSink no-op）
+ * @property {(stop: Object|null) => void} renderStopNotice - 截断 / 拦截 / 拒答提示（BufferedSink no-op）
  * @property {(stats: import('./stats.js').StreamStats) => void} appendStats
  * @property {(parts: Array, meta: Object, opts: Object) => number} commit - 返回写入后的 messageIndex，-1 表示未写入
  * @property {(parts: Array, meta: Object, opts: Object, errorInfo: Object) => number} commitError
@@ -113,6 +115,11 @@ export class DefaultSink {
         // errorHtml 由 renderHumanizedError 生成 + 静态 stream-error-partial-save 拼接，内容已转义
         // eslint-disable-next-line no-restricted-syntax -- 已审计：errorHtml = renderHumanizedError + 静态 stream-error-partial-save，内容已转义
         contentDiv.insertAdjacentHTML('beforeend', errorHtml);
+    }
+
+    renderStopNotice(stop) {
+        if (this.isBackground()) return;
+        appendStopNotice(this.getContentElement(), stop);
     }
 
     appendStats(stats) {
@@ -289,6 +296,7 @@ export class BufferedSink {
     renderFinalContent() {}
     renderFinalText() {}
     renderError() {}
+    renderStopNotice() {}
 
     // 多流 stats 在外层 saveAssistantMessage 时一次性 syncToGlobal
     appendStats() {}

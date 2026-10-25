@@ -59,8 +59,24 @@ const ERROR_MESSAGES = {
     user_cancelled: {
         title: '请求已取消',
         hint: '已保留取消前接收的内容'
-    }
+    },
+
+    // 没有正文的回复（messages/stop-reason.js 的 StopKind 与 EMPTY_REPLY_CODE），提示语取错误消息本身
+    empty_reply: { title: '模型没有返回内容' },
+    max_tokens: { title: '达到最大输出长度' },
+    context_overflow: { title: '超出上下文窗口' },
+    safety: { title: '回复被安全策略拦截' },
+    prompt_blocked: { title: '请求被安全策略拦截' },
+    refusal: { title: '模型拒绝回答' },
+    recitation: { title: '回复引用受限' },
+    malformed_tool_call: { title: '工具调用不合法' },
+    continuation: { title: '达到单次输出上限' },
+    other: { title: '生成中断' }
 };
+
+function withHint(entry, errorMessage) {
+    return entry.hint ? entry : { title: entry.title, hint: errorMessage || '发生未知错误' };
+}
 
 /**
  * 获取人性化错误信息
@@ -69,22 +85,23 @@ const ERROR_MESSAGES = {
  * @returns {Object} { title, hint }
  */
 export function getHumanizedError(error, httpStatus = null) {
+    const errorMessage = error?.error?.message || error?.message || '';
+
     // 尝试从 HTTP 状态码获取
     if (httpStatus && ERROR_MESSAGES[httpStatus]) {
-        return ERROR_MESSAGES[httpStatus];
+        return withHint(ERROR_MESSAGES[httpStatus], errorMessage);
     }
 
     // 尝试从错误对象提取类型/代码
     const errorType = error?.error?.type || error?.type || error?.code || error?.name;
     const errorStatus = error?.error?.status || error?.status;
-    const errorMessage = error?.error?.message || error?.message || '';
 
     // 匹配错误类型
     if (errorType && ERROR_MESSAGES[errorType]) {
-        return ERROR_MESSAGES[errorType];
+        return withHint(ERROR_MESSAGES[errorType], errorMessage);
     }
     if (errorStatus && ERROR_MESSAGES[errorStatus]) {
-        return ERROR_MESSAGES[errorStatus];
+        return withHint(ERROR_MESSAGES[errorStatus], errorMessage);
     }
 
     // 尝试从消息内容匹配

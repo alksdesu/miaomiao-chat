@@ -263,6 +263,7 @@ export function buildPartsFromStreamingState(streamingState = {}) {
  * @param {string} [extras.thoughtSignature] - Gemini 签名（消息级冗余写入 meta.raw.gemini）
  * @param {string} [extras.thinkingSignature] - Claude 签名（消息级冗余写入 meta.raw.claude）
  * @param {Object} [extras.groundingMetadata] - Gemini 搜索引用
+ * @param {import('./stop-reason.js').StopInfo} [extras.stop] - 归一后的结束原因
  * @returns {Object} createMeta 返回的 meta 对象
  */
 export function buildMetaFromStreamingState(extras = {}) {
@@ -275,6 +276,7 @@ export function buildMetaFromStreamingState(extras = {}) {
         thinkingSignature,
         groundingMetadata,
         usage,
+        stop,
         // 响应侧实际模型名（代理可能改写 model，如 OpenRouter 'auto' → 真实路由模型）
         responseModel
     } = extras;
@@ -313,7 +315,8 @@ export function buildMetaFromStreamingState(extras = {}) {
         provider: providerName,
         usage: usage || null,
         stats: streamStats || null,
-        raw
+        raw,
+        ...(stop ? { stop } : {})
     });
 }
 
@@ -402,7 +405,12 @@ export function buildMetaFromReply(reply) {
     }
     if (reply.thoughtSignature) raw.gemini = { thoughtSignature: reply.thoughtSignature };
     if (reply.thinkingSignature) raw.claude = { thinkingSignature: reply.thinkingSignature };
-    return createMeta({ usage: reply.usage || null, stats: reply.stats?.getData?.() || null, raw });
+    return createMeta({
+        usage: reply.usage || null,
+        stats: reply.stats?.getData?.() || null,
+        raw,
+        ...(reply.stop ? { stop: reply.stop } : {})
+    });
 }
 
 export function buildCanonicalReply(reply, ts = Date.now()) {
@@ -426,4 +434,20 @@ export function buildCanonicalReply(reply, ts = Date.now()) {
 
 export function buildCanonicalReplies(replies, ts = Date.now()) {
     return Array.isArray(replies) ? replies.map((reply) => buildCanonicalReply(reply, ts)) : [];
+}
+
+/**
+ * 流式中间格式的回复是否带有正文（文本、思考或媒体）
+ */
+export function hasReplyOutput(reply) {
+    return !!reply?.content || !!reply?.thinkingContent || (reply?.contentParts?.length ?? 0) > 0;
+}
+
+/**
+ * 多回复落库时默认选中的回复：优先第一个成功的回复，其次第一个带部分内容的失败回复
+ * @returns {number} 都没有内容时返回 -1，由调用方落错误消息
+ */
+export function pickInitialReplyIndex(replies) {
+    const successIndex = replies.findIndex((reply) => !reply.isError);
+    return successIndex >= 0 ? successIndex : replies.findIndex(hasReplyOutput);
 }

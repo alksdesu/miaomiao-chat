@@ -18,6 +18,7 @@ import { GeminiStreamParser, parseGeminiStream } from '../../stream/parser-gemin
 import { isTextFile, stringifyToolResult } from './openai-shared.js';
 import { TOOL_INTERRUPTED_MESSAGE } from '../../utils/constants.js';
 import { normalizeBudgetStrength, resolveThinkingBudget } from '../reasoning.js';
+import { normalizeGeminiStop } from '../../messages/stop-reason.js';
 
 const GEMINI_THINKING_BUDGETS = Object.freeze({ low: 4096, medium: 8192, high: 16384 });
 
@@ -216,11 +217,16 @@ function partsToAPIMessages(msgs, _opts = {}) {
 
 function parseResponse(data, options = {}) {
     if (data.error) return null;
-    if (!data.candidates || data.candidates.length === 0) return null;
+    const candidate = data.candidates?.[0];
+    const stop = normalizeGeminiStop({
+        finishReason: candidate?.finishReason,
+        finishMessage: candidate?.finishMessage,
+        blockReason: data.promptFeedback?.blockReason,
+        blockReasonMessage: data.promptFeedback?.blockReasonMessage
+    });
+    // prompt 被拦截时没有候选，候选被安全拦截时没有 content，只带回结束原因，由 handler 按空回复处理
+    if (!candidate?.content?.parts) return { content: '', stop };
     const xmlMode = options.isXmlMode === true;
-
-    const candidate = data.candidates[0];
-    if (!candidate.content || !candidate.content.parts) return null;
 
     // 1. 优先检测原生工具调用 — 不早 return，下方统一抽取 thinking/thoughtSignature/contentParts
     // 让 saveAssistantMessage 落库的 part 含完整 thinking + signature，下轮 resendWithToolResults
@@ -342,7 +348,8 @@ function parseResponse(data, options = {}) {
         reasoningTokens: reasoningTokens || null,
         contentParts: contentParts.length > 0 ? contentParts : null,
         toolCalls: hasNativeToolCalls ? toolCalls : undefined,
-        hasToolCalls: hasNativeToolCalls
+        hasToolCalls: hasNativeToolCalls,
+        stop
     };
 }
 

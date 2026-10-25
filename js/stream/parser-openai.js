@@ -10,6 +10,7 @@ import { handleContentArray } from './helpers.js';
 import { eventBus } from '../core/events.js';
 import { createToolCallAccumulator } from './openai-tool-accumulator.js';
 import { ToolMode } from '../messages/schema.js';
+import { normalizeOpenAIChatStop, normalizeResponsesStop } from '../messages/stop-reason.js';
 import { generateIdSet } from '../api/format-converter.js';
 import { STREAM_IDLE_TIMEOUT_RESPONSES_MIN } from '../utils/constants.js';
 
@@ -35,6 +36,11 @@ export class OpenAIStreamParser extends BaseStreamParser {
         this.encryptedContent = null;
         this.reasoningItemId = null;
         this.responsesReasoningItems = new Map();
+
+        // 拒答文本按正文展示，结束原因另记为 refusal
+        this.refused = false;
+        // response.incomplete 时函数调用参数可能被截断，不再执行工具
+        this.responsesIncomplete = false;
     }
 
     /**
@@ -74,7 +80,7 @@ export class OpenAIStreamParser extends BaseStreamParser {
 
             // Responses API 格式
             if (this.isResponsesFormat && parsed.type) {
-                return this._processResponsesEvent(parsed);
+                return await this._processResponsesEvent(parsed);
             }
 
             // Responses API 兜底：output_text 无 type
@@ -108,16 +114,17 @@ export class OpenAIStreamParser extends BaseStreamParser {
 
     // ───── Responses API 事件 ─────
 
-    _processResponsesEvent(parsed) {
+    async _processResponsesEvent(parsed) {
         switch (parsed.type) {
             case 'response.output_text.delta':
+                if (parsed.delta) this._appendResponsesText(parsed.delta);
+                break;
+
+            case 'response.refusal.delta':
                 if (parsed.delta) {
-                    this.stats.recordFirstToken();
-                    this.stats.recordTokens(parsed.delta);
-                    this.textContent += parsed.delta;
-                    this.totalReceived += parsed.delta.length;
-                    this.mergeContentPart('text', parsed.delta);
-                    this.notifyStreaming(this.textContent, this.thinkingContent);
+                    this.refused = true;
+                    this.stop = normalizeResponsesStop(null, { refused: true });
+                    this._appendResponsesText(parsed.delta);
                 }
                 break;
 
@@ -202,40 +209,80 @@ export class OpenAIStreamParser extends BaseStreamParser {
 
             case 'response.completed':
             case 'response.done': {
-                if (parsed.response?.output_text && !this.textContent) {
-                    this.textContent = parsed.response.output_text;
-                    this.totalReceived += this.textContent.length;
-                    this.stats.recordFirstToken();
-                    this.stats.recordTokens(this.textContent);
-                    this.contentParts.push({ type: 'text', text: this.textContent });
-                    this.notifyStreaming(this.textContent, this.thinkingContent);
-                }
-                if (parsed.response?.output) {
-                    for (const item of parsed.response.output) {
-                        if (item.type === 'reasoning') this._upsertReasoningItem(item);
-                        if (item.type === 'function_call' && !this.responsesToolCalls.size) {
-                            const idx = this.responsesToolCalls.size;
-                            const callId = item.call_id || `call_${Date.now()}_${idx}`;
-                            this.responsesToolCalls.set(idx, {
-                                id: callId,
-                                call_id: callId,
-                                responseItemId: item.id || null,
-                                name: item.name || '',
-                                arguments: item.arguments || ''
-                            });
-                            this.hasResponsesToolCalls = true;
-                        }
-                    }
-                }
+                this._absorbFinalResponse(parsed.response);
+                this.stop = normalizeResponsesStop(parsed.response, { refused: this.refused });
                 if (this._tryExecuteResponsesToolCalls()) return true;
                 break;
             }
 
+            case 'response.incomplete':
+                this.responsesIncomplete = true;
+                this._absorbFinalResponse(parsed.response);
+                this.stop = normalizeResponsesStop(parsed.response, { refused: this.refused });
+                break;
+
+            case 'response.failed':
+                await this._handleStreamError(
+                    parsed.response?.error || {
+                        code: 'response_failed',
+                        message: 'Responses API 返回 failed 状态'
+                    }
+                );
+                return true;
+
+            case 'error':
+                await this._handleStreamError({
+                    code: parsed.code || 'stream_error',
+                    message: parsed.message || 'Responses API 流内错误'
+                });
+                return true;
+
             default:
-                console.debug('[Parser] Responses API 事件:', parsed.type);
+                logger.debug('[Parser] Responses API 事件:', parsed.type);
                 break;
         }
         return false;
+    }
+
+    _appendResponsesText(delta) {
+        this.stats.recordFirstToken();
+        this.stats.recordTokens(delta);
+        this.textContent += delta;
+        this.totalReceived += delta.length;
+        this.mergeContentPart('text', delta);
+        this.notifyStreaming(this.textContent, this.thinkingContent);
+    }
+
+    /**
+     * 终态事件携带完整 response：补齐增量里缺失的正文、推理项与函数调用
+     */
+    _absorbFinalResponse(response) {
+        if (response?.output_text && !this.textContent) {
+            this.textContent = response.output_text;
+            this.totalReceived += this.textContent.length;
+            this.stats.recordFirstToken();
+            this.stats.recordTokens(this.textContent);
+            this.contentParts.push({ type: 'text', text: this.textContent });
+            this.notifyStreaming(this.textContent, this.thinkingContent);
+        }
+        if (!response?.output) return;
+        // 增量事件里已收到函数调用时以增量为准；只有完全没收到时才从终态补齐，且要补齐全部
+        const hasStreamedCalls = this.responsesToolCalls.size > 0;
+        for (const item of response.output) {
+            if (item.type === 'reasoning') this._upsertReasoningItem(item);
+            if (item.type === 'function_call' && !hasStreamedCalls) {
+                const idx = this.responsesToolCalls.size;
+                const callId = item.call_id || `call_${Date.now()}_${idx}`;
+                this.responsesToolCalls.set(idx, {
+                    id: callId,
+                    call_id: callId,
+                    responseItemId: item.id || null,
+                    name: item.name || '',
+                    arguments: item.arguments || ''
+                });
+                this.hasResponsesToolCalls = true;
+            }
+        }
     }
 
     // ───── Responses API output[] 兜底 ─────
@@ -274,6 +321,14 @@ export class OpenAIStreamParser extends BaseStreamParser {
                     }
                     const addedLength = await handleContentArray(item.content, this.contentParts);
                     this.totalReceived += addedLength;
+                    const refusalText = item.content
+                        .filter((p) => p?.type === 'refusal' && typeof p.refusal === 'string')
+                        .map((p) => p.refusal)
+                        .join('');
+                    if (refusalText) {
+                        this.refused = true;
+                        this._appendResponsesText(refusalText);
+                    }
                 }
             } else if (item.type === 'function_call') {
                 const idx = this.responsesToolCalls.size;
@@ -293,6 +348,9 @@ export class OpenAIStreamParser extends BaseStreamParser {
             this._consumeOutputText(parsed.output_text);
         }
 
+        if (parsed.status === 'incomplete') this.responsesIncomplete = true;
+        this.stop = normalizeResponsesStop(parsed, { refused: this.refused }) || this.stop;
+
         if (this._tryExecuteResponsesToolCalls()) return true;
         return false;
     }
@@ -303,6 +361,9 @@ export class OpenAIStreamParser extends BaseStreamParser {
         // Chat Completions usage（最后一个 chunk 带 usage）
         const delta = parsed.choices?.[0]?.delta;
         const finishReason = parsed.choices?.[0]?.finish_reason;
+        if (finishReason) {
+            this.stop = normalizeOpenAIChatStop(finishReason, { refused: this.refused });
+        }
 
         // 原生 tool_calls
         if (delta?.tool_calls && !this.xmlMode) {
@@ -383,6 +444,16 @@ export class OpenAIStreamParser extends BaseStreamParser {
                 this.stats.recordFirstToken();
                 const addedLength = await handleContentArray(delta.content, this.contentParts);
                 this.totalReceived += addedLength;
+            }
+
+            // 安全拒答：content 为空，拒答文本在 refusal 字段里分片下发
+            if (typeof delta.refusal === 'string' && delta.refusal) {
+                this.refused = true;
+                this.stop = normalizeOpenAIChatStop(finishReason, { refused: true });
+                this.stats.recordFirstToken();
+                this.stats.recordTokens(delta.refusal);
+                this.processThinkAndMarkdown(delta.refusal);
+                this.notifyStreaming(this.textContent, this.thinkingContent);
             }
         }
 
@@ -477,6 +548,7 @@ export class OpenAIStreamParser extends BaseStreamParser {
     }
 
     _tryExecuteResponsesToolCalls() {
+        if (this.responsesIncomplete) return false;
         if (!this.hasResponsesToolCalls || this.responsesToolCalls.size === 0) return false;
 
         const completedCalls = [];

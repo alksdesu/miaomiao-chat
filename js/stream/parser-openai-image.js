@@ -44,7 +44,7 @@ export class OpenAIImageStreamParser extends BaseStreamParser {
     }
 
     collectExtraSaveFields() {
-        return { usage: this.usage };
+        return { ...super.collectExtraSaveFields(), usage: this.usage };
     }
 
     async processLine(line) {

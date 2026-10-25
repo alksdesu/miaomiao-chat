@@ -76,7 +76,8 @@ import {
     saveErrorMessage,
     copyMessageMetadata,
     extractTextContent,
-    extractImages
+    extractImages,
+    mergeContinuationParts
 } from '../../js/messages/sync.js';
 import {
     buildPartsFromStreamingState,
@@ -520,6 +521,32 @@ describe('saveAssistantMessage', () => {
         // 跨格式同逻辑 call_id 命中应去重保留 1 个新轮
         expect(toolParts).toHaveLength(1);
         expect(toolParts[0].id).toBe('call_synth1');
+    });
+});
+
+// ========== mergeContinuationParts 结束原因 ==========
+
+describe('mergeContinuationParts 结束原因', () => {
+    const prev = {
+        role: 'assistant',
+        parts: [{ type: 'text', text: '第一轮' }],
+        meta: { model: 'm', raw: {}, stop: { kind: 'tool_use', reason: 'tool_use' } }
+    };
+
+    it('以最后一轮的结束原因为准', () => {
+        const { mergedMeta } = mergeContinuationParts(prev, [{ type: 'text', text: '第二轮' }], {
+            raw: {},
+            stop: { kind: 'max_tokens', reason: 'max_tokens' }
+        });
+        expect(mergedMeta.stop).toEqual({ kind: 'max_tokens', reason: 'max_tokens' });
+    });
+
+    it('最后一轮没有结束原因时清除旧值', () => {
+        const { mergedMeta } = mergeContinuationParts(prev, [{ type: 'text', text: '第二轮' }], {
+            raw: {}
+        });
+        expect(mergedMeta).not.toHaveProperty('stop');
+        expect(prev.meta.stop).toEqual({ kind: 'tool_use', reason: 'tool_use' });
     });
 });
 

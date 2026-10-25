@@ -31,6 +31,7 @@
     font-size: var(--fs-md);
     color: var(--color-text-secondary);
     line-height: 1.4;
+    white-space: pre-line;
 }
 
 .error-technical {
@@ -83,6 +84,32 @@
     background: rgba(var(--palette-orange-rgb), 0.1);
     border-left: 3px solid var(--md-coral);
     font-size: var(--fs-xs);
+}
+
+/* 回复被截断、拦截或拒答时追加在正文末尾的提示条 */
+.message-content .stop-notice {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--sp-2) var(--sp-3);
+    margin-top: var(--sp-4);
+    padding: var(--sp-4) var(--sp-6);
+    background: var(--color-warning-bg);
+    border-left: var(--border-accent) var(--color-warning);
+    border-radius: var(--radius-sm);
+    color: var(--color-text-primary);
+    font-size: var(--fs-md);
+}
+
+.message-content .stop-notice-reason {
+    color: var(--color-text-secondary);
+    font-size: var(--fs-xs);
+}
+
+.message-content .stop-notice-detail {
+    flex-basis: 100%;
+    color: var(--color-text-secondary);
+    white-space: pre-line;
 }
 
 /* 工具调用 continuation 失败追加到消息正文中的错误条 */

@@ -17,6 +17,7 @@ import { XMLStreamAccumulator } from '../tools/xml-formatter.js';
 import { state } from '../core/state.js';
 import { ThinkTagParser } from './think-tag-parser.js';
 import { ToolMode } from '../messages/schema.js';
+import { buildEmptyReplyError } from '../messages/stop-reason.js';
 import { DefaultSink } from './sink.js';
 
 // 响应长度限制
@@ -51,6 +52,10 @@ export class BaseStreamParser {
         // signature 来源标识（子类 override：'claude' | 'gemini' | 'openai'）
         // commit 路径自动注入到 streamingState.signatureFormat，parts-builder 写入 thinking part
         this.signatureFormat = null;
+
+        // 子类把各家结束原因归一后写入，随 meta.stop 落库并在正文末尾提示
+        /** @type {import('../messages/stop-reason.js').StopInfo|null} */
+        this.stop = null;
 
         this.stats = new StreamStats();
 
@@ -188,12 +193,14 @@ export class BaseStreamParser {
             // 看到 0 token 不知发生什么。空响应直接走 ERROR 提示「响应内容为空」。
             // 纯 tool_call 流（input_json_delta / function_call_arguments.delta 不累加 totalReceived）
             // 通过 hasOngoingToolStream() hook 排除：子类必须 override 申报自己的工具累积状态
+            // 带结束原因的空回复是服务端正常结束（拦截 / 拒答等），交给 finalizeStream 按原因处理
             if (
                 !this.textContent &&
                 !this.thinkingContent &&
                 this.contentParts.length === 0 &&
                 this.totalReceived === 0 &&
-                !this.hasOngoingToolStream()
+                !this.hasOngoingToolStream() &&
+                !this.stop
             ) {
                 this._handleStreamReadError(
                     new Error('收到非 SSE 响应（可能是代理错误页 / HTML 内容）'),
@@ -274,7 +281,7 @@ export class BaseStreamParser {
         } catch (flushErr) {
             logger.error('[BaseStreamParser] 取消前收尾失败:', flushErr);
         }
-        if (!this.textContent && !this.thinkingContent && this.contentParts.length === 0) {
+        if (this._hasNoOutput()) {
             return false;
         }
         const extra = this._collectExtraSaveFields();
@@ -508,13 +515,14 @@ export class BaseStreamParser {
 
     /**
      * 子类申报需随 finalize / finalizeStreamWithError / executeToolCalls 落库的格式专属字段。
-     * 基类默认空对象。返回值会经 _collectExtraSaveFields 过滤空字段。
+     * 基类只申报归一后的结束原因，子类 override 时必须合并 super 的结果。
+     * 返回值会经 _collectExtraSaveFields 过滤空字段。
      *
      * 注意：被三处出口共用，子类 override 时必须保证字段在所有调用时机都已初始化。
      * @returns {object}
      */
     collectExtraSaveFields() {
-        return {};
+        return this.stop ? { stop: this.stop } : {};
     }
 
     /**
@@ -573,7 +581,8 @@ export class BaseStreamParser {
             stats: this.stats,
             // signatureFormat 透传到 multi-stream → buildPartsFromReply → thinking part
             // 多回复模式下每个流独立 parser 实例，signatureFormat 由各家子类 override
-            signatureFormat: this.signatureFormat
+            signatureFormat: this.signatureFormat,
+            stop: this.stop
         };
         // 多流模式下 BufferedSink 拦截的工具调用透传到 reply，由 multi-stream 落库为
         // tool_call part 保留会话历史；否则用户看不到模型尝试调用什么工具
@@ -585,6 +594,10 @@ export class BaseStreamParser {
     }
 
     // ───── finalize 公共逻辑 ─────
+
+    _hasNoOutput() {
+        return !this.textContent && !this.thinkingContent && this.contentParts.length === 0;
+    }
 
     /**
      * 正常完成流处理（公共骨架）
@@ -603,6 +616,14 @@ export class BaseStreamParser {
         // 在此排空 XML 累积器残留才能覆盖 processLine 提前 return 的格式
         this.flushXmlAccumulator();
 
+        // 被拦截、拒答、思考耗尽输出上限或正常结束却没有任何正文：按原因落错误消息，
+        // 空回复不进入后续请求的上下文；续作轮次并入已有内容的消息，只在末尾提示结束原因
+        if (this._hasNoOutput() && this.sink.task?.isSavingContinuation !== true) {
+            const { code, message } = buildEmptyReplyError(this.stop);
+            this.finalizeStreamWithError(code, message, extraSaveFields, groundingMetadata);
+            return;
+        }
+
         this.stats.finalize();
         cleanupAllIncompleteImages(this.contentParts);
 
@@ -615,6 +636,7 @@ export class BaseStreamParser {
         } else if (this.textContent || this.thinkingContent) {
             this.sink.renderFinalText(this.textContent, this.thinkingContent, groundingMetadata);
         }
+        this.sink.renderStopNotice(this.stop);
 
         this.stats.recalculateTokenCount({
             textContent: this.textContent,
@@ -660,11 +682,15 @@ export class BaseStreamParser {
         cleanupAllIncompleteImages(this.contentParts);
 
         const errorObject = { code: errorCode, message: errorMessage, type: errorCode };
+        const hasPartialContent = !this._hasNoOutput();
         const errorHtml =
             renderHumanizedError(errorObject, errorCode, true) +
-            `<div class="stream-error-partial-save">\u{1F4BE} 已保存部分接收的内容</div>`;
+            (hasPartialContent
+                ? `<div class="stream-error-partial-save">\u{1F4BE} 已保存部分接收的内容</div>`
+                : '');
 
-        const finalText = this.textContent + '\n\n' + errorMessage;
+        // 没有收到任何内容时错误只由错误块展示，不再把错误文案写进正文
+        const finalText = hasPartialContent ? this.textContent + '\n\n' + errorMessage : '';
 
         if (!this.sink.isBackground()) {
             if (this.contentParts.length > 0) {

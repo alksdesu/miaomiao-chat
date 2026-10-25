@@ -10,6 +10,7 @@ import { parseDataURL } from '../../utils/file-helpers.js';
 import { extractXMLToolCalls, appendXmlToolResultsForMessage } from '../../tools/xml-formatter.js';
 import { isVideoUrl } from '../../utils/media.js';
 import { OpenAIStreamParser, parseOpenAIStream } from '../../stream/parser-openai.js';
+import { normalizeResponsesStop } from '../../messages/stop-reason.js';
 
 import {
     isTextFile,
@@ -186,9 +187,11 @@ function parseResponse(data, options = {}) {
     // 响应结构: { output: [...], output_text: "..." }
     if (data.error) return null;
     const xmlMode = options.isXmlMode === true;
+    // incomplete 时函数调用参数可能被截断，按普通回复处理并提示结束原因
+    const incomplete = data.status === 'incomplete';
 
     // 1. 优先检测工具调用（function_call 类型）
-    if (data.output && Array.isArray(data.output)) {
+    if (!incomplete && data.output && Array.isArray(data.output)) {
         const toolCalls = [];
         const reasoningItems = [];
         let encryptedContent = null;
@@ -277,6 +280,7 @@ function parseResponse(data, options = {}) {
     let thinkingContent = '';
     let encryptedContent = null;
     let reasoningItemId = null;
+    let refused = false;
     const reasoningItems = [];
     const contentParts = [];
 
@@ -314,6 +318,11 @@ function parseResponse(data, options = {}) {
                         } else if (part.type === 'text' && part.text) {
                             textContent += part.text;
                             contentParts.push({ type: 'text', text: part.text });
+                        } else if (part.type === 'refusal' && part.refusal) {
+                            // 拒答文本按正文展示，结束原因另行提示
+                            refused = true;
+                            textContent += part.refusal;
+                            contentParts.push({ type: 'text', text: part.refusal });
                         } else if (part.type === 'image_url' && part.image_url?.url) {
                             const mediaUrl = part.image_url.url;
                             const mediaType = isVideoUrl(
@@ -357,9 +366,11 @@ function parseResponse(data, options = {}) {
         contentParts.push({ type: 'text', text: textContent });
     }
 
-    // 3. 如果没有任何内容，返回 null
+    const stop = normalizeResponsesStop(data, { refused });
+
+    // 3. 没有任何内容（如推理耗尽 max_output_tokens）时只带回结束原因，由 handler 按空回复处理
     if (!textContent && !thinkingContent && contentParts.length === 0) {
-        return null;
+        return { content: '', stop };
     }
 
     return {
@@ -368,7 +379,8 @@ function parseResponse(data, options = {}) {
         contentParts: contentParts.length > 0 ? contentParts : null,
         encryptedContent: encryptedContent,
         reasoningItemId: reasoningItemId,
-        reasoningItems: reasoningItems
+        reasoningItems: reasoningItems,
+        stop
     };
 }
 

@@ -950,9 +950,20 @@ function normalizeImage(img) {
 }
 
 function updateCanonicalMessage(index, updates) {
-    updateMessageAt(index, updates);
+    const current = state.messages[index];
+    updateMessageAt(
+        index,
+        current?.meta?.stop ? { ...updates, meta: withoutStop(current.meta) } : updates
+    );
     const msg = state.messages[index];
     if (msg) syncPartsToSelectedReply(msg);
+}
+
+// 结束原因描述的是模型原始输出的截断 / 拦截，内容被编辑后不再适用
+function withoutStop(meta) {
+    if (!meta?.stop) return meta;
+    const { stop: _stop, ...rest } = meta;
+    return rest;
 }
 
 /**
@@ -966,7 +977,11 @@ function syncPartsToSelectedReply(msg) {
     if (!Number.isInteger(sel) || sel < 0 || sel >= all.length) return;
     const reply = all[sel];
     if (!reply || typeof reply !== 'object') return;
-    all[sel] = { ...reply, parts: structuredClone(msg.parts) };
+    all[sel] = {
+        ...reply,
+        parts: structuredClone(msg.parts),
+        ...(reply.meta?.stop ? { meta: withoutStop(reply.meta) } : {})
+    };
 }
 
 /**

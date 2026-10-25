@@ -12,6 +12,7 @@ import { extractXMLToolCalls, appendXmlToolResultsForMessage } from '../../tools
 import { parseThinkTags } from '../../stream/think-tag-parser.js';
 import { isVideoUrl } from '../../utils/media.js';
 import { OpenAIStreamParser, parseOpenAIStream } from '../../stream/parser-openai.js';
+import { normalizeOpenAIChatStop } from '../../messages/stop-reason.js';
 
 import {
     isTextFile,
@@ -179,9 +180,11 @@ function partsToAPIMessages(msgs, _opts = {}) {
 function parseResponse(data, options = {}) {
     if (!data.choices || !data.choices[0]) return null;
 
-    const message = data.choices[0].message;
+    const message = data.choices[0].message || {};
     const finishReason = data.choices[0].finish_reason;
     const xmlMode = options.isXmlMode === true;
+    const refusal = typeof message.refusal === 'string' ? message.refusal : '';
+    const stop = normalizeOpenAIChatStop(finishReason, { refused: !!refusal });
 
     // 检测原生 tool_calls（仅在非 XML 模式）
     if (message.tool_calls && finishReason === 'tool_calls' && !xmlMode) {
@@ -236,11 +239,12 @@ function parseResponse(data, options = {}) {
     if (content === null || content === undefined) {
         if (message.image) {
             content = [{ type: 'image_url', image_url: { url: message.image } }];
-        } else if (typeof message.refusal === 'string' && message.refusal) {
-            // OpenAI safety refusal：content 为 null + refusal 文本，之前丢字段导致空消息
-            content = `[模型拒绝回应] ${message.refusal}`;
+        } else if (refusal) {
+            // 安全拒答：content 为 null，拒答文本按正文展示，结束原因另行提示
+            content = refusal;
         } else {
-            return null;
+            // 推理耗尽 max_completion_tokens 等场景没有正文，只带回结束原因，由 handler 按空回复处理
+            return { content: '', stop };
         }
     }
 
@@ -329,7 +333,8 @@ function parseResponse(data, options = {}) {
               ? textContent
               : content,
         thinkingContent: finalThinkingContent,
-        contentParts: contentParts.length > 0 ? contentParts : null
+        contentParts: contentParts.length > 0 ? contentParts : null,
+        stop
     };
 }
 

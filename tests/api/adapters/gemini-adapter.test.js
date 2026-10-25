@@ -317,12 +317,47 @@ describe('parseApiResponse - Gemini 格式', () => {
         expect(geminiAdapter.parseResponse({ error: 'err' })).toBeNull();
     });
 
-    it('返回 null 当 candidates 为空', () => {
-        expect(geminiAdapter.parseResponse({ candidates: [] })).toBeNull();
+    it('candidates 为空时只带回结束原因', () => {
+        expect(geminiAdapter.parseResponse({ candidates: [] })).toEqual({
+            content: '',
+            stop: null
+        });
     });
 
-    it('返回 null 当 content.parts 缺失', () => {
-        expect(geminiAdapter.parseResponse({ candidates: [{ content: {} }] })).toBeNull();
+    it('content.parts 缺失时只带回结束原因', () => {
+        expect(geminiAdapter.parseResponse({ candidates: [{ content: {} }] })).toEqual({
+            content: '',
+            stop: null
+        });
+    });
+
+    it('prompt 被拦截时带回 blockReason', () => {
+        const result = geminiAdapter.parseResponse({
+            promptFeedback: { blockReason: 'PROHIBITED_CONTENT', blockReasonMessage: '已拦截' }
+        });
+        expect(result).toEqual({
+            content: '',
+            stop: { kind: 'prompt_blocked', reason: 'PROHIBITED_CONTENT', detail: '已拦截' }
+        });
+    });
+
+    it('候选被安全拦截且没有内容时带回 finishReason', () => {
+        const result = geminiAdapter.parseResponse({
+            candidates: [{ finishReason: 'SAFETY', finishMessage: '命中安全策略' }]
+        });
+        expect(result.stop).toEqual({
+            kind: 'safety',
+            reason: 'SAFETY',
+            detail: '命中安全策略'
+        });
+    });
+
+    it('有内容时附带归一后的结束原因', () => {
+        const result = geminiAdapter.parseResponse({
+            candidates: [{ content: { parts: [{ text: '截断' }] }, finishReason: 'MAX_TOKENS' }]
+        });
+        expect(result.content).toBe('截断');
+        expect(result.stop).toEqual({ kind: 'max_tokens', reason: 'MAX_TOKENS' });
     });
 
     it('解析文本 parts', () => {

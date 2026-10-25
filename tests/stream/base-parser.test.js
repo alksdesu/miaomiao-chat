@@ -111,6 +111,11 @@ vi.mock('../../js/core/request-state-machine.js', () => ({
     RequestState: { TOOL_CALLING: 'tool_calling' }
 }));
 
+vi.mock('../../js/api/current.js', () => ({
+    getCurrentProvider: vi.fn(() => ({ name: 'Test' })),
+    getModelDisplayName: vi.fn((id) => id || '')
+}));
+
 import { BaseStreamParser } from '../../js/stream/base-parser.js';
 import { state } from '../../js/core/state.js';
 
@@ -281,5 +286,121 @@ describe('processThinkAndMarkdown', () => {
         parser.processThinkAndMarkdown('');
         expect(parser.textContent).toBe('');
         expect(parser.contentParts).toEqual([]);
+    });
+});
+
+// ========== finalize 与结束原因 ==========
+
+function createFakeSink({ continuation = false } = {}) {
+    return {
+        task: continuation ? { isSavingContinuation: true } : null,
+        isBackground: vi.fn(() => false),
+        renderFinalContent: vi.fn(),
+        renderFinalText: vi.fn(),
+        renderError: vi.fn(),
+        renderStopNotice: vi.fn(),
+        appendStats: vi.fn(),
+        commit: vi.fn(() => 0),
+        commitError: vi.fn(() => 0)
+    };
+}
+
+describe('finalizeStream 结束原因', () => {
+    beforeEach(() => {
+        state.xmlToolCallingEnabled = false;
+    });
+
+    it('有正文时正常落库，提示并记录结束原因', () => {
+        const sink = createFakeSink();
+        const parser = new BaseStreamParser('session_1', sink);
+        parser.textContent = '被截断的回';
+        parser.stop = { kind: 'max_tokens', reason: 'length' };
+
+        parser.finalizeStream(parser.collectExtraSaveFields());
+
+        expect(sink.renderStopNotice).toHaveBeenCalledWith(parser.stop);
+        expect(sink.commitError).not.toHaveBeenCalled();
+        const [parts, meta] = sink.commit.mock.calls[0];
+        expect(parts).toEqual([expect.objectContaining({ type: 'text', text: '被截断的回' })]);
+        expect(meta.stop).toEqual({ kind: 'max_tokens', reason: 'length' });
+    });
+
+    it('没有正文时按结束原因落错误消息，正文不写入错误文案', () => {
+        const sink = createFakeSink();
+        const parser = new BaseStreamParser('session_1', sink);
+        parser.stop = { kind: 'safety', reason: 'SAFETY' };
+
+        parser.finalizeStream(parser.collectExtraSaveFields());
+
+        expect(sink.commit).not.toHaveBeenCalled();
+        expect(sink.renderStopNotice).not.toHaveBeenCalled();
+        const [parts, meta, , errorInfo] = sink.commitError.mock.calls[0];
+        expect(parts).toEqual([]);
+        expect(meta.stop).toEqual(parser.stop);
+        expect(errorInfo.errorCode).toBe('safety');
+        expect(errorInfo.errorMessage).toContain('（SAFETY）');
+        expect(sink.renderError.mock.calls[0][0]).not.toContain('stream-error-partial-save');
+    });
+
+    it('正常结束却没有正文时按空回复落错误消息', () => {
+        const sink = createFakeSink();
+        const parser = new BaseStreamParser('session_1', sink);
+        parser.stop = { kind: 'end', reason: 'stop' };
+
+        parser.finalizeStream({});
+
+        expect(sink.commitError.mock.calls[0][3].errorCode).toBe('empty_reply');
+    });
+
+    it('续作轮次没有正文时并入原消息，只提示结束原因', () => {
+        const sink = createFakeSink({ continuation: true });
+        const parser = new BaseStreamParser('session_1', sink);
+        parser.stop = { kind: 'max_tokens', reason: 'max_tokens' };
+
+        parser.finalizeStream(parser.collectExtraSaveFields());
+
+        expect(sink.commitError).not.toHaveBeenCalled();
+        expect(sink.commit).toHaveBeenCalledTimes(1);
+        expect(sink.commit.mock.calls[0][1].stop).toEqual(parser.stop);
+        expect(sink.renderStopNotice).toHaveBeenCalledWith(parser.stop);
+    });
+});
+
+describe('finalizeStreamWithError 部分内容', () => {
+    beforeEach(() => {
+        state.xmlToolCallingEnabled = false;
+    });
+
+    it('有部分内容时保留正文并标注已保存', () => {
+        const sink = createFakeSink();
+        const parser = new BaseStreamParser('session_1', sink);
+        parser.textContent = '部分';
+
+        parser.finalizeStreamWithError('network_error', '连接中断');
+
+        expect(sink.renderError.mock.calls[0][0]).toContain('stream-error-partial-save');
+        const [parts] = sink.commitError.mock.calls[0];
+        expect(parts).toEqual([
+            expect.objectContaining({ type: 'text', text: '部分\n\n连接中断' })
+        ]);
+    });
+
+    it('没有任何内容时只展示错误块', () => {
+        const sink = createFakeSink();
+        const parser = new BaseStreamParser('session_1', sink);
+
+        parser.finalizeStreamWithError('network_error', '连接中断');
+
+        expect(sink.renderError.mock.calls[0][0]).not.toContain('stream-error-partial-save');
+        expect(sink.commitError.mock.calls[0][0]).toEqual([]);
+    });
+});
+
+describe('collectExtraSaveFields', () => {
+    it('带出结束原因', () => {
+        const parser = new BaseStreamParser('session_1', createFakeSink());
+        expect(parser.collectExtraSaveFields()).toEqual({});
+        parser.stop = { kind: 'end', reason: 'stop' };
+        expect(parser.collectExtraSaveFields()).toEqual({ stop: parser.stop });
     });
 });

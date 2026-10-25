@@ -18,6 +18,7 @@ function createSink() {
         renderFinalContent: vi.fn(),
         renderFinalText: vi.fn(),
         renderError: vi.fn(),
+        renderStopNotice: vi.fn(),
         appendStats: vi.fn(),
         commit: vi.fn(() => 0),
         commitError: vi.fn(() => 0),

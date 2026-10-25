@@ -312,9 +312,39 @@ describe('parseApiResponse - OpenAI 格式', () => {
         expect(result.content).toContain('test text');
     });
 
-    it('返回 null 当 content 为 null 且无 image', () => {
+    it('content 为 null 且无 image 时只带回结束原因', () => {
         const data = { choices: [{ message: { content: null } }] };
-        expect(openaiChatAdapter.parseResponse(data)).toBeNull();
+        expect(openaiChatAdapter.parseResponse(data)).toEqual({ content: '', stop: null });
+    });
+
+    it('推理耗尽输出上限时带回 length', () => {
+        const data = { choices: [{ message: { content: null }, finish_reason: 'length' }] };
+        expect(openaiChatAdapter.parseResponse(data)).toEqual({
+            content: '',
+            stop: { kind: 'max_tokens', reason: 'length' }
+        });
+    });
+
+    it('安全拒答的文本按正文返回并标记 refusal', () => {
+        const data = {
+            choices: [{ message: { content: null, refusal: '无法协助' }, finish_reason: 'stop' }]
+        };
+        const result = openaiChatAdapter.parseResponse(data);
+        expect(result.content).toBe('无法协助');
+        expect(result.stop).toEqual({ kind: 'refusal', reason: 'refusal' });
+    });
+
+    it('message 缺失时不抛错', () => {
+        const data = { choices: [{ finish_reason: 'content_filter' }] };
+        expect(openaiChatAdapter.parseResponse(data)).toEqual({
+            content: '',
+            stop: { kind: 'safety', reason: 'content_filter' }
+        });
+    });
+
+    it('有内容时附带归一后的结束原因', () => {
+        const data = { choices: [{ message: { content: 'hi' }, finish_reason: 'stop' }] };
+        expect(openaiChatAdapter.parseResponse(data).stop).toEqual({ kind: 'end', reason: 'stop' });
     });
 
     it('解析 message.image 回退', () => {

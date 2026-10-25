@@ -316,6 +316,12 @@ export function mergeContinuationParts(prev, newParts, newMeta) {
 
     // 构建合并后的 meta
     const mergedMeta = prev.meta ? { ...prev.meta } : createMeta();
+    // 整条消息的结束状态以最后一轮为准
+    if (newMeta.stop) {
+        mergedMeta.stop = newMeta.stop;
+    } else {
+        delete mergedMeta.stop;
+    }
     const prevRaw = mergedMeta.raw || {};
     if (newMeta.raw) {
         mergedMeta.raw = { ...prevRaw, ...newMeta.raw };

@@ -134,8 +134,55 @@ describe('parseApiResponse - Responses API 格式', () => {
         expect(result.content).toBe('fallback text');
     });
 
-    it('返回 null 当没有任何内容', () => {
-        expect(openaiResponsesAdapter.parseResponse({ output: [] })).toBeNull();
+    it('没有任何内容时只带回结束原因', () => {
+        expect(openaiResponsesAdapter.parseResponse({ output: [] })).toEqual({
+            content: '',
+            stop: null
+        });
+    });
+
+    it('推理耗尽 max_output_tokens 时带回原因', () => {
+        const result = openaiResponsesAdapter.parseResponse({
+            status: 'incomplete',
+            incomplete_details: { reason: 'max_output_tokens' },
+            output: [{ type: 'reasoning', id: 'rs_1', summary: [] }]
+        });
+        expect(result).toEqual({
+            content: '',
+            stop: { kind: 'max_tokens', reason: 'max_output_tokens' }
+        });
+    });
+
+    it('incomplete 时不执行被截断的函数调用', () => {
+        const result = openaiResponsesAdapter.parseResponse({
+            status: 'incomplete',
+            incomplete_details: { reason: 'max_output_tokens' },
+            output: [{ type: 'function_call', call_id: 'c1', name: 'search', arguments: '{"q":' }]
+        });
+        expect(result.hasToolCalls).toBeUndefined();
+        expect(result.stop.kind).toBe('max_tokens');
+    });
+
+    it('拒答内容按正文返回并标记 refusal', () => {
+        const result = openaiResponsesAdapter.parseResponse({
+            status: 'completed',
+            output: [
+                {
+                    type: 'message',
+                    content: [{ type: 'refusal', refusal: '无法协助' }]
+                }
+            ]
+        });
+        expect(result.content).toBe('无法协助');
+        expect(result.stop).toEqual({ kind: 'refusal', reason: 'refusal' });
+    });
+
+    it('completed 时附带正常结束原因', () => {
+        const result = openaiResponsesAdapter.parseResponse({
+            status: 'completed',
+            output: [{ type: 'message', content: [{ type: 'output_text', text: 'hi' }] }]
+        });
+        expect(result.stop).toEqual({ kind: 'end', reason: 'completed' });
     });
 
     it('解析 function_call 工具调用', () => {

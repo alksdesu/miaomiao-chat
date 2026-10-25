@@ -94,7 +94,8 @@ vi.mock('../../js/api/request-pipeline.js', () => ({
     executeRequest: vi.fn()
 }));
 
-vi.mock('../../js/messages/parts-builder.js', () => ({
+vi.mock('../../js/messages/parts-builder.js', async (importOriginal) => ({
+    ...(await importOriginal()),
     buildPartsFromStreamingState: vi.fn(() => []),
     buildMetaFromStreamingState: vi.fn(() => ({})),
     buildCanonicalReplies: vi.fn((replies) =>
@@ -290,5 +291,106 @@ describe('handleMultiStreamResponses - 部分成功', () => {
 
         // 仍然应保存成功的回复
         expect(saveAssistantMessageAsync).toHaveBeenCalled();
+    });
+});
+
+function makeStreamingAdapter(outcomes) {
+    let call = 0;
+    return {
+        name: 'Test',
+        streamParser: vi.fn(async (_reader, _sessionId, sink) => {
+            const outcome = outcomes[call++];
+            if (outcome.errorInfo) sink.errorInfo = outcome.errorInfo;
+            return {
+                collectReply: () => ({
+                    content: outcome.content || '',
+                    thinkingContent: null,
+                    contentParts: null,
+                    stop: outcome.stop || null,
+                    stats: { syncToGlobal: vi.fn(), getData: () => ({}) }
+                })
+            };
+        })
+    };
+}
+
+function mockOkResponses() {
+    executeRequest.mockImplementation(async () => ({
+        ok: true,
+        body: { getReader: () => createSimpleMockReader() }
+    }));
+}
+
+describe('handleMultiStreamResponses - 默认选中与空回复', () => {
+    it('第一个回复没有内容而失败时默认选中成功的回复', async () => {
+        mockOkResponses();
+        const adapter = makeStreamingAdapter([
+            { errorInfo: { errorCode: 'safety', errorMessage: '回复被安全策略拦截' } },
+            { content: 'World', stop: { kind: 'max_tokens', reason: 'length' } }
+        ]);
+
+        await handleMultiStreamResponses(makeCtx({ adapter }));
+
+        expect(state.selectedReplyIndex).toBe(1);
+        const [, , opts] = saveAssistantMessageAsync.mock.calls[0];
+        expect(opts.selectedReplyIndex).toBe(1);
+        expect(opts.isError).toBeUndefined();
+        expect(renderReplyWithSelector).toHaveBeenCalledWith(
+            expect.any(Array),
+            1,
+            expect.anything()
+        );
+        const { buildPartsFromStreamingState, buildMetaFromStreamingState } =
+            await import('../../js/messages/parts-builder.js');
+        expect(buildPartsFromStreamingState).toHaveBeenCalledWith(
+            expect.objectContaining({ textContent: 'World' })
+        );
+        expect(buildMetaFromStreamingState).toHaveBeenCalledWith(
+            expect.objectContaining({ stop: { kind: 'max_tokens', reason: 'length' } })
+        );
+    });
+
+    it('全部回复都没有内容时落错误消息并汇总每个回复的原因', async () => {
+        mockOkResponses();
+        const adapter = makeStreamingAdapter([
+            { errorInfo: { errorCode: 'safety', errorMessage: '回复被安全策略拦截（SAFETY）' } },
+            { errorInfo: { errorCode: 'empty_reply', errorMessage: '模型没有生成任何内容' } }
+        ]);
+
+        await handleMultiStreamResponses(makeCtx({ adapter }));
+
+        expect(renderReplyWithSelector).not.toHaveBeenCalled();
+        const [parts, , opts] = saveAssistantMessageAsync.mock.calls[0];
+        expect(parts).toEqual([]);
+        expect(opts.isError).toBe(true);
+        expect(opts.errorData.error.type).toBe('safety');
+        expect(opts.errorData.error.message).toBe('回复被安全策略拦截（SAFETY）');
+        expect(opts.errorData.error.allErrors).toEqual([
+            expect.objectContaining({ stream: 1, type: 'safety' }),
+            expect.objectContaining({ stream: 2, type: 'empty_reply' })
+        ]);
+    });
+
+    it('全部失败但有部分内容时选中带内容的回复并标记错误', async () => {
+        mockOkResponses();
+        const adapter = makeStreamingAdapter([
+            { errorInfo: { errorCode: 'safety', errorMessage: '拦截' } },
+            {
+                content: '部分内容',
+                errorInfo: { errorCode: 'network_error', errorMessage: '连接中断' }
+            }
+        ]);
+
+        await handleMultiStreamResponses(makeCtx({ adapter }));
+
+        const [, , opts] = saveAssistantMessageAsync.mock.calls[0];
+        expect(opts.selectedReplyIndex).toBe(1);
+        expect(opts.isError).toBe(true);
+        expect(opts.errorData).toEqual({ code: 'network_error', message: '连接中断' });
+        expect(renderReplyWithSelector).toHaveBeenCalledWith(
+            expect.any(Array),
+            1,
+            expect.anything()
+        );
     });
 });

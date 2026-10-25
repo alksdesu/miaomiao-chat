@@ -12,6 +12,7 @@ import {
     buildPartsFromStreamingState,
     buildMetaFromStreamingState
 } from '../messages/parts-builder.js';
+import { normalizeClaudeStop } from '../messages/stop-reason.js';
 import { generateIdSet } from '../api/format-converter.js';
 
 /**
@@ -91,6 +92,10 @@ export class ClaudeStreamParser extends BaseStreamParser {
                 case 'message_delta':
                     if (event.delta?.stop_reason) {
                         this.stopReason = event.delta.stop_reason;
+                        this.stop = normalizeClaudeStop(
+                            event.delta.stop_reason,
+                            event.delta.stop_details
+                        );
                     }
                     break;
 

@@ -380,3 +380,65 @@ describe('ensureTurnConsistency', () => {
         expect(items[3]).toBe('string-item');
     });
 });
+
+// ============================================================
+// 编辑后清除结束原因
+// ============================================================
+
+describe('updateMessageContent 结束原因', () => {
+    beforeEach(async () => {
+        vi.clearAllMocks();
+        const { updateMessageAt } = await import('../../js/core/state-mutations.js');
+        const { state } = await import('../../js/core/state.js');
+        updateMessageAt.mockImplementation((idx, updates) => {
+            state.messages[idx] = { ...state.messages[idx], ...updates };
+        });
+    });
+
+    it('编辑后移除消息与选中回复上的结束原因，其余 meta 保留', async () => {
+        const { state } = await import('../../js/core/state.js');
+        const { updateMessageContent } = await import('../../js/messages/editor.js');
+        const stop = { kind: 'max_tokens', reason: 'length' };
+        state.messages = [
+            {
+                id: 'm1',
+                role: 'assistant',
+                parts: [{ type: PartType.TEXT, text: '被截断的回' }],
+                meta: { model: 'gpt', raw: {}, stop },
+                replies: {
+                    selected: 0,
+                    all: [
+                        {
+                            parts: [{ type: PartType.TEXT, text: '被截断的回' }],
+                            meta: { model: 'gpt', raw: {}, stop }
+                        }
+                    ]
+                }
+            }
+        ];
+
+        updateMessageContent(0, '补全后的回答', 'assistant');
+
+        const msg = state.messages[0];
+        expect(msg.meta).toEqual({ model: 'gpt', raw: {} });
+        expect(msg.replies.all[0].meta).toEqual({ model: 'gpt', raw: {} });
+        expect(msg.replies.all[0].parts).toEqual([
+            expect.objectContaining({ type: PartType.TEXT, text: '补全后的回答' })
+        ]);
+    });
+
+    it('没有结束原因时不改写 meta', async () => {
+        const { state } = await import('../../js/core/state.js');
+        const { updateMessageContent } = await import('../../js/messages/editor.js');
+        const { updateMessageAt } = await import('../../js/core/state-mutations.js');
+        const meta = { model: 'gpt', raw: {} };
+        state.messages = [
+            { id: 'm1', role: 'assistant', parts: [{ type: PartType.TEXT, text: 'a' }], meta }
+        ];
+
+        updateMessageContent(0, 'b', 'assistant');
+
+        expect(updateMessageAt.mock.calls[0][1]).not.toHaveProperty('meta');
+        expect(state.messages[0].meta).toBe(meta);
+    });
+});

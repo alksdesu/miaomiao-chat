@@ -21,6 +21,7 @@ import {
 } from '../../utils/constants.js';
 import { resolveThinkingBudget } from '../reasoning.js';
 import { CLAUDE_EFFORTS } from '../model-profiles.js';
+import { normalizeClaudeStop } from '../../messages/stop-reason.js';
 
 const CLAUDE_THINKING_BUDGETS = Object.freeze({ low: 2048, medium: 8192, high: 16384 });
 
@@ -320,7 +321,11 @@ function partsToAPIMessages(msgs, _opts = {}) {
 
 function parseResponse(data, options = {}) {
     if (data.error) return null;
-    if (!data.content || data.content.length === 0) return null;
+    const stop = normalizeClaudeStop(data.stop_reason, data.stop_details);
+    // 拒答或思考耗尽输出上限时 content 为空，只带回结束原因，由 handler 按空回复处理
+    if (!data.content || data.content.length === 0) {
+        return { content: '', stop, pauseTurn: data.stop_reason === 'pause_turn' };
+    }
     const xmlMode = options.isXmlMode === true;
 
     // 1. 优先检测原生工具调用 — 不早 return，下方统一抽取 thinking blocks/signatures/items
@@ -465,7 +470,8 @@ function parseResponse(data, options = {}) {
         contentParts: contentParts.length > 0 ? contentParts : null,
         toolCalls: hasNativeToolCalls ? toolCalls : undefined,
         hasToolCalls: hasNativeToolCalls,
-        pauseTurn: data.stop_reason === 'pause_turn'
+        pauseTurn: data.stop_reason === 'pause_turn',
+        stop
     };
 }
 

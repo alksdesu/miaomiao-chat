@@ -34,6 +34,7 @@ import {
     restoreExpandedThinkingState
 } from './render-thinking.js';
 import { renderSearchGrounding } from './render-search.js';
+import { appendStopNotice } from './render-stop-notice.js';
 import { getMessageUiState, updateMessageUiState } from './message-ui-state.js';
 
 export {
@@ -362,6 +363,7 @@ export function renderReplyWithSelector(replies, selectedIndex, assistantMessage
     if (Number.isInteger(msgIdx)) {
         restoreToolCallsFromMessage(state.messages[msgIdx], contentDiv);
     }
+    if (!reply.error) appendStopNotice(contentDiv, reply.meta?.stop);
 
     scrollToBottom();
 }
@@ -501,6 +503,7 @@ export function rerenderMessageContent(messageEl, index, role, messageOverride =
 
     if (role === 'assistant') {
         restoreToolCallsFromMessage(message, contentDiv);
+        if (!message.error) appendStopNotice(contentDiv, message.meta?.stop);
     }
 
     return true;

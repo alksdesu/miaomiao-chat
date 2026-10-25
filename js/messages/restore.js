@@ -20,6 +20,7 @@ import {
     renderSearchGrounding,
     renderCanonicalParts
 } from './renderer.js';
+import { appendStopNotice } from './render-stop-notice.js';
 import { renderStreamStatsFromData } from '../stream/stats.js';
 import { rebuildMessageIdMap, ensureMessageIds } from '../core/state-mutations.js';
 import { renderHumanizedError } from '../utils/errors.js';
@@ -162,7 +163,10 @@ export function renderSessionMessages() {
                             enhanceAssistantMessage(messageEl, renderedMessage, {
                                 isError: renderedError
                             });
-                            if (renderedError) appendStoredErrorBlock(messageEl, renderedMessage);
+                            // 多回复时选中回复的错误已由 renderReplyWithSelector 渲染
+                            if (renderedError && !hasReplySelector(renderedMessage)) {
+                                appendStoredErrorBlock(messageEl, renderedMessage);
+                            }
                         } else {
                             rerenderMessageContent(
                                 messageEl,
@@ -364,6 +368,10 @@ async function restoreToolCallsUI(toolCalls, messageEl) {
     }
 }
 
+function hasReplySelector(msg) {
+    return (msg.replies?.all?.length ?? 0) > 1;
+}
+
 // 与用户附件懒加载共用的灰色占位图（renderer.js / memory-manager.js 同款）
 /**
  * 异步增强 assistant 消息（思维链、统计、多回复、工具UI）
@@ -414,7 +422,7 @@ function enhanceAssistantMessage(_messageEl, msg, { isError = false } = {}) {
 
     const allReplies = msg.replies?.all;
     const uiState = getMessageUiState(msg.id);
-    if (allReplies && allReplies.length > 1) {
+    if (hasReplySelector(msg)) {
         const storedIndex = msg.replies?.selected ?? 0;
         const selectedIndex = Math.min(uiState.selectedReply ?? storedIndex, allReplies.length - 1);
         renderReplyWithSelector(allReplies, selectedIndex, _messageEl);
@@ -424,7 +432,7 @@ function enhanceAssistantMessage(_messageEl, msg, { isError = false } = {}) {
 
     // 恢复 Gemini 搜索引用（groundingMetadata）
     const groundingMetadata = msg.meta?.raw?.gemini?.groundingMetadata;
-    if ((!allReplies || allReplies.length <= 1) && groundingMetadata) {
+    if (!hasReplySelector(msg) && groundingMetadata) {
         const contentDiv = _messageEl.querySelector('.message-content');
         if (contentDiv) {
             // eslint-disable-next-line no-restricted-syntax -- 已审计：renderSearchGrounding 已对 uri/title 双 escapeHtml + safeHref 协议白名单
@@ -435,6 +443,11 @@ function enhanceAssistantMessage(_messageEl, msg, { isError = false } = {}) {
     const mapped = partsToToolCallRestoreFormat(msg.parts);
     if (mapped.length > 0) {
         restoreToolCallsUI(mapped, _messageEl);
+    }
+
+    // 多回复的提示由 renderReplyWithSelector 按选中回复渲染
+    if (!isError && !hasReplySelector(msg)) {
+        appendStopNotice(contentDiv, msg.meta?.stop);
     }
 
     restoreExpandedThinkingState(contentDiv, uiState.thinkingExpanded, (block) =>

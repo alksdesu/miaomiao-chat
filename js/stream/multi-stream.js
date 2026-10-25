@@ -14,7 +14,8 @@ import { saveAssistantMessageAsync } from '../messages/sync.js';
 import {
     buildPartsFromStreamingState,
     buildMetaFromStreamingState,
-    buildCanonicalReplies
+    buildCanonicalReplies,
+    pickInitialReplyIndex
 } from '../messages/parts-builder.js';
 import { setCurrentMessageIndex } from '../messages/dom-sync.js';
 import { renderReplyWithSelector } from '../messages/renderer.js';
@@ -45,6 +46,16 @@ function resolveResponseMeta(meta, ctx) {
         ...meta,
         model: ctx.requestProfile?.modelDisplayName || meta?.model,
         provider: ctx.requestProfile?.providerName || meta?.provider
+    };
+}
+
+// parseReplyStream 抛出的错误消息形如 `${errorCode}: ${errorMessage}`
+function splitStreamFailure(reason) {
+    const rawMessage = reason?.message || String(reason);
+    const [type, ...messageParts] = rawMessage.split(':');
+    return {
+        type: type || 'stream_error',
+        message: messageParts.join(':').trim() || rawMessage
     };
 }
 
@@ -199,47 +210,53 @@ export async function handleMultiStreamResponses(ctx) {
     for (let i = 0; i < streamResults.length; i++) {
         const result = streamResults[i];
         if (result.status === 'fulfilled' && result.value) {
-            allReplies.push(result.value);
+            const reply = result.value;
+            allReplies.push(reply);
+            if (reply.isError) {
+                streamErrors.push({
+                    index: i + 1,
+                    type: reply.errorType,
+                    message: reply.errorMessage
+                });
+            }
         } else if (result.status === 'rejected') {
             // 单个流被 abort（其他流仍在跑）：不落库为错误，跳过即可
             if (result.reason?.name === 'AbortError') {
                 logger.debug(`Stream ${i + 1} aborted, 跳过持久化`);
                 continue;
             }
-            const errorMessage = result.reason?.message || String(result.reason);
-            const [errorType, ...messageParts] = errorMessage.split(':');
-            const cleanMessage = messageParts.join(':').trim() || errorMessage;
-
-            allReplies.push({
-                content: '',
-                isError: true,
-                errorType: errorType || 'stream_error',
-                errorMessage: cleanMessage
+            const { type, message } = splitStreamFailure(result.reason);
+            allReplies.push({ content: '', isError: true, errorType: type, errorMessage: message });
+            streamErrors.push({
+                index: i + 1,
+                type,
+                message,
+                code: result.reason?.code,
+                fullError: result.reason
             });
-
-            streamErrors.push({ index: i + 1, error: result.reason });
             logger.error(`Stream ${i + 1} failed:`, result.reason);
         }
     }
 
-    if (allReplies.length > 0) {
+    const selectedIndex = pickInitialReplyIndex(allReplies);
+    if (selectedIndex >= 0) {
         const canonicalReplies = buildCanonicalReplies(allReplies);
         if (isForegroundContext(ctx)) {
             state.currentReplies = canonicalReplies;
-            state.selectedReplyIndex = 0;
+            state.selectedReplyIndex = selectedIndex;
         }
 
-        const reply0 = allReplies[0];
+        const selectedReply = allReplies[selectedIndex];
 
-        // 同步第一个回复的统计到全局（供 DOM 渲染）
-        if (isForegroundContext(ctx) && reply0.stats) reply0.stats.syncToGlobal();
+        // 同步选中回复的统计到全局（供 DOM 渲染）
+        if (isForegroundContext(ctx) && selectedReply.stats) selectedReply.stats.syncToGlobal();
 
         // 多回复模式下被 BufferedSink 拦截的工具调用：标 'skipped' 状态。
         // adapter.partsToAPIMessages 看到 ToolState.SKIPPED 整条 tool_call 跳过不下发
         // （既不输出 tool_use 也不需要配对 tool_result，避免 'failed' 路径需要伪造 tool_result）；
         // UI 用 tool-display 'skipped' 灰色分支提示用户「未执行（多回复模式不支持工具）」
-        const skippedToolCalls = reply0.toolCalls
-            ? reply0.toolCalls.map((tc) => ({
+        const skippedToolCalls = selectedReply.toolCalls
+            ? selectedReply.toolCalls.map((tc) => ({
                   ...tc,
                   status: 'skipped',
                   error: '多回复模式不支持工具调用，已跳过执行'
@@ -248,26 +265,28 @@ export async function handleMultiStreamResponses(ctx) {
 
         const messageIndex = await saveAssistantMessageAsync(
             buildPartsFromStreamingState({
-                textContent: reply0.content || '',
-                thinkingContent: reply0.thinkingContent,
-                thoughtSignature: reply0.thoughtSignature || reply0.thinkingSignature,
-                thinkingBlocks: reply0.thinkingBlocks,
-                thinkingSignatures: reply0.thinkingSignatures,
-                thinkingItems: reply0.thinkingItems,
-                // 透传 contentParts 让图片/视频/音频媒体不被丢失（reply0.contentParts 含
+                textContent: selectedReply.content || '',
+                thinkingContent: selectedReply.thinkingContent,
+                thoughtSignature: selectedReply.thoughtSignature || selectedReply.thinkingSignature,
+                thinkingBlocks: selectedReply.thinkingBlocks,
+                thinkingSignatures: selectedReply.thinkingSignatures,
+                thinkingItems: selectedReply.thinkingItems,
+                // 透传 contentParts 让图片/视频/音频媒体不被丢失（contentParts 含
                 // 图像生成与多模态结果，仅靠 textContent 走 TEXT part 兜底会丢媒体）
-                contentParts: reply0.contentParts,
+                contentParts: selectedReply.contentParts,
                 toolCalls: skippedToolCalls,
-                signatureFormat: reply0.signatureFormat
+                signatureFormat: selectedReply.signatureFormat
             }),
             resolveResponseMeta(
                 buildMetaFromStreamingState({
-                    thoughtSignature: reply0.thoughtSignature || reply0.thinkingSignature,
-                    encryptedContent: reply0.encryptedContent,
-                    reasoningItemId: reply0.reasoningItemId,
-                    reasoningItems: reply0.reasoningItems,
-                    groundingMetadata: reply0.groundingMetadata,
-                    streamStats: reply0.stats ? reply0.stats.getData() : null
+                    thoughtSignature:
+                        selectedReply.thoughtSignature || selectedReply.thinkingSignature,
+                    encryptedContent: selectedReply.encryptedContent,
+                    reasoningItemId: selectedReply.reasoningItemId,
+                    reasoningItems: selectedReply.reasoningItems,
+                    groundingMetadata: selectedReply.groundingMetadata,
+                    stop: selectedReply.stop,
+                    streamStats: selectedReply.stats ? selectedReply.stats.getData() : null
                 }),
                 ctx
             ),
@@ -276,7 +295,17 @@ export async function handleMultiStreamResponses(ctx) {
                 forceBackground: ctx.task?.isDetached === true,
                 isContinuation: ctx.task?.isSavingContinuation === true,
                 allReplies: canonicalReplies,
-                selectedReplyIndex: 0
+                selectedReplyIndex: selectedIndex,
+                // 选中的是中途失败的回复时与切换到失败回复一致：标记错误，部分内容不进入后续上下文
+                ...(selectedReply.isError
+                    ? {
+                          isError: true,
+                          errorData: {
+                              code: selectedReply.errorType,
+                              message: selectedReply.errorMessage
+                          }
+                      }
+                    : {})
             }
         );
 
@@ -286,39 +315,26 @@ export async function handleMultiStreamResponses(ctx) {
 
         // 渲染回复选择器
         if (foregroundAtCommit) {
-            renderReplyWithSelector(canonicalReplies, 0, currentMessageElement);
+            renderReplyWithSelector(canonicalReplies, selectedIndex, currentMessageElement);
         }
 
         // 添加统计信息
         if (foregroundAtCommit) appendStreamStats();
     } else {
-        // 所有流都失败了，显示详细错误信息
+        // 所有流都失败且没有任何内容，显示详细错误信息
         let errorObj;
         if (streamErrors.length > 0) {
-            const firstError = streamErrors[0].error;
-            const errorMessage = firstError?.message || String(firstError);
-            const [errorType, ...messageParts] = errorMessage.split(':');
-            const cleanMessage = messageParts.join(':').trim() || errorMessage;
-
-            errorObj = {
-                error: {
-                    type: errorType || 'stream_error',
-                    message: cleanMessage
-                }
-            };
+            const [firstError] = streamErrors;
+            errorObj = { error: { type: firstError.type, message: firstError.message } };
 
             if (streamErrors.length > 1) {
-                errorObj.error.allErrors = streamErrors.map((e) => {
-                    const msg = e.error?.message || String(e.error);
-                    const [eType, ...mParts] = msg.split(':');
-                    return {
-                        stream: e.index,
-                        message: mParts.join(':').trim() || msg,
-                        type: eType || e.error?.type,
-                        code: e.error?.code,
-                        fullError: e.error
-                    };
-                });
+                errorObj.error.allErrors = streamErrors.map((e) => ({
+                    stream: e.index,
+                    message: e.message,
+                    type: e.type,
+                    code: e.code,
+                    fullError: e.fullError
+                }));
             }
         } else {
             errorObj = { error: { type: 'empty_response', message: '没有收到有效回复' } };

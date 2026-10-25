@@ -151,6 +151,39 @@ describe('getHumanizedError', () => {
         const result = getHumanizedError({ type: 'NetworkError' }, 401);
         expect(result.title).toContain('认证');
     });
+
+    it.each([
+        ['empty_reply', '没有返回内容'],
+        ['max_tokens', '最大输出长度'],
+        ['context_overflow', '上下文窗口'],
+        ['safety', '回复被安全策略拦截'],
+        ['prompt_blocked', '请求被安全策略拦截'],
+        ['refusal', '拒绝回答'],
+        ['recitation', '引用受限'],
+        ['malformed_tool_call', '工具调用不合法'],
+        ['continuation', '单次输出上限'],
+        ['other', '生成中断']
+    ])('结束原因 %s 的标题固定，提示语取错误消息', (code, title) => {
+        const message = `原因说明（${code}）`;
+        expect(getHumanizedError({ code, message, type: code }, code)).toEqual({
+            title: expect.stringContaining(title),
+            hint: message
+        });
+        expect(getHumanizedError({ error: { type: code, message } })).toEqual({
+            title: expect.stringContaining(title),
+            hint: message
+        });
+    });
+
+    it('结束原因缺少消息时提示语回落默认值', () => {
+        expect(getHumanizedError({ error: { type: 'refusal' } }).hint).toBe('发生未知错误');
+    });
+
+    it('带固定提示语的错误类型不受消息影响', () => {
+        expect(getHumanizedError({ error: { type: 'overloaded', message: 'raw' } }).hint).toBe(
+            '当前请求量大，请稍后再试'
+        );
+    });
 });
 
 // ========== renderHumanizedError ==========

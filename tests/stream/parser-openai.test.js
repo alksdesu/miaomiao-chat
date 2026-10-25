@@ -446,3 +446,152 @@ describe('parseOpenAIStream - Responses API', () => {
         // 不应崩溃
     });
 });
+
+// ========== 结束原因 ==========
+
+describe('parseOpenAIStream - 结束原因', () => {
+    it('Chat finish_reason length 时正常落库并记录截断', async () => {
+        const reader = createMockReader([
+            'data: {"choices":[{"delta":{"content":"被截断的回"},"finish_reason":null}]}',
+            'data: {"choices":[{"delta":{},"finish_reason":"length"}]}',
+            'data: [DONE]'
+        ]);
+
+        await parseOpenAIStream(reader, 'openai');
+
+        const [parts, meta, opts] = saveAssistantMessage.mock.calls[0];
+        expect(parts).toEqual([expect.objectContaining({ type: 'text', text: '被截断的回' })]);
+        expect(meta.stop).toEqual({ kind: 'max_tokens', reason: 'length' });
+        expect(opts.isError).toBeUndefined();
+    });
+
+    it('Chat 拒答文本按正文展示并记录 refusal', async () => {
+        const reader = createMockReader([
+            'data: {"choices":[{"delta":{"refusal":"无法"},"finish_reason":null}]}',
+            'data: {"choices":[{"delta":{"refusal":"协助"},"finish_reason":null}]}',
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+            'data: [DONE]'
+        ]);
+
+        await parseOpenAIStream(reader, 'openai');
+
+        const [parts, meta, opts] = saveAssistantMessage.mock.calls[0];
+        expect(parts).toEqual([expect.objectContaining({ type: 'text', text: '无法协助' })]);
+        expect(meta.stop).toEqual({ kind: 'refusal', reason: 'refusal' });
+        expect(opts.isError).toBeUndefined();
+    });
+
+    it('Chat 被内容过滤且没有内容时按拦截落错误消息', async () => {
+        const reader = createMockReader([
+            'data: {"choices":[{"delta":{},"finish_reason":"content_filter"}]}',
+            'data: [DONE]'
+        ]);
+
+        await parseOpenAIStream(reader, 'openai');
+
+        const [parts, , opts] = saveAssistantMessage.mock.calls[0];
+        expect(parts).toEqual([]);
+        expect(opts.isError).toBe(true);
+        expect(opts.errorData.code).toBe('safety');
+        expect(opts.errorData.message).toContain('（content_filter）');
+    });
+
+    it('Responses incomplete 且有内容时记录截断原因', async () => {
+        const reader = createMockReader([
+            'data: {"type":"response.output_text.delta","delta":"被截断"}',
+            'data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[]}}'
+        ]);
+
+        await parseOpenAIStream(reader, 'openai-responses');
+
+        const [, meta, opts] = saveAssistantMessage.mock.calls[0];
+        expect(meta.stop).toEqual({ kind: 'max_tokens', reason: 'max_output_tokens' });
+        expect(opts.isError).toBeUndefined();
+    });
+
+    it('Responses incomplete 时不执行被截断的函数调用，没有正文按截断落错误', async () => {
+        const reader = createMockReader([
+            'data: {"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_1","name":"search"},"output_index":0}',
+            'data: {"type":"response.function_call_arguments.delta","delta":"{\\"q\\":","output_index":0}',
+            'data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[]}}'
+        ]);
+
+        await parseOpenAIStream(reader, 'openai-responses');
+
+        expect(saveAssistantMessage).toHaveBeenCalledTimes(1);
+        const [, , opts] = saveAssistantMessage.mock.calls[0];
+        expect(opts.toolCalls).toBeUndefined();
+        expect(opts.isError).toBe(true);
+        expect(opts.errorData.code).toBe('max_tokens');
+    });
+
+    it('Responses 拒答增量按正文展示并记录 refusal', async () => {
+        const reader = createMockReader([
+            'data: {"type":"response.refusal.delta","delta":"无法协助"}',
+            'data: {"type":"response.completed","response":{"status":"completed","output":[]}}'
+        ]);
+
+        await parseOpenAIStream(reader, 'openai-responses');
+
+        const [parts, meta] = saveAssistantMessage.mock.calls[0];
+        expect(parts).toEqual([expect.objectContaining({ type: 'text', text: '无法协助' })]);
+        expect(meta.stop).toEqual({ kind: 'refusal', reason: 'refusal' });
+    });
+
+    it('Responses completed 时记录正常结束', async () => {
+        const reader = createMockReader([
+            'data: {"type":"response.output_text.delta","delta":"hi"}',
+            'data: {"type":"response.completed","response":{"status":"completed","output":[]}}'
+        ]);
+
+        await parseOpenAIStream(reader, 'openai-responses');
+
+        expect(saveAssistantMessage.mock.calls[0][1].stop).toEqual({
+            kind: 'end',
+            reason: 'completed'
+        });
+    });
+
+    it('Responses failed 事件走流内错误处理', async () => {
+        const reader = createMockReader([
+            'data: {"type":"response.output_text.delta","delta":"部分"}',
+            'data: {"type":"response.failed","response":{"status":"failed","error":{"code":"server_error","message":"上游故障"}}}'
+        ]);
+
+        await parseOpenAIStream(reader, 'openai-responses');
+
+        expect(eventBus.emit).toHaveBeenCalledWith(
+            'ui:notification',
+            expect.objectContaining({ type: 'error', message: expect.stringContaining('上游故障') })
+        );
+        expect(reader.cancel).toHaveBeenCalled();
+        const [, , opts] = saveAssistantMessage.mock.calls[0];
+        expect(opts.isError).toBe(true);
+        expect(opts.errorData.code).toBe('server_error');
+    });
+
+    it('Responses error 事件走流内错误处理', async () => {
+        const reader = createMockReader([
+            'data: {"type":"error","code":"rate_limit_exceeded","message":"请求过多"}'
+        ]);
+
+        await parseOpenAIStream(reader, 'openai-responses');
+
+        expect(eventBus.emit).toHaveBeenCalledWith(
+            'ui:notification',
+            expect.objectContaining({ type: 'error', message: expect.stringContaining('请求过多') })
+        );
+        expect(reader.cancel).toHaveBeenCalled();
+    });
+
+    it('增量未收到函数调用时从终态补齐全部调用', async () => {
+        const reader = createMockReader([
+            'data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"function_call","call_id":"c1","name":"a","arguments":"{}"},{"type":"function_call","call_id":"c2","name":"b","arguments":"{}"}]}}'
+        ]);
+
+        await parseOpenAIStream(reader, 'openai-responses');
+
+        const [, , opts] = saveAssistantMessage.mock.calls[0];
+        expect(opts.toolCalls.map((tc) => tc.name)).toEqual(['a', 'b']);
+    });
+});

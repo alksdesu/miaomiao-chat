@@ -398,3 +398,60 @@ describe('parseGeminiStream - 错误处理', () => {
         consoleSpy.mockRestore();
     });
 });
+
+describe('parseGeminiStream - 结束原因', () => {
+    it('MAX_TOKENS 截断时正常落库并记录结束原因', async () => {
+        const reader = createMockReader([
+            'data: {"candidates":[{"content":{"parts":[{"text":"被截断"}]}}]}',
+            'data: {"candidates":[{"content":{"parts":[{"text":"的回"}]},"finishReason":"MAX_TOKENS"}]}'
+        ]);
+
+        await parseGeminiStream(reader);
+
+        const [, meta, opts] = saveAssistantMessage.mock.calls[0];
+        expect(meta.stop).toEqual({ kind: 'max_tokens', reason: 'MAX_TOKENS' });
+        expect(opts.isError).toBeUndefined();
+    });
+
+    it('候选被安全拦截且没有内容时按拦截落错误消息', async () => {
+        const reader = createMockReader([
+            'data: {"candidates":[{"finishReason":"SAFETY","finishMessage":"命中安全策略"}]}'
+        ]);
+
+        await parseGeminiStream(reader);
+
+        const [parts, meta, opts] = saveAssistantMessage.mock.calls[0];
+        expect(parts).toEqual([]);
+        expect(meta.stop).toEqual({ kind: 'safety', reason: 'SAFETY', detail: '命中安全策略' });
+        expect(opts.isError).toBe(true);
+        expect(opts.errorData.code).toBe('safety');
+        expect(opts.errorData.message).toContain('命中安全策略');
+    });
+
+    it('prompt 被拦截时按请求拦截落错误消息', async () => {
+        const reader = createMockReader([
+            'data: {"promptFeedback":{"blockReason":"PROHIBITED_CONTENT"}}'
+        ]);
+
+        await parseGeminiStream(reader);
+
+        const [, , opts] = saveAssistantMessage.mock.calls[0];
+        expect(opts.isError).toBe(true);
+        expect(opts.errorData.code).toBe('prompt_blocked');
+        expect(opts.errorData.message).toContain('（PROHIBITED_CONTENT）');
+    });
+
+    it('后续分片缺少 finishReason 时保留已记录的结束原因', async () => {
+        const reader = createMockReader([
+            'data: {"candidates":[{"content":{"parts":[{"text":"截断"}]},"finishReason":"MAX_TOKENS"}]}',
+            'data: {"usageMetadata":{"totalTokenCount":10}}'
+        ]);
+
+        await parseGeminiStream(reader);
+
+        expect(saveAssistantMessage.mock.calls[0][1].stop).toEqual({
+            kind: 'max_tokens',
+            reason: 'MAX_TOKENS'
+        });
+    });
+});

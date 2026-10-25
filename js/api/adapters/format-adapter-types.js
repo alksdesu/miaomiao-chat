@@ -56,6 +56,8 @@
  * 非流式响应解析结果（与原 parseApiResponse 返回形状等价）。
  * 各家字段不同，含 toolCalls/content/thinkingContent/contentParts 等中间字段，
  * 由 handler 传给 buildPartsFromStreamingState 转 parts[]。
+ * stop 为归一后的结束原因（messages/stop-reason.js）；没有正文时返回 `{content: '', stop}`，
+ * 由 handler 按空回复落错误消息。
  */
 
 /**

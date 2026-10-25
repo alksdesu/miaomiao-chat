@@ -146,6 +146,7 @@ vi.mock('../../js/stream/sink.js', async () => {
             renderFinalTextWithThinking(text, thinking);
         }
         renderError() {}
+        renderStopNotice() {}
         appendStats() {}
         commit(parts, meta, opts = {}) {
             const idx = saveAssistantMessage(parts, meta, { ...opts, sessionId: this.sessionId });

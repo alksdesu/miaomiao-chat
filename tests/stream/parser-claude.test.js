@@ -374,5 +374,56 @@ describe('parseClaudeStream - message_delta', () => {
         await parseClaudeStream(reader);
 
         expect(saveAssistantMessage).toHaveBeenCalled();
+        const [, meta, opts] = saveAssistantMessage.mock.calls[0];
+        expect(meta.stop).toEqual({ kind: 'end', reason: 'end_turn' });
+        expect(opts.isError).toBeUndefined();
+    });
+
+    it('max_tokens 截断时正常落库并记录结束原因', async () => {
+        const reader = createMockReader([
+            'data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}',
+            'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"被截断的回"}}',
+            'data: {"type":"content_block_stop","index":0}',
+            'data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"}}',
+            'data: {"type":"message_stop"}'
+        ]);
+
+        await parseClaudeStream(reader);
+
+        const [parts, meta, opts] = saveAssistantMessage.mock.calls[0];
+        expect(parts).toEqual([expect.objectContaining({ type: 'text', text: '被截断的回' })]);
+        expect(meta.stop).toEqual({ kind: 'max_tokens', reason: 'max_tokens' });
+        expect(opts.isError).toBeUndefined();
+    });
+
+    it('拒答且没有内容时按拒答落错误消息，错误文案不写进正文', async () => {
+        const reader = createMockReader([
+            'data: {"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"category":"cyber","explanation":"涉及攻击"}}}',
+            'data: {"type":"message_stop"}'
+        ]);
+
+        await parseClaudeStream(reader);
+
+        const [parts, meta, opts] = saveAssistantMessage.mock.calls[0];
+        expect(parts).toEqual([]);
+        expect(meta.stop).toEqual({ kind: 'refusal', reason: 'refusal', detail: '涉及攻击' });
+        expect(opts.isError).toBe(true);
+        expect(opts.errorData.code).toBe('refusal');
+        expect(opts.errorData.message).toContain('（refusal）');
+        expect(opts.errorData.message).toContain('涉及攻击');
+    });
+
+    it('正常结束却没有内容时按空回复落错误消息', async () => {
+        const reader = createMockReader([
+            'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}',
+            'data: {"type":"message_stop"}'
+        ]);
+
+        await parseClaudeStream(reader);
+
+        const [parts, , opts] = saveAssistantMessage.mock.calls[0];
+        expect(parts).toEqual([]);
+        expect(opts.isError).toBe(true);
+        expect(opts.errorData.code).toBe('empty_reply');
     });
 });

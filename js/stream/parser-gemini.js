@@ -10,6 +10,7 @@ import { eventBus } from '../core/events.js';
 import { parseStreamingMarkdownImages } from '../utils/markdown-image-parser.js';
 import { isVideoMimeType, isAudioMimeType } from '../utils/media.js';
 import { ToolMode } from '../messages/schema.js';
+import { normalizeGeminiStop } from '../messages/stop-reason.js';
 import { generateIdSet } from '../api/format-converter.js';
 
 // 响应长度限制（区分文本和图片）
@@ -63,10 +64,12 @@ export class GeminiStreamParser extends BaseStreamParser {
             }
 
             // 处理 candidates parts
-            const parts = parsed.candidates?.[0]?.content?.parts || [];
+            const candidate = parsed.candidates?.[0];
+            const parts = candidate?.content?.parts || [];
             for (const part of parts) {
                 this._processPart(part);
             }
+            this._recordStop(candidate, parsed.promptFeedback);
 
             // 智能截断
             if (this._checkTruncation()) {
@@ -138,6 +141,19 @@ export class GeminiStreamParser extends BaseStreamParser {
 
         this.flushThinkTagParser();
         this._finalize();
+    }
+
+    /**
+     * finishReason 只出现在候选的最后一个分片；prompt 被拦截时没有候选，只有 promptFeedback
+     */
+    _recordStop(candidate, promptFeedback) {
+        const stop = normalizeGeminiStop({
+            finishReason: candidate?.finishReason,
+            finishMessage: candidate?.finishMessage,
+            blockReason: promptFeedback?.blockReason,
+            blockReasonMessage: promptFeedback?.blockReasonMessage
+        });
+        if (stop) this.stop = stop;
     }
 
     // ───── 单个 part 处理 ─────

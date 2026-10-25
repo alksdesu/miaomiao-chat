@@ -545,8 +545,34 @@ describe('parseApiResponse - Claude 格式', () => {
         expect(claudeAdapter.parseResponse({ error: 'bad' })).toBeNull();
     });
 
-    it('返回 null 当 content 为空', () => {
-        expect(claudeAdapter.parseResponse({ content: [] })).toBeNull();
+    it('content 为空时只带回结束原因', () => {
+        expect(claudeAdapter.parseResponse({ content: [] })).toEqual({
+            content: '',
+            stop: null,
+            pauseTurn: false
+        });
+    });
+
+    it('拒答且没有内容时带回拒答原因与说明', () => {
+        const result = claudeAdapter.parseResponse({
+            content: [],
+            stop_reason: 'refusal',
+            stop_details: { category: 'cyber', explanation: '涉及攻击' }
+        });
+        expect(result).toEqual({
+            content: '',
+            stop: { kind: 'refusal', reason: 'refusal', detail: '涉及攻击' },
+            pauseTurn: false
+        });
+    });
+
+    it('有内容时附带归一后的结束原因', () => {
+        const result = claudeAdapter.parseResponse({
+            content: [{ type: 'text', text: '被截断的回' }],
+            stop_reason: 'max_tokens'
+        });
+        expect(result.content).toBe('被截断的回');
+        expect(result.stop).toEqual({ kind: 'max_tokens', reason: 'max_tokens' });
     });
 
     it('解析文本块', () => {
