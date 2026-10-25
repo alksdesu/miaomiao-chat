@@ -18,7 +18,8 @@ import { syncUIWithState } from './config-ui-sync.js';
 export { syncUIWithState };
 
 // ⭐ 配置版本管理
-const CONFIG_VERSION = 2; // v1 = 旧格式（provider.models为字符串数组），v2 = 新格式（对象数组）
+// v1 = provider.models 为字符串数组，v2 = 对象数组，v3 = 修正 Responses / OpenClaw 模型的默认能力
+const CONFIG_VERSION = 3;
 
 // 防抖保存配置定时器
 let saveConfigTimeout = null;
@@ -184,6 +185,8 @@ export function buildConfigObject() {
 export function getDefaultCapabilities(apiFormat) {
     const defaults = {
         openai: { imageInput: true, imageOutput: false }, // OpenAI 支持 Vision，但不生成图片
+        'openai-responses': { imageInput: true, imageOutput: false },
+        openclaw: { imageInput: true, imageOutput: false },
         'openai-image': { imageInput: true, imageOutput: true },
         gemini: { imageInput: true, imageOutput: true }, // Gemini 完全支持多模态
         claude: { imageInput: true, imageOutput: false } // Claude 支持 Vision，但不生成图片
@@ -253,6 +256,46 @@ function upgradeFromV1ToV2(config) {
     return config;
 }
 
+// 旧版 getDefaultCapabilities 缺这两种格式，拉取或添加的模型被写成了"不支持图片"
+const FORMATS_WITH_FIXED_DEFAULT_CAPABILITIES = Object.freeze(['openai-responses', 'openclaw']);
+
+function hasLegacyFallbackCapabilities(model) {
+    const capabilities = model?.capabilities;
+    return (
+        !!capabilities &&
+        Object.keys(capabilities).length === 2 &&
+        capabilities.imageInput === false &&
+        capabilities.imageOutput === false
+    );
+}
+
+/**
+ * v2 → v3 升级逻辑：把被旧默认值写坏的模型能力改回该格式的默认能力
+ * @param {Object} config - v2 配置对象
+ * @returns {Object} v3 配置对象
+ */
+function upgradeFromV2ToV3(config) {
+    if (!Array.isArray(config.providers)) return config;
+
+    config.providers = config.providers.map((provider) => {
+        if (
+            !FORMATS_WITH_FIXED_DEFAULT_CAPABILITIES.includes(provider?.apiFormat) ||
+            !Array.isArray(provider.models)
+        ) {
+            return provider;
+        }
+        return {
+            ...provider,
+            models: provider.models.map((model) =>
+                hasLegacyFallbackCapabilities(model)
+                    ? { ...model, capabilities: getDefaultCapabilities(provider.apiFormat) }
+                    : model
+            )
+        };
+    });
+    return config;
+}
+
 /**
  * 配置升级主控制器（支持增量升级 v1 → v2 → v3...）
  * @param {Object} config - 原始配置对象
@@ -272,10 +315,9 @@ function upgradeConfig(config, fromVersion, toVersion) {
                 // v1 → v2: 升级 provider.models 为对象数组
                 currentConfig = upgradeFromV1ToV2(currentConfig);
                 break;
-            // 未来可添加更多版本升级逻辑
-            // case 2:
-            //     currentConfig = upgradeFromV2ToV3(currentConfig);
-            //     break;
+            case 2:
+                currentConfig = upgradeFromV2ToV3(currentConfig);
+                break;
         }
     }
 

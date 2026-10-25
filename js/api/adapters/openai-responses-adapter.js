@@ -479,7 +479,6 @@ function streamParser(reader, sessionId, sink = null, signal = null) {
 export const openaiResponsesAdapter = Object.freeze({
     name: 'OpenAI Responses',
     apiFormat: 'openai-responses',
-    filterPosition: 'after',
     signatureFormat: 'openai',
 
     parserClass: OpenAIStreamParser,

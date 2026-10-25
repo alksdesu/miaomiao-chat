@@ -205,7 +205,6 @@ function sanitizeResponseForLogging(data) {
 export const openaiImageAdapter = Object.freeze({
     name: 'OpenAI Image',
     apiFormat: 'openai-image',
-    filterPosition: 'before',
     supportsMultiStream: false,
     supportsMultipleReplies: false,
     requestFeatures: Object.freeze({

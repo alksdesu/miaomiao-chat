@@ -1,7 +1,7 @@
 /**
  * request-pipeline.js 测试
  *
- * 验证 executeRequest 编排顺序、filterPosition 分支、SystemContext / Prefill / Tools 装配。
+ * 验证 executeRequest 编排顺序、能力过滤时机、SystemContext / Prefill / Tools 装配。
  * 用 stub adapter 隔离 pipeline 逻辑与具体 adapter 实现。
  */
 // @vitest-environment jsdom
@@ -77,7 +77,6 @@ function createStubAdapter(overrides = {}) {
     return {
         name: 'Stub',
         apiFormat: 'stub',
-        filterPosition: 'before',
 
         parserClass: class {},
         streamParser: vi.fn(),
@@ -310,51 +309,36 @@ describe('adapter 请求能力声明', () => {
     });
 });
 
-// ========== filterPosition 分支 ==========
+// ========== 能力过滤时机 ==========
 
-describe('filterPosition 分支', () => {
-    it("'before' 模式：在 partsToAPIMessages 之前过滤 state.messages", async () => {
-        const adapter = createStubAdapter({ filterPosition: 'before' });
-        getCurrentModelCapabilities.mockReturnValue({ supportsImage: false });
-        state.messages = [
-            { role: 'user', content: 'keep' },
-            { role: '__drop__', content: 'drop me' }
-        ];
+describe('能力过滤时机', () => {
+    it.each(['claude', 'gemini', 'openai', 'openai-responses'])(
+        '%s：在 partsToAPIMessages 之前按新格式消息过滤',
+        async (apiFormat) => {
+            const adapter = createStubAdapter({ apiFormat });
+            getCurrentModelCapabilities.mockReturnValue({ imageInput: false });
+            state.messages = [
+                { role: 'user', content: 'keep' },
+                { role: '__drop__', content: 'drop me' }
+            ];
 
-        await executeRequest(adapter, {
-            endpoint: 'https://api.example.com',
-            apiKey: 'k',
-            model: 'm'
-        });
+            await executeRequest(adapter, {
+                endpoint: 'https://api.example.com',
+                apiKey: 'k',
+                model: 'm'
+            });
 
-        // partsToAPIMessages 接收已过滤后的 state.messages（旧格式 schema）
-        const calledWith = adapter.partsToAPIMessages.mock.calls[0][0];
-        expect(calledWith).toHaveLength(1);
-        expect(calledWith[0].role).toBe('user');
-    });
-
-    it("'after' 模式：在 partsToAPIMessages 之后过滤其输出", async () => {
-        const adapter = createStubAdapter({ filterPosition: 'after' });
-        getCurrentModelCapabilities.mockReturnValue({ supportsImage: false });
-        adapter.partsToAPIMessages.mockReturnValue([
-            { role: 'user', content: 'converted' },
-            { role: '__drop__', content: 'drop after convert' }
-        ]);
-
-        await executeRequest(adapter, {
-            endpoint: 'https://api.example.com',
-            apiKey: 'k',
-            model: 'm'
-        });
-
-        // buildRequestBody.messages 是过滤后的转换结果
-        const ctx = adapter.buildRequestBody.mock.calls[0][0];
-        expect(ctx.messages).toHaveLength(1);
-        expect(ctx.messages[0].role).toBe('user');
-    });
+            const filteredInput = filterMessagesByCapabilities.mock.calls[0][0];
+            expect(filteredInput.every((m) => m._stub === undefined)).toBe(true);
+            const calledWith = adapter.partsToAPIMessages.mock.calls[0][0];
+            expect(calledWith).toHaveLength(1);
+            expect(calledWith[0].role).toBe('user');
+            expect(filterMessagesByCapabilities).toHaveBeenCalledTimes(1);
+        }
+    );
 
     it('capabilities=null 时跳过过滤', async () => {
-        const adapter = createStubAdapter({ filterPosition: 'before' });
+        const adapter = createStubAdapter();
         getCurrentModelCapabilities.mockReturnValue(null);
         state.messages = [
             { role: 'user', content: 'a' },

@@ -64,10 +64,6 @@
  * 元数据
  * @property {string} name           日志前缀（'OpenAI Chat' / 'Claude' / 'Gemini' / ...）
  * @property {string} apiFormat      provider.apiFormat 匹配键
- * @property {'before'|'after'} filterPosition
- *     capabilities 过滤时机：'before' = partsToAPIMessages 之前过滤 state.messages，
- *     'after' = 之后过滤 adapter 输出。OpenAI 历史行为是 after，其他家是 before；
- *     pipeline 据此选择调用顺序。
  * @property {boolean} [supportsMultiStream]
  *     是否支持并行多回复（multi-stream）。缺省 true；false 时 handler 会将 replyCount 强制降为 1
  *     并发出 UI 提示（典型场景：OpenClaw 的 WebSocket 单连接协议不允许并发拉流）。
@@ -90,7 +86,8 @@
  *
  * 消息层
  * @property {(msgs: Array, opts?: Object) => Array} partsToAPIMessages
- *     新格式消息数组 → API 原生消息数组（含 XML 模式 tool_result 追加 user 消息）
+ *     新格式消息数组 → API 原生消息数组（含 XML 模式 tool_result 追加 user 消息）；
+ *     收到的消息已由 pipeline 按模型能力处理过历史图片
  * @property {(data: Object, options?: {isXmlMode?: boolean}) => ParsedReply|null} parseResponse
  *     非流式响应解析；isXmlMode 取自 requestProfile，缺省按原生工具协议解析
  *

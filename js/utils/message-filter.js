@@ -8,7 +8,7 @@ import { PartType, MediaKind, textPart, mediaPart } from '../messages/schema.js'
 
 /**
  * 根据模型能力过滤和转换消息
- * @param {Array} messages - 原始消息数组（OpenAI 格式）
+ * @param {Array} messages - 新格式消息数组（parts[]），必须在转成各家 API 格式之前调用
  * @param {Object} modelCapabilities - 当前模型的能力配置 {imageInput, imageOutput}
  * @returns {Array} 转换后的消息数组
  */

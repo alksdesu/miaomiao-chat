@@ -140,13 +140,9 @@ function collectTools(adapter, stateRef = state) {
 }
 
 /**
- * 过滤错误消息 + capabilities 过滤（按 adapter.filterPosition 决定时机）
+ * 过滤错误消息 + 按模型能力处理历史图片，再交给 adapter 转成 API 消息
  *
- * - 'before'（Claude / Gemini）：在 partsToAPIMessages 之前过滤 state.messages（新格式 parts）
- * - 'after'（OpenAI）：在 partsToAPIMessages 之后过滤适配后的 OpenAI 格式数组
- *
- * filterMessagesByCapabilities 同时支持新格式 parts 和旧格式 content，
- * 两种过滤时机都安全；保留差异是为了 1:1 等价于原 send 函数行为。
+ * 能力过滤只认新格式 parts，必须发生在 partsToAPIMessages 之前
  */
 async function filterAndConvertMessages(adapter, requestProfile, sessionId, sourceSnapshot) {
     await requestProfile.providerHistoryCleanup;
@@ -158,33 +154,16 @@ async function filterAndConvertMessages(adapter, requestProfile, sessionId, sour
         sourceMessages = await materializeSessionMessages(sessionId, sourceMessages);
     }
     sourceMessages = await resolveMessagesMediaForApi(sourceMessages);
-    const filtered = sourceMessages.filter((message) => !message.error);
+    const withoutErrors = sourceMessages.filter((message) => !message.error);
     const capabilities = requestProfile.capabilities;
+    const filtered = capabilities
+        ? filterMessagesByCapabilities(withoutErrors, capabilities)
+        : withoutErrors;
 
-    if (adapter.filterPosition === 'before') {
-        const beforeFiltered = capabilities
-            ? filterMessagesByCapabilities(filtered, capabilities)
-            : filtered;
-        return adapter.partsToAPIMessages(beforeFiltered, {
-            injectReasoning: adapter.apiFormat === 'openai-responses',
-            isXmlMode: requestProfile.isXmlMode
-        });
-    }
-
-    // 'after' 路径（OpenAI Chat / Responses）：先转换再过滤
-    let messages = adapter.partsToAPIMessages(filtered, {
+    return adapter.partsToAPIMessages(filtered, {
         injectReasoning: adapter.apiFormat === 'openai-responses',
         isXmlMode: requestProfile.isXmlMode
     });
-    if (capabilities) {
-        messages = filterMessagesByCapabilities(messages, capabilities);
-        logger.debug(`[${adapter.name}] 消息已根据模型能力过滤:`, {
-            capabilities,
-            originalCount: filtered.length,
-            filteredCount: messages.length
-        });
-    }
-    return messages;
 }
 
 /**

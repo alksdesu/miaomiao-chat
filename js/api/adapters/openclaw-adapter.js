@@ -65,7 +65,6 @@ function buildQueryString(_apiKey, _ctx) {
 export const openclawAdapter = Object.freeze({
     name: 'OpenClaw',
     apiFormat: 'openclaw',
-    filterPosition: 'after',
     // OpenClaw 中转 Claude 协议响应，签名按 Claude 处理
     signatureFormat: 'claude',
     // OpenClaw 走 WebSocket 单连接 + agent.event 全局 eventBus 派发，

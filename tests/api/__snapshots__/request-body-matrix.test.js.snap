@@ -63,7 +63,11 @@ exports[`请求体矩阵快照 > chat image history with capabilities 1`] = `
       {
         "content": [
           {
-            "text": "Here it is",
+            "text": "[*] 第 2 条消息中 AI 的回复已转为你的消息（当前模型不支持图片输出）
+
+AI 说：Here it is
+
+AI 生成的图片（1 张）：",
             "type": "text",
           },
           {
@@ -73,7 +77,7 @@ exports[`请求体矩阵快照 > chat image history with capabilities 1`] = `
             "type": "image_url",
           },
         ],
-        "role": "assistant",
+        "role": "user",
       },
       {
         "content": [
@@ -3908,7 +3912,11 @@ exports[`请求体矩阵快照 > responses image history with capabilities 1`] =
       {
         "content": [
           {
-            "text": "Here it is",
+            "text": "[*] 第 2 条消息中 AI 的回复已转为你的消息（当前模型不支持图片输出）
+
+AI 说：Here it is
+
+AI 生成的图片（1 张）：",
             "type": "text",
           },
           {
@@ -3918,7 +3926,7 @@ exports[`请求体矩阵快照 > responses image history with capabilities 1`] =
             "type": "image_url",
           },
         ],
-        "role": "assistant",
+        "role": "user",
       },
       {
         "content": [

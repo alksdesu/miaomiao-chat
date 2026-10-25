@@ -177,7 +177,7 @@ beforeEach(resetState);
 
 describe('buildConfigObject', () => {
     it('包含 configVersion', () => {
-        expect(buildConfigObject().configVersion).toBe(2);
+        expect(buildConfigObject().configVersion).toBe(3);
     });
 
     it('包含 updatedAt 时间戳', () => {
@@ -264,6 +264,10 @@ describe('getDefaultCapabilities', () => {
         expect(getDefaultCapabilities('claude')).toEqual({ imageInput: true, imageOutput: false });
     });
 
+    it.each(['openai-responses', 'openclaw'])('%s 与 OpenAI Chat 一致', (apiFormat) => {
+        expect(getDefaultCapabilities(apiFormat)).toEqual({ imageInput: true, imageOutput: false });
+    });
+
     it('未知格式默认都不支持', () => {
         expect(getDefaultCapabilities('unknown')).toEqual({
             imageInput: false,
@@ -275,6 +279,70 @@ describe('getDefaultCapabilities', () => {
         expect(getDefaultCapabilities(undefined)).toEqual({
             imageInput: false,
             imageOutput: false
+        });
+    });
+});
+
+// ========== 配置升级 ==========
+
+describe('配置升级 v2 → v3', () => {
+    const legacyCaps = () => ({ imageInput: false, imageOutput: false });
+    const provider = (apiFormat, capabilities) => ({
+        id: `p-${apiFormat}`,
+        name: apiFormat,
+        apiFormat,
+        enabled: true,
+        models: [{ id: 'm1', name: 'm1', capabilities }]
+    });
+
+    it.each(['openai-responses', 'openclaw'])(
+        '%s 模型的旧默认能力改为该格式默认值',
+        (apiFormat) => {
+            applyConfigToState({
+                configVersion: 2,
+                providers: [provider(apiFormat, legacyCaps())]
+            });
+            expect(state.providers[0].models[0].capabilities).toEqual({
+                imageInput: true,
+                imageOutput: false
+            });
+        }
+    );
+
+    it('其他格式的全关能力视为用户设置，保持不变', () => {
+        applyConfigToState({
+            configVersion: 2,
+            providers: [provider('claude', legacyCaps())]
+        });
+        expect(state.providers[0].models[0].capabilities).toEqual(legacyCaps());
+    });
+
+    it('已经修改过的能力保持不变', () => {
+        const caps = { imageInput: true, imageOutput: true };
+        applyConfigToState({
+            configVersion: 2,
+            providers: [provider('openai-responses', caps)]
+        });
+        expect(state.providers[0].models[0].capabilities).toEqual(caps);
+    });
+
+    it('v3 配置不再改写全关能力', () => {
+        applyConfigToState({
+            configVersion: 3,
+            providers: [provider('openai-responses', legacyCaps())]
+        });
+        expect(state.providers[0].models[0].capabilities).toEqual(legacyCaps());
+    });
+
+    it('v1 配置连续升级到 v3', () => {
+        applyConfigToState({
+            configVersion: 1,
+            providers: [{ id: 'p1', name: 'r', apiFormat: 'openai-responses', models: ['gpt-5.5'] }]
+        });
+        expect(state.providers[0].models[0]).toEqual({
+            id: 'gpt-5.5',
+            name: 'gpt-5.5',
+            capabilities: { imageInput: true, imageOutput: false }
         });
     });
 });

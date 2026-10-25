@@ -707,7 +707,6 @@ function streamParser(reader, sessionId, sink = null, signal = null) {
 export const claudeAdapter = Object.freeze({
     name: 'Claude',
     apiFormat: 'claude',
-    filterPosition: 'before', // 转换前过滤 state.messages
     // 非流式 handler.js 调 buildPartsFromStreamingState 时按 adapter 注入 signatureFormat
     // 让 thinking part 携带来源标识，跨格式继承时被自家 adapter 守门
     signatureFormat: 'claude',

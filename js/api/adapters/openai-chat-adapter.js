@@ -425,7 +425,6 @@ function streamParser(reader, sessionId, sink = null, signal = null) {
 export const openaiChatAdapter = Object.freeze({
     name: 'OpenAI Chat',
     apiFormat: 'openai',
-    filterPosition: 'after', // 历史行为：转换后过滤（与 Claude/Gemini 不同）
     signatureFormat: 'openai',
 
     parserClass: OpenAIStreamParser,

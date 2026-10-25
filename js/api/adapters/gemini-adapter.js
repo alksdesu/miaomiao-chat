@@ -699,7 +699,6 @@ function streamParser(reader, sessionId, sink = null, signal = null) {
 export const geminiAdapter = Object.freeze({
     name: 'Gemini',
     apiFormat: 'gemini',
-    filterPosition: 'before',
     signatureFormat: 'gemini',
 
     parserClass: GeminiStreamParser,
