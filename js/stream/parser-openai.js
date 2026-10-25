@@ -598,9 +598,8 @@ export class OpenAIStreamParser extends BaseStreamParser {
         eventBus.emit('ui:notification', { message: userMessage, type: 'error', duration: 8000 });
         await this.reader.cancel();
 
-        if (this.textContent || this.thinkingContent || this.contentParts.length > 0) {
-            this.finalizeStreamWithError(errorCode, errorMessage, this.getStreamErrorExtraFields());
-        }
+        // 尚未收到内容时也要落错误消息，否则只剩一闪而过的通知和空白气泡
+        this.finalizeStreamWithError(errorCode, errorMessage, this.getStreamErrorExtraFields());
     }
 
     _finalize() {

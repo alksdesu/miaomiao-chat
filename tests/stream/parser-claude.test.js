@@ -347,6 +347,19 @@ describe('parseClaudeStream - 错误处理', () => {
         consoleSpy.mockRestore();
     });
 
+    it('尚未收到内容时也落错误消息，正文为空', async () => {
+        const reader = createMockReader([
+            'data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}'
+        ]);
+
+        await parseClaudeStream(reader);
+
+        const [parts, , opts] = saveAssistantMessage.mock.calls[0];
+        expect(parts).toEqual([]);
+        expect(opts.isError).toBe(true);
+        expect(opts.errorData).toEqual({ code: 'overloaded_error', message: 'Overloaded' });
+    });
+
     it('处理错误时保存已接收内容', async () => {
         const reader = createMockReader([
             'data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}',

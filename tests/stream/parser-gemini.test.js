@@ -355,6 +355,19 @@ describe('parseGeminiStream - 错误处理', () => {
         );
     });
 
+    it('尚未收到内容时也落错误消息', async () => {
+        const reader = createMockReader([
+            'data: {"error":{"code":429,"message":"Resource exhausted"}}'
+        ]);
+
+        await parseGeminiStream(reader);
+
+        const [parts, , opts] = saveAssistantMessage.mock.calls[0];
+        expect(parts).toEqual([]);
+        expect(opts.isError).toBe(true);
+        expect(opts.errorData).toEqual({ code: 429, message: 'Resource exhausted' });
+    });
+
     it('处理 503 错误', async () => {
         const reader = createMockReader([
             'data: {"error":{"code":503,"message":"Service unavailable"}}'

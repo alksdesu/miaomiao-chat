@@ -260,6 +260,19 @@ describe('parseOpenAIStream - Chat Completions', () => {
         expect(reader.cancel).toHaveBeenCalled();
     });
 
+    it('流中错误且尚未收到内容时也落错误消息', async () => {
+        const reader = createMockReader([
+            'data: {"error":{"code":"rate_limit_exceeded","message":"Rate limit exceeded"}}'
+        ]);
+
+        await parseOpenAIStream(reader, 'openai');
+
+        const [parts, , opts] = saveAssistantMessage.mock.calls[0];
+        expect(parts).toEqual([]);
+        expect(opts.isError).toBe(true);
+        expect(opts.errorData.code).toBe('rate_limit_exceeded');
+    });
+
     it('处理 finish_reason stop', async () => {
         const reader = createMockReader([
             'data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}',

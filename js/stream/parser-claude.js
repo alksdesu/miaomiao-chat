@@ -361,13 +361,11 @@ export class ClaudeStreamParser extends BaseStreamParser {
         // 导致 Anthropic 校验 thinking blocks 不一致 400
         this._flushCurrentThinkingBlock();
 
-        const partialThinking = this.mergedThinking;
-        if (this.textContent || partialThinking || this.contentParts.length > 0) {
-            // 临时同步 thinkingContent 供 finalizeStreamWithError 使用
-            this.thinkingContent = partialThinking;
-            // getStreamErrorExtraFields() 透传 thinkingBlocks/Signatures/Items + serverTool*
-            this.finalizeStreamWithError(errorCode, errorMessage, this.getStreamErrorExtraFields());
-        }
+        // 临时同步 thinkingContent 供 finalizeStreamWithError 使用
+        this.thinkingContent = this.mergedThinking;
+        // 尚未收到内容时也要落错误消息，否则只剩一闪而过的通知和空白气泡
+        // getStreamErrorExtraFields() 透传 thinkingBlocks/Signatures/Items + serverTool*
+        this.finalizeStreamWithError(errorCode, errorMessage, this.getStreamErrorExtraFields());
     }
 
     _finalize() {
