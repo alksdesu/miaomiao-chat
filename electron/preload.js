@@ -245,10 +245,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     /**
      * Computer Use: 鼠标滚轮
-     * @param {number} amount - 滚动量（正数向下，负数向上）
+     * @param {number} amount - 滚动量；未给方向时正数向下、负数向上
+     * @param {'up'|'down'|'left'|'right'} [direction] - 滚动方向
      */
-    computerUse_scrollMouse: (amount) => {
-        return ipcRenderer.invoke('computer-use:mouse-scroll', { amount });
+    computerUse_scrollMouse: (amount, direction) => {
+        return ipcRenderer.invoke('computer-use:mouse-scroll', { amount, direction });
     },
 
     /**
@@ -314,6 +315,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
      */
     computerUse_getCursorPosition: () => {
         return ipcRenderer.invoke('computer-use:get-cursor-position');
+    },
+
+    /**
+     * Computer Use: 截图缩放比例与输出尺寸
+     * @returns {Promise<{success: boolean, scaleFactor: number, width: number, height: number, originalWidth: number, originalHeight: number}>}
+     */
+    computerUse_getScreenGeometry: () => {
+        return ipcRenderer.invoke('computer-use:screen-geometry');
     },
 
     /**

@@ -90,7 +90,11 @@ describe('Claude', () => {
         });
         expect(profile.sampling).toBe(false);
         expect(profile.assistantPrefill).toBe(false);
-        expect(profile.computerUse).toEqual({ type: 'computer_toolset_20260801', beta: null });
+        expect(profile.computerUse).toEqual({
+            type: 'computer_toolset_20260801',
+            beta: null,
+            declaresDisplay: false
+        });
     });
 
     it('Opus 4.8 / 4.7：仅 adaptive 但默认不思考', () => {
@@ -111,14 +115,16 @@ describe('Claude', () => {
     it('4.5 及更早：仅 budget，computer 工具版本按型号区分', () => {
         expect(resolveModelProfile('claude', 'claude-opus-4-5').computerUse).toEqual({
             type: 'computer_20251124',
-            beta: 'computer-use-2025-11-24'
+            beta: 'computer-use-2025-11-24',
+            declaresDisplay: true
         });
         for (const modelId of ['claude-sonnet-4-5', 'claude-haiku-4-5', 'claude-opus-4-1']) {
             const profile = resolveModelProfile('claude', modelId);
             expect(profile.reasoning.modes).toEqual(['budget']);
             expect(profile.computerUse).toEqual({
                 type: 'computer_20250124',
-                beta: 'computer-use-2025-01-24'
+                beta: 'computer-use-2025-01-24',
+                declaresDisplay: true
             });
         }
     });

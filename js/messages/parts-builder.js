@@ -73,6 +73,8 @@ function convertToolCallsToParts(toolCalls) {
         }
         // Gemini functionCall 必须携带 thoughtSignature 才能续发，签名跟 part 持久化
         if (tc.thoughtSignature) opts.thoughtSignature = tc.thoughtSignature;
+        // Claude 工具集成员的调用与结果都要带回 toolset_name
+        if (tc.toolsetName) opts.toolsetName = tc.toolsetName;
         // mode 由 parser 在工具调用累积时显式标注；缺失走 toolCallPart 缺省 NATIVE
         if (tc.mode) opts.mode = tc.mode;
         if (tc.status === 'completed' && tc.result != null) {

@@ -160,6 +160,7 @@ export class ClaudeStreamParser extends BaseStreamParser {
             this.toolCalls.set(this.blockIndex, {
                 id: block.id,
                 name: block.name,
+                toolsetName: block.toolset_name || null,
                 input: ''
             });
         } else if (this.currentBlockType?.endsWith('_tool_result')) {
@@ -267,6 +268,7 @@ export class ClaudeStreamParser extends BaseStreamParser {
                     id: call.id,
                     name: call.name,
                     arguments: args,
+                    ...(call.toolsetName ? { toolsetName: call.toolsetName } : {}),
                     mode: ToolMode.NATIVE,
                     idMap: generateIdSet(call.id, 'claude')
                 });

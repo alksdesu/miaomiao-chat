@@ -19,6 +19,7 @@ import { resolveModelProfile } from './model-profiles.js';
 import { emitRequestNotices } from './request-notices.js';
 import { buildDevToolsContext } from '../devtools/context-builder.js';
 import { getToolsForAPI } from '../tools/manager.js';
+import { fetchScreenGeometry } from '../tools/computer-actions.js';
 import { materializeSessionMessages } from '../state/session-message-repository.js';
 import { resolveMessagesMediaForApi } from '../state/media-blob-store.js';
 import { waitForProviderHistoryCleanup } from '../providers/provider-sync.js';
@@ -165,6 +166,30 @@ function collectTools(adapter, stateRef, profile, notices) {
 }
 
 /**
+ * 需要声明显示器尺寸的 computer 工具按回传截图的尺寸声明；同一任务的续作沿用首次取到的尺寸，
+ * 工具定义前后一致
+ * @returns {Promise<Object|null>} fetchScreenGeometry 的结果，取不到时为 null
+ */
+async function resolveComputerDisplay(requestProfile, tools) {
+    const computerUse = requestProfile.profile?.computerUse;
+    if (!computerUse?.declaresDisplay || !tools.some((tool) => tool?.type === computerUse.type)) {
+        return null;
+    }
+    if (requestProfile.computerDisplay === undefined) {
+        try {
+            requestProfile.computerDisplay = await fetchScreenGeometry();
+        } catch (error) {
+            logger.warn(
+                '[RequestPipeline] 获取截图尺寸失败，computer 工具按窗口所在屏幕声明:',
+                error
+            );
+            requestProfile.computerDisplay = null;
+        }
+    }
+    return requestProfile.computerDisplay;
+}
+
+/**
  * 过滤错误消息 + 按模型能力处理历史图片，再交给 adapter 转成 API 消息
  *
  * 能力过滤只认新格式 parts，必须发生在 partsToAPIMessages 之前
@@ -231,6 +256,7 @@ export async function executeRequest(
     const prefill = features.prefill === false ? null : requestProfile.prefill;
     const tools = features.tools === false ? [] : requestProfile.tools;
     const notices = [...(requestProfile.notices || [])];
+    const computerDisplay = await resolveComputerDisplay(requestProfile, tools);
 
     const requestBody = await adapter.buildRequestBody({
         messages,
@@ -247,6 +273,7 @@ export async function executeRequest(
         formatSettings: requestProfile.formatSettings,
         state: requestProfile.state,
         endpoint, // Gemini Vertex vs AI Studio safetySettings 需要看 endpoint
+        computerDisplay,
         notices
     });
     emitRequestNotices(sessionId, notices);

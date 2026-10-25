@@ -49,6 +49,23 @@ function parseClaudeVersion(modelId) {
 
 // ========== Claude ==========
 
+// 旧版 computer 工具要声明显示器尺寸，坐标位于声明的尺寸内；工具集不接受尺寸，坐标直接位于回传截图
+const COMPUTER_TOOLSET = Object.freeze({
+    type: 'computer_toolset_20260801',
+    beta: null,
+    declaresDisplay: false
+});
+const COMPUTER_20251124 = Object.freeze({
+    type: 'computer_20251124',
+    beta: 'computer-use-2025-11-24',
+    declaresDisplay: true
+});
+const COMPUTER_20250124 = Object.freeze({
+    type: 'computer_20250124',
+    beta: 'computer-use-2025-01-24',
+    declaresDisplay: true
+});
+
 const CLAUDE_BASE = Object.freeze({
     reasoning: {
         modes: ['adaptive', 'budget'],
@@ -59,12 +76,8 @@ const CLAUDE_BASE = Object.freeze({
     },
     sampling: true,
     assistantPrefill: true,
-    computerUse: { type: 'computer_20251124', beta: 'computer-use-2025-11-24' }
+    computerUse: COMPUTER_20251124
 });
-
-const COMPUTER_TOOLSET = { type: 'computer_toolset_20260801', beta: null };
-const COMPUTER_20251124 = { type: 'computer_20251124', beta: 'computer-use-2025-11-24' };
-const COMPUTER_20250124 = { type: 'computer_20250124', beta: 'computer-use-2025-01-24' };
 
 // 5.x / Fable：thinking 始终开启，只认 adaptive；采样参数与末尾 assistant 预填充一律 400
 function claudeAdaptiveOnly({ alwaysOn, blockBinding = false, computerUse = COMPUTER_20251124 }) {

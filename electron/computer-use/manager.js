@@ -177,7 +177,8 @@ class ComputerUseManager {
                 );
                 throw new Error('Mouse permission denied');
             }
-            const result = await mouse.move(x, y);
+            const target = display.getInputSpace().toNative({ x, y });
+            const result = await mouse.move(target.x, target.y);
             await audit.log(
                 'mouse_move',
                 { x, y },
@@ -231,17 +232,20 @@ class ComputerUseManager {
         if (!this.checkPermission('mouse')) {
             throw new Error('Mouse permission denied');
         }
-        return await mouse.drag(fromX, fromY, toX, toY);
+        const inputSpace = display.getInputSpace();
+        const from = inputSpace.toNative({ x: fromX, y: fromY });
+        const to = inputSpace.toNative({ x: toX, y: toY });
+        return await mouse.drag(from.x, from.y, to.x, to.y);
     }
 
     /**
      * 鼠标滚轮
      */
-    async scrollMouse(amount) {
+    async scrollMouse(amount, direction) {
         if (!this.checkPermission('mouse')) {
             throw new Error('Mouse permission denied');
         }
-        return await mouse.scroll(amount);
+        return await mouse.scroll(amount, direction);
     }
 
     /**
@@ -312,10 +316,17 @@ class ComputerUseManager {
     }
 
     /**
+     * 截图缩放比例与输出尺寸，用于把截图坐标换算回屏幕坐标
+     */
+    getScreenGeometry() {
+        return screenshot.getGeometry();
+    }
+
+    /**
      * 获取光标位置
      */
     async getCursorPosition() {
-        return await mouse.getPosition();
+        return display.getInputSpace().toDip(await mouse.getPosition());
     }
 
     /**

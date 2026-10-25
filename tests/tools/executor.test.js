@@ -2,7 +2,7 @@
  * executor.js 测试
  * 工具执行引擎: executeTool, executeToolsBatch, safeExecuteTool, cancelToolExecution
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 vi.mock('../../js/tools/manager.js', () => ({
     getTool: vi.fn()
@@ -30,6 +30,10 @@ vi.mock('../../js/tools/history.js', () => ({
     recordToolCall: vi.fn()
 }));
 
+vi.mock('../../js/tools/computer-actions.js', () => ({
+    executeComputerAction: vi.fn(async () => ({ content: 'OK' }))
+}));
+
 vi.mock('../../js/core/state.js', () => ({
     state: {
         apiFormat: 'openai',
@@ -40,6 +44,8 @@ vi.mock('../../js/core/state.js', () => ({
 import { getTool } from '../../js/tools/manager.js';
 import { safeValidate } from '../../js/tools/validator.js';
 import { recordToolCall } from '../../js/tools/history.js';
+import { isElectron } from '../../js/utils/platform.js';
+import { executeComputerAction } from '../../js/tools/computer-actions.js';
 import {
     executeTool,
     executeToolsBatch,
@@ -149,6 +155,49 @@ describe('executeTool', () => {
         expect(recordToolCall).toHaveBeenCalledWith(
             expect.objectContaining({ sessionId: 'source-session', toolId: 'computer' })
         );
+    });
+});
+
+describe('executeTool Claude 原生 computer 工具', () => {
+    beforeEach(() => {
+        isElectron.mockReturnValue(true);
+    });
+
+    afterEach(() => {
+        isElectron.mockReturnValue(false);
+    });
+
+    it('computer 动作交给 computer-actions 执行，并透传取消信号', async () => {
+        const controller = new AbortController();
+        const args = { action: 'left_click', coordinate: [1, 2] };
+
+        const result = await executeTool('computer', args, {
+            apiFormat: 'claude',
+            isXmlMode: false,
+            signal: controller.signal
+        });
+
+        expect(result).toEqual({ content: 'OK' });
+        expect(executeComputerAction).toHaveBeenCalledWith('left_click', args, {
+            signal: controller.signal
+        });
+        expect(getTool).not.toHaveBeenCalled();
+        expect(recordToolCall).toHaveBeenCalledWith(
+            expect.objectContaining({ toolId: 'computer', success: true })
+        );
+    });
+
+    it('非 Electron 环境不执行', async () => {
+        isElectron.mockReturnValue(false);
+
+        await expect(
+            executeTool(
+                'computer',
+                { action: 'screenshot' },
+                { apiFormat: 'claude', isXmlMode: false }
+            )
+        ).rejects.toThrow('仅在 Electron 环境中可用');
+        expect(executeComputerAction).not.toHaveBeenCalled();
     });
 });
 

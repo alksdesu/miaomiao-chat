@@ -5,7 +5,7 @@
  * 用 stub adapter 隔离 pipeline 逻辑与具体 adapter 实现。
  */
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ---------- mocks ----------
 
@@ -856,5 +856,93 @@ describe('RequestBodyContext 完整字段', () => {
             imageInput: true,
             imageOutput: false
         });
+    });
+});
+
+// ========== computer 工具的显示器尺寸 ==========
+
+describe('computer 工具的显示器尺寸', () => {
+    const GEOMETRY = {
+        scaleFactor: 0.7447,
+        width: 1429,
+        height: 804,
+        originalWidth: 1920,
+        originalHeight: 1080
+    };
+
+    function adapterWithTool(type) {
+        return createStubAdapter({
+            apiFormat: 'claude',
+            collectBuiltinTools: vi.fn(() => [{ type, name: 'computer' }])
+        });
+    }
+
+    function requestOf(adapter, model) {
+        return {
+            endpoint: 'https://api.example.com',
+            apiKey: 'k',
+            model,
+            requestProfile: captureRequestProfile(adapter, model)
+        };
+    }
+
+    afterEach(() => {
+        delete window.electronAPI;
+    });
+
+    it('旧版 computer 工具按截图尺寸声明，同一任务的续作只取一次', async () => {
+        const getScreenGeometry = vi.fn(async () => ({ success: true, ...GEOMETRY }));
+        window.electronAPI = { computerUse_getScreenGeometry: getScreenGeometry };
+        const adapter = adapterWithTool('computer_20250124');
+        const request = requestOf(adapter, 'claude-sonnet-4-5');
+
+        await executeRequest(adapter, request);
+        await executeRequest(adapter, request);
+
+        expect(getScreenGeometry).toHaveBeenCalledTimes(1);
+        const [first, second] = adapter.buildRequestBody.mock.calls.map(([ctx]) => ctx);
+        expect(first.computerDisplay).toEqual(GEOMETRY);
+        expect(second.computerDisplay).toBe(first.computerDisplay);
+    });
+
+    it('工具集不声明尺寸，不读取截图尺寸', async () => {
+        const getScreenGeometry = vi.fn(async () => ({ success: true, ...GEOMETRY }));
+        window.electronAPI = { computerUse_getScreenGeometry: getScreenGeometry };
+        const adapter = adapterWithTool('computer_toolset_20260801');
+
+        await executeRequest(adapter, requestOf(adapter, 'claude-opus-5-5'));
+
+        expect(getScreenGeometry).not.toHaveBeenCalled();
+        expect(adapter.buildRequestBody.mock.calls[0][0].computerDisplay).toBeNull();
+    });
+
+    it('请求里没有 computer 工具时不读取截图尺寸', async () => {
+        const getScreenGeometry = vi.fn(async () => ({ success: true, ...GEOMETRY }));
+        window.electronAPI = { computerUse_getScreenGeometry: getScreenGeometry };
+        const adapter = createStubAdapter({ apiFormat: 'claude' });
+
+        await executeRequest(adapter, requestOf(adapter, 'claude-sonnet-4-5'));
+
+        expect(getScreenGeometry).not.toHaveBeenCalled();
+        expect(adapter.buildRequestBody.mock.calls[0][0].computerDisplay).toBeNull();
+    });
+
+    it('取不到截图尺寸时传 null，同一任务不再重试', async () => {
+        const { logger } = await import('../../js/utils/logger.js');
+        const getScreenGeometry = vi.fn(async () => ({ success: false, error: 'No display' }));
+        window.electronAPI = { computerUse_getScreenGeometry: getScreenGeometry };
+        const adapter = adapterWithTool('computer_20251124');
+        const request = requestOf(adapter, 'claude-opus-4-6');
+
+        await executeRequest(adapter, request);
+        await executeRequest(adapter, request);
+
+        expect(getScreenGeometry).toHaveBeenCalledTimes(1);
+        expect(adapter.buildRequestBody.mock.calls[1][0].computerDisplay).toBeNull();
+        expect(logger.warn).toHaveBeenCalledWith(
+            expect.stringContaining('获取截图尺寸失败'),
+            expect.any(Error)
+        );
+        expect(fetchSpy).toHaveBeenCalledTimes(2);
     });
 });

@@ -3,7 +3,18 @@
  * 使用 @nut-tree-fork/nut-js
  */
 
-const { mouse, Button, straightTo } = require('@nut-tree-fork/nut-js');
+const { mouse, Button, Point, straightTo } = require('@nut-tree-fork/nut-js');
+
+const BUTTONS = Object.freeze({
+    left: Button.LEFT,
+    right: Button.RIGHT,
+    middle: Button.MIDDLE
+});
+
+// 未知按钮按左键处理；Button.LEFT 的枚举值是 0，不能用 || 回退
+function toNutButton(button) {
+    return BUTTONS[button] ?? Button.LEFT;
+}
 
 /**
  * 移动鼠标到指定位置
@@ -13,7 +24,8 @@ const { mouse, Button, straightTo } = require('@nut-tree-fork/nut-js');
  */
 async function move(x, y) {
     try {
-        await mouse.setPosition(straightTo({ x, y }));
+        // setPosition 只接受 Point，straightTo 返回的是路径 Promise
+        await mouse.setPosition(new Point(x, y));
         console.log(`[Mouse] Moved to (${x}, ${y})`);
         return { x, y };
     } catch (error) {
@@ -29,11 +41,7 @@ async function move(x, y) {
  */
 async function click(button = 'left') {
     try {
-        const nutButton = button === 'right' ? Button.RIGHT :
-                         button === 'middle' ? Button.MIDDLE :
-                         Button.LEFT;
-
-        await mouse.click(nutButton);
+        await mouse.click(toNutButton(button));
         console.log(`[Mouse] Clicked ${button} button`);
     } catch (error) {
         console.error('[Mouse] Click error:', error);
@@ -47,11 +55,7 @@ async function click(button = 'left') {
  */
 async function doubleClick(button = 'left') {
     try {
-        const nutButton = button === 'right' ? Button.RIGHT :
-                         button === 'middle' ? Button.MIDDLE :
-                         Button.LEFT;
-
-        await mouse.doubleClick(nutButton);
+        await mouse.doubleClick(toNutButton(button));
         console.log(`[Mouse] Double clicked ${button} button`);
     } catch (error) {
         console.error('[Mouse] Double click error:', error);
@@ -66,15 +70,12 @@ async function doubleClick(button = 'left') {
  */
 async function tripleClick(button = 'left', clickInterval = 50) {
     try {
-        const nutButton = button === 'right' ? Button.RIGHT :
-                         button === 'middle' ? Button.MIDDLE :
-                         Button.LEFT;
-
         // nut.js 没有原生 tripleClick，使用三次点击模拟
         for (let i = 0; i < 3; i++) {
-            await mouse.click(nutButton);
-            if (i < 2) {  // 最后一次点击后不需要等待
-                await new Promise(resolve => setTimeout(resolve, clickInterval));
+            await mouse.click(toNutButton(button));
+            if (i < 2) {
+                // 最后一次点击后不需要等待
+                await new Promise((resolve) => setTimeout(resolve, clickInterval));
             }
         }
 
@@ -93,20 +94,29 @@ async function tripleClick(button = 'left', clickInterval = 50) {
  * @param {number} toY - 目标 Y 坐标
  */
 async function drag(fromX, fromY, toX, toY) {
+    let pressed = false;
     try {
-        // 移动到起始位置
-        await mouse.setPosition(straightTo({ x: fromX, y: fromY }));
-        // 按下鼠标左键
+        await mouse.setPosition(new Point(fromX, fromY));
         await mouse.pressButton(Button.LEFT);
-        // 移动到目标位置
-        await mouse.setPosition(straightTo({ x: toX, y: toY }));
-        // 释放鼠标左键
+        pressed = true;
+        // 沿路径移动到目标位置，拖放需要途中的移动事件
+        await mouse.move(straightTo(new Point(toX, toY)));
         await mouse.releaseButton(Button.LEFT);
+        pressed = false;
 
         console.log(`[Mouse] Dragged from (${fromX}, ${fromY}) to (${toX}, ${toY})`);
     } catch (error) {
         console.error('[Mouse] Drag error:', error);
         throw error;
+    } finally {
+        // 中途失败也要松开左键，否则系统里会一直按着
+        if (pressed) {
+            try {
+                await mouse.releaseButton(Button.LEFT);
+            } catch (releaseError) {
+                console.error('[Mouse] Release button error:', releaseError);
+            }
+        }
     }
 }
 
@@ -123,13 +133,28 @@ async function getPosition() {
     }
 }
 
+const SCROLL_METHODS = Object.freeze({
+    up: 'scrollUp',
+    down: 'scrollDown',
+    left: 'scrollLeft',
+    right: 'scrollRight'
+});
+
 /**
  * 鼠标滚轮
- * @param {number} amount - 滚动量（正数向下，负数向上）
+ * @param {number} amount - 滚动量；未给方向时正数向下、负数向上
+ * @param {'up'|'down'|'left'|'right'} [direction] - 滚动方向，给出时 amount 取绝对值
  */
-async function scroll(amount) {
+async function scroll(amount, direction) {
     try {
-        if (amount > 0) {
+        if (direction) {
+            const method = SCROLL_METHODS[direction];
+            if (!method) {
+                throw new Error(`Unsupported scroll direction: ${direction}`);
+            }
+            await mouse[method](Math.abs(amount));
+            console.log(`[Mouse] Scrolled ${direction} ${Math.abs(amount)}`);
+        } else if (amount > 0) {
             await mouse.scrollDown(amount);
             console.log(`[Mouse] Scrolled down ${amount}`);
         } else if (amount < 0) {
@@ -149,11 +174,7 @@ async function scroll(amount) {
  */
 async function pressButton(button = 'left') {
     try {
-        const nutButton = button === 'right' ? Button.RIGHT :
-                         button === 'middle' ? Button.MIDDLE :
-                         Button.LEFT;
-
-        await mouse.pressButton(nutButton);
+        await mouse.pressButton(toNutButton(button));
         console.log(`[Mouse] Pressed ${button} button (held down)`);
     } catch (error) {
         console.error('[Mouse] Press button error:', error);
@@ -167,11 +188,7 @@ async function pressButton(button = 'left') {
  */
 async function releaseButton(button = 'left') {
     try {
-        const nutButton = button === 'right' ? Button.RIGHT :
-                         button === 'middle' ? Button.MIDDLE :
-                         Button.LEFT;
-
-        await mouse.releaseButton(nutButton);
+        await mouse.releaseButton(toNutButton(button));
         console.log(`[Mouse] Released ${button} button`);
     } catch (error) {
         console.error('[Mouse] Release button error:', error);

@@ -136,6 +136,7 @@ import { parseClaudeStream } from '../../js/stream/parser-claude.js';
 import { state } from '../../js/core/state.js';
 import { eventBus } from '../../js/core/events.js';
 import { saveAssistantMessage } from '../../js/messages/sync.js';
+import { handleToolCallStream } from '../../js/tools/orchestrator.js';
 
 function createMockReader(lines) {
     const encoder = new TextEncoder();
@@ -267,6 +268,46 @@ describe('parseClaudeStream - 工具调用', () => {
         const parts = saveAssistantMessage.mock.calls[0][0];
         const toolCalls = parts.filter((p) => p.type === 'tool_call');
         expect(toolCalls.some((p) => p.id === 'tc_1' && p.name === 'search')).toBe(true);
+    });
+
+    it('工具集成员调用保留 toolset_name，交给执行与持久化', async () => {
+        const reader = createMockReader([
+            'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tc_click","name":"left_click","toolset_name":"computer","input":{}}}',
+            'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"coordinate\\":[10,20]}"}}',
+            'data: {"type":"content_block_stop","index":0}',
+            'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}',
+            'data: {"type":"message_stop"}'
+        ]);
+
+        await parseClaudeStream(reader);
+
+        const parts = saveAssistantMessage.mock.calls[0][0];
+        const toolCall = parts.find((p) => p.type === 'tool_call');
+        expect(toolCall).toMatchObject({
+            id: 'tc_click',
+            name: 'left_click',
+            args: { coordinate: [10, 20] },
+            toolsetName: 'computer'
+        });
+        expect(handleToolCallStream).toHaveBeenCalledWith(
+            [expect.objectContaining({ name: 'left_click', toolsetName: 'computer' })],
+            expect.anything()
+        );
+    });
+
+    it('普通工具调用不带 toolsetName', async () => {
+        const reader = createMockReader([
+            'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tc_1","name":"search"}}',
+            'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}',
+            'data: {"type":"content_block_stop","index":0}',
+            'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}',
+            'data: {"type":"message_stop"}'
+        ]);
+
+        await parseClaudeStream(reader);
+
+        const toolCall = saveAssistantMessage.mock.calls[0][0].find((p) => p.type === 'tool_call');
+        expect(toolCall).not.toHaveProperty('toolsetName');
     });
 
     it('解析 server_tool_use 块', async () => {

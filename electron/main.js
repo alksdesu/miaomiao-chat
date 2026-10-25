@@ -909,10 +909,10 @@ ipcMain.handle('computer-use:mouse-drag', async (event, { fromX, fromY, toX, toY
 /**
  * IPC: 鼠标滚轮
  */
-ipcMain.handle('computer-use:mouse-scroll', async (event, { amount }) => {
+ipcMain.handle('computer-use:mouse-scroll', async (event, { amount, direction }) => {
     try {
         requireTrustedRenderer(event);
-        await getComputerUse().scrollMouse(amount);
+        await getComputerUse().scrollMouse(amount, direction);
         return { success: true };
     } catch (error) {
         console.error('[Computer Use] 鼠标滚轮失败:', error);
@@ -1014,6 +1014,19 @@ ipcMain.handle('computer-use:get-display-info', async (event) => {
         return { success: true, displays: result };
     } catch (error) {
         console.error('[Computer Use] 获取显示器信息失败:', error);
+        return { success: false, error: error.message };
+    }
+});
+
+/**
+ * IPC: 截图缩放比例与输出尺寸
+ */
+ipcMain.handle('computer-use:screen-geometry', async (event) => {
+    try {
+        requireTrustedRenderer(event);
+        return { success: true, ...getComputerUse().getScreenGeometry() };
+    } catch (error) {
+        console.error('[Computer Use] 获取截图尺寸失败:', error);
         return { success: false, error: error.message };
     }
 });

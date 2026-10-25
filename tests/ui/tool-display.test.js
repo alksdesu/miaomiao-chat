@@ -115,6 +115,26 @@ describe('tool-display', () => {
             expect(btn.getAttribute('data-status')).toBe('completed');
         });
 
+        it('结果里的 media 数组渲染为图片', async () => {
+            const container = document.createElement('div');
+            container.className = 'message-content';
+            document.body.appendChild(container);
+
+            await createToolCallUI({ id: 'tc1', name: 'screenshot', args: {} }, container);
+            updateToolCallStatus('tc1', 'completed', {
+                result: {
+                    content: '',
+                    media: [
+                        { type: 'image', url: 'data:image/png;base64,SHOT', mimeType: 'image/png' }
+                    ]
+                }
+            });
+
+            const images = container.querySelectorAll('.tool-media-area img');
+            expect(images).toHaveLength(1);
+            expect(images[0].getAttribute('src')).toBe('data:image/png;base64,SHOT');
+        });
+
         it('更新工具状态为 failed', async () => {
             const container = document.createElement('div');
             container.className = 'message-content';

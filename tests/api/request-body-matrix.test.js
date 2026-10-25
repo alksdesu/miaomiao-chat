@@ -942,6 +942,7 @@ function resetEnvironment() {
     h.electron = false;
     h.systemToolsEnabled = false;
     messageSeq = 0;
+    if (globalThis.window) delete window.electronAPI;
 }
 
 function sortKeys(obj) {
@@ -960,6 +961,19 @@ function applyCase(spec) {
     h.capabilities = spec.capabilities ?? null;
     h.electron = !!spec.electron;
     h.systemToolsEnabled = !!spec.systemTools;
+    if (spec.electron) {
+        // 主进程按 1920x1080 主显示器给出的截图尺寸
+        window.electronAPI = {
+            computerUse_getScreenGeometry: async () => ({
+                success: true,
+                scaleFactor: 0.7447087010252506,
+                width: 1429,
+                height: 804,
+                originalWidth: 1920,
+                originalHeight: 1080
+            })
+        };
+    }
     if (spec.imageSize !== undefined) {
         h.state.imageSize = spec.imageSize;
     }

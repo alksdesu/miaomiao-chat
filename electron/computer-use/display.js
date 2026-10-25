@@ -4,6 +4,7 @@
  */
 
 const { screen } = require('electron');
+const { createInputSpace } = require('./geometry');
 
 /**
  * 获取所有显示器信息
@@ -73,8 +74,16 @@ async function getDisplayAtPoint(x, y) {
     }
 }
 
+/**
+ * 渲染进程给出的主显示器坐标（DIP）与输入库坐标的换算
+ */
+function getInputSpace() {
+    return createInputSpace(process.platform, screen.getPrimaryDisplay());
+}
+
 module.exports = {
     getInfo,
     getPrimaryDisplay,
-    getDisplayAtPoint
+    getDisplayAtPoint,
+    getInputSpace
 };

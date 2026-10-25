@@ -139,11 +139,12 @@ export function mediaPart(kind, url, mime = '', opts = {}) {
  * @param {string} name - 工具名称
  * @param {Object} args - 调用参数
  * @param {Object} [opts] - { state?, result?, mode?, idMap?, server?, call_id?, responseItemId?,
- *                            thoughtSignature?, error?, duration?, _turn?, _edited? }
+ *                            thoughtSignature?, toolsetName?, error?, duration?, _turn?, _edited? }
  *   state 默认 PENDING；mode 默认 NATIVE（兼容缺少 mode 的历史消息）；
  *   idMap 缺省时由 parts-builder/migration 用 generateIdSet(id) 兜底；
  *   call_id/responseItemId 用于 OpenAI Responses；
- *   thoughtSignature 用于 Gemini functionCall；server=true 标记服务端工具调用
+ *   thoughtSignature 用于 Gemini functionCall；server=true 标记服务端工具调用；
+ *   toolsetName 为 Claude 工具集成员调用所属的工具集（如 computer），回放时原样带回
  * @returns {{ type, id, name, args, state, result, mode, idMap? }}
  *   result 完成后为 any（字符串、对象、MCP content 数组等），由消费方自行解释
  */
@@ -162,6 +163,7 @@ export function toolCallPart(id, name, args = {}, opts = {}) {
     if (opts.call_id) part.call_id = opts.call_id;
     if (opts.responseItemId) part.responseItemId = opts.responseItemId;
     if (opts.thoughtSignature) part.thoughtSignature = opts.thoughtSignature;
+    if (opts.toolsetName) part.toolsetName = opts.toolsetName;
     if (opts.error !== undefined) part.error = opts.error;
     if (opts.duration !== undefined) part.duration = opts.duration;
     applyPartOpts(part, opts);

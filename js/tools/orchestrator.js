@@ -11,6 +11,12 @@
 import { logger } from '../utils/logger.js';
 import { eventBus } from '../core/events.js';
 import { executeTool } from './executor.js';
+import {
+    COMPUTER_HALT_MESSAGE,
+    COMPUTER_IMAGE_ACTIONS,
+    executeComputerAction,
+    isComputerToolsetCall
+} from './computer-actions.js';
 import { snapshotBeforeToolCall } from './undo.js';
 import { createToolCallUI, updateToolCallStatus } from '../ui/tool-display.js';
 import { state } from '../core/state.js';
@@ -18,7 +24,7 @@ import { updateMessageAt } from '../core/state-mutations.js';
 import { requestStateMachine, RequestState } from '../core/request-state-machine.js';
 import { requestTaskRegistry } from '../core/request-task-registry.js';
 import { TOOL_INLINE_IMAGE_MAX, TOOL_INLINE_IMAGE_TOTAL_MAX } from '../utils/constants.js';
-import { validateToolPairings } from '../messages/schema.js';
+import { validateToolPairings, ToolMode } from '../messages/schema.js';
 import { applyToolResultsToMessages } from '../messages/tool-results.js';
 import { writeToolResultsToBackgroundSession } from '../messages/sync.js';
 import { getCurrentProvider, getCurrentActiveApiKey } from '../api/current.js';
@@ -329,7 +335,30 @@ async function downloadClaudeFile(fileId) {
 }
 
 /**
- * 执行工具调用并渲染 UI（并行执行版本）
+ * GUI 动作必须逐个执行：工具集成员按 toolset_name 识别，旧版 computer 工具按名称识别
+ * @returns {'toolset'|'legacy'|null}
+ */
+function getComputerActionKind(toolCall) {
+    if (isComputerToolsetCall(toolCall)) return 'toolset';
+    return toolCall.name === 'computer' && toolCall.mode !== ToolMode.XML ? 'legacy' : null;
+}
+
+/**
+ * 工具集批量动作没有以截图或放大结束时，最后一个动作的结果附带一张截图，模型据此确认动作效果
+ */
+async function appendClosingScreenshot(result, signal) {
+    if (signal?.aborted || state.computerUsePermissions?.screenshot === false) return result;
+    try {
+        const screenshot = await executeComputerAction('screenshot', {}, { signal });
+        return { ...result, media: [...(result?.media || []), ...screenshot.media] };
+    } catch (error) {
+        logger.warn('[Orchestrator] 批量动作结束后补截图失败:', error);
+        return result;
+    }
+}
+
+/**
+ * 执行工具调用并渲染 UI：普通工具并行执行，computer 动作按顺序逐个执行
  * @param {Array} toolCalls - 工具调用列表
  * @returns {Promise<Array>} 工具结果列表
  */
@@ -389,9 +418,23 @@ export async function executeToolCalls(toolCalls, options = {}) {
         }
     }
 
-    // 第二步：并行执行所有工具
-    const executionPromises = toolCalls.map(async (toolCall) => {
+    const executeOptions = {
+        signal: externalSignal,
+        apiFormat: options.requestProfile?.providerApiFormat,
+        isXmlMode: options.requestProfile?.isXmlMode,
+        sessionId: options.sessionId,
+        turnId: options.turnId
+    };
+    const lastToolsetCall = toolCalls.findLast(isComputerToolsetCall);
+    const closingCall =
+        lastToolsetCall && !COMPUTER_IMAGE_ACTIONS.includes(lastToolsetCall.name)
+            ? lastToolsetCall
+            : null;
+
+    // 第二步：执行单个工具，成功与失败都返回格式无关的结果
+    const runToolCall = async (toolCall) => {
         const { id, name, arguments: args, parseError, parseErrorMessage, rawArguments } = toolCall;
+        const computerKind = getComputerActionKind(toolCall);
 
         // 参数 JSON 截断 / 解析失败：跳过 executeTool（用 args={} 调用会让工具误以为参数缺省执行），
         // 直接落 ERROR 让模型看到显式错误提示，避免静默错误结果污染对话
@@ -426,14 +469,20 @@ export async function executeToolCalls(toolCalls, options = {}) {
         try {
             // 执行工具
             // 使用工具名称查找执行，id 仅用于跟踪和结果回传；signal 透传让 cancelCurrentRequest
-            // 真能打断长跑工具（fetch / MCP / bash），否则 abort 后用户必须等工具自己超时
-            const result = await executeTool(name, args, {
-                signal: externalSignal,
-                apiFormat: options.requestProfile?.providerApiFormat,
-                isXmlMode: options.requestProfile?.isXmlMode,
-                sessionId: options.sessionId,
-                turnId: options.turnId
-            });
+            // 真能打断长跑工具（fetch / MCP / bash），否则 abort 后用户必须等工具自己超时。
+            // 工具集成员的动作名在 tool_use.name 上，输入里没有 action，按旧版 computer 工具的形式执行
+            const executed =
+                computerKind === 'toolset'
+                    ? await executeTool(
+                          'computer',
+                          { ...(args || {}), action: name },
+                          executeOptions
+                      )
+                    : await executeTool(name, args, executeOptions);
+            const result =
+                toolCall === closingCall
+                    ? await appendClosingScreenshot(executed, externalSignal)
+                    : executed;
 
             logger.debug(`[Orchestrator] 工具执行成功: ${name}`, result);
 
@@ -499,6 +548,9 @@ export async function executeToolCalls(toolCalls, options = {}) {
                     `The user does NOT want this tool to run. Do NOT retry this tool call. ` +
                     `Please respond to the user WITHOUT using this tool, ` +
                     `using an alternative approach or asking what the user prefers.`;
+            } else if (computerKind) {
+                // computer 动作失败只回报原因，模型据此换一种操作继续，而不是放弃整个任务
+                errorMessage = `Error: ${error.message}`;
             } else if (error.message.includes('Missing required parameter')) {
                 errorMessage =
                     `Tool "${name}" call failed due to missing required parameter. ` +
@@ -538,9 +590,35 @@ export async function executeToolCalls(toolCalls, options = {}) {
                 isError: true
             };
         }
+    };
+
+    const haltToolsetCall = ({ id, name }) => {
+        updateToolUi(id, 'failed', { error: COMPUTER_HALT_MESSAGE, toolName: name });
+        return {
+            id,
+            name,
+            result: { error: COMPUTER_HALT_MESSAGE, is_error: true, error_kind: 'not_executed' },
+            isError: true
+        };
+    };
+
+    // 第三步：普通工具并行执行；computer 动作排队按顺序执行，
+    // 工具集批量动作中一个失败后，其余动作是在它成功的前提下规划的，不再执行
+    let computerQueue = Promise.resolve();
+    let toolsetFailed = false;
+    const executionPromises = toolCalls.map((toolCall) => {
+        const computerKind = getComputerActionKind(toolCall);
+        if (!computerKind) return runToolCall(toolCall);
+        const queued = computerQueue.then(async () => {
+            if (computerKind === 'toolset' && toolsetFailed) return haltToolsetCall(toolCall);
+            const outcome = await runToolCall(toolCall);
+            if (computerKind === 'toolset' && outcome.isError) toolsetFailed = true;
+            return outcome;
+        });
+        computerQueue = queued;
+        return queued;
     });
 
-    // 第三步：等待所有工具执行完成
     const results = await Promise.all(executionPromises);
 
     logger.debug(`[Orchestrator] 🎉 所有工具执行完成: ${results.length}/${toolCalls.length}`);

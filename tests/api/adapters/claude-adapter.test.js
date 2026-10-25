@@ -71,6 +71,10 @@ import { isElectron } from '../../../js/utils/platform.js';
 import { PartType, MediaKind, Role } from '../../../js/messages/schema.js';
 import { state } from '../../../js/core/state.js';
 import { getCurrentProvider } from '../../../js/providers/manager.js';
+import {
+    COMPUTER_HALT_MESSAGE,
+    COMPUTER_MEMBER_PERMISSIONS
+} from '../../../js/tools/computer-actions.js';
 
 // 辅助：构建新格式消息
 function newMsg(role, parts, opts = {}) {
@@ -453,6 +457,94 @@ describe('toClaudeMessages', () => {
         expect(toolResult.content[0].type).toBe('text');
         expect(toolResult.content[1].type).toBe('image');
     });
+
+    it('工具集成员的 tool_use 与 tool_result 都带回 toolset_name，截图只回传图片', () => {
+        const msgs = [
+            newMsg('assistant', [
+                {
+                    type: PartType.TOOL_CALL,
+                    id: 'tc_shot',
+                    name: 'screenshot',
+                    args: {},
+                    toolsetName: 'computer',
+                    state: 'done',
+                    result: {
+                        content: '',
+                        media: [
+                            {
+                                type: MediaKind.IMAGE,
+                                url: 'data:image/png;base64,SHOT',
+                                mimeType: 'image/png'
+                            }
+                        ]
+                    }
+                }
+            ])
+        ];
+        const out = claudeAdapter.partsToAPIMessages(msgs);
+        const toolUse = out[0].content[0];
+        expect(toolUse).toEqual({
+            type: 'tool_use',
+            id: 'claude_tc_shot',
+            name: 'screenshot',
+            input: {},
+            toolset_name: 'computer'
+        });
+        expect(out[1].content[0]).toEqual({
+            type: 'tool_result',
+            tool_use_id: 'claude_tc_shot',
+            toolset_name: 'computer',
+            content: [
+                { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'SHOT' } }
+            ]
+        });
+    });
+
+    it('未执行的工具集成员回复固定的中止文字并标记 is_error', () => {
+        const msgs = [
+            newMsg('assistant', [
+                {
+                    type: PartType.TOOL_CALL,
+                    id: 'tc_halt',
+                    name: 'type',
+                    args: { text: 'x' },
+                    toolsetName: 'computer',
+                    state: 'error',
+                    result: {
+                        error: COMPUTER_HALT_MESSAGE,
+                        is_error: true,
+                        error_kind: 'not_executed'
+                    }
+                }
+            ])
+        ];
+        const out = claudeAdapter.partsToAPIMessages(msgs);
+        expect(out[1].content[0]).toEqual({
+            type: 'tool_result',
+            tool_use_id: 'claude_tc_halt',
+            toolset_name: 'computer',
+            content: COMPUTER_HALT_MESSAGE,
+            is_error: true
+        });
+    });
+
+    it('普通工具调用不带 toolset_name', () => {
+        const msgs = [
+            newMsg('assistant', [
+                {
+                    type: PartType.TOOL_CALL,
+                    id: 'tc_plain',
+                    name: 'search',
+                    args: {},
+                    state: 'done',
+                    result: { content: 'ok' }
+                }
+            ])
+        ];
+        const out = claudeAdapter.partsToAPIMessages(msgs);
+        expect(out[0].content[0]).not.toHaveProperty('toolset_name');
+        expect(out[1].content[0]).not.toHaveProperty('toolset_name');
+    });
 });
 
 // ========== Stage 5a tool_result is_error transparent transmission ==========
@@ -741,6 +833,14 @@ describe('buildHeaders', () => {
         expect(headers['anthropic-beta']).toBeUndefined();
     });
 
+    it('computer 工具集不需要 beta 头', () => {
+        const headers = claudeAdapter.buildHeaders('sk-ant', {
+            tools: [{ type: 'computer_toolset_20260801' }],
+            requestProfile: { isXmlMode: false, profile: profile('claude-opus-5-5') }
+        });
+        expect(headers['anthropic-beta']).toBeUndefined();
+    });
+
     it('computer 工具的 beta 跟随能力表里的工具版本', () => {
         const headers = claudeAdapter.buildHeaders('sk-ant', {
             tools: [{ type: 'computer_20250124', name: 'computer' }],
@@ -801,11 +901,53 @@ describe('collectBuiltinTools 按型号选择 computer 工具版本', () => {
         ]);
     });
 
-    it('只接受 computer 工具集的型号不附带旧版 computer 工具', () => {
+    it('只接受 computer 工具集的型号声明工具集，不附带旧版 computer 工具', () => {
         const tools = claudeAdapter.collectBuiltinTools(computerState, {
             profile: resolveModelProfile('claude', 'claude-opus-5-5')
         });
-        expect(tools.map((tool) => tool.type)).toEqual(['bash_20250124', 'text_editor_20250728']);
+        expect(tools).toEqual([
+            { type: 'computer_toolset_20260801' },
+            expect.objectContaining({ type: 'bash_20250124' }),
+            expect.objectContaining({ type: 'text_editor_20250728' })
+        ]);
+    });
+
+    it('权限里关掉的操作对应的工具集成员不下发', () => {
+        const tools = claudeAdapter.collectBuiltinTools(
+            {
+                ...computerState,
+                computerUsePermissions: { mouse: false, keyboard: true, screenshot: true }
+            },
+            { profile: resolveModelProfile('claude', 'claude-opus-5-5') }
+        );
+        const mouseMembers = Object.keys(COMPUTER_MEMBER_PERMISSIONS).filter(
+            (member) => COMPUTER_MEMBER_PERMISSIONS[member] === 'mouse'
+        );
+        expect(tools[0]).toEqual({
+            type: 'computer_toolset_20260801',
+            configs: Object.fromEntries(mouseMembers.map((member) => [member, { enabled: false }]))
+        });
+    });
+
+    it.each([
+        ['claude-opus-5-5', 'computer_toolset_20260801'],
+        ['claude-sonnet-4-5', 'computer_20250124']
+    ])('%s 鼠标、键盘、截图权限全关时不声明 computer', (model, computerType) => {
+        const tools = claudeAdapter.collectBuiltinTools(
+            {
+                ...computerState,
+                computerUsePermissions: {
+                    mouse: false,
+                    keyboard: false,
+                    screenshot: false,
+                    bash: true,
+                    textEditor: false
+                }
+            },
+            { profile: resolveModelProfile('claude', model) }
+        );
+        expect(tools.map((tool) => tool.type)).not.toContain(computerType);
+        expect(tools.map((tool) => tool.type)).toEqual(['bash_20250124']);
     });
 
     it('非 Electron 环境不附带 computer use 工具', () => {
@@ -886,13 +1028,92 @@ describe('buildRequestBody 按型号约束', () => {
         expect(ctx.notices).toEqual([]);
     });
 
-    it('只接受 computer 工具集的型号开启 Computer Use 时提示', () => {
+    it('旧版 computer 工具按回传截图的尺寸声明显示器', () => {
+        const ctx = baseCtx('claude-sonnet-4-5', {
+            tools: [
+                {
+                    type: 'computer_20250124',
+                    name: 'computer',
+                    display_width_px: 1920,
+                    display_height_px: 1080,
+                    display_number: 1
+                },
+                { type: 'bash_20250124', name: 'bash' }
+            ],
+            computerDisplay: { scaleFactor: 0.7447, width: 1429, height: 804 }
+        });
+        expect(claudeAdapter.buildRequestBody(ctx).tools).toEqual([
+            {
+                type: 'computer_20250124',
+                name: 'computer',
+                display_width_px: 1429,
+                display_height_px: 804,
+                display_number: 1
+            },
+            { type: 'bash_20250124', name: 'bash' }
+        ]);
+        expect(ctx.tools[0].display_width_px).toBe(1920);
+    });
+
+    it('取不到截图尺寸时保留占位尺寸', () => {
+        const tool = {
+            type: 'computer_20251124',
+            name: 'computer',
+            display_width_px: 1920,
+            display_height_px: 1080,
+            display_number: 1
+        };
+        const ctx = baseCtx('claude-opus-4-6', { tools: [tool], computerDisplay: null });
+        expect(claudeAdapter.buildRequestBody(ctx).tools).toEqual([tool]);
+    });
+
+    it('工具集不声明显示器尺寸', () => {
+        const ctx = baseCtx('claude-opus-5-5', {
+            tools: [{ type: 'computer_toolset_20260801' }],
+            computerDisplay: { scaleFactor: 0.7447, width: 1429, height: 804 }
+        });
+        expect(claudeAdapter.buildRequestBody(ctx).tools).toEqual([
+            { type: 'computer_toolset_20260801' }
+        ]);
+    });
+
+    it('只接受 computer 工具集的型号开启 Computer Use 时不再提示', () => {
         isElectron.mockReturnValue(true);
         const ctx = baseCtx('claude-opus-5-5', {
+            tools: [{ type: 'computer_toolset_20260801' }],
             state: { streamEnabled: true, computerUseEnabled: true }
         });
-        claudeAdapter.buildRequestBody(ctx);
-        expect(ctx.notices).toEqual([expect.objectContaining({ key: 'claude.computer-toolset' })]);
+        expect(claudeAdapter.buildRequestBody(ctx).tools).toEqual([
+            { type: 'computer_toolset_20260801' }
+        ]);
+        expect(ctx.notices).toEqual([]);
+    });
+});
+
+describe('parseResponse 工具集成员', () => {
+    it('保留 toolset_name', () => {
+        const result = claudeAdapter.parseResponse(
+            {
+                content: [
+                    {
+                        type: 'tool_use',
+                        id: 'toolu_click',
+                        name: 'left_click',
+                        toolset_name: 'computer',
+                        input: { coordinate: [1, 2] }
+                    },
+                    { type: 'tool_use', id: 'toolu_search', name: 'search', input: {} }
+                ],
+                stop_reason: 'tool_use'
+            },
+            { isXmlMode: false }
+        );
+        expect(result.toolCalls[0]).toMatchObject({
+            name: 'left_click',
+            arguments: { coordinate: [1, 2] },
+            toolsetName: 'computer'
+        });
+        expect(result.toolCalls[1]).not.toHaveProperty('toolsetName');
     });
 });
 

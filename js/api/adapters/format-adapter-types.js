@@ -52,6 +52,8 @@
  * @property {Object|null} formatSettings adapter.captureFormatSettings 输出
  * @property {Object}   state          requestProfile.state 通用开关快照
  * @property {string}   endpoint       用户配置的原始端点
+ * @property {Object|null} computerDisplay 需要声明显示器尺寸的 computer 工具所用的截图尺寸，
+ *     pipeline 每个任务取一次；没有这类工具或取不到时为 null
  * @property {import('../request-notices.js').RequestNotice[]} notices
  *     组装请求体时按能力表丢弃或改写内容（工具、末尾预填充等）就追加一条提示
  */

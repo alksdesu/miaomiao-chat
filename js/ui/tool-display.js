@@ -311,6 +311,15 @@ function collectMedia(obj) {
         }
     }
 
+    // 统一媒体数组（computer 截图等）
+    if (Array.isArray(obj.media)) {
+        for (const item of obj.media) {
+            if ((item?.type === 'image' || item?.type === 'video') && item.url) {
+                items.push({ type: item.type, url: item.url });
+            }
+        }
+    }
+
     // 视频
     if (typeof obj.video === 'string') {
         items.push({ type: 'video', url: obj.video });
@@ -689,6 +698,7 @@ function renderDetailResult(container, result) {
         const other = { ...normalized };
         delete other.image;
         delete other.images;
+        delete other.media;
         delete other.video;
         delete other.videos;
         delete other.text;

@@ -1255,9 +1255,9 @@ exports[`请求体矩阵快照 > claude computer use opus-4-6 1`] = `
     "stream": true,
     "tools": [
       {
-        "display_height_px": 1080,
+        "display_height_px": 804,
         "display_number": 1,
-        "display_width_px": 1920,
+        "display_width_px": 1429,
         "name": "computer",
         "type": "computer_20251124",
       },
@@ -1314,6 +1314,9 @@ exports[`请求体矩阵快照 > claude computer use opus-5-5 1`] = `
     },
     "tools": [
       {
+        "type": "computer_toolset_20260801",
+      },
+      {
         "name": "bash",
         "type": "bash_20250124",
       },
@@ -1356,9 +1359,9 @@ exports[`请求体矩阵快照 > claude computer use sonnet-4-5 dated 1`] = `
     "stream": true,
     "tools": [
       {
-        "display_height_px": 1080,
+        "display_height_px": 804,
         "display_number": 1,
-        "display_width_px": 1920,
+        "display_width_px": 1429,
         "name": "computer",
         "type": "computer_20250124",
       },

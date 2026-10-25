@@ -26,6 +26,7 @@ import {
 } from '../reasoning.js';
 import { CLAUDE_EFFORTS } from '../model-profiles.js';
 import { pushXmlBuiltinToolsNotice } from '../request-notices.js';
+import { COMPUTER_MEMBER_PERMISSIONS } from '../../tools/computer-actions.js';
 import { normalizeClaudeStop } from '../../messages/stop-reason.js';
 
 const CLAUDE_THINKING_BUDGETS = Object.freeze({ low: 2048, medium: 8192, high: 16384 });
@@ -193,7 +194,13 @@ function partsToClaudeContent(parts) {
                             /* keep string */
                         }
                     }
-                    content.push({ type: 'tool_use', id: claudeId, name: p.name, input });
+                    content.push({
+                        type: 'tool_use',
+                        id: claudeId,
+                        name: p.name,
+                        input,
+                        ...(p.toolsetName ? { toolset_name: p.toolsetName } : {})
+                    });
                     toolCallIdMap.set(p, claudeId);
                     toolCallParts.push(p);
                 }
@@ -221,6 +228,8 @@ function buildClaudeToolResultMessage(toolCallParts, idMap) {
         const block = {
             type: 'tool_result',
             tool_use_id: idMap.get(p),
+            // 工具集成员的结果必须带回同一个 toolset_name，否则整条请求被拒
+            ...(p.toolsetName ? { toolset_name: p.toolsetName } : {}),
             content: p.result ? buildClaudeToolResultContent(p.result) : TOOL_INTERRUPTED_MESSAGE
         };
         // 老化/中断/失败的 tool 结果透传 is_error，Anthropic 据此让模型走错误恢复路径
@@ -343,6 +352,7 @@ function parseResponse(data, options = {}) {
                 id: block.id,
                 name: block.name,
                 arguments: block.input,
+                ...(block.toolset_name ? { toolsetName: block.toolset_name } : {}),
                 mode: ToolMode.NATIVE,
                 idMap: generateIdSet(block.id || '', 'claude')
             });
@@ -501,7 +511,13 @@ const CODE_EXECUTION_BETAS = Object.freeze([
 ]);
 
 const COMPUTER_TOOLSET_TYPE = 'computer_toolset_20260801';
+const COMPUTER_GUI_PERMISSIONS = Object.freeze(['mouse', 'keyboard', 'screenshot']);
 
+function isComputerPermissionAllowed(permissions, permission) {
+    return permissions?.[permission] !== false;
+}
+
+// 尺寸先按窗口所在屏幕占位，buildRequestBody 换成实际回传的截图尺寸
 function buildComputerTool(type) {
     let displayWidth = 1920;
     let displayHeight = 1080;
@@ -516,6 +532,39 @@ function buildComputerTool(type) {
         display_height_px: displayHeight,
         display_number: 1
     };
+}
+
+/**
+ * 旧版 computer 工具按回传截图的尺寸声明显示器，模型给出的坐标才与截图像素一一对应
+ */
+function applyComputerDisplay(tools, computerUse, computerDisplay) {
+    if (!computerDisplay || !computerUse?.declaresDisplay) return tools;
+    return tools.map((tool) =>
+        tool?.type === computerUse.type
+            ? {
+                  ...tool,
+                  display_width_px: computerDisplay.width,
+                  display_height_px: computerDisplay.height
+              }
+            : tool
+    );
+}
+
+/**
+ * computer 工具集：Computer Use 权限里关掉的操作对应的成员不下发
+ * @param {Object} [permissions] state.computerUsePermissions
+ * @returns {Object}
+ */
+function buildComputerToolset(permissions) {
+    const configs = {};
+    for (const [member, permission] of Object.entries(COMPUTER_MEMBER_PERMISSIONS)) {
+        if (permission && !isComputerPermissionAllowed(permissions, permission)) {
+            configs[member] = { enabled: false };
+        }
+    }
+    return Object.keys(configs).length > 0
+        ? { type: COMPUTER_TOOLSET_TYPE, configs }
+        : { type: COMPUTER_TOOLSET_TYPE };
 }
 
 /**
@@ -537,14 +586,23 @@ function collectBuiltinTools(stateRef, { profile, notices } = {}) {
     }
 
     if (stateRef.computerUseEnabled && isElectron()) {
+        const permissions = stateRef.computerUsePermissions;
         const computerType = profile?.computerUse?.type;
-        if (computerType && computerType !== COMPUTER_TOOLSET_TYPE) {
-            tools.push(buildComputerTool(computerType));
+        // 鼠标、键盘、截图权限全关时 computer 的每个动作都会被拒，不再声明
+        const guiAllowed = COMPUTER_GUI_PERMISSIONS.some((permission) =>
+            isComputerPermissionAllowed(permissions, permission)
+        );
+        if (computerType && guiAllowed) {
+            tools.push(
+                computerType === COMPUTER_TOOLSET_TYPE
+                    ? buildComputerToolset(permissions)
+                    : buildComputerTool(computerType)
+            );
         }
-        if (stateRef.computerUsePermissions?.bash !== false) {
+        if (isComputerPermissionAllowed(permissions, 'bash')) {
             tools.push({ ...CLAUDE_BUILTIN_TOOLS.bash });
         }
-        if (stateRef.computerUsePermissions?.textEditor !== false) {
+        if (isComputerPermissionAllowed(permissions, 'textEditor')) {
             tools.push({ ...CLAUDE_BUILTIN_TOOLS.textEditor });
         }
     }
@@ -727,6 +785,7 @@ function buildRequestBody(ctx) {
         isXmlMode,
         profile,
         notices,
+        computerDisplay,
         state: stateRef
     } = ctx;
 
@@ -762,26 +821,13 @@ function buildRequestBody(ctx) {
     // 添加思维链配置 (Claude Extended Thinking)
     if (thinkingCfg) Object.assign(requestBody, thinkingCfg);
 
-    if (
-        stateRef.computerUseEnabled &&
-        !isXmlMode &&
-        isElectron() &&
-        profile?.computerUse?.type === COMPUTER_TOOLSET_TYPE
-    ) {
-        notices.push({
-            key: 'claude.computer-toolset',
-            message:
-                '当前 Claude 模型的 Computer Use 只接受新版 computer 工具集，本次请求未附带 computer 工具'
-        });
-    }
-
     if (tools.length > 0) {
         if (isXmlMode) {
             injectToolsToClaude(requestBody, tools);
             const stats = getXMLInjectionStats(tools);
             logger.debug('[claude] XML 模式注入统计:', stats);
         } else {
-            requestBody.tools = tools;
+            requestBody.tools = applyComputerDisplay(tools, profile?.computerUse, computerDisplay);
             logger.debug('[claude] 原生 tools 模式，工具数量:', tools.length);
         }
     }

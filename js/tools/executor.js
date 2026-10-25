@@ -23,6 +23,7 @@ import { checkToolPermission, confirmToolExecutionIfRequired } from './permissio
 import { recordToolCall } from './history.js';
 import { isElectron } from '../utils/platform.js';
 import { logger } from '../utils/logger.js';
+import { executeComputerAction } from './computer-actions.js';
 
 // ========== 配置 ==========
 
@@ -36,9 +37,10 @@ const MAX_TIMEOUT = 180000; // 最大3分钟
  * 执行 Claude 原生工具（computer, bash, text_editor）
  * @param {string} toolName - 工具名称
  * @param {Object} args - 工具参数
+ * @param {Object} [options] - executeTool 的执行选项
  * @returns {Promise<Object>} 执行结果
  */
-async function executeNativeTool(toolName, args) {
+async function executeNativeTool(toolName, args, options = {}) {
     // 检查是否在 Electron 环境
     if (!isElectron()) {
         throw new Error(`原生工具 "${toolName}" 仅在 Electron 环境中可用`);
@@ -46,7 +48,7 @@ async function executeNativeTool(toolName, args) {
 
     switch (toolName) {
         case 'computer':
-            return await executeComputerTool(args);
+            return await executeComputerAction(args.action, args, { signal: options.signal });
 
         case 'bash':
             return await executeBashTool(args);
@@ -56,142 +58,6 @@ async function executeNativeTool(toolName, args) {
 
         default:
             throw new Error(`未知的原生工具: ${toolName}`);
-    }
-}
-
-/**
- * 执行 computer 工具
- * 参考：https://platform.claude.com/docs/zh-CN/agents-and-tools/tool-use/computer-use-tool
- */
-async function executeComputerTool(args) {
-    const { action } = args;
-
-    // 增强错误提示
-    if (!action) {
-        const availableParams = Object.keys(args).join(', ');
-        throw new Error(
-            `Missing required parameter 'action' for computer tool. ` +
-                `Received parameters: ${availableParams || 'none'}. ` +
-                `Expected format: { action: 'screenshot' | 'bash' | 'mouse_move' | 'type' | ..., ... }`
-        );
-    }
-
-    switch (action) {
-        case 'screenshot':
-            return await window.electronAPI.computerUse_screenshot();
-
-        case 'mouse_move': {
-            const [x, y] = args.coordinate || [];
-            if (![x, y].every((value) => Number.isFinite(value) && value >= 0)) {
-                throw new Error('mouse_move 需要非负数 coordinate');
-            }
-            return await window.electronAPI.computerUse_moveMouse(x, y);
-        }
-
-        case 'left_click':
-        case 'right_click':
-        case 'middle_click': {
-            const button = action.replace('_click', '');
-            if (args.coordinate) {
-                const [x, y] = args.coordinate;
-                await window.electronAPI.computerUse_moveMouse(x, y);
-            }
-            return await window.electronAPI.computerUse_clickMouse(button);
-        }
-
-        case 'double_click':
-        case 'triple_click': {
-            const times = action === 'double_click' ? 2 : 3;
-            if (args.coordinate) {
-                const [x, y] = args.coordinate;
-                await window.electronAPI.computerUse_moveMouse(x, y);
-            }
-            // 连续点击
-            for (let i = 0; i < times; i++) {
-                await window.electronAPI.computerUse_clickMouse('left');
-                if (i < times - 1) await new Promise((r) => setTimeout(r, 50));
-            }
-            return { success: true };
-        }
-
-        case 'left_click_drag': {
-            const [fromX, fromY] = args.coordinate || [0, 0];
-            const [toX, toY] = args.end_coordinate || args.coordinate || [0, 0];
-            return await window.electronAPI.computerUse_dragMouse(fromX, fromY, toX, toY);
-        }
-
-        case 'left_mouse_down': {
-            const [x, y] = args.coordinate || [];
-            if (![x, y].every((value) => Number.isFinite(value) && value >= 0)) {
-                throw new Error('left_mouse_down 需要非负数 coordinate');
-            }
-            await window.electronAPI.computerUse_moveMouse(x, y);
-            return await window.electronAPI.computerUse_pressMouseButton('left');
-        }
-
-        case 'left_mouse_up':
-            return await window.electronAPI.computerUse_releaseMouseButton('left');
-
-        case 'scroll': {
-            const direction = args.scroll_direction || 'down';
-            const amount = args.scroll_amount ?? 1;
-            if (!Number.isInteger(amount) || amount < 1 || amount > 20) {
-                throw new Error('scroll_amount 必须是 1 到 20 的整数');
-            }
-            if (!['down', 'up', 'left', 'right'].includes(direction)) {
-                throw new Error(`不支持的滚动方向: ${direction}`);
-            }
-            const key =
-                direction === 'down' || direction === 'up'
-                    ? direction === 'down'
-                        ? 'Page_Down'
-                        : 'Page_Up'
-                    : direction === 'right'
-                      ? 'Right'
-                      : 'Left';
-
-            for (let i = 0; i < amount; i++) {
-                await window.electronAPI.computerUse_pressKey(key, []);
-                await new Promise((r) => setTimeout(r, 100));
-            }
-            return { success: true };
-        }
-
-        case 'type':
-            return await window.electronAPI.computerUse_typeText(args.text);
-
-        case 'key':
-            return await window.electronAPI.computerUse_pressKey(args.key, args.modifiers || []);
-
-        case 'hold_key':
-            return await window.electronAPI.computerUse_holdKey(args.key);
-
-        case 'wait': {
-            const duration = args.duration ?? 1;
-            if (!Number.isFinite(duration) || duration < 0 || duration > 300) {
-                throw new Error('wait duration 必须在 0 到 300 秒之间');
-            }
-            await new Promise((r) => setTimeout(r, duration * 1000));
-            return { success: true };
-        }
-
-        case 'zoom': {
-            const [x1, y1, x2, y2] = [args.x1, args.y1, args.x2, args.y2];
-            if (![x1, y1, x2, y2].every((value) => Number.isFinite(value) && value >= 0)) {
-                throw new Error('zoom 需要非负数坐标');
-            }
-            return await window.electronAPI.computerUse_zoom(x1, y1, x2, y2);
-        }
-
-        case 'cursor_position':
-            return await window.electronAPI.computerUse_getCursorPosition();
-
-        default:
-            throw new Error(
-                `Unknown computer action: "${action}". ` +
-                    `Valid actions: screenshot, mouse_move, left_click, right_click, middle_click, ` +
-                    `double_click, triple_click, type, key, cursor_position, bash, str_replace_editor, etc.`
-            );
     }
 }
 
@@ -329,7 +195,7 @@ export async function executeTool(toolId, args, options = {}) {
                 throw new Error(reason);
             }
 
-            const result = await executeNativeTool(toolId, args);
+            const result = await executeNativeTool(toolId, args, options);
             const duration = Date.now() - startTime;
 
             logger.debug(`[Executor] 工具执行成功: ${toolId} (耗时 ${duration}ms)`);
