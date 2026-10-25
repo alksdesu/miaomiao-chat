@@ -4,10 +4,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../js/core/state.js', () => ({
-    state: { xmlToolCallingEnabled: true }
+    state: { xmlToolCallingEnabled: false }
 }));
 
-import { state } from '../../js/core/state.js';
 import {
     injectToolsToOpenAI,
     injectToolsToClaude,
@@ -18,8 +17,8 @@ import {
     resetMetrics
 } from '../../js/tools/tool-injection.js';
 
+// 全局 XML 开关在 mock 里保持关闭：注入与否只由调用方决定，不读全局开关
 beforeEach(() => {
-    state.xmlToolCallingEnabled = true;
     resetMetrics();
 });
 
@@ -40,13 +39,6 @@ describe('injectToolsToOpenAI', () => {
         injectToolsToOpenAI(messages, [{ name: 'tool1' }]);
         expect(messages[0].role).toBe('system');
         expect(messages[0].content).toContain('tool1');
-    });
-
-    it('XML 未启用时不注入', () => {
-        state.xmlToolCallingEnabled = false;
-        const messages = [{ role: 'system', content: 'original' }];
-        injectToolsToOpenAI(messages, [{ name: 'tool1' }]);
-        expect(messages[0].content).toBe('original');
     });
 
     it('空工具列表不注入', () => {
@@ -78,10 +70,9 @@ describe('injectToolsToClaude', () => {
         expect(body.system).toContain('tool1');
     });
 
-    it('XML 未启用时不注入', () => {
-        state.xmlToolCallingEnabled = false;
+    it('空工具列表不注入', () => {
         const body = { system: 'original' };
-        injectToolsToClaude(body, [{ name: 'tool1' }]);
+        injectToolsToClaude(body, []);
         expect(body.system).toBe('original');
     });
 });
@@ -110,10 +101,9 @@ describe('injectToolsToGemini', () => {
         expect(body.systemInstruction.parts[0].text).toContain('fn2');
     });
 
-    it('XML 未启用时不注入', () => {
-        state.xmlToolCallingEnabled = false;
+    it('空工具列表不注入', () => {
         const body = {};
-        injectToolsToGemini(body, [{ name: 'tool1' }]);
+        injectToolsToGemini(body, null);
         expect(body.systemInstruction).toBeUndefined();
     });
 });

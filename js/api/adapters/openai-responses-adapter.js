@@ -9,7 +9,6 @@ import { PartType, MediaKind, Role, ToolMode, ToolState } from '../../messages/s
 import { parseDataURL } from '../../utils/file-helpers.js';
 import { extractXMLToolCalls, appendXmlToolResultsForMessage } from '../../tools/xml-formatter.js';
 import { isVideoUrl } from '../../utils/media.js';
-import { injectToolsToOpenAI, getXMLInjectionStats } from '../../tools/tool-injection.js';
 import { OpenAIStreamParser, parseOpenAIStream } from '../../stream/parser-openai.js';
 
 import {
@@ -23,6 +22,8 @@ import {
     pushResponsesFunctionCallPair,
     buildOpenAIAuthHeaders,
     collectOpenAIBuiltinTools,
+    assembleOpenAIConversation,
+    applyOpenAITools,
     normalizeOpenAIEffort,
     buildOpenAISamplingParams,
     buildOpenAIVerbosityConfig
@@ -425,36 +426,12 @@ function buildRequestBody(ctx) {
         state: stateRef
     } = ctx;
 
-    const finalMessages = [...messages];
-
-    // System prompt + Monitor 注入：与 Chat 行为一致
-    // 注意：Responses API 的 input 数组里 system 仍以 role:'system' + content 表达
-    if (systemCtx.systemPrompt) {
-        finalMessages.unshift({ role: 'system', content: systemCtx.systemPrompt });
-    }
-    if (systemCtx.monitorContext) {
-        const sysMsg = finalMessages.find((m) => m.role === 'system');
-        if (sysMsg) {
-            sysMsg.content += systemCtx.monitorContext;
-        } else {
-            finalMessages.unshift({ role: 'system', content: systemCtx.monitorContext });
-        }
-    }
-
-    if (prefill && prefill.opening.length > 0) {
-        const systemIndex = finalMessages.findIndex((m) => m.role === 'system');
-        const insertIndex = systemIndex >= 0 ? systemIndex + 1 : 0;
-        finalMessages.splice(insertIndex, 0, ...prefill.opening);
-    }
-    if (prefill && prefill.trailing.length > 0) {
-        finalMessages.push(...prefill.trailing);
-    }
-
-    // Responses API 使用 input 字段而非 messages
+    // Responses API 的 input 数组里 system 仍以 role:'system' + content 表达
+    const conversation = assembleOpenAIConversation(messages, systemCtx, prefill);
     const requestBody = {
         model: model,
         stream: stateRef.streamEnabled,
-        input: finalMessages,
+        input: conversation,
         // 请求返回加密的推理内容（用于多轮对话保持思维链上下文）
         include: ['reasoning.encrypted_content']
     };
@@ -463,25 +440,10 @@ function buildRequestBody(ctx) {
     if (thinkingCfg) Object.assign(requestBody, thinkingCfg);
     if (verbosityCfg) Object.assign(requestBody, verbosityCfg);
 
-    if (tools.length > 0) {
-        if (isXmlMode) {
-            injectToolsToOpenAI(finalMessages, tools);
-            const stats = getXMLInjectionStats(tools);
-            logger.debug('[openai-responses] XML 模式注入统计:', stats);
-            if (stats.estimatedTokens > 2000) {
-                logger.warn(
-                    '[openai-responses] XML 描述过长，预计消耗',
-                    stats.estimatedTokens,
-                    'tokens'
-                );
-            }
-        } else {
-            requestBody.tools = tools;
-            requestBody.tool_choice = 'auto';
-            // parallel_tool_calls 仅 Chat Completions 支持，Responses API 不发送
-            logger.debug('[openai-responses] 原生 tools 模式，工具数量:', tools.length);
-        }
-    }
+    applyOpenAITools(requestBody, conversation, tools, {
+        isXmlMode,
+        logTag: 'openai-responses'
+    });
 
     return requestBody;
 }

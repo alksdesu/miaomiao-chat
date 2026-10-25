@@ -1,9 +1,8 @@
 /**
  * 通用 XML 工具注入模块
- * 为不同 API 格式注入 XML 工具描述到 system prompt
+ * 为不同 API 格式注入 XML 工具描述到 system prompt；是否走 XML 模式由调用方按请求快照决定
  */
 
-import { state } from '../core/state.js';
 import { convertToolsToXML } from './xml-formatter.js';
 import { logger } from '../utils/logger.js';
 
@@ -13,7 +12,7 @@ import { logger } from '../utils/logger.js';
  * @param {Array} tools - 工具列表（OpenAI 格式）
  */
 export function injectToolsToOpenAI(messages, tools) {
-    if (!state.xmlToolCallingEnabled || !tools || tools.length === 0) {
+    if (!tools || tools.length === 0) {
         return;
     }
 
@@ -40,7 +39,7 @@ export function injectToolsToOpenAI(messages, tools) {
  * @param {Array} tools - 工具列表（Claude 格式）
  */
 export function injectToolsToClaude(requestBody, tools) {
-    if (!state.xmlToolCallingEnabled || !tools || tools.length === 0) {
+    if (!tools || tools.length === 0) {
         return;
     }
 
@@ -62,7 +61,7 @@ export function injectToolsToClaude(requestBody, tools) {
  * @param {Array} tools - 工具列表（Gemini 格式，包含 functionDeclarations）
  */
 export function injectToolsToGemini(requestBody, tools) {
-    if (!state.xmlToolCallingEnabled || !tools || tools.length === 0) {
+    if (!tools || tools.length === 0) {
         return;
     }
 

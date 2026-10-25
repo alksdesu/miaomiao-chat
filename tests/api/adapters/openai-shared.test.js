@@ -21,7 +21,15 @@ vi.mock('../../../js/utils/file-helpers.js', () => ({
     parseDataURL: vi.fn(() => null)
 }));
 
-import { stringifyToolResult } from '../../../js/api/adapters/openai-shared.js';
+vi.mock('../../../js/utils/logger.js', () => ({
+    logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+}));
+
+import {
+    stringifyToolResult,
+    assembleOpenAIConversation,
+    applyOpenAITools
+} from '../../../js/api/adapters/openai-shared.js';
 
 describe('stringifyToolResult', () => {
     it('null 返回 fallback', () => {
@@ -84,5 +92,87 @@ describe('stringifyToolResult', () => {
 
     it('自定义 fallback', () => {
         expect(stringifyToolResult(null, 'CUSTOM')).toBe('CUSTOM');
+    });
+});
+
+describe('assembleOpenAIConversation', () => {
+    const history = () => [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: 'hello' }
+    ];
+    const noPrefill = null;
+
+    it('systemPrompt 与 monitor 合并为首条 system 消息', () => {
+        const out = assembleOpenAIConversation(
+            history(),
+            { systemPrompt: 'SYS', monitorContext: '+MON' },
+            noPrefill
+        );
+        expect(out[0]).toEqual({ role: 'system', content: 'SYS+MON' });
+        expect(out).toHaveLength(3);
+    });
+
+    it('只有 monitor 时单独成为 system 消息', () => {
+        const out = assembleOpenAIConversation(
+            history(),
+            { systemPrompt: null, monitorContext: 'MON' },
+            noPrefill
+        );
+        expect(out[0]).toEqual({ role: 'system', content: 'MON' });
+    });
+
+    it('开场对话插在 system 之后，末尾预填充追加在最后', () => {
+        const out = assembleOpenAIConversation(
+            history(),
+            { systemPrompt: 'SYS', monitorContext: null },
+            {
+                opening: [{ role: 'user', content: 'open' }],
+                trailing: [{ role: 'assistant', content: 'tail' }]
+            }
+        );
+        expect(out.map((m) => m.content)).toEqual(['SYS', 'open', 'hi', 'hello', 'tail']);
+    });
+
+    it('没有 system 时开场对话插在最前', () => {
+        const out = assembleOpenAIConversation(
+            history(),
+            { systemPrompt: null, monitorContext: null },
+            { opening: [{ role: 'user', content: 'open' }], trailing: [] }
+        );
+        expect(out[0].content).toBe('open');
+    });
+
+    it('不修改传入的消息数组', () => {
+        const messages = history();
+        assembleOpenAIConversation(messages, { systemPrompt: 'SYS', monitorContext: null }, null);
+        expect(messages).toHaveLength(2);
+    });
+});
+
+describe('applyOpenAITools', () => {
+    const tools = [{ type: 'function', function: { name: 'get_weather', parameters: {} } }];
+
+    it('无工具时不改动请求体', () => {
+        const body = {};
+        applyOpenAITools(body, [], [], { isXmlMode: false, logTag: 't' });
+        expect(body).toEqual({});
+    });
+
+    it('原生模式写入 tools / tool_choice 与附加字段', () => {
+        const body = {};
+        applyOpenAITools(body, [], tools, {
+            isXmlMode: false,
+            logTag: 't',
+            nativeFields: { parallel_tool_calls: true }
+        });
+        expect(body).toEqual({ tools, tool_choice: 'auto', parallel_tool_calls: true });
+    });
+
+    it('XML 模式把工具描述注入 system 消息且不写 tools 字段', () => {
+        const body = {};
+        const conversation = [{ role: 'system', content: 'SYS' }];
+        applyOpenAITools(body, conversation, tools, { isXmlMode: true, logTag: 't' });
+        expect(body.tools).toBeUndefined();
+        expect(conversation[0].content).toContain('get_weather');
     });
 });

@@ -11,7 +11,6 @@ import { parseMarkdownImages } from '../../utils/markdown-image-parser.js';
 import { extractXMLToolCalls, appendXmlToolResultsForMessage } from '../../tools/xml-formatter.js';
 import { parseThinkTags } from '../../stream/think-tag-parser.js';
 import { isVideoUrl } from '../../utils/media.js';
-import { injectToolsToOpenAI, getXMLInjectionStats } from '../../tools/tool-injection.js';
 import { OpenAIStreamParser, parseOpenAIStream } from '../../stream/parser-openai.js';
 
 import {
@@ -19,6 +18,8 @@ import {
     stringifyToolResult,
     buildOpenAIAuthHeaders,
     collectOpenAIBuiltinTools,
+    assembleOpenAIConversation,
+    applyOpenAITools,
     normalizeOpenAIEffort,
     buildOpenAISamplingParams,
     buildOpenAIVerbosityConfig
@@ -379,71 +380,22 @@ function buildRequestBody(ctx) {
         state: stateRef
     } = ctx;
 
-    // 1. 组装 messages 数组（注入 system + opening + history + trailing）
-    const finalMessages = [...messages];
-
-    // System prompt + Monitor 上下文注入到 system msg.content
-    // 原 openai.js 行为：找已有 system msg append，否则 unshift 一条
-    const systemPieces = [];
-    if (systemCtx.systemPrompt) systemPieces.push(systemCtx.systemPrompt);
-
-    if (systemPieces.length > 0) {
-        finalMessages.unshift({ role: 'system', content: systemPieces.join('') });
-    }
-
-    if (systemCtx.monitorContext) {
-        const sysMsg = finalMessages.find((m) => m.role === 'system');
-        if (sysMsg) {
-            sysMsg.content += systemCtx.monitorContext;
-        } else {
-            finalMessages.unshift({ role: 'system', content: systemCtx.monitorContext });
-        }
-    }
-
-    // 开场对话插入到 System Prompt 之后、对话历史之前
-    if (prefill && prefill.opening.length > 0) {
-        const systemIndex = finalMessages.findIndex((m) => m.role === 'system');
-        const insertIndex = systemIndex >= 0 ? systemIndex + 1 : 0;
-        finalMessages.splice(insertIndex, 0, ...prefill.opening);
-    }
-
-    // 预填充消息追加到末尾（用户最新消息之后）
-    if (prefill && prefill.trailing.length > 0) {
-        finalMessages.push(...prefill.trailing);
-    }
-
-    // 2. 构建请求体
+    const conversation = assembleOpenAIConversation(messages, systemCtx, prefill);
     const requestBody = {
         model: model,
         stream: stateRef.streamEnabled,
-        messages: finalMessages
+        messages: conversation
     };
 
-    // 3. 模型参数
     Object.assign(requestBody, modelParams);
     if (thinkingCfg) Object.assign(requestBody, thinkingCfg);
     if (verbosityCfg) Object.assign(requestBody, verbosityCfg);
 
-    // 4. 工具：XML 模式注入 system，原生模式塞 tools 字段
-    if (tools.length > 0) {
-        if (isXmlMode) {
-            injectToolsToOpenAI(finalMessages, tools);
-            const stats = getXMLInjectionStats(tools);
-            logger.debug('[openai-chat] XML 模式注入统计:', stats);
-            if (stats.estimatedTokens > 2000) {
-                logger.warn(
-                    '[openai-chat] XML 描述过长，预计消耗',
-                    stats.estimatedTokens,
-                    'tokens'
-                );
-            }
-        } else {
-            requestBody.tools = tools;
-            requestBody.tool_choice = 'auto';
-            requestBody.parallel_tool_calls = true;
-            logger.debug('[openai-chat] 原生 tools 模式，工具数量:', tools.length);
-        }
-    }
+    applyOpenAITools(requestBody, conversation, tools, {
+        isXmlMode,
+        logTag: 'openai-chat',
+        nativeFields: { parallel_tool_calls: true }
+    });
 
     return requestBody;
 }

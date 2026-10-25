@@ -443,6 +443,45 @@ function captureFormatSettings(stateRef) {
 
 // ========== buildRequestBody 辅助 ==========
 
+const SAFETY_POLICIES = Object.freeze({
+    vertex: Object.freeze({
+        threshold: 'OFF',
+        categories: Object.freeze([
+            'HARM_CATEGORY_HATE_SPEECH',
+            'HARM_CATEGORY_DANGEROUS_CONTENT',
+            'HARM_CATEGORY_HARASSMENT',
+            'HARM_CATEGORY_SEXUALLY_EXPLICIT',
+            'HARM_CATEGORY_CIVIC_INTEGRITY',
+            'HARM_CATEGORY_IMAGE_HATE',
+            'HARM_CATEGORY_IMAGE_DANGEROUS_CONTENT',
+            'HARM_CATEGORY_IMAGE_HARASSMENT',
+            'HARM_CATEGORY_IMAGE_SEXUALLY_EXPLICIT',
+            'HARM_CATEGORY_JAILBREAK'
+        ])
+    }),
+    aiStudio: Object.freeze({
+        threshold: 'BLOCK_NONE',
+        categories: Object.freeze([
+            'HARM_CATEGORY_HATE_SPEECH',
+            'HARM_CATEGORY_DANGEROUS_CONTENT',
+            'HARM_CATEGORY_HARASSMENT',
+            'HARM_CATEGORY_SEXUALLY_EXPLICIT',
+            'HARM_CATEGORY_CIVIC_INTEGRITY'
+        ])
+    })
+});
+
+/**
+ * @param {string} [endpoint] 用户配置的原始端点，用于区分 Vertex AI 与 AI Studio
+ * @returns {Array<{category: string, threshold: string}>}
+ */
+function buildSafetySettings(endpoint) {
+    const policy = (endpoint || '').includes('aiplatform.googleapis.com')
+        ? SAFETY_POLICIES.vertex
+        : SAFETY_POLICIES.aiStudio;
+    return policy.categories.map((category) => ({ category, threshold: policy.threshold }));
+}
+
 /**
  * 处理 contents 用于发送请求：压缩历史图片
  */
@@ -547,29 +586,8 @@ async function buildRequestBody(ctx) {
         generationConfig.thinkingConfig = thinkingCfg.thinkingConfig;
     }
 
-    // 2. safetySettings：Vertex AI 10 类 OFF / AI Studio 5 类 BLOCK_NONE
-    const baseEndpoint = ctx.endpoint || '';
-    const isVertex = baseEndpoint.includes('aiplatform.googleapis.com');
-    const safetySettings = isVertex
-        ? [
-              { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'OFF' },
-              { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'OFF' },
-              { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'OFF' },
-              { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'OFF' },
-              { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'OFF' },
-              { category: 'HARM_CATEGORY_IMAGE_HATE', threshold: 'OFF' },
-              { category: 'HARM_CATEGORY_IMAGE_DANGEROUS_CONTENT', threshold: 'OFF' },
-              { category: 'HARM_CATEGORY_IMAGE_HARASSMENT', threshold: 'OFF' },
-              { category: 'HARM_CATEGORY_IMAGE_SEXUALLY_EXPLICIT', threshold: 'OFF' },
-              { category: 'HARM_CATEGORY_JAILBREAK', threshold: 'OFF' }
-          ]
-        : [
-              { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-              { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-              { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-              { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-              { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'BLOCK_NONE' }
-          ];
+    // 2. safetySettings：Vertex AI 与 AI Studio 可调类别不同
+    const safetySettings = buildSafetySettings(ctx.endpoint);
 
     // 3. 压缩历史图片
     const processedContents = await processContentsForRequest(messages);

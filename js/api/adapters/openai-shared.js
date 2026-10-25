@@ -5,10 +5,12 @@
  * OpenAI 相关 helper。本模块仅供 openai-chat-adapter / openai-responses-adapter 内部使用。
  */
 
+import { logger } from '../../utils/logger.js';
 import { parseDataURL } from '../../utils/file-helpers.js';
 import { getMappedId } from '../format-converter.js';
 import { PartType } from '../../messages/schema.js';
 import { TOOL_INTERRUPTED_MESSAGE } from '../../utils/constants.js';
+import { injectToolsToOpenAI, getXMLInjectionStats } from '../../tools/tool-injection.js';
 
 // ========== 通用判定与字符串化 ==========
 
@@ -171,6 +173,73 @@ export function pushResponsesFunctionCallPair(out, p) {
         call_id: callId,
         output: stringifyToolResult(p.result)
     });
+}
+
+// ========== 会话装配 ==========
+
+/**
+ * system prompt 与 monitor 上下文合并进首条 system 消息，开场对话紧随其后，末尾预填充追加在最新消息之后
+ * @param {Array} messages partsToAPIMessages 输出
+ * @param {import('./format-adapter-types.js').SystemContext} systemCtx
+ * @param {import('./format-adapter-types.js').PrefillContext|null} prefill
+ * @returns {Array}
+ */
+export function assembleOpenAIConversation(messages, systemCtx, prefill) {
+    const conversation = [...messages];
+
+    if (systemCtx.systemPrompt) {
+        conversation.unshift({ role: 'system', content: systemCtx.systemPrompt });
+    }
+    if (systemCtx.monitorContext) {
+        const systemMessage = conversation.find((m) => m.role === 'system');
+        if (systemMessage) {
+            systemMessage.content += systemCtx.monitorContext;
+        } else {
+            conversation.unshift({ role: 'system', content: systemCtx.monitorContext });
+        }
+    }
+
+    if (prefill && prefill.opening.length > 0) {
+        const systemIndex = conversation.findIndex((m) => m.role === 'system');
+        conversation.splice(systemIndex >= 0 ? systemIndex + 1 : 0, 0, ...prefill.opening);
+    }
+    if (prefill && prefill.trailing.length > 0) {
+        conversation.push(...prefill.trailing);
+    }
+
+    return conversation;
+}
+
+/**
+ * XML 模式把工具描述注入 system 消息，原生模式写入 tools 字段
+ * @param {Object} requestBody
+ * @param {Array} conversation assembleOpenAIConversation 输出，XML 注入会就地修改
+ * @param {Array} tools
+ * @param {{ isXmlMode: boolean, logTag: string, nativeFields?: Object }} options
+ *     nativeFields 为原生模式额外附加的请求字段（Chat 的 parallel_tool_calls）
+ */
+export function applyOpenAITools(
+    requestBody,
+    conversation,
+    tools,
+    { isXmlMode, logTag, nativeFields = {} }
+) {
+    if (tools.length === 0) return;
+
+    if (isXmlMode) {
+        injectToolsToOpenAI(conversation, tools);
+        const stats = getXMLInjectionStats(tools);
+        logger.debug(`[${logTag}] XML 模式注入统计:`, stats);
+        if (stats.estimatedTokens > 2000) {
+            logger.warn(`[${logTag}] XML 描述过长，预计消耗`, stats.estimatedTokens, 'tokens');
+        }
+        return;
+    }
+
+    requestBody.tools = tools;
+    requestBody.tool_choice = 'auto';
+    Object.assign(requestBody, nativeFields);
+    logger.debug(`[${logTag}] 原生 tools 模式，工具数量:`, tools.length);
 }
 
 // ========== 生成参数 ==========

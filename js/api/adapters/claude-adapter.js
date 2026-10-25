@@ -471,63 +471,65 @@ function parseResponse(data, options = {}) {
 
 // ========== 工具构造 ==========
 
+// 与型号无关的内置工具版本；type 与 name 必须成对升级，只改其一会 400
+const CLAUDE_BUILTIN_TOOLS = Object.freeze({
+    codeExecution: Object.freeze({ type: 'code_execution_20250825', name: 'code_execution' }),
+    bash: Object.freeze({ type: 'bash_20250124', name: 'bash' }),
+    textEditor: Object.freeze({
+        type: 'text_editor_20250728',
+        name: 'str_replace_based_edit_tool'
+    }),
+    webSearch: Object.freeze({ type: 'web_search_20250305', name: 'web_search', max_uses: 5 })
+});
+
+// Code Execution 需要 Files API 支持（用于 container_upload）
+const CODE_EXECUTION_BETAS = Object.freeze([
+    'code-execution-2025-08-25',
+    'advanced-tool-use-2025-11-20',
+    'files-api-2025-04-14'
+]);
+
+const COMPUTER_TOOL = Object.freeze({ type: 'computer_20251124', beta: 'computer-use-2025-11-24' });
+
+function buildComputerTool() {
+    let displayWidth = 1920;
+    let displayHeight = 1080;
+    if (typeof window !== 'undefined' && window.screen) {
+        displayWidth = window.screen.width;
+        displayHeight = window.screen.height;
+    }
+    return {
+        type: COMPUTER_TOOL.type,
+        name: 'computer',
+        display_width_px: displayWidth,
+        display_height_px: displayHeight,
+        display_number: 1
+    };
+}
+
 /**
  * Claude 内置工具：code_execution / web_search / Computer Use（仅 Electron 且非 XML 模式）
  */
 function collectBuiltinTools(stateRef) {
     const tools = [];
 
-    // 1. Code Execution 工具
     if (stateRef.codeExecutionEnabled) {
-        tools.push({
-            type: 'code_execution_20250825',
-            name: 'code_execution'
-        });
+        tools.push({ ...CLAUDE_BUILTIN_TOOLS.codeExecution });
     }
 
-    // 2. Computer Use 原生工具（仅 Electron 且非 XML 模式）
     // XML 模式下使用统一的自定义 computer 工具（来自 builtin/computer-use.js）
     if (stateRef.computerUseEnabled && isElectron() && !stateRef.xmlToolCallingEnabled) {
-        // 统一使用 20251124：较新模型会拒绝旧版本 computer_20250124，新版本向后兼容
-        const computerVersion = '20251124';
-
-        let displayWidth = 1920;
-        let displayHeight = 1080;
-        if (typeof window !== 'undefined' && window.screen) {
-            displayWidth = window.screen.width;
-            displayHeight = window.screen.height;
-        }
-
-        tools.push({
-            type: `computer_${computerVersion}`,
-            name: 'computer',
-            display_width_px: displayWidth,
-            display_height_px: displayHeight,
-            display_number: 1
-        });
-
+        tools.push(buildComputerTool());
         if (stateRef.computerUsePermissions?.bash !== false) {
-            tools.push({
-                type: 'bash_20250124',
-                name: 'bash'
-            });
+            tools.push({ ...CLAUDE_BUILTIN_TOOLS.bash });
         }
-
         if (stateRef.computerUsePermissions?.textEditor !== false) {
-            tools.push({
-                type: 'text_editor_20250728',
-                name: 'str_replace_based_edit_tool'
-            });
+            tools.push({ ...CLAUDE_BUILTIN_TOOLS.textEditor });
         }
     }
 
-    // 3. Web Search 工具
     if (stateRef.webSearchEnabled) {
-        tools.push({
-            type: 'web_search_20250305',
-            name: 'web_search',
-            max_uses: 5
-        });
+        tools.push({ ...CLAUDE_BUILTIN_TOOLS.webSearch });
     }
 
     return tools;
@@ -675,26 +677,16 @@ function buildHeaders(apiKey, { state: stateRef }) {
         'anthropic-dangerous-direct-browser-access': 'true'
     };
 
-    // 智能合并 beta headers
-    const betaFeaturesToAdd = [];
+    const betas = new Set();
     if (stateRef.codeExecutionEnabled) {
-        betaFeaturesToAdd.push('code-execution-2025-08-25');
-        betaFeaturesToAdd.push('advanced-tool-use-2025-11-20');
-        // Code Execution 需要 Files API 支持（用于 container_upload）
-        betaFeaturesToAdd.push('files-api-2025-04-14');
+        CODE_EXECUTION_BETAS.forEach((beta) => betas.add(beta));
     }
-    // Computer Use beta（仅 Electron 环境）— 与 computer 工具版本对齐到最新
     if (stateRef.computerUseEnabled && isElectron()) {
-        betaFeaturesToAdd.push('computer-use-2025-11-24');
+        betas.add(COMPUTER_TOOL.beta);
     }
 
-    if (betaFeaturesToAdd.length > 0) {
-        // 去重（理论上不重复，但保持原 sendClaudeRequest 行为）
-        const unique = [];
-        for (const feature of betaFeaturesToAdd) {
-            if (!unique.includes(feature)) unique.push(feature);
-        }
-        headers['anthropic-beta'] = unique.join(',');
+    if (betas.size > 0) {
+        headers['anthropic-beta'] = [...betas].join(',');
         logger.debug('[claude] Beta headers:', headers['anthropic-beta']);
     }
 
