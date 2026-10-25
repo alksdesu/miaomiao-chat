@@ -307,20 +307,43 @@ describe('OpenAI Image', () => {
 
 describe('Gemini', () => {
     describe('modelParams', () => {
-        it('所有参数为 null 时采样参数用默认值，maxOutputTokens 不传', () => {
-            expect(generate('gemini').modelParams).toEqual({
-                temperature: 1,
-                topK: 40,
-                topP: 0.95
-            });
+        it('所有参数为 null 时不发送采样参数与输出上限', () => {
+            expect(generate('gemini').modelParams).toEqual({});
         });
 
-        it('maxOutputTokens 显式设置时传', () => {
+        it('只发送用户显式设置的参数', () => {
             expect(
                 generate('gemini', {
                     params: { temperature: 0.3, topK: 20, topP: null, maxOutputTokens: 4096 }
                 }).modelParams
-            ).toEqual({ temperature: 0.3, topK: 20, topP: 0.95, maxOutputTokens: 4096 });
+            ).toEqual({ temperature: 0.3, topK: 20, maxOutputTokens: 4096 });
+        });
+
+        it('已弃用采样参数的型号丢弃并提示，输出上限照常发送', () => {
+            const result = generate('gemini', {
+                model: 'gemini-4-argon',
+                params: { temperature: 0.3, topP: 0.9, maxOutputTokens: 65536 }
+            });
+            expect(result.modelParams).toEqual({ maxOutputTokens: 65536 });
+            expect(result.notices).toEqual([
+                expect.objectContaining({
+                    key: 'gemini.sampling',
+                    message: expect.stringContaining('temperature / topP')
+                })
+            ]);
+        });
+
+        it('长输出型号的输出上限低于 32768 时提示，其他型号不提示', () => {
+            const argon = generate('gemini', {
+                model: 'gemini-4-argon',
+                params: { maxOutputTokens: 8192 }
+            });
+            expect(argon.modelParams).toEqual({ maxOutputTokens: 8192 });
+            expect(argon.notices).toEqual([expect.objectContaining({ key: 'gemini.long-decode' })]);
+            expect(
+                generate('gemini', { model: 'gemini-3.8-flash', params: { maxOutputTokens: 8192 } })
+                    .notices
+            ).toEqual([]);
         });
     });
 
@@ -329,42 +352,100 @@ describe('Gemini', () => {
             generate('gemini', {
                 model,
                 settings: { thinkingEnabled: true, thinkingStrength: strength, ...extra }
-            }).thinkingCfg;
+            });
+        const level = (model, strength, extra) =>
+            thinking(model, strength, extra).thinkingCfg.thinkingConfig.thinkingLevel;
 
-        it('未启用时为 null', () => {
-            expect(generate('gemini', { model: 'gemini-2.5-flash' }).thinkingCfg).toBeNull();
+        it('未识别的型号未启用时省略 thinkingConfig', () => {
+            expect(generate('gemini', { model: 'gemini-proxy-x' }).thinkingCfg).toBeNull();
+        });
+
+        it('已识别的档位制型号关闭思维链时发送最低档位，不请求思考摘要', () => {
+            expect(generate('gemini', { model: 'gemini-4-argon' }).thinkingCfg).toEqual({
+                thinkingConfig: { thinkingLevel: 'LOW' }
+            });
+            expect(generate('gemini', { model: 'gemini-3-flash' }).thinkingCfg).toEqual({
+                thinkingConfig: { thinkingLevel: 'MINIMAL' }
+            });
+        });
+
+        it('2.5 系列关闭思维链时关闭预算，不能关闭思考的 Pro 发送最低预算', () => {
+            expect(generate('gemini', { model: 'gemini-2.5-flash' }).thinkingCfg).toEqual({
+                thinkingConfig: { thinkingBudget: 0 }
+            });
+            expect(generate('gemini', { model: 'gemini-2.5-pro' }).thinkingCfg).toEqual({
+                thinkingConfig: { thinkingBudget: 128 }
+            });
         });
 
         it('Gemini 2.5 使用 thinkingBudget', () => {
-            expect(thinking('gemini-2.5-flash', 'high')).toEqual({
+            expect(thinking('gemini-2.5-flash', 'high').thinkingCfg).toEqual({
                 thinkingConfig: { thinkingBudget: 16384, includeThoughts: true }
             });
         });
 
         it('Gemini 2.5 medium 使用 8192，low 使用 4096', () => {
-            expect(thinking('gemini-2.5-pro', 'medium').thinkingConfig.thinkingBudget).toBe(8192);
-            expect(thinking('gemini-2.5-flash', 'low').thinkingConfig.thinkingBudget).toBe(4096);
+            expect(
+                thinking('gemini-2.5-pro', 'medium').thinkingCfg.thinkingConfig.thinkingBudget
+            ).toBe(8192);
+            expect(
+                thinking('gemini-2.5-flash', 'low').thinkingCfg.thinkingConfig.thinkingBudget
+            ).toBe(4096);
         });
 
-        it('Gemini 3 使用 thinkingLevel', () => {
-            expect(thinking('gemini-3-flash', 'high')).toEqual({
+        it('预算制型号上 minimal 规范化为 low，xhigh / max 规范化为 high', () => {
+            const budget = (strength) =>
+                thinking('gemini-2.5-flash', strength).thinkingCfg.thinkingConfig.thinkingBudget;
+            expect(budget('minimal')).toBe(4096);
+            expect(budget('xhigh')).toBe(16384);
+            expect(budget('max')).toBe(16384);
+        });
+
+        it('custom 预算超出型号范围时收敛并提示', () => {
+            const result = thinking('gemini-2.5-flash', 'custom', { thinkingBudget: 50000 });
+            expect(result.thinkingCfg.thinkingConfig.thinkingBudget).toBe(24576);
+            expect(result.notices).toEqual([
+                expect.objectContaining({ key: 'gemini.thinking-budget' })
+            ]);
+        });
+
+        it('未识别的旧型号按预算原样发送', () => {
+            expect(
+                thinking('gemini-proxy-x', 'custom', { thinkingBudget: 50000 }).thinkingCfg
+            ).toEqual({ thinkingConfig: { thinkingBudget: 50000, includeThoughts: true } });
+        });
+
+        it('Gemini 3 及以后使用 thinkingLevel', () => {
+            expect(thinking('gemini-3-flash', 'high').thinkingCfg).toEqual({
                 thinkingConfig: { thinkingLevel: 'HIGH', includeThoughts: true }
             });
-            expect(thinking('gemini-3-pro', 'low').thinkingConfig.thinkingLevel).toBe('LOW');
+            expect(level('gemini-3-pro', 'low')).toBe('LOW');
+            expect(level('gemini-3.8-flash', 'medium')).toBe('MEDIUM');
         });
 
-        it('minimal 规范化为 low，xhigh 规范化为 high', () => {
-            expect(thinking('gemini-2.5-flash', 'minimal').thinkingConfig.thinkingBudget).toBe(
-                4096
-            );
-            expect(thinking('gemini-2.5-flash', 'xhigh').thinkingConfig.thinkingBudget).toBe(16384);
+        it('型号不支持的档位优先向下收敛，没有更低档位时向上收敛，并提示', () => {
+            const pro = thinking('gemini-3-pro', 'medium');
+            expect(pro.thinkingCfg.thinkingConfig.thinkingLevel).toBe('LOW');
+            expect(pro.notices).toEqual([
+                expect.objectContaining({
+                    key: 'gemini.thinking-level',
+                    message: expect.stringContaining('medium')
+                })
+            ]);
+            expect(level('gemini-nano-banana-2.1', 'low')).toBe('MINIMAL');
+            expect(level('gemini-4-argon', 'minimal')).toBe('LOW');
+            expect(level('gemini-3.6-flash', 'minimal')).toBe('MINIMAL');
         });
 
-        it('custom 使用自定义 budget', () => {
-            expect(
-                thinking('gemini-2.5-flash', 'custom', { thinkingBudget: 50000 }).thinkingConfig
-                    .thinkingBudget
-            ).toBe(50000);
+        it('xhigh / max 归到 HIGH 不提示，custom 按最接近的预算档位换算', () => {
+            expect(level('gemini-3.8-flash', 'xhigh')).toBe('HIGH');
+            expect(thinking('gemini-3.8-flash', 'max').notices).toEqual([]);
+            expect(level('gemini-3.8-flash', 'custom', { thinkingBudget: 9000 })).toBe('MEDIUM');
+        });
+
+        it('未识别的 3 代以后型号与 Nano Banana 按档位原样发送', () => {
+            expect(level('gemini-5-ultra', 'medium')).toBe('MEDIUM');
+            expect(level('my-nano-banana-pro', 'minimal')).toBe('MINIMAL');
         });
     });
 

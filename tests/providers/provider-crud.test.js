@@ -146,6 +146,15 @@ describe('createProvider', () => {
         expect(createProvider({ name: 'Test', apiFormat: 'openai' }).endpoint).toBe('');
     });
 
+    it('新建 Gemini provider 默认用请求头传 key，其他格式不用', () => {
+        expect(createProvider({ name: 'G', apiFormat: 'gemini' }).geminiApiKeyInHeader).toBe(true);
+        expect(createProvider({ name: 'O', apiFormat: 'openai' }).geminiApiKeyInHeader).toBe(false);
+        expect(
+            createProvider({ name: 'G2', apiFormat: 'gemini', geminiApiKeyInHeader: false })
+                .geminiApiKeyInHeader
+        ).toBe(false);
+    });
+
     it('geminiApiKeyInHeader 配置', () => {
         const p = createProvider({
             name: 'Gemini',
@@ -335,5 +344,22 @@ describe('migrateFromLegacyConfig', () => {
 
         migrateFromLegacyConfig();
         expect(state.providers.length).toBeGreaterThan(0);
+        expect(state.providers[0].models).toEqual(['gemini-3.8-flash']);
+    });
+
+    it('没有模型列表时按格式填入当前可用的兜底型号', () => {
+        state.providers = [];
+        state.apiKeys = { openai: 'sk-1', gemini: 'gk-2', claude: 'ck-3' };
+        state.endpoints = { openai: '', gemini: '', claude: '' };
+        state.customModels = { openai: '', gemini: '', claude: '' };
+        state.apiFormat = 'openai';
+        state.selectedModel = '';
+
+        migrateFromLegacyConfig();
+
+        const modelsOf = (format) => state.providers.find((p) => p.apiFormat === format).models;
+        expect(modelsOf('openai')).toEqual(['gpt-5.5']);
+        expect(modelsOf('gemini')).toEqual(['gemini-3.8-flash']);
+        expect(modelsOf('claude')).toEqual(['claude-sonnet-5-5']);
     });
 });

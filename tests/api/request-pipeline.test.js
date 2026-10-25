@@ -632,7 +632,61 @@ describe('生成参数', () => {
     });
 });
 
+describe('型号超时下限', () => {
+    it('型号要求的最短超时高于用户设置时，请求与流式空闲超时都取型号下限', () => {
+        state.requestTimeout = 300000;
+        state.streamIdleTimeout = 120000;
+        const adapter = createStubAdapter({ apiFormat: 'gemini' });
+
+        const requestProfile = captureRequestProfile(adapter, 'gemini-4-argon');
+
+        expect(requestProfile.state.requestTimeout).toBe(20 * 60 * 1000);
+        expect(requestProfile.state.streamIdleTimeout).toBe(20 * 60 * 1000);
+    });
+
+    it('用户设置更长或型号没有要求时保持用户设置', () => {
+        state.requestTimeout = 30 * 60 * 1000;
+        state.streamIdleTimeout = 120000;
+        const adapter = createStubAdapter({ apiFormat: 'gemini' });
+
+        expect(captureRequestProfile(adapter, 'gemini-4-argon').state.requestTimeout).toBe(
+            30 * 60 * 1000
+        );
+        const flash = captureRequestProfile(adapter, 'gemini-3.8-flash');
+        expect(flash.state.requestTimeout).toBe(30 * 60 * 1000);
+        expect(flash.state.streamIdleTimeout).toBe(120000);
+    });
+});
+
 describe('请求预检提示', () => {
+    it('工具收集阶段的提示排在生成参数提示之前', async () => {
+        const adapter = createStubAdapter({
+            collectBuiltinTools: vi.fn((stateRef, { notices }) => {
+                notices.push({ key: 'tools', message: '工具已调整' });
+                return [];
+            }),
+            buildGenerationParams: vi.fn(() => ({
+                modelParams: {},
+                thinkingCfg: null,
+                verbosityCfg: null,
+                notices: [{ key: 'params', message: '参数已调整' }]
+            }))
+        });
+
+        await executeRequest(adapter, {
+            endpoint: 'https://api.example.com',
+            apiKey: 'k',
+            model: 'm',
+            sessionId: 'session-9',
+            sourceMessages: state.messages
+        });
+
+        expect(emitRequestNotices).toHaveBeenCalledWith('session-9', [
+            { key: 'tools', message: '工具已调整' },
+            { key: 'params', message: '参数已调整' }
+        ]);
+    });
+
     it('生成参数与请求体组装的提示合并后按会话弹出', async () => {
         const adapter = createStubAdapter({
             buildGenerationParams: vi.fn(() => ({
@@ -786,5 +840,21 @@ describe('RequestBodyContext 完整字段', () => {
         );
         expect(ctx.state).not.toBe(state);
         expect(ctx.endpoint).toBe('https://api.example.com/v1');
+    });
+
+    it('buildRequestBody 收到模型编辑里设置的能力', async () => {
+        getCurrentModelCapabilities.mockReturnValue({ imageInput: true, imageOutput: false });
+        const adapter = createStubAdapter();
+
+        await executeRequest(adapter, {
+            endpoint: 'https://api.example.com',
+            apiKey: 'k',
+            model: 'm'
+        });
+
+        expect(adapter.buildRequestBody.mock.calls[0][0].capabilities).toEqual({
+            imageInput: true,
+            imageOutput: false
+        });
     });
 });

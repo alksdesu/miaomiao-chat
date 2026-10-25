@@ -547,9 +547,13 @@ export function initOtherConfigInputs() {
         });
     }
 
-    // Gemini 图片大小
+    // Gemini 出图尺寸与宽高比
     elements.imageSizeSelect?.addEventListener('change', (e) => {
         state.imageSize = e.target.value;
+        saveCurrentConfig();
+    });
+    elements.imageAspectSelect?.addEventListener('change', (e) => {
+        state.imageAspectRatio = e.target.value;
         saveCurrentConfig();
     });
 

@@ -27,6 +27,7 @@ import {
     buildOpenAISampling,
     resolveOpenAIVerbosity
 } from './openai-shared.js';
+import { pushXmlBuiltinToolsNotice } from '../request-notices.js';
 import { ensureIdMap } from '../format-converter.js';
 
 // ========== partsToAPIMessages ==========
@@ -364,8 +365,11 @@ function parseResponse(data, options = {}) {
 // ========== 工具构造 ==========
 
 // 服务端工具由 OpenAI 执行；XML 模式下工具写进提示词，服务端工具无法这样调用
-function collectBuiltinTools(stateRef) {
-    if (stateRef.xmlToolCallingEnabled) return [];
+function collectBuiltinTools(stateRef, { notices } = {}) {
+    if (stateRef.xmlToolCallingEnabled) {
+        pushXmlBuiltinToolsNotice(stateRef, notices);
+        return [];
+    }
     const tools = [];
     if (stateRef.codeExecutionEnabled) {
         tools.push({ type: 'code_interpreter', container: { type: 'auto' } });

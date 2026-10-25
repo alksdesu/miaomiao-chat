@@ -48,6 +48,7 @@ function initializeElements() {
         // Gemini 图片配置
         geminiImageConfig: 'gemini-image-config',
         imageSizeSelect: 'image-size-select',
+        imageAspectSelect: 'image-aspect-select',
         geminiApiKeyInHeaderToggle: 'gemini-apikey-in-header',
 
         // Gemini System Parts

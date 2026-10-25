@@ -262,14 +262,19 @@ describe('Responses 请求体与内置工具', () => {
         ]);
     });
 
-    it('XML 模式下不附带服务端工具', () => {
+    it('XML 模式下不附带服务端工具并提示', () => {
+        const notices = [];
         expect(
-            openaiResponsesAdapter.collectBuiltinTools({
-                codeExecutionEnabled: true,
-                webSearchEnabled: true,
-                xmlToolCallingEnabled: true
-            })
+            openaiResponsesAdapter.collectBuiltinTools(
+                {
+                    codeExecutionEnabled: true,
+                    webSearchEnabled: true,
+                    xmlToolCallingEnabled: true
+                },
+                { notices }
+            )
         ).toEqual([]);
+        expect(notices).toEqual([expect.objectContaining({ key: 'xml.builtin-tools' })]);
     });
 
     it('不在服务端保存对话，并请求加密推理内容', () => {

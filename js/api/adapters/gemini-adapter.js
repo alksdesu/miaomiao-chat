@@ -14,13 +14,30 @@ import { isVideoMimeType, isAudioMimeType } from '../../utils/media.js';
 import { getMappedId, generateIdSet, ensureIdMap } from '../format-converter.js';
 import { compressImage } from '../../utils/images.js';
 import { injectToolsToGemini, getXMLInjectionStats } from '../../tools/tool-injection.js';
-import { GeminiStreamParser, parseGeminiStream } from '../../stream/parser-gemini.js';
+import {
+    GeminiStreamParser,
+    parseGeminiStream,
+    resolveFunctionCallSignature
+} from '../../stream/parser-gemini.js';
 import { isTextFile, stringifyToolResult } from './openai-shared.js';
 import { TOOL_INTERRUPTED_MESSAGE } from '../../utils/constants.js';
-import { normalizeBudgetStrength, resolveThinkingBudget } from '../reasoning.js';
+import {
+    resolveThinkingBudget,
+    nearestBudgetStrength,
+    clampToSupportedLevel
+} from '../reasoning.js';
 import { normalizeGeminiStop } from '../../messages/stop-reason.js';
+import { pushXmlBuiltinToolsNotice } from '../request-notices.js';
 
 const GEMINI_THINKING_BUDGETS = Object.freeze({ low: 4096, medium: 8192, high: 16384 });
+// 思考档位由低到高
+const GEMINI_THINKING_LEVELS = Object.freeze(['minimal', 'low', 'medium', 'high']);
+const GEMINI_IMAGE_SIZES = Object.freeze(['1K', '2K', '4K']);
+const GEMINI_SAMPLING_KEYS = Object.freeze(['temperature', 'topP', 'topK']);
+// 长输出型号单次输出上限低于该值时，长回复容易在上限处截断
+const LONG_DECODE_MIN_OUTPUT_TOKENS = 32768;
+// 未识别的型号按名称判断是否为出图模型
+const IMAGE_MODEL_PATTERN = /image|nano-banana/;
 
 // ========== 辅助 ==========
 
@@ -175,13 +192,13 @@ function partsToAPIMessages(msgs, _opts = {}) {
             parts.push({ text: '' });
         }
 
-        const outMsg = { role, parts };
-        // 无 functionCall 响应：signature 落在 message 末尾（项目历史路径，保留兼容）
+        // 不含函数调用的回复把签名放回最后一个 part，与服务端返回签名的位置一致
         if (lastThinkingSignature && !signatureUsedForToolCallGroup && toolCallParts.length === 0) {
-            outMsg.thoughtSignature = lastThinkingSignature;
+            const lastIndex = parts.length - 1;
+            parts[lastIndex] = { ...parts[lastIndex], thoughtSignature: lastThinkingSignature };
         }
 
-        out.push(outMsg);
+        out.push({ role, parts });
 
         // 拆出 tool 结果为 user 消息
         if (toolCallParts.length > 0) {
@@ -232,14 +249,21 @@ function parseResponse(data, options = {}) {
     // 让 saveAssistantMessage 落库的 part 含完整 thinking + signature，下轮 resendWithToolResults
     // 重发时 Gemini 校验 thoughtSignature 才不会拒绝 'thoughtSignature required'
     const toolCalls = [];
+    let latestSignature = null;
     for (let i = 0; i < candidate.content.parts.length; i++) {
         const part = candidate.content.parts[i];
+        if (part.thoughtSignature) latestSignature = part.thoughtSignature;
         if (part.functionCall) {
             const fcId = part.functionCall.id || `gemini_tc_${Date.now()}_${i}`;
             toolCalls.push({
                 id: fcId,
                 name: part.functionCall.name,
                 arguments: part.functionCall.args,
+                thoughtSignature: resolveFunctionCallSignature(
+                    part,
+                    latestSignature,
+                    toolCalls.length
+                ),
                 mode: ToolMode.NATIVE,
                 // Gemini fc.id 不带前缀，显式标记 originalFormat='gemini' 让 idMap.gemini 槽直接归位
                 // 跨格式重发时 openai/claude 槽走 generate 兜底
@@ -355,7 +379,12 @@ function parseResponse(data, options = {}) {
 
 // ========== 工具构造 ==========
 
-function collectBuiltinTools(stateRef) {
+// 服务端工具由 Google 执行；XML 模式下工具写进提示词，服务端工具无法这样调用
+function collectBuiltinTools(stateRef, { notices } = {}) {
+    if (stateRef.xmlToolCallingEnabled) {
+        pushXmlBuiltinToolsNotice(stateRef, notices);
+        return [];
+    }
     const tools = [];
     if (stateRef.codeExecutionEnabled) {
         tools.push({ codeExecution: {} });
@@ -378,46 +407,121 @@ function formatSystemTools(systemTools) {
 // ========== 生成参数与格式设置 ==========
 
 /**
+ * 设置面板强度 → 思考档位；custom 按最接近的预算档位换算，xhigh / max 归到 high
  * @param {import('../reasoning.js').ReasoningIntent} reasoning
- * @param {string} model
- * @returns {Object|null}
+ * @returns {string}
  */
-function buildThinkingConfig(reasoning, model) {
-    if (!reasoning.enabled) return null;
-
-    const isGemini3 = model.includes('gemini-3') || model.includes('gemini3');
-    if (isGemini3) {
-        const level = normalizeBudgetStrength(reasoning.strength) === 'low' ? 'LOW' : 'HIGH';
-        return { thinkingConfig: { thinkingLevel: level, includeThoughts: true } };
+function levelFromIntent(reasoning) {
+    if (reasoning.strength === 'custom') {
+        return nearestBudgetStrength(reasoning.budget, GEMINI_THINKING_BUDGETS);
     }
-    return {
-        thinkingConfig: {
-            thinkingBudget: resolveThinkingBudget(reasoning, GEMINI_THINKING_BUDGETS),
-            includeThoughts: true
-        }
-    };
+    if (reasoning.strength === 'xhigh' || reasoning.strength === 'max') return 'high';
+    return GEMINI_THINKING_LEVELS.includes(reasoning.strength) ? reasoning.strength : 'high';
+}
+
+// 未识别的型号按名称推断：3 代及以后与 Nano Banana 用思考档位，更早的型号用思考预算
+function inferThinkingMode(model) {
+    const id = String(model || '').toLowerCase();
+    if (id.includes('nano-banana')) return 'level';
+    const match = /gemini-?(\d+)/.exec(id);
+    return match && Number(match[1]) >= 3 ? 'level' : 'budget';
+}
+
+function levelThinking(level, includeThoughts) {
+    const thinkingConfig = { thinkingLevel: level.toUpperCase() };
+    if (includeThoughts) thinkingConfig.includeThoughts = true;
+    return { thinkingConfig };
+}
+
+function budgetThinking(budget, includeThoughts) {
+    const thinkingConfig = { thinkingBudget: budget };
+    if (includeThoughts) thinkingConfig.includeThoughts = true;
+    return { thinkingConfig };
 }
 
 /**
- * 采样参数保留默认值；maxOutputTokens 仅在用户显式设置时传，缺省交给模型自身上限
+ * 已识别的型号按能力表收敛档位与预算；关闭思维链时改发最低档位或关闭预算，
+ * 否则省略 thinkingConfig 等于按型号默认档位思考
+ * @param {import('../reasoning.js').ReasoningIntent} reasoning
+ * @param {Object} rules profile.thinking
+ * @param {string} model
+ * @param {import('../request-notices.js').RequestNotice[]} notices
+ * @returns {Object|null}
+ */
+function buildThinkingConfig(reasoning, rules, model, notices) {
+    const known = rules.mode !== 'auto';
+    const mode = known ? rules.mode : inferThinkingMode(model);
+
+    if (!reasoning.enabled) {
+        if (!known) return null;
+        if (mode === 'level') return levelThinking(rules.levels[0], false);
+        return budgetThinking(rules.offBudget ?? rules.budgetRange[0], false);
+    }
+
+    if (mode === 'level') {
+        const requested = levelFromIntent(reasoning);
+        const level = clampToSupportedLevel(requested, GEMINI_THINKING_LEVELS, rules.levels);
+        if (level !== requested) {
+            notices.push({
+                key: 'gemini.thinking-level',
+                message: `当前模型不支持思考档位 ${requested}，已改用 ${level}`
+            });
+        }
+        return levelThinking(level, true);
+    }
+
+    const requested = resolveThinkingBudget(reasoning, GEMINI_THINKING_BUDGETS);
+    if (!rules.budgetRange) return budgetThinking(requested, true);
+    const [min, max] = rules.budgetRange;
+    const budget = Math.min(Math.max(requested, min), max);
+    if (budget !== requested) {
+        notices.push({
+            key: 'gemini.thinking-budget',
+            message: `当前模型的思考预算范围为 ${min} - ${max}，已调整为 ${budget}`
+        });
+    }
+    return budgetThinking(budget, true);
+}
+
+/**
+ * 采样参数与输出上限只发送用户显式设置的值；已弃用采样参数的型号丢弃并提示
  * @param {import('../params.js').GenerationSettings} settings
- * @param {{ model: string }} ctx
+ * @param {{ model: string, profile: Object }} ctx
  * @returns {import('./format-adapter-types.js').GenerationParams}
  */
-function buildGenerationParams(settings, { model }) {
+function buildGenerationParams(settings, { model, profile }) {
     const { userParams } = settings;
-    const modelParams = {
-        temperature: userParams.temperature !== null ? userParams.temperature : 1,
-        topK: userParams.topK !== null ? userParams.topK : 40,
-        topP: userParams.topP !== null ? userParams.topP : 0.95
-    };
-    if (userParams.maxOutputTokens !== null) {
-        modelParams.maxOutputTokens = userParams.maxOutputTokens;
+    const notices = [];
+    const modelParams = {};
+
+    const requested = GEMINI_SAMPLING_KEYS.filter(
+        (key) => userParams[key] !== null && userParams[key] !== undefined
+    );
+    if (profile.sampling === 'ignored' && requested.length > 0) {
+        notices.push({
+            key: 'gemini.sampling',
+            message: `当前模型已弃用 ${requested.join(' / ')}，本次请求未发送`
+        });
+    } else {
+        for (const key of requested) modelParams[key] = userParams[key];
     }
+
+    const maxOutputTokens = userParams.maxOutputTokens;
+    if (maxOutputTokens !== null && maxOutputTokens !== undefined) {
+        modelParams.maxOutputTokens = maxOutputTokens;
+        if (profile.longDecode && maxOutputTokens < LONG_DECODE_MIN_OUTPUT_TOKENS) {
+            notices.push({
+                key: 'gemini.long-decode',
+                message: `当前模型建议把 Max Output Tokens 设为 ${LONG_DECODE_MIN_OUTPUT_TOKENS} 以上，过低时长回复会在上限处截断`
+            });
+        }
+    }
+
     return {
         modelParams,
-        thinkingCfg: buildThinkingConfig(settings.reasoning, model),
-        verbosityCfg: null
+        thinkingCfg: buildThinkingConfig(settings.reasoning, profile.thinking, model, notices),
+        verbosityCfg: null,
+        notices
     };
 }
 
@@ -436,14 +540,15 @@ function collectSystemParts(stateRef) {
 }
 
 /**
- * Gemini 专属设置快照：API Key 传递方式、出图尺寸、多段 system parts
+ * Gemini 专属设置快照：API Key 传递方式、出图尺寸与宽高比、多段 system parts
  * @param {Object} stateRef
- * @returns {{ apiKeyInHeader: boolean, imageSize: string, systemParts: Array|null }}
+ * @returns {{ apiKeyInHeader: boolean, imageSize: string, imageAspectRatio: string, systemParts: Array|null }}
  */
 function captureFormatSettings(stateRef) {
     return {
         apiKeyInHeader: !!stateRef.geminiApiKeyInHeader,
         imageSize: stateRef.imageSize || '',
+        imageAspectRatio: stateRef.imageAspectRatio || '',
         systemParts: collectSystemParts(stateRef)
     };
 }
@@ -466,14 +571,14 @@ const SAFETY_POLICIES = Object.freeze({
             'HARM_CATEGORY_JAILBREAK'
         ])
     }),
+    // AI Studio 只开放这四类；OFF 不再计算安全评分，BLOCK_NONE 仍会多算一遍
     aiStudio: Object.freeze({
-        threshold: 'BLOCK_NONE',
+        threshold: 'OFF',
         categories: Object.freeze([
             'HARM_CATEGORY_HATE_SPEECH',
             'HARM_CATEGORY_DANGEROUS_CONTENT',
             'HARM_CATEGORY_HARASSMENT',
-            'HARM_CATEGORY_SEXUALLY_EXPLICIT',
-            'HARM_CATEGORY_CIVIC_INTEGRITY'
+            'HARM_CATEGORY_SEXUALLY_EXPLICIT'
         ])
     })
 });
@@ -487,6 +592,56 @@ function buildSafetySettings(endpoint) {
         ? SAFETY_POLICIES.vertex
         : SAFETY_POLICIES.aiStudio;
     return policy.categories.map((category) => ({ category, threshold: policy.threshold }));
+}
+
+/**
+ * 出图配置只发给能出图的型号；用户在模型能力里标明不支持图片输出时始终不发
+ * @returns {boolean}
+ */
+function supportsImageOutput(model, profile, capabilities) {
+    if (capabilities?.imageOutput === false) return false;
+    if (profile.image.output !== null) return profile.image.output;
+    return IMAGE_MODEL_PATTERN.test(String(model || '').toLowerCase());
+}
+
+function resolveImageSize(size, supported, notices) {
+    if (!supported || supported.includes(size)) return size;
+    if (supported.length === 0) {
+        notices.push({
+            key: 'gemini.image-size',
+            message: '当前模型不支持指定图片尺寸，已按模型默认尺寸生成'
+        });
+        return null;
+    }
+    const fallback = clampToSupportedLevel(size, GEMINI_IMAGE_SIZES, supported);
+    notices.push({
+        key: 'gemini.image-size',
+        message: `当前模型不支持 ${size} 图片尺寸，已改用 ${fallback}`
+    });
+    return fallback;
+}
+
+/**
+ * 尺寸与宽高比按型号收敛，都未指定时不发 imageConfig，由模型按默认 1K 生成
+ * @returns {Object|null}
+ */
+function buildImageConfig({ imageSize, imageAspectRatio }, rules, notices) {
+    const imageConfig = {};
+    if (imageSize) {
+        const size = resolveImageSize(imageSize, rules.sizes, notices);
+        if (size) imageConfig.imageSize = size;
+    }
+    if (imageAspectRatio) {
+        if (!rules.aspectRatios || rules.aspectRatios.includes(imageAspectRatio)) {
+            imageConfig.aspectRatio = imageAspectRatio;
+        } else {
+            notices.push({
+                key: 'gemini.image-aspect',
+                message: `当前模型不支持 ${imageAspectRatio} 宽高比，已按模型默认比例生成`
+            });
+        }
+    }
+    return Object.keys(imageConfig).length > 0 ? imageConfig : null;
 }
 
 /**
@@ -527,42 +682,10 @@ async function processContentsForRequest(contents) {
             }
         }
 
-        processed.push({
-            role: content.role,
-            parts: processedParts,
-            ...(content.thoughtSignature ? { thoughtSignature: content.thoughtSignature } : {})
-        });
+        processed.push({ role: content.role, parts: processedParts });
     }
 
     return processed;
-}
-
-/**
- * 构建带 thoughtSignature 的 Gemini contents
- * 每条消息保留自己的签名，不做全局传播
- */
-function buildGeminiContentsWithSignatures(contents) {
-    return contents.map((content) => {
-        const msgSignature = content.thoughtSignature || null;
-        const partSignature =
-            content.parts?.find((p) => p.thoughtSignature)?.thoughtSignature || null;
-        const signature = msgSignature || partSignature;
-
-        if (signature) {
-            return {
-                role: content.role,
-                parts: content.parts.map((part) => ({
-                    ...part,
-                    thoughtSignature: signature
-                }))
-            };
-        }
-
-        return {
-            role: content.role,
-            parts: content.parts
-        };
-    });
 }
 
 // ========== buildRequestBody ==========
@@ -571,8 +694,24 @@ function buildGeminiContentsWithSignatures(contents) {
  * Gemini buildRequestBody 是异步的（含图片压缩）。Pipeline 必须 await。
  */
 async function buildRequestBody(ctx) {
-    const { messages, modelParams, thinkingCfg, systemCtx, prefill, tools, isXmlMode } = ctx;
-    const { imageSize = '', systemParts: configuredSystemParts = null } = ctx.formatSettings || {};
+    const {
+        messages,
+        model,
+        modelParams,
+        thinkingCfg,
+        systemCtx,
+        prefill,
+        tools,
+        isXmlMode,
+        profile,
+        capabilities,
+        notices
+    } = ctx;
+    const {
+        imageSize = '',
+        imageAspectRatio = '',
+        systemParts: configuredSystemParts = null
+    } = ctx.formatSettings || {};
 
     // ⚠️ 安全检查：如果所有消息都被过滤掉，抛出错误
     if (messages.length === 0) {
@@ -582,10 +721,14 @@ async function buildRequestBody(ctx) {
     // 1. 构建 generationConfig
     const generationConfig = { ...modelParams };
 
-    // 图片配置
-    if (imageSize) {
+    if (supportsImageOutput(model, profile, capabilities)) {
         generationConfig.responseModalities = ['TEXT', 'IMAGE'];
-        generationConfig.imageConfig = { imageSize };
+        const imageConfig = buildImageConfig(
+            { imageSize, imageAspectRatio },
+            profile.image,
+            notices
+        );
+        if (imageConfig) generationConfig.imageConfig = imageConfig;
     }
 
     // 思维链配置（Gemini 嵌入到 generationConfig.thinkingConfig）
@@ -609,16 +752,13 @@ async function buildRequestBody(ctx) {
         finalContents = [...finalContents, ...prefill.trailing];
     }
 
-    // 5. 构建带 thoughtSignature 的 contents
-    const contentsWithSignatures = buildGeminiContentsWithSignatures(finalContents);
-
     const requestBody = {
-        contents: contentsWithSignatures,
+        contents: finalContents,
         generationConfig: generationConfig,
         safetySettings: safetySettings
     };
 
-    // 6. System Instruction：多段 system parts 优先于单段 systemPrompt，monitor 上下文追加在后
+    // 5. System Instruction：多段 system parts 优先于单段 systemPrompt，monitor 上下文追加在后
     const systemParts = [];
     if (configuredSystemParts && configuredSystemParts.length > 0) {
         systemParts.push(...configuredSystemParts);
@@ -633,7 +773,7 @@ async function buildRequestBody(ctx) {
         requestBody.systemInstruction = { parts: systemParts };
     }
 
-    // 7. 工具
+    // 6. 工具
     if (tools.length > 0) {
         if (isXmlMode) {
             injectToolsToGemini(requestBody, tools);

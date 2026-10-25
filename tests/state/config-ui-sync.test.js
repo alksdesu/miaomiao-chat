@@ -283,6 +283,26 @@ describe('config-ui-sync', () => {
             expect(select.value).toBe('large');
         });
 
+        it('出图尺寸为空时也同步，切换配置后下拉框不停在旧值', () => {
+            const select = document.createElement('select');
+            select.innerHTML = '<option value="">default</option><option value="2K">2K</option>';
+            select.value = '2K';
+            elements.imageSizeSelect = select;
+            state.imageSize = '';
+            syncUIWithState();
+            expect(select.value).toBe('');
+        });
+
+        it('同步 imageAspectSelect', () => {
+            const select = document.createElement('select');
+            select.innerHTML =
+                '<option value="">default</option><option value="16:9">16:9</option>';
+            elements.imageAspectSelect = select;
+            state.imageAspectRatio = '16:9';
+            syncUIWithState();
+            expect(select.value).toBe('16:9');
+        });
+
         it('同步 geminiApiKeyInHeaderToggle', () => {
             const cb = document.createElement('input');
             cb.type = 'checkbox';

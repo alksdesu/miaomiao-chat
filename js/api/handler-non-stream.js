@@ -107,10 +107,13 @@ async function tryHandleToolCalls(reply, ctx, responseModel) {
             thinkingItems: reply.thinkingItems,
             contentParts: reply.contentParts,
             toolCalls: reply.toolCalls,
+            // 与流式落库一致：Gemini 签名写进 thinking part 与 meta，续发工具结果时才能回放
+            thoughtSignature: reply.thoughtSignature,
             signatureFormat: adapter.signatureFormat || null
         }),
         resolveResponseMeta(
             buildMetaFromStreamingState({
+                thoughtSignature: reply.thoughtSignature,
                 encryptedContent: reply.encryptedContent,
                 reasoningItemId: reply.reasoningItemId,
                 reasoningItems: reply.reasoningItems,
@@ -362,6 +365,7 @@ export async function handleNonStreamResponse(response, ctx) {
                 thinkingSignatures: selectedReply.thinkingSignatures,
                 thinkingItems: selectedReply.thinkingItems,
                 contentParts: selectedReply.contentParts,
+                thoughtSignature: selectedReply.thoughtSignature,
                 signatureFormat: adapter.signatureFormat || null
             }),
             resolveResponseMeta(

@@ -818,6 +818,32 @@ describe('collectBuiltinTools 按型号选择 computer 工具版本', () => {
     });
 });
 
+describe('collectBuiltinTools XML 模式', () => {
+    it('XML 模式下不附带代码执行与联网搜索，并提示', () => {
+        const notices = [];
+        expect(
+            claudeAdapter.collectBuiltinTools(
+                { codeExecutionEnabled: true, webSearchEnabled: true, xmlToolCallingEnabled: true },
+                { profile: resolveModelProfile('claude', 'claude-sonnet-5-5'), notices }
+            )
+        ).toEqual([]);
+        expect(notices).toEqual([
+            expect.objectContaining({
+                key: 'xml.builtin-tools',
+                message: expect.stringContaining('联网搜索、代码执行')
+            })
+        ]);
+    });
+
+    it('原生模式照常附带服务端工具', () => {
+        const tools = claudeAdapter.collectBuiltinTools(
+            { codeExecutionEnabled: true, webSearchEnabled: true, xmlToolCallingEnabled: false },
+            { profile: resolveModelProfile('claude', 'claude-sonnet-5-5'), notices: [] }
+        );
+        expect(tools.map((tool) => tool.name)).toEqual(['code_execution', 'web_search']);
+    });
+});
+
 describe('buildRequestBody 按型号约束', () => {
     const baseCtx = (model, overrides = {}) => ({
         messages: [{ role: 'user', content: 'hi' }],

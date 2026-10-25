@@ -36,6 +36,23 @@ export function emitRequestNotices(sessionId, notices) {
     }
 }
 
+/**
+ * XML 工具模式下工具写进提示词，联网搜索、代码执行这类服务端工具无法这样调用
+ * @param {Object} stateRef
+ * @param {RequestNotice[]|undefined} notices
+ */
+export function pushXmlBuiltinToolsNotice(stateRef, notices) {
+    if (!notices) return;
+    const names = [];
+    if (stateRef.webSearchEnabled) names.push('联网搜索');
+    if (stateRef.codeExecutionEnabled) names.push('代码执行');
+    if (names.length === 0) return;
+    notices.push({
+        key: 'xml.builtin-tools',
+        message: `XML 工具模式下无法使用${names.join('、')}，本次请求未附带`
+    });
+}
+
 export function clearRequestNoticesForTests() {
     shownNoticeKeys.clear();
 }

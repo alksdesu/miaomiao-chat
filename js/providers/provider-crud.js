@@ -56,7 +56,8 @@ export function createProvider(data) {
         enabled: true,
         models: data.models || [],
         createdAt: Date.now(),
-        geminiApiKeyInHeader: data.geminiApiKeyInHeader || false,
+        // 新建的 Gemini provider 默认用请求头传 key，避免 key 出现在 URL、代理日志与浏览器历史里
+        geminiApiKeyInHeader: data.geminiApiKeyInHeader ?? data.apiFormat === 'gemini',
         modelParams: null
     };
 
@@ -133,6 +134,18 @@ function getDefaultEndpoint(apiFormat) {
     return defaults[apiFormat] || '';
 }
 
+// 旧配置没有模型列表时的兜底型号；出图格式由用户自行填写
+const FALLBACK_MODELS = Object.freeze({
+    gemini: 'gemini-3.8-flash',
+    claude: 'claude-sonnet-5-5',
+    'openai-image': ''
+});
+const DEFAULT_FALLBACK_MODEL = 'gpt-5.5';
+
+function getFallbackModel(format) {
+    return FALLBACK_MODELS[format] ?? DEFAULT_FALLBACK_MODEL;
+}
+
 /**
  * 获取默认提供商名称
  */
@@ -186,14 +199,7 @@ export function migrateFromLegacyConfig() {
             }
 
             if (models.length === 0) {
-                const defaultModel =
-                    format === 'openai-image'
-                        ? ''
-                        : format === 'gemini'
-                          ? 'gemini-2.0-flash'
-                          : format === 'claude'
-                            ? 'claude-3-5-sonnet-20241022'
-                            : 'gpt-4o';
+                const defaultModel = getFallbackModel(format);
                 if (defaultModel) models.push(defaultModel);
             }
 
@@ -222,14 +228,7 @@ export function migrateFromLegacyConfig() {
             models.push(backup.selectedModel);
         }
         if (models.length === 0) {
-            const defaultModel =
-                state.apiFormat === 'openai-image'
-                    ? ''
-                    : state.apiFormat === 'gemini'
-                      ? 'gemini-2.0-flash'
-                      : state.apiFormat === 'claude'
-                        ? 'claude-3-5-sonnet-20241022'
-                        : 'gpt-4o';
+            const defaultModel = getFallbackModel(state.apiFormat);
             if (defaultModel) models.push(defaultModel);
         }
 

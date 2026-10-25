@@ -221,7 +221,8 @@ describe('Gemini', () => {
         expect(profile.thinking).toEqual({
             mode: 'level',
             levels: ['low', 'medium', 'high'],
-            budgetRange: null
+            budgetRange: null,
+            offBudget: null
         });
         expect(profile.sampling).toBe('ignored');
         expect(profile.longDecode).toBe(true);
@@ -229,15 +230,17 @@ describe('Gemini', () => {
         expect(profile.image.output).toBe(false);
     });
 
-    it('2.5 系列使用预算区间', () => {
+    it('2.5 系列使用预算区间，Pro 不能关闭思考', () => {
         expect(resolveModelProfile('gemini', 'gemini-2.5-pro').thinking).toEqual({
             mode: 'budget',
             levels: null,
-            budgetRange: [128, 32768]
+            budgetRange: [128, 32768],
+            offBudget: null
         });
-        expect(resolveModelProfile('gemini', 'gemini-2.5-flash').thinking.budgetRange).toEqual([
-            0, 24576
-        ]);
+        const flash = resolveModelProfile('gemini', 'gemini-2.5-flash').thinking;
+        expect(flash.budgetRange).toEqual([0, 24576]);
+        expect(flash.offBudget).toBe(0);
+        expect(resolveModelProfile('gemini', 'gemini-2.5-flash-lite').thinking.offBudget).toBe(0);
     });
 
     it('出图模型声明尺寸与宽高比', () => {

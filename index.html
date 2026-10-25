@@ -531,17 +531,45 @@
 
                 <!-- Gemini 配置 -->
                 <div class="settings-group api-config" id="gemini-config">
-                    <label class="settings-label">图片尺寸</label>
-                    <select
-                        id="image-size-select"
-                        class="settings-select"
-                        title="图片生成尺寸"
-                        aria-label="选择图片生成尺寸"
-                    >
-                        <option value="">无</option>
-                        <option value="2K">2K</option>
-                        <option value="4K">4K</option>
-                    </select>
+                    <label class="settings-label">出图尺寸与宽高比</label>
+                    <div class="settings-row">
+                        <select
+                            id="image-size-select"
+                            class="settings-select"
+                            title="图片生成尺寸"
+                            aria-label="选择图片生成尺寸"
+                        >
+                            <option value="">默认尺寸（1K）</option>
+                            <option value="1K">1K</option>
+                            <option value="2K">2K</option>
+                            <option value="4K">4K</option>
+                        </select>
+                        <select
+                            id="image-aspect-select"
+                            class="settings-select"
+                            title="图片宽高比"
+                            aria-label="选择图片宽高比"
+                        >
+                            <option value="">默认宽高比</option>
+                            <option value="1:1">1:1</option>
+                            <option value="2:3">2:3</option>
+                            <option value="3:2">3:2</option>
+                            <option value="3:4">3:4</option>
+                            <option value="4:3">4:3</option>
+                            <option value="4:5">4:5</option>
+                            <option value="5:4">5:4</option>
+                            <option value="9:16">9:16</option>
+                            <option value="16:9">16:9</option>
+                            <option value="21:9">21:9</option>
+                            <option value="1:4">1:4</option>
+                            <option value="4:1">4:1</option>
+                            <option value="1:8">1:8</option>
+                            <option value="8:1">8:1</option>
+                        </select>
+                    </div>
+                    <p class="settings-hint">
+                        只对能出图的模型生效；型号不支持的尺寸或宽高比会自动调整或忽略
+                    </p>
                     <!-- Gemini 模型参数 -->
                     <details class="model-params-details">
                         <summary class="model-params-summary">

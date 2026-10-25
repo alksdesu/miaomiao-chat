@@ -61,7 +61,8 @@ const _rawState = {
     imageTimeoutMs: 60000,
     maxImageBufferSize: 100 * 1024 * 1024, // 100MB
     uploadedImages: [],
-    imageSize: '2K', // '2K' | '4K'
+    imageSize: '', // '' 表示按模型默认尺寸 | '1K' | '2K' | '4K'
+    imageAspectRatio: '', // '' 表示按模型默认宽高比
     fastImageCompression: false, // 高速压缩模式（512px 超级压缩）
     pdfMode: 'standard', // PDF 处理模式: 'standard' | 'compat' | 'render'
 

@@ -225,3 +225,60 @@ describe('handleNonStreamResponse - 多回复', () => {
         expect(saveAssistantMessageAsync).not.toHaveBeenCalled();
     });
 });
+
+describe('handleNonStreamResponse - Gemini 签名', () => {
+    it('工具调用回复的签名写进 thinking part、调用 part 与 meta，续发时才能回放', async () => {
+        const { response, ctx } = makeCtx({
+            replies: [
+                {
+                    content: '',
+                    thinkingContent: '计划',
+                    thoughtSignature: 'sig_1',
+                    hasToolCalls: true,
+                    toolCalls: [
+                        {
+                            id: 'fc1',
+                            name: 'search',
+                            arguments: {},
+                            thoughtSignature: 'sig_1',
+                            mode: 'native'
+                        }
+                    ]
+                }
+            ]
+        });
+        ctx.adapter.signatureFormat = 'gemini';
+
+        await handleNonStreamResponse(response, ctx);
+
+        const [parts, meta] = saveAssistantMessageAsync.mock.calls[0];
+        expect(parts.find((p) => p.type === 'thinking')).toMatchObject({
+            signature: 'sig_1',
+            signatureFormat: 'gemini'
+        });
+        expect(parts.find((p) => p.type === 'tool_call')).toMatchObject({
+            thoughtSignature: 'sig_1'
+        });
+        expect(meta.raw.gemini).toEqual({ thoughtSignature: 'sig_1' });
+    });
+
+    it('普通回复的签名写进 thinking part 与 meta', async () => {
+        const { response, ctx } = makeCtx({
+            replies: [
+                {
+                    content: '回答',
+                    thinkingContent: '思考',
+                    thoughtSignature: 'sig_2',
+                    stop: { kind: 'end', reason: 'STOP' }
+                }
+            ]
+        });
+        ctx.adapter.signatureFormat = 'gemini';
+
+        await handleNonStreamResponse(response, ctx);
+
+        const [parts, meta] = saveAssistantMessageAsync.mock.calls[0];
+        expect(parts.find((p) => p.type === 'thinking')).toMatchObject({ signature: 'sig_2' });
+        expect(meta.raw.gemini).toEqual({ thoughtSignature: 'sig_2' });
+    });
+});

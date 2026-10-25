@@ -10,6 +10,7 @@ import { parseDataURL } from '../../utils/file-helpers.js';
 import { getMappedId } from '../format-converter.js';
 import { TOOL_INTERRUPTED_MESSAGE } from '../../utils/constants.js';
 import { injectToolsToOpenAI, getXMLInjectionStats } from '../../tools/tool-injection.js';
+import { clampToSupportedLevel } from '../reasoning.js';
 
 // ========== 通用判定与字符串化 ==========
 
@@ -241,6 +242,8 @@ export function applyOpenAITools(
 
 // 推理强度由低到高
 const OPENAI_EFFORTS = Object.freeze(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+// 开启推理时可用的档位，不含 none
+const OPENAI_REASONING_EFFORTS = Object.freeze(OPENAI_EFFORTS.filter((level) => level !== 'none'));
 const OPENAI_SAMPLING_KEYS = Object.freeze([
     'temperature',
     'top_p',
@@ -256,14 +259,9 @@ const OPENAI_SAMPLING_KEYS = Object.freeze([
  * @returns {string}
  */
 export function resolveOpenAIEffort(strength, supported, notices) {
-    const requested = OPENAI_EFFORTS.includes(strength) && strength !== 'none' ? strength : 'high';
-    if (!supported || supported.includes(requested)) return requested;
-
-    const usable = OPENAI_EFFORTS.filter((level) => level !== 'none' && supported.includes(level));
-    if (usable.length === 0) return requested;
-    const rank = OPENAI_EFFORTS.indexOf(requested);
-    const lower = usable.filter((level) => OPENAI_EFFORTS.indexOf(level) < rank);
-    const effort = lower.length > 0 ? lower[lower.length - 1] : usable[0];
+    const requested = OPENAI_REASONING_EFFORTS.includes(strength) ? strength : 'high';
+    const effort = clampToSupportedLevel(requested, OPENAI_REASONING_EFFORTS, supported);
+    if (effort === requested) return requested;
     notices.push({
         key: 'openai.effort',
         message: `当前模型不支持推理强度 ${requested}，已改用 ${effort}`

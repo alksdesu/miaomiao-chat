@@ -465,6 +465,16 @@ describe('config-helpers', () => {
             expect(state.imageSize).toBe('medium');
         });
 
+        it('imageAspectSelect change 更新', () => {
+            const select = document.createElement('select');
+            select.innerHTML = '<option value="">default</option><option value="4:3">4:3</option>';
+            elements.imageAspectSelect = select;
+            initOtherConfigInputs();
+            select.value = '4:3';
+            select.dispatchEvent(new Event('change'));
+            expect(state.imageAspectRatio).toBe('4:3');
+        });
+
         it('geminiApiKeyInHeaderToggle change', () => {
             const cb = document.createElement('input');
             cb.type = 'checkbox';

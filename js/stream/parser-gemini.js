@@ -18,6 +18,19 @@ const MAX_TEXT_RESPONSE_LENGTH = 200000;
 const MAX_IMAGE_RESPONSE_LENGTH = 60000000;
 
 /**
+ * functionCall 的签名：调用自带的签名优先；并行调用只有第一个调用带签名，
+ * 签名落在前面的 part 上时由第一个调用接收，后续调用不再复用
+ * @param {Object} part
+ * @param {string|null} latestSignature 本次回复里最近收到的签名
+ * @param {number} priorCallCount 本次回复里已经收到的调用数
+ * @returns {string|null}
+ */
+export function resolveFunctionCallSignature(part, latestSignature, priorCallCount) {
+    if (part.thoughtSignature) return part.thoughtSignature;
+    return priorCallCount === 0 ? latestSignature || null : null;
+}
+
+/**
  * Gemini 流解析器
  */
 export class GeminiStreamParser extends BaseStreamParser {
@@ -167,8 +180,11 @@ export class GeminiStreamParser extends BaseStreamParser {
         if (part.functionCall && !this.xmlMode) {
             const fc = part.functionCall;
             const id = fc.id || `gemini_tc_${Date.now()}_${this.toolCalls.length}`;
-            // 就近原则：functionCall part 自带 thoughtSignature 优先，避免被前面 thinking 的累积签名覆盖
-            const sigForCall = part.thoughtSignature || this.thoughtSignature || null;
+            const sigForCall = resolveFunctionCallSignature(
+                part,
+                this.thoughtSignature,
+                this.toolCalls.length
+            );
             // fc.id 真值时显式标记 originalFormat=gemini，避免短 id 不带前缀被前缀启发式误判
             // 兜底生成的 gemini_tc_* 也走 gemini 槽，下游 adapter 仍能用 startsWith('gemini_tc_') 区分回传与否
             this.toolCalls.push({

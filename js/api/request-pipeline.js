@@ -44,6 +44,12 @@ function findProfileAlias(provider, model) {
     return alias || null;
 }
 
+// 部分型号要求客户端超时不低于指定值，用户设置更长时以用户为准
+function applyMinTimeout(value, minTimeoutMs) {
+    if (!minTimeoutMs) return value;
+    return Number.isFinite(value) && value > minTimeoutMs ? value : minTimeoutMs;
+}
+
 export function captureRequestProfile(adapter, model) {
     let provider = null;
     let capabilities = null;
@@ -55,6 +61,9 @@ export function captureRequestProfile(adapter, model) {
     } catch (error) {
         logger.warn('[RequestProfile] 提供商快照读取失败，使用请求参数兜底:', error);
     }
+    const profile = resolveModelProfile(adapter.apiFormat, model, {
+        alias: findProfileAlias(provider, model)
+    });
     const stateSnapshot = {
         streamEnabled: !!state.streamEnabled,
         codeExecutionEnabled: !!state.codeExecutionEnabled,
@@ -63,19 +72,17 @@ export function captureRequestProfile(adapter, model) {
         computerUsePermissions: cloneValue(state.computerUsePermissions),
         xmlToolCallingEnabled: !!state.xmlToolCallingEnabled,
         fastImageCompression: !!state.fastImageCompression,
-        streamIdleTimeout: state.streamIdleTimeout,
-        requestTimeout: state.requestTimeout
+        streamIdleTimeout: applyMinTimeout(state.streamIdleTimeout, profile.minTimeoutMs),
+        requestTimeout: applyMinTimeout(state.requestTimeout, profile.minTimeoutMs)
     };
-    const profile = resolveModelProfile(adapter.apiFormat, model, {
-        alias: findProfileAlias(provider, model)
-    });
     const systemCtx = buildSystemContext();
     const prefill =
         adapter.requestFeatures?.prefill === false ? null : collectPrefill(adapter.apiFormat);
+    const toolNotices = [];
     const tools =
         adapter.requestFeatures?.tools === false
             ? []
-            : collectTools(adapter, stateSnapshot, profile);
+            : collectTools(adapter, stateSnapshot, profile, toolNotices);
     const generation = adapter.buildGenerationParams(captureGenerationSettings(adapter.apiFormat), {
         model: model || '',
         profile,
@@ -92,7 +99,7 @@ export function captureRequestProfile(adapter, model) {
         modelParams: cloneValue(generation.modelParams),
         thinkingCfg: cloneValue(generation.thinkingCfg),
         verbosityCfg: cloneValue(generation.verbosityCfg),
-        notices: cloneValue(generation.notices || []),
+        notices: cloneValue([...toolNotices, ...(generation.notices || [])]),
         customHeaders: cloneValue(getCustomHeadersObject()),
         systemCtx: cloneValue(systemCtx),
         prefill: cloneValue(prefill),
@@ -146,8 +153,8 @@ function collectPrefill(apiFormat) {
 /**
  * 收集工具列表：adapter.collectBuiltinTools + getToolsForAPI + adapter.formatSystemTools
  */
-function collectTools(adapter, stateRef, profile) {
-    const tools = [...adapter.collectBuiltinTools(stateRef, { profile })];
+function collectTools(adapter, stateRef, profile, notices) {
+    const tools = [...adapter.collectBuiltinTools(stateRef, { profile, notices })];
     try {
         const systemTools = getToolsForAPI(adapter.apiFormat);
         tools.push(...adapter.formatSystemTools(systemTools));
@@ -236,6 +243,7 @@ export async function executeRequest(
         tools,
         isXmlMode: requestProfile.isXmlMode,
         profile: requestProfile.profile,
+        capabilities: requestProfile.capabilities,
         formatSettings: requestProfile.formatSettings,
         state: requestProfile.state,
         endpoint, // Gemini Vertex vs AI Studio safetySettings 需要看 endpoint

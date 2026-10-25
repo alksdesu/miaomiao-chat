@@ -385,6 +385,13 @@ describe('applyConfigToState', () => {
         expect(state.webSearchEnabled).toBe(true);
     });
 
+    it('应用出图宽高比，旧配置缺少该字段时恢复为按模型默认', () => {
+        applyConfigToState({ configVersion: 2, imageAspectRatio: '16:9', providers: [] });
+        expect(state.imageAspectRatio).toBe('16:9');
+        applyConfigToState({ configVersion: 2, providers: [] });
+        expect(state.imageAspectRatio).toBe('');
+    });
+
     it('功能开关缺失时使用默认值', () => {
         applyConfigToState({ configVersion: 2, providers: [] });
         expect(state.streamEnabled).toBe(true);

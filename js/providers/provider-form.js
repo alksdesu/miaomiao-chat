@@ -132,10 +132,10 @@ export function showProviderForm(providerId) {
             <div class="form-group gemini-only" style="display: ${provider?.apiFormat === 'gemini' || !provider ? 'block' : 'none'};">
                 <div class="form-group-inline">
                     <input type="checkbox" id="detail-provider-gemini-header"
-                           ${provider?.geminiApiKeyInHeader ? 'checked' : ''} />
+                           ${(provider ? provider.geminiApiKeyInHeader : true) ? 'checked' : ''} />
                     <label for="detail-provider-gemini-header">通过请求头传递 API Key</label>
                 </div>
-                <p class="form-hint">启用后使用 x-goog-api-key 请求头（适用于代理）</p>
+                <p class="form-hint">使用 x-goog-api-key 请求头；关闭后 key 放在 URL 的 key 参数里，只在代理不认请求头时关闭</p>
             </div>
 
             ${

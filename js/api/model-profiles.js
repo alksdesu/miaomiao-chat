@@ -345,8 +345,9 @@ const OPENAI_RULES = [
 // ========== Gemini ==========
 
 const GEMINI_BASE = Object.freeze({
-    // level / budget 以外的 'auto' 表示未识别：沿用按名称推断的旧规则
-    thinking: { mode: 'auto', levels: null, budgetRange: null },
+    // level / budget 以外的 'auto' 表示未识别：按名称推断用档位还是预算，不收敛
+    // offBudget 为关闭思维链时发送的预算，null 表示型号不能关闭思考，改发最低预算
+    thinking: { mode: 'auto', levels: null, budgetRange: null, offBudget: null },
     sampling: 'allowed',
     // output 为 null 表示未识别：沿用设置面板的出图配置
     image: { output: null, sizes: null, aspectRatios: null },
@@ -365,9 +366,9 @@ function geminiText(levels, overrides = {}) {
     };
 }
 
-function geminiBudget(budgetRange) {
+function geminiBudget(budgetRange, offBudget) {
     return {
-        thinking: { mode: 'budget', levels: null, budgetRange },
+        thinking: { mode: 'budget', levels: null, budgetRange, offBudget },
         sampling: 'allowed',
         image: { output: false, sizes: null, aspectRatios: null },
         minTimeoutMs: null,
@@ -481,17 +482,17 @@ const GEMINI_RULES = [
     {
         id: 'gemini-2.5-flash-lite',
         match: modelToken('gemini-2.5-flash-lite'),
-        profile: geminiBudget([512, 24576])
+        profile: geminiBudget([512, 24576], 0)
     },
     {
         id: 'gemini-2.5-flash',
         match: modelToken('gemini-2.5-flash'),
-        profile: geminiBudget([0, 24576])
+        profile: geminiBudget([0, 24576], 0)
     },
     {
         id: 'gemini-2.5-pro',
         match: modelToken('gemini-2.5-pro'),
-        profile: geminiBudget([128, 32768])
+        profile: geminiBudget([128, 32768], null)
     }
 ];
 

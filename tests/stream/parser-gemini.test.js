@@ -310,8 +310,31 @@ describe('parseGeminiStream - 工具调用', () => {
             'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"search","args":{"q":"test"}}}]}}]}'
         ]);
 
-        await parseGeminiStream(reader);
-        // 工具调用在 onStreamEnd 处理
+        const parser = await parseGeminiStream(reader);
+
+        expect(parser.toolCalls).toHaveLength(1);
+        expect(parser.toolCalls[0]).toMatchObject({ name: 'search', arguments: { q: 'test' } });
+    });
+
+    it('并行函数调用只有第一个调用带签名', async () => {
+        const reader = createMockReader([
+            'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"fa","args":{}},"thoughtSignature":"sig_a"},{"functionCall":{"name":"fb","args":{}}}]}}]}'
+        ]);
+
+        const parser = await parseGeminiStream(reader);
+
+        expect(parser.toolCalls.map((tc) => tc.thoughtSignature)).toEqual(['sig_a', null]);
+    });
+
+    it('签名落在前面的思考 part 上时由第一个调用接收', async () => {
+        const reader = createMockReader([
+            'data: {"candidates":[{"content":{"parts":[{"text":"plan","thought":true,"thoughtSignature":"sig_t"}]}}]}',
+            'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"fa","args":{}}},{"functionCall":{"name":"fb","args":{}}}]}}]}'
+        ]);
+
+        const parser = await parseGeminiStream(reader);
+
+        expect(parser.toolCalls.map((tc) => tc.thoughtSignature)).toEqual(['sig_t', null]);
     });
 });
 

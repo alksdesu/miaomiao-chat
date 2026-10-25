@@ -212,6 +212,13 @@ describe('buildConfigObject 边界', () => {
         expect(config.imageSize).toBe('4K');
     });
 
+    it('包含 imageAspectRatio，缺省为空字符串', () => {
+        state.imageAspectRatio = '16:9';
+        expect(buildConfigObject().imageAspectRatio).toBe('16:9');
+        state.imageAspectRatio = undefined;
+        expect(buildConfigObject().imageAspectRatio).toBe('');
+    });
+
     it('包含 fastImageCompression', () => {
         state.fastImageCompression = true;
         const config = buildConfigObject();

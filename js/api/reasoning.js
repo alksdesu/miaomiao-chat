@@ -55,3 +55,33 @@ export function resolveThinkingBudget(reasoning, budgetMap, fallback = 16384) {
     if (strength === 'custom') return reasoning.budget;
     return budgetMap[strength] || fallback;
 }
+
+/**
+ * 自定义预算换算成最接近的 low / medium / high 档位
+ * @param {number} budget
+ * @param {{ low: number, medium: number, high: number }} budgetMap
+ * @returns {'low'|'medium'|'high'}
+ */
+export function nearestBudgetStrength(budget, budgetMap) {
+    const value = Number(budget) || 0;
+    const { low, medium, high } = budgetMap;
+    if (value < (low + medium) / 2) return 'low';
+    if (value < (medium + high) / 2) return 'medium';
+    return 'high';
+}
+
+/**
+ * 档位收敛到型号支持的范围：优先取更低的最近档位，没有更低的档位时取支持的最低档
+ * @param {string} level
+ * @param {readonly string[]} order 由低到高的全部档位
+ * @param {readonly string[]|null} supported 型号支持的档位，null 表示不限制
+ * @returns {string}
+ */
+export function clampToSupportedLevel(level, order, supported) {
+    if (!supported || supported.includes(level)) return level;
+    const usable = order.filter((item) => supported.includes(item));
+    if (usable.length === 0) return level;
+    const rank = order.indexOf(level);
+    const lower = usable.filter((item) => order.indexOf(item) < rank);
+    return lower.length > 0 ? lower[lower.length - 1] : usable[0];
+}

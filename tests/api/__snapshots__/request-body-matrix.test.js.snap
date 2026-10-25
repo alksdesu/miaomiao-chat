@@ -2178,30 +2178,26 @@ exports[`请求体矩阵快照 > gemini api key in header 1`] = `
       },
     ],
     "generationConfig": {
-      "temperature": 1,
-      "topK": 40,
-      "topP": 0.95,
+      "thinkingConfig": {
+        "thinkingLevel": "LOW",
+      },
     },
     "safetySettings": [
       {
         "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_HARASSMENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "threshold": "BLOCK_NONE",
-      },
-      {
-        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
     ],
   },
@@ -2243,37 +2239,26 @@ exports[`请求体矩阵快照 > gemini defaults 3.8-flash with 2K select 1`] = 
       },
     ],
     "generationConfig": {
-      "imageConfig": {
-        "imageSize": "2K",
+      "thinkingConfig": {
+        "thinkingLevel": "LOW",
       },
-      "responseModalities": [
-        "TEXT",
-        "IMAGE",
-      ],
-      "temperature": 1,
-      "topK": 40,
-      "topP": 0.95,
     },
     "safetySettings": [
       {
         "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_HARASSMENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "threshold": "BLOCK_NONE",
-      },
-      {
-        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
     ],
   },
@@ -2314,30 +2299,26 @@ exports[`请求体矩阵快照 > gemini defaults 3.8-flash without image size 1`
       },
     ],
     "generationConfig": {
-      "temperature": 1,
-      "topK": 40,
-      "topP": 0.95,
+      "thinkingConfig": {
+        "thinkingLevel": "LOW",
+      },
     },
     "safetySettings": [
       {
         "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_HARASSMENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "threshold": "BLOCK_NONE",
-      },
-      {
-        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
     ],
   },
@@ -2394,30 +2375,26 @@ AI 生成的图片（1 张）：",
       },
     ],
     "generationConfig": {
-      "temperature": 1,
-      "topK": 40,
-      "topP": 0.95,
+      "thinkingConfig": {
+        "thinkingLevel": "LOW",
+      },
     },
     "safetySettings": [
       {
         "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_HARASSMENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "threshold": "BLOCK_NONE",
-      },
-      {
-        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
     ],
   },
@@ -2458,30 +2435,26 @@ exports[`请求体矩阵快照 > gemini native tools with builtins 1`] = `
       },
     ],
     "generationConfig": {
-      "temperature": 1,
-      "topK": 40,
-      "topP": 0.95,
+      "thinkingConfig": {
+        "thinkingLevel": "LOW",
+      },
     },
     "safetySettings": [
       {
         "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_HARASSMENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "threshold": "BLOCK_NONE",
-      },
-      {
-        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
     ],
     "tools": [
@@ -2552,30 +2525,26 @@ exports[`请求体矩阵快照 > gemini non-stream 4-argon 1`] = `
       },
     ],
     "generationConfig": {
-      "temperature": 1,
-      "topK": 40,
-      "topP": 0.95,
+      "thinkingConfig": {
+        "thinkingLevel": "LOW",
+      },
     },
     "safetySettings": [
       {
         "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_HARASSMENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "threshold": "BLOCK_NONE",
-      },
-      {
-        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
     ],
   },
@@ -2609,7 +2578,6 @@ exports[`请求体矩阵快照 > gemini rich history 1`] = `
           {
             "text": "Looking at the image",
             "thought": true,
-            "thoughtSignature": "sig-a-gemini",
           },
           {
             "text": "It is a cat.",
@@ -2631,7 +2599,6 @@ exports[`请求体矩阵快照 > gemini rich history 1`] = `
           {
             "text": "Need the weather tool",
             "thought": true,
-            "thoughtSignature": "sig-fc-w1",
           },
           {
             "functionCall": {
@@ -2644,7 +2611,6 @@ exports[`请求体矩阵快照 > gemini rich history 1`] = `
           },
           {
             "text": "It is sunny in Paris.",
-            "thoughtSignature": "sig-fc-w1",
           },
         ],
         "role": "model",
@@ -2673,30 +2639,26 @@ exports[`请求体矩阵快照 > gemini rich history 1`] = `
       },
     ],
     "generationConfig": {
-      "temperature": 1,
-      "topK": 40,
-      "topP": 0.95,
+      "thinkingConfig": {
+        "thinkingLevel": "LOW",
+      },
     },
     "safetySettings": [
       {
         "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_HARASSMENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "threshold": "BLOCK_NONE",
-      },
-      {
-        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
     ],
   },
@@ -2739,29 +2701,28 @@ exports[`请求体矩阵快照 > gemini sampling params 2.5-flash 1`] = `
     "generationConfig": {
       "maxOutputTokens": 8192,
       "temperature": 0.7,
+      "thinkingConfig": {
+        "thinkingBudget": 0,
+      },
       "topK": 20,
       "topP": 0.9,
     },
     "safetySettings": [
       {
         "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_HARASSMENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "threshold": "BLOCK_NONE",
-      },
-      {
-        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
     ],
   },
@@ -2803,30 +2764,26 @@ exports[`请求体矩阵快照 > gemini sampling params 4-argon 1`] = `
     ],
     "generationConfig": {
       "maxOutputTokens": 8192,
-      "temperature": 0.7,
-      "topK": 20,
-      "topP": 0.9,
+      "thinkingConfig": {
+        "thinkingLevel": "LOW",
+      },
     },
     "safetySettings": [
       {
         "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_HARASSMENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "threshold": "BLOCK_NONE",
-      },
-      {
-        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
     ],
   },
@@ -2854,7 +2811,6 @@ exports[`请求体矩阵快照 > gemini signature placement 1`] = `
           {
             "text": "Plan both lookups",
             "thought": true,
-            "thoughtSignature": "sig-call-a",
           },
           {
             "functionCall": {
@@ -2872,7 +2828,6 @@ exports[`请求体矩阵快照 > gemini signature placement 1`] = `
               },
               "name": "get_weather",
             },
-            "thoughtSignature": "sig-call-a",
           },
         ],
         "role": "model",
@@ -2905,11 +2860,9 @@ exports[`请求体矩阵快照 > gemini signature placement 1`] = `
           {
             "text": "Summarize",
             "thought": true,
-            "thoughtSignature": "sig-summary",
           },
           {
             "text": "Paris is sunny. ",
-            "thoughtSignature": "sig-summary",
           },
           {
             "text": "Rome is rainy.",
@@ -2928,30 +2881,26 @@ exports[`请求体矩阵快照 > gemini signature placement 1`] = `
       },
     ],
     "generationConfig": {
-      "temperature": 1,
-      "topK": 40,
-      "topP": 0.95,
+      "thinkingConfig": {
+        "thinkingLevel": "LOW",
+      },
     },
     "safetySettings": [
       {
         "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_HARASSMENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "threshold": "BLOCK_NONE",
-      },
-      {
-        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
     ],
   },
@@ -3016,30 +2965,26 @@ exports[`请求体矩阵快照 > gemini system parts monitor prefill 1`] = `
       },
     ],
     "generationConfig": {
-      "temperature": 1,
-      "topK": 40,
-      "topP": 0.95,
+      "thinkingConfig": {
+        "thinkingLevel": "LOW",
+      },
     },
     "safetySettings": [
       {
         "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_HARASSMENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "threshold": "BLOCK_NONE",
-      },
-      {
-        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
     ],
     "systemInstruction": {
@@ -3095,34 +3040,27 @@ exports[`请求体矩阵快照 > gemini thinking custom 2.5-flash 1`] = `
       },
     ],
     "generationConfig": {
-      "temperature": 1,
       "thinkingConfig": {
         "includeThoughts": true,
         "thinkingBudget": 12000,
       },
-      "topK": 40,
-      "topP": 0.95,
     },
     "safetySettings": [
       {
         "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_HARASSMENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "threshold": "BLOCK_NONE",
-      },
-      {
-        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
     ],
   },
@@ -3163,34 +3101,27 @@ exports[`请求体矩阵快照 > gemini thinking high 4-argon 1`] = `
       },
     ],
     "generationConfig": {
-      "temperature": 1,
       "thinkingConfig": {
         "includeThoughts": true,
-        "thinkingBudget": 16384,
+        "thinkingLevel": "HIGH",
       },
-      "topK": 40,
-      "topP": 0.95,
     },
     "safetySettings": [
       {
         "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_HARASSMENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "threshold": "BLOCK_NONE",
-      },
-      {
-        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
     ],
   },
@@ -3232,40 +3163,33 @@ exports[`请求体矩阵快照 > gemini thinking low 3.1-flash-lite-image 4K 1`]
     ],
     "generationConfig": {
       "imageConfig": {
-        "imageSize": "4K",
+        "imageSize": "1K",
       },
       "responseModalities": [
         "TEXT",
         "IMAGE",
       ],
-      "temperature": 1,
       "thinkingConfig": {
         "includeThoughts": true,
-        "thinkingLevel": "LOW",
+        "thinkingLevel": "MINIMAL",
       },
-      "topK": 40,
-      "topP": 0.95,
     },
     "safetySettings": [
       {
         "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_HARASSMENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "threshold": "BLOCK_NONE",
-      },
-      {
-        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
     ],
   },
@@ -3313,34 +3237,27 @@ exports[`请求体矩阵快照 > gemini thinking low nano-banana-2.1 1`] = `
         "TEXT",
         "IMAGE",
       ],
-      "temperature": 1,
       "thinkingConfig": {
         "includeThoughts": true,
-        "thinkingBudget": 4096,
+        "thinkingLevel": "MINIMAL",
       },
-      "topK": 40,
-      "topP": 0.95,
     },
     "safetySettings": [
       {
         "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_HARASSMENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "threshold": "BLOCK_NONE",
-      },
-      {
-        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
     ],
   },
@@ -3381,34 +3298,27 @@ exports[`请求体矩阵快照 > gemini thinking medium 3.8-flash 1`] = `
       },
     ],
     "generationConfig": {
-      "temperature": 1,
       "thinkingConfig": {
         "includeThoughts": true,
-        "thinkingLevel": "HIGH",
+        "thinkingLevel": "MEDIUM",
       },
-      "topK": 40,
-      "topP": 0.95,
     },
     "safetySettings": [
       {
         "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_HARASSMENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "threshold": "BLOCK_NONE",
-      },
-      {
-        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
     ],
   },
@@ -3449,34 +3359,27 @@ exports[`请求体矩阵快照 > gemini thinking minimal 3.6-flash 1`] = `
       },
     ],
     "generationConfig": {
-      "temperature": 1,
       "thinkingConfig": {
         "includeThoughts": true,
-        "thinkingLevel": "LOW",
+        "thinkingLevel": "MINIMAL",
       },
-      "topK": 40,
-      "topP": 0.95,
     },
     "safetySettings": [
       {
         "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_HARASSMENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "threshold": "BLOCK_NONE",
-      },
-      {
-        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
     ],
   },
@@ -3517,34 +3420,27 @@ exports[`请求体矩阵快照 > gemini thinking minimal 3.8-flash 1`] = `
       },
     ],
     "generationConfig": {
-      "temperature": 1,
       "thinkingConfig": {
         "includeThoughts": true,
         "thinkingLevel": "LOW",
       },
-      "topK": 40,
-      "topP": 0.95,
     },
     "safetySettings": [
       {
         "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_HARASSMENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "threshold": "BLOCK_NONE",
-      },
-      {
-        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
     ],
   },
@@ -3585,30 +3481,26 @@ exports[`请求体矩阵快照 > gemini thinking off 4-argon 1`] = `
       },
     ],
     "generationConfig": {
-      "temperature": 1,
-      "topK": 40,
-      "topP": 0.95,
+      "thinkingConfig": {
+        "thinkingLevel": "LOW",
+      },
     },
     "safetySettings": [
       {
         "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_HARASSMENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "threshold": "BLOCK_NONE",
-      },
-      {
-        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
     ],
   },
@@ -3648,38 +3540,23 @@ exports[`请求体矩阵快照 > gemini unknown proxy model with 2K select 1`] =
         "role": "user",
       },
     ],
-    "generationConfig": {
-      "imageConfig": {
-        "imageSize": "2K",
-      },
-      "responseModalities": [
-        "TEXT",
-        "IMAGE",
-      ],
-      "temperature": 1,
-      "topK": 40,
-      "topP": 0.95,
-    },
+    "generationConfig": {},
     "safetySettings": [
       {
         "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_HARASSMENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "threshold": "BLOCK_NONE",
-      },
-      {
-        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
     ],
   },
@@ -3720,9 +3597,9 @@ exports[`请求体矩阵快照 > gemini vertex endpoint 1`] = `
       },
     ],
     "generationConfig": {
-      "temperature": 1,
-      "topK": 40,
-      "topP": 0.95,
+      "thinkingConfig": {
+        "thinkingLevel": "LOW",
+      },
     },
     "safetySettings": [
       {
@@ -3804,30 +3681,26 @@ exports[`请求体矩阵快照 > gemini xml tools 1`] = `
       },
     ],
     "generationConfig": {
-      "temperature": 1,
-      "topK": 40,
-      "topP": 0.95,
+      "thinkingConfig": {
+        "thinkingLevel": "LOW",
+      },
     },
     "safetySettings": [
       {
         "category": "HARM_CATEGORY_HATE_SPEECH",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_HARASSMENT",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
       {
         "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        "threshold": "BLOCK_NONE",
-      },
-      {
-        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
-        "threshold": "BLOCK_NONE",
+        "threshold": "OFF",
       },
     ],
     "systemInstruction": {

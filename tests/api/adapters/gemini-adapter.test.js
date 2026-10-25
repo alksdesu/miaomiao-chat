@@ -62,6 +62,7 @@ vi.mock('../../../js/utils/media.js', () => ({
 }));
 
 import { geminiAdapter } from '../../../js/api/adapters/gemini-adapter.js';
+import { resolveModelProfile } from '../../../js/api/model-profiles.js';
 import { PartType, MediaKind, Role } from '../../../js/messages/schema.js';
 import { state } from '../../../js/core/state.js';
 import { getCurrentProvider } from '../../../js/providers/manager.js';
@@ -134,8 +135,9 @@ describe('toGeminiContents', () => {
         ];
         const out = geminiAdapter.partsToAPIMessages(msgs);
         expect(out[0].parts[0]).toEqual({ text: '思考中', thought: true });
-        expect(out[0].parts[1]).toEqual({ text: '回答' });
-        expect(out[0].thoughtSignature).toBe('sig_1');
+        // 不含函数调用的回复把签名放回最后一个 part，消息顶层不是 Content 的字段
+        expect(out[0].parts[1]).toEqual({ text: '回答', thoughtSignature: 'sig_1' });
+        expect(out[0]).not.toHaveProperty('thoughtSignature');
     });
 
     it('媒体 base64 转为 inlineData', () => {
@@ -484,20 +486,29 @@ describe('captureFormatSettings', () => {
         geminiSystemParts: []
     };
 
-    it('读取 API Key 传递方式与出图尺寸', () => {
+    it('读取 API Key 传递方式、出图尺寸与宽高比', () => {
         expect(
             geminiAdapter.captureFormatSettings({
                 ...baseState,
                 geminiApiKeyInHeader: true,
-                imageSize: '4K'
+                imageSize: '4K',
+                imageAspectRatio: '16:9'
             })
-        ).toEqual({ apiKeyInHeader: true, imageSize: '4K', systemParts: null });
+        ).toEqual({
+            apiKeyInHeader: true,
+            imageSize: '4K',
+            imageAspectRatio: '16:9',
+            systemParts: null
+        });
     });
 
-    it('出图尺寸缺省为空字符串', () => {
-        expect(
-            geminiAdapter.captureFormatSettings({ ...baseState, imageSize: undefined }).imageSize
-        ).toBe('');
+    it('出图尺寸与宽高比缺省为空字符串', () => {
+        const settings = geminiAdapter.captureFormatSettings({
+            ...baseState,
+            imageSize: undefined
+        });
+        expect(settings.imageSize).toBe('');
+        expect(settings.imageAspectRatio).toBe('');
     });
 
     it('多段 system parts 开启时过滤空段并替换模板变量', () => {
@@ -594,5 +605,243 @@ describe('API Key 传递与端点', () => {
                 { requestProfile: profile({ providerApiFormat: 'openai' }) }
             )
         ).toBe('https://proxy.example.com/v1/chat/completions');
+    });
+});
+
+// ========== 签名位置 ==========
+
+describe('thoughtSignature 只回放到收到它的 part', () => {
+    it('并行函数调用只有第一个调用带签名，思考 part 不带', () => {
+        const out = geminiAdapter.partsToAPIMessages([
+            newMsg('assistant', [
+                {
+                    type: PartType.THINKING,
+                    text: '思考',
+                    signature: 'sig_1',
+                    signatureFormat: 'gemini'
+                },
+                {
+                    type: PartType.TOOL_CALL,
+                    id: 'a',
+                    name: 'fa',
+                    args: {},
+                    thoughtSignature: 'sig_1',
+                    result: { content: 'A' }
+                },
+                {
+                    type: PartType.TOOL_CALL,
+                    id: 'b',
+                    name: 'fb',
+                    args: {},
+                    result: { content: 'B' }
+                }
+            ])
+        ]);
+        const calls = out[0].parts.filter((p) => p.functionCall);
+        expect(calls[0].thoughtSignature).toBe('sig_1');
+        expect(calls[1]).not.toHaveProperty('thoughtSignature');
+        expect(out[0].parts[0]).not.toHaveProperty('thoughtSignature');
+    });
+
+    it('parseResponse：签名只给收到它的调用，并行的后续调用不复用', () => {
+        const result = geminiAdapter.parseResponse({
+            candidates: [
+                {
+                    content: {
+                        parts: [
+                            { functionCall: { name: 'fa', args: {} }, thoughtSignature: 'sig_a' },
+                            { functionCall: { name: 'fb', args: {} } }
+                        ]
+                    }
+                }
+            ]
+        });
+        expect(result.toolCalls.map((tc) => tc.thoughtSignature)).toEqual(['sig_a', null]);
+        expect(result.thoughtSignature).toBe('sig_a');
+    });
+
+    it('parseResponse：签名落在前面的思考 part 上时由第一个调用接收', () => {
+        const result = geminiAdapter.parseResponse({
+            candidates: [
+                {
+                    content: {
+                        parts: [
+                            { text: 'plan', thought: true, thoughtSignature: 'sig_t' },
+                            { functionCall: { name: 'fa', args: {} } },
+                            { functionCall: { name: 'fb', args: {} } }
+                        ]
+                    }
+                }
+            ]
+        });
+        expect(result.toolCalls.map((tc) => tc.thoughtSignature)).toEqual(['sig_t', null]);
+    });
+});
+
+// ========== 内置工具 ==========
+
+describe('collectBuiltinTools', () => {
+    it('原生模式附带代码执行、搜索与网页读取', () => {
+        expect(
+            geminiAdapter.collectBuiltinTools(
+                { codeExecutionEnabled: true, webSearchEnabled: true },
+                {}
+            )
+        ).toEqual([{ codeExecution: {} }, { googleSearch: {} }, { urlContext: {} }]);
+    });
+
+    it('XML 模式下不附带服务端工具并提示', () => {
+        const notices = [];
+        expect(
+            geminiAdapter.collectBuiltinTools(
+                { codeExecutionEnabled: true, webSearchEnabled: true, xmlToolCallingEnabled: true },
+                { notices }
+            )
+        ).toEqual([]);
+        expect(notices).toEqual([
+            expect.objectContaining({
+                key: 'xml.builtin-tools',
+                message: expect.stringContaining('联网搜索、代码执行')
+            })
+        ]);
+    });
+});
+
+// ========== 请求体：出图配置、安全设置、contents ==========
+
+describe('buildRequestBody 按型号组装', () => {
+    const build = async (
+        model,
+        {
+            messages = [{ role: 'user', parts: [{ text: 'draw' }] }],
+            formatSettings = {},
+            capabilities = null,
+            endpoint = 'https://generativelanguage.googleapis.com'
+        } = {}
+    ) => {
+        const notices = [];
+        const body = await geminiAdapter.buildRequestBody({
+            messages,
+            model,
+            modelParams: {},
+            thinkingCfg: null,
+            verbosityCfg: null,
+            systemCtx: {},
+            prefill: null,
+            tools: [],
+            isXmlMode: false,
+            profile: resolveModelProfile('gemini', model),
+            capabilities,
+            formatSettings: {
+                apiKeyInHeader: true,
+                imageSize: '',
+                imageAspectRatio: '',
+                systemParts: null,
+                ...formatSettings
+            },
+            state: { streamEnabled: true },
+            endpoint,
+            notices
+        });
+        return { body, notices };
+    };
+
+    it('出图模型按设置发送尺寸与宽高比', async () => {
+        const { body, notices } = await build('gemini-nano-banana-2.1', {
+            formatSettings: { imageSize: '2K', imageAspectRatio: '8:1' }
+        });
+        expect(body.generationConfig.responseModalities).toEqual(['TEXT', 'IMAGE']);
+        expect(body.generationConfig.imageConfig).toEqual({ imageSize: '2K', aspectRatio: '8:1' });
+        expect(notices).toEqual([]);
+    });
+
+    it('尺寸与宽高比都未指定时只声明出图，不发 imageConfig', async () => {
+        const { body } = await build('gemini-nano-banana-2.1');
+        expect(body.generationConfig.responseModalities).toEqual(['TEXT', 'IMAGE']);
+        expect(body.generationConfig.imageConfig).toBeUndefined();
+    });
+
+    it('型号不支持的尺寸收敛、宽高比省略，并提示', async () => {
+        const { body, notices } = await build('gemini-3.1-flash-lite-image', {
+            formatSettings: { imageSize: '4K', imageAspectRatio: '8:1' }
+        });
+        expect(body.generationConfig.imageConfig).toEqual({ imageSize: '1K' });
+        expect(notices.map((n) => n.key)).toEqual(['gemini.image-size', 'gemini.image-aspect']);
+    });
+
+    it('不支持指定尺寸的型号省略 imageSize 并提示', async () => {
+        const { body, notices } = await build('gemini-2.5-flash-image', {
+            formatSettings: { imageSize: '2K' }
+        });
+        expect(body.generationConfig.responseModalities).toEqual(['TEXT', 'IMAGE']);
+        expect(body.generationConfig.imageConfig).toBeUndefined();
+        expect(notices).toEqual([expect.objectContaining({ key: 'gemini.image-size' })]);
+    });
+
+    it('文字模型不带出图配置', async () => {
+        const { body, notices } = await build('gemini-3.8-flash', {
+            formatSettings: { imageSize: '2K', imageAspectRatio: '16:9' }
+        });
+        expect(body.generationConfig.responseModalities).toBeUndefined();
+        expect(body.generationConfig.imageConfig).toBeUndefined();
+        expect(notices).toEqual([]);
+    });
+
+    it('未识别的型号按名称判断是否出图，用户标明不支持图片输出时不发', async () => {
+        const unknownImage = await build('my-image-model', { formatSettings: { imageSize: '2K' } });
+        expect(unknownImage.body.generationConfig.imageConfig).toEqual({ imageSize: '2K' });
+
+        const unknownText = await build('gemini-proxy-x', { formatSettings: { imageSize: '2K' } });
+        expect(unknownText.body.generationConfig.responseModalities).toBeUndefined();
+
+        const disabled = await build('gemini-nano-banana-2.1', {
+            capabilities: { imageInput: true, imageOutput: false }
+        });
+        expect(disabled.body.generationConfig.responseModalities).toBeUndefined();
+    });
+
+    it('AI Studio 四类可调类别设为 OFF，Vertex 十类设为 OFF', async () => {
+        const aiStudio = (await build('gemini-3.8-flash')).body.safetySettings;
+        expect(aiStudio.map((s) => s.category)).toEqual([
+            'HARM_CATEGORY_HATE_SPEECH',
+            'HARM_CATEGORY_DANGEROUS_CONTENT',
+            'HARM_CATEGORY_HARASSMENT',
+            'HARM_CATEGORY_SEXUALLY_EXPLICIT'
+        ]);
+        expect(aiStudio.every((s) => s.threshold === 'OFF')).toBe(true);
+
+        const vertex = (
+            await build('gemini-3.8-flash', {
+                endpoint: 'https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global'
+            })
+        ).body.safetySettings;
+        expect(vertex).toHaveLength(10);
+        expect(vertex.every((s) => s.threshold === 'OFF')).toBe(true);
+    });
+
+    it('contents 不带消息级签名，签名不会复制到同一条消息的其他 part', async () => {
+        const messages = geminiAdapter.partsToAPIMessages([
+            newMsg('user', [{ type: PartType.TEXT, text: 'q' }]),
+            newMsg('assistant', [
+                {
+                    type: PartType.THINKING,
+                    text: 't',
+                    signature: 'sig_1',
+                    signatureFormat: 'gemini'
+                },
+                { type: PartType.TEXT, text: 'a1' },
+                { type: PartType.TEXT, text: 'a2' }
+            ]),
+            newMsg('user', [{ type: PartType.TEXT, text: 'q2' }])
+        ]);
+        const { body } = await build('gemini-3.8-flash', { messages });
+        expect(body.contents[1]).toEqual({
+            role: 'model',
+            parts: [
+                { text: 't', thought: true },
+                { text: 'a1' },
+                { text: 'a2', thoughtSignature: 'sig_1' }
+            ]
+        });
     });
 });

@@ -48,6 +48,7 @@
  * @property {Array}    tools          pipeline 收集到的工具列表
  * @property {boolean}  isXmlMode      state.xmlToolCallingEnabled 快照
  * @property {Object}   profile        resolveModelProfile 输出（模型能力约束）
+ * @property {Object|null} capabilities 用户在模型编辑里设置的能力（图片输入 / 输出）
  * @property {Object|null} formatSettings adapter.captureFormatSettings 输出
  * @property {Object}   state          requestProfile.state 通用开关快照
  * @property {string}   endpoint       用户配置的原始端点
@@ -98,8 +99,9 @@
  *     非流式响应解析；isXmlMode 取自 requestProfile，缺省按原生工具协议解析
  *
  * 请求构造层
- * @property {(state: Object, ctx: {profile: Object}) => Array} collectBuiltinTools
- *     code_execution / web_search / computer_use 三家 schema 不同的内置工具，工具版本按能力表选择
+ * @property {(state: Object, ctx: {profile: Object, notices?: import('../request-notices.js').RequestNotice[]}) => Array} collectBuiltinTools
+ *     code_execution / web_search / computer_use 三家 schema 不同的内置工具，工具版本按能力表选择；
+ *     XML 模式下服务端工具无法通过提示词调用，不返回并提示
  * @property {(systemTools: Array) => Array} formatSystemTools
  *     getToolsForAPI 返回的系统工具列表的最终包装（Gemini 独有 functionDeclarations）
  * @property {(settings: import('../params.js').GenerationSettings, ctx: {model: string, profile: Object, nativeTools: boolean}) => GenerationParams} buildGenerationParams

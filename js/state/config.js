@@ -101,7 +101,8 @@ export function buildConfigObject() {
         // 但在配置导出时会被 export-import.js 的 filterRuntimeState() 过滤掉
         selectedModel: state.selectedModel ?? elements?.modelSelect?.value ?? '',
         apiFormat: state?.apiFormat ?? 'openai',
-        imageSize: state?.imageSize ?? '2K', // 使用 ?? 保留空字符串
+        imageSize: state?.imageSize ?? '', // 使用 ?? 保留空字符串
+        imageAspectRatio: state?.imageAspectRatio ?? '',
         pdfMode: state?.pdfMode ?? 'standard', // PDF 处理模式
         replyCount: state?.replyCount ?? 1,
         longChatRenderingMode: state?.longChatRenderingMode ?? 'auto',
@@ -486,6 +487,10 @@ export function applyConfigToState(config) {
         if (elements.imageSizeSelect) {
             elements.imageSizeSelect.value = config.imageSize;
         }
+    }
+    state.imageAspectRatio = config.imageAspectRatio ?? '';
+    if (elements.imageAspectSelect) {
+        elements.imageAspectSelect.value = state.imageAspectRatio;
     }
     // PDF 处理模式（向后兼容旧配置）
     if (config.pdfMode !== undefined) {

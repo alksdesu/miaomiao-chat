@@ -19,8 +19,13 @@ import {
     CLAUDE_DEFAULT_MAX_TOKENS_STREAM,
     CLAUDE_DEFAULT_MAX_TOKENS_NON_STREAM
 } from '../../utils/constants.js';
-import { resolveThinkingBudget } from '../reasoning.js';
+import {
+    resolveThinkingBudget,
+    nearestBudgetStrength,
+    clampToSupportedLevel
+} from '../reasoning.js';
 import { CLAUDE_EFFORTS } from '../model-profiles.js';
+import { pushXmlBuiltinToolsNotice } from '../request-notices.js';
 import { normalizeClaudeStop } from '../../messages/stop-reason.js';
 
 const CLAUDE_THINKING_BUDGETS = Object.freeze({ low: 2048, medium: 8192, high: 16384 });
@@ -517,15 +522,21 @@ function buildComputerTool(type) {
  * Claude 内置工具：code_execution / web_search / Computer Use（仅 Electron 且非 XML 模式）
  * computer 工具版本由能力表按型号给出
  */
-function collectBuiltinTools(stateRef, { profile } = {}) {
+function collectBuiltinTools(stateRef, { profile, notices } = {}) {
+    // 服务端工具由 Anthropic 执行，XML 模式下工具写进提示词无法这样调用；
+    // computer use 在 XML 模式下改用统一的自定义 computer 工具（来自 builtin/computer-use.js）
+    if (stateRef.xmlToolCallingEnabled) {
+        pushXmlBuiltinToolsNotice(stateRef, notices);
+        return [];
+    }
+
     const tools = [];
 
     if (stateRef.codeExecutionEnabled) {
         tools.push({ ...CLAUDE_BUILTIN_TOOLS.codeExecution });
     }
 
-    // XML 模式下使用统一的自定义 computer 工具（来自 builtin/computer-use.js）
-    if (stateRef.computerUseEnabled && isElectron() && !stateRef.xmlToolCallingEnabled) {
+    if (stateRef.computerUseEnabled && isElectron()) {
         const computerType = profile?.computerUse?.type;
         if (computerType && computerType !== COMPUTER_TOOLSET_TYPE) {
             tools.push(buildComputerTool(computerType));
@@ -557,22 +568,10 @@ const SAMPLING_KEYS = Object.freeze(['temperature', 'top_p', 'top_k']);
 // 开启思考时 top_p 只接受 [0.95, 1]
 const THINKING_MIN_TOP_P = 0.95;
 
-function clampEffort(effort, supported) {
-    if (!supported || supported.includes(effort)) return effort;
-    for (let rank = CLAUDE_EFFORTS.indexOf(effort) - 1; rank >= 0; rank--) {
-        if (supported.includes(CLAUDE_EFFORTS[rank])) return CLAUDE_EFFORTS[rank];
-    }
-    return supported[0];
-}
-
 // 只支持 adaptive 的型号收到预算设置时，按与预算档位最接近的 effort 换算
 function effortFromBudgetIntent(reasoning) {
     if (reasoning.strength === 'custom') {
-        const budget = Number(reasoning.budget) || 0;
-        const { low, medium, high } = CLAUDE_THINKING_BUDGETS;
-        if (budget < (low + medium) / 2) return 'low';
-        if (budget < (medium + high) / 2) return 'medium';
-        return 'high';
+        return nearestBudgetStrength(reasoning.budget, CLAUDE_THINKING_BUDGETS);
     }
     if (reasoning.strength === 'minimal') return 'low';
     return CLAUDE_EFFORTS.includes(reasoning.strength) ? reasoning.strength : 'high';
@@ -586,7 +585,10 @@ function adaptiveThinking(effort, reasoning, rules) {
     if (rules.blockBinding) {
         thinking.block_binding = { prefix_mismatch_behavior: 'drop_block' };
     }
-    return { thinking, output_config: { effort: clampEffort(effort, rules.efforts) } };
+    return {
+        thinking,
+        output_config: { effort: clampToSupportedLevel(effort, CLAUDE_EFFORTS, rules.efforts) }
+    };
 }
 
 function budgetThinking(reasoning) {

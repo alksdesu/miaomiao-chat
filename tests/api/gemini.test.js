@@ -166,11 +166,15 @@ describe('gemini API', () => {
         expect(body.safetySettings[0].threshold).toBe('OFF');
     });
 
-    it('AI Studio 使用 BLOCK_NONE threshold', async () => {
+    it('AI Studio 只设置四类可调类别，阈值为 OFF', async () => {
         await sendGeminiRequest('https://generativelanguage.googleapis.com', 'key', 'gemini-pro');
 
         const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
-        expect(body.safetySettings[0].threshold).toBe('BLOCK_NONE');
+        expect(body.safetySettings).toHaveLength(4);
+        expect(body.safetySettings.every((s) => s.threshold === 'OFF')).toBe(true);
+        expect(body.safetySettings.map((s) => s.category)).not.toContain(
+            'HARM_CATEGORY_CIVIC_INTEGRITY'
+        );
     });
 
     it('web search 启用', async () => {
@@ -228,13 +232,26 @@ describe('gemini API', () => {
         expect(body.systemInstruction.parts.length).toBe(2);
     });
 
-    it('出图尺寸取自 state.imageSize', async () => {
+    it('出图模型的尺寸取自 state.imageSize', async () => {
         state.imageSize = '4K';
-        await sendGeminiRequest('https://generativelanguage.googleapis.com', 'key', 'gemini-pro');
+        await sendGeminiRequest(
+            'https://generativelanguage.googleapis.com',
+            'key',
+            'gemini-3-pro-image-preview'
+        );
 
         const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
         expect(body.generationConfig.imageConfig).toEqual({ imageSize: '4K' });
         expect(body.generationConfig.responseModalities).toEqual(['TEXT', 'IMAGE']);
+    });
+
+    it('文字模型即使设置了出图尺寸也不带图片配置', async () => {
+        state.imageSize = '4K';
+        await sendGeminiRequest('https://generativelanguage.googleapis.com', 'key', 'gemini-pro');
+
+        const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+        expect(body.generationConfig.imageConfig).toBeUndefined();
+        expect(body.generationConfig.responseModalities).toBeUndefined();
     });
 
     it('未设置出图尺寸时不带图片配置', async () => {

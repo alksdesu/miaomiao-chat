@@ -190,9 +190,12 @@ export function syncUIWithState() {
     // 快捷开关 - 通过事件通知同步
     eventBus.emit('config:sync-quick-toggles');
 
-    // 图片尺寸选择
-    if (elements.imageSizeSelect && state.imageSize) {
-        elements.imageSizeSelect.value = state.imageSize;
+    // 出图尺寸与宽高比：空值表示按模型默认，也要同步，否则切换配置后下拉框停在旧值
+    if (elements.imageSizeSelect) {
+        elements.imageSizeSelect.value = state.imageSize || '';
+    }
+    if (elements.imageAspectSelect) {
+        elements.imageAspectSelect.value = state.imageAspectRatio || '';
     }
 
     // Gemini API key 传递方式
