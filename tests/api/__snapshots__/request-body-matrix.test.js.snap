@@ -1,0 +1,4384 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`OpenClaw 请求参数快照 > openclaw defaults 1`] = `
+{
+  "modelParams": {},
+  "thinkingCfg": null,
+  "verbosityCfg": null,
+}
+`;
+
+exports[`OpenClaw 请求参数快照 > openclaw params and budget thinking 1`] = `
+{
+  "modelParams": {
+    "max_tokens": 2048,
+    "temperature": 0.4,
+    "top_p": 0.8,
+  },
+  "thinkingCfg": {
+    "thinking": {
+      "budget_tokens": 9000,
+    },
+  },
+  "verbosityCfg": null,
+}
+`;
+
+exports[`请求体矩阵快照 > chat defaults 1`] = `
+{
+  "body": {
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-5.5",
+    "stream": true,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/chat/completions",
+}
+`;
+
+exports[`请求体矩阵快照 > chat image history with capabilities 1`] = `
+{
+  "body": {
+    "messages": [
+      {
+        "content": "Draw a cat",
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "text": "Here it is",
+            "type": "text",
+          },
+          {
+            "image_url": {
+              "url": "data:image/png;base64,QUFBQQ==",
+            },
+            "type": "image_url",
+          },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": [
+          {
+            "text": "Make it blue",
+            "type": "text",
+          },
+          {
+            "image_url": {
+              "url": "data:image/png;base64,QkJCQg==",
+            },
+            "type": "image_url",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "model": "gpt-5.5",
+    "stream": true,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/chat/completions",
+}
+`;
+
+exports[`请求体矩阵快照 > chat native tools gpt-5.5 1`] = `
+{
+  "body": {
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-5.5",
+    "parallel_tool_calls": true,
+    "stream": true,
+    "tool_choice": "auto",
+    "tools": [
+      {
+        "function": {
+          "description": "Get the weather for a city",
+          "name": "get_weather",
+          "parameters": {
+            "properties": {
+              "city": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "city",
+            ],
+            "type": "object",
+          },
+        },
+        "type": "function",
+      },
+    ],
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/chat/completions",
+}
+`;
+
+exports[`请求体矩阵快照 > chat native tools gpt-6-sol 1`] = `
+{
+  "body": {
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-6-sol",
+    "parallel_tool_calls": true,
+    "stream": true,
+    "tool_choice": "auto",
+    "tools": [
+      {
+        "function": {
+          "description": "Get the weather for a city",
+          "name": "get_weather",
+          "parameters": {
+            "properties": {
+              "city": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "city",
+            ],
+            "type": "object",
+          },
+        },
+        "type": "function",
+      },
+    ],
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/chat/completions",
+}
+`;
+
+exports[`请求体矩阵快照 > chat native tools with builtins gpt-6-astra 1`] = `
+{
+  "body": {
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-6-astra",
+    "parallel_tool_calls": true,
+    "stream": true,
+    "tool_choice": "auto",
+    "tools": [
+      {
+        "type": "code_interpreter",
+      },
+      {
+        "function": {
+          "description": "Search the web for current information",
+          "name": "web_search",
+          "parameters": {
+            "properties": {
+              "query": {
+                "description": "Search query",
+                "type": "string",
+              },
+            },
+            "required": [
+              "query",
+            ],
+            "type": "object",
+          },
+        },
+        "type": "function",
+      },
+      {
+        "function": {
+          "description": "Get the weather for a city",
+          "name": "get_weather",
+          "parameters": {
+            "properties": {
+              "city": {
+                "type": "string",
+              },
+            },
+            "required": [
+              "city",
+            ],
+            "type": "object",
+          },
+        },
+        "type": "function",
+      },
+    ],
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/chat/completions",
+}
+`;
+
+exports[`请求体矩阵快照 > chat non-stream 1`] = `
+{
+  "body": {
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-5.5",
+    "stream": false,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/chat/completions",
+}
+`;
+
+exports[`请求体矩阵快照 > chat rich history 1`] = `
+{
+  "body": {
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "Describe this image",
+            "type": "text",
+          },
+          {
+            "image_url": {
+              "url": "data:image/png;base64,QUFBQQ==",
+            },
+            "type": "image_url",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": "It is a cat.",
+        "role": "assistant",
+      },
+      {
+        "content": "What is the weather in Paris?",
+        "role": "user",
+      },
+      {
+        "content": "It is sunny in Paris.",
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": {
+              "arguments": "{"city":"Paris"}",
+              "name": "get_weather",
+            },
+            "id": "call_w1",
+            "type": "function",
+          },
+        ],
+      },
+      {
+        "_toolName": "get_weather",
+        "content": "Sunny, 22C",
+        "role": "tool",
+        "tool_call_id": "call_w1",
+      },
+      {
+        "content": "And tomorrow?",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-5.5",
+    "stream": true,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/chat/completions",
+}
+`;
+
+exports[`请求体矩阵快照 > chat sampling params gpt-4o 1`] = `
+{
+  "body": {
+    "max_tokens": 1000,
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-4o",
+    "stream": true,
+    "temperature": 0.7,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/chat/completions",
+}
+`;
+
+exports[`请求体矩阵快照 > chat sampling params gpt-5.5 1`] = `
+{
+  "body": {
+    "frequency_penalty": 0.5,
+    "max_tokens": 1000,
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-5.5",
+    "presence_penalty": 0.3,
+    "stream": true,
+    "temperature": 0.7,
+    "top_p": 0.9,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/chat/completions",
+}
+`;
+
+exports[`请求体矩阵快照 > chat sampling params gpt-6-sol effort none 1`] = `
+{
+  "body": {
+    "max_tokens": 2000,
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-6-sol",
+    "stream": true,
+    "temperature": 0.2,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/chat/completions",
+}
+`;
+
+exports[`请求体矩阵快照 > chat sampling params unknown model 1`] = `
+{
+  "body": {
+    "frequency_penalty": 0.5,
+    "max_tokens": 1000,
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "deepseek-chat",
+    "presence_penalty": 0.3,
+    "stream": true,
+    "temperature": 0.7,
+    "top_p": 0.9,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/chat/completions",
+}
+`;
+
+exports[`请求体矩阵快照 > chat system monitor prefill 1`] = `
+{
+  "body": {
+    "messages": [
+      {
+        "content": "You are helpful.
+
+[MONITOR CONTEXT]",
+        "role": "system",
+      },
+      {
+        "content": "Opening user line",
+        "role": "user",
+      },
+      {
+        "content": "Opening assistant line",
+        "role": "assistant",
+      },
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+      {
+        "content": "Sure, here is",
+        "role": "assistant",
+      },
+    ],
+    "model": "gpt-5.5",
+    "stream": true,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/chat/completions",
+}
+`;
+
+exports[`请求体矩阵快照 > chat thinking custom budget 1`] = `
+{
+  "body": {
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-5.5",
+    "reasoning_effort": "high",
+    "stream": true,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/chat/completions",
+}
+`;
+
+exports[`请求体矩阵快照 > chat thinking high 1`] = `
+{
+  "body": {
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-5.5",
+    "reasoning_effort": "high",
+    "stream": true,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/chat/completions",
+}
+`;
+
+exports[`请求体矩阵快照 > chat thinking minimal gpt-5 1`] = `
+{
+  "body": {
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-5",
+    "reasoning_effort": "minimal",
+    "stream": true,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/chat/completions",
+}
+`;
+
+exports[`请求体矩阵快照 > chat thinking minimal gpt-6.1-sol 1`] = `
+{
+  "body": {
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-6.1-sol",
+    "reasoning_effort": "minimal",
+    "stream": true,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/chat/completions",
+}
+`;
+
+exports[`请求体矩阵快照 > chat thinking off with none mode 1`] = `
+{
+  "body": {
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-5.5",
+    "stream": true,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/chat/completions",
+}
+`;
+
+exports[`请求体矩阵快照 > chat thinking off with none mode gpt-6-astra 1`] = `
+{
+  "body": {
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-6-astra",
+    "stream": true,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/chat/completions",
+}
+`;
+
+exports[`请求体矩阵快照 > chat thinking xhigh gpt-6-astra 1`] = `
+{
+  "body": {
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-6-astra",
+    "reasoning_effort": "xhigh",
+    "stream": true,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/chat/completions",
+}
+`;
+
+exports[`请求体矩阵快照 > chat verbosity low 1`] = `
+{
+  "body": {
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-5.5",
+    "stream": true,
+    "text": {
+      "verbosity": "low",
+    },
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/chat/completions",
+}
+`;
+
+exports[`请求体矩阵快照 > chat verbosity low gpt-4o 1`] = `
+{
+  "body": {
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-4o",
+    "stream": true,
+    "text": {
+      "verbosity": "low",
+    },
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/chat/completions",
+}
+`;
+
+exports[`请求体矩阵快照 > chat xml tools 1`] = `
+{
+  "body": {
+    "messages": [
+      {
+        "content": "
+
+In this environment you have access to a set of tools you can use to answer the user's question.
+
+## Tool Use Formatting
+
+Tool use is formatted using XML-style tags. The tool name is enclosed in opening and closing tags, and each parameter is similarly enclosed within its own set of tags. Here's the structure:
+
+<tool_use>
+  <name>{tool_name}</name>
+  <arguments>{json_arguments}</arguments>
+</tool_use>
+
+## Available Tools
+
+<tool>
+  <name>get_weather</name>
+  <description>Get the weather for a city</description>
+  <arguments>{&quot;jsonSchema&quot;:{&quot;type&quot;:&quot;object&quot;,&quot;properties&quot;:{&quot;city&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;required&quot;:[&quot;city&quot;]}}</arguments>
+</tool>
+
+## Tool Use Examples
+
+Here are some examples demonstrating proper tool use:
+
+---
+User: What is the current time?
+
+Assistant: I will use the datetime tool to get the current time.
+<tool_use>
+  <name>datetime</name>
+  <arguments>{"action": "current"}</arguments>
+</tool_use>
+
+User: <tool_use_result>
+  <name>datetime</name>
+  <result>2025-12-14 15:30:00</result>
+</tool_use_result>
+
+Assistant: The current time is 15:30:00 on December 14, 2025.
+
+---
+User: Search for the latest AI news.
+
+Assistant: I will search for the latest AI news using the web_search tool.
+<tool_use>
+  <name>web_search</name>
+  <arguments>{"query": "latest AI news 2025"}</arguments>
+</tool_use>
+
+---
+
+## Extended Thinking with Tools
+
+You can use <thinking> tags to show your reasoning process BEFORE calling tools:
+
+<thinking>I need to check the weather in Tokyo, so I will call the weather tool.</thinking>
+<tool_use>
+  <name>weather</name>
+  <arguments>{"location": "Tokyo"}</arguments>
+</tool_use>
+
+## Tool Use Rules
+
+Here are the rules you MUST follow:
+1. Always use the correct parameter values. Never use variable names, use actual values.
+2. Call a tool only when needed. Do not call tools if you can answer directly.
+3. If no tool is needed, just answer the question directly.
+4. **CRITICAL**: Never repeat the exact same tool call with the same parameters.
+5. **CRITICAL**: Simply mentioning a tool in <thinking> does NOT execute it. You MUST output the <tool_use> XML block.
+6. Use the EXACT format shown above. Do not use any other format.
+
+Now Begin! If you use tools correctly, you will be rewarded.
+",
+        "role": "system",
+      },
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-5.5",
+    "stream": true,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/chat/completions",
+}
+`;
+
+exports[`请求体矩阵快照 > claude adaptive high haiku-4-5 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "claude-haiku-4-5",
+    "output_config": {
+      "effort": "high",
+    },
+    "stream": true,
+    "thinking": {
+      "display": "summarized",
+      "type": "adaptive",
+    },
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude adaptive high sonnet-5-5 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "claude-sonnet-5-5",
+    "output_config": {
+      "effort": "high",
+    },
+    "stream": true,
+    "thinking": {
+      "display": "summarized",
+      "type": "adaptive",
+    },
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude adaptive max hidden fable-5-1 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "claude-fable-5-1",
+    "output_config": {
+      "effort": "max",
+    },
+    "stream": true,
+    "thinking": {
+      "type": "adaptive",
+    },
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude adaptive on unknown model 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "claude-proxy-custom",
+    "output_config": {
+      "effort": "medium",
+    },
+    "stream": true,
+    "temperature": 1,
+    "thinking": {
+      "display": "summarized",
+      "type": "adaptive",
+    },
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude adaptive xhigh opus-4-6 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "claude-opus-4-6",
+    "output_config": {
+      "effort": "xhigh",
+    },
+    "stream": true,
+    "thinking": {
+      "display": "summarized",
+      "type": "adaptive",
+    },
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude budget thinking custom fable-5-1 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "claude-fable-5-1",
+    "stream": true,
+    "thinking": {
+      "budget_tokens": 5000,
+      "type": "enabled",
+    },
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude budget thinking high opus-5-5 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "claude-opus-5-5",
+    "stream": true,
+    "thinking": {
+      "budget_tokens": 16384,
+      "type": "enabled",
+    },
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude budget thinking medium haiku-4-5 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "claude-haiku-4-5",
+    "stream": true,
+    "thinking": {
+      "budget_tokens": 8192,
+      "type": "enabled",
+    },
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude computer use opus-4-6 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "claude-opus-4-6",
+    "stream": true,
+    "tools": [
+      {
+        "display_height_px": 1080,
+        "display_number": 1,
+        "display_width_px": 1920,
+        "name": "computer",
+        "type": "computer_20251124",
+      },
+      {
+        "name": "bash",
+        "type": "bash_20250124",
+      },
+      {
+        "name": "str_replace_based_edit_tool",
+        "type": "text_editor_20250728",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-beta": "computer-use-2025-11-24",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude computer use opus-5-5 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "claude-opus-5-5",
+    "stream": true,
+    "tools": [
+      {
+        "display_height_px": 1080,
+        "display_number": 1,
+        "display_width_px": 1920,
+        "name": "computer",
+        "type": "computer_20251124",
+      },
+      {
+        "name": "bash",
+        "type": "bash_20250124",
+      },
+      {
+        "name": "str_replace_based_edit_tool",
+        "type": "text_editor_20250728",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-beta": "computer-use-2025-11-24",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude computer use sonnet-4-5 dated 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "claude-sonnet-4-5-20250929",
+    "stream": true,
+    "tools": [
+      {
+        "display_height_px": 1080,
+        "display_number": 1,
+        "display_width_px": 1920,
+        "name": "computer",
+        "type": "computer_20251124",
+      },
+      {
+        "name": "bash",
+        "type": "bash_20250124",
+      },
+      {
+        "name": "str_replace_based_edit_tool",
+        "type": "text_editor_20250728",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-beta": "computer-use-2025-11-24",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude computer use xml mode 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "claude-opus-5-5",
+    "stream": true,
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-beta": "computer-use-2025-11-24",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude defaults opus-5-5 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "claude-opus-5-5",
+    "stream": true,
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude image history with capabilities 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": "Draw a cat",
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "text": "[*] 第 2 条消息中 AI 的回复已转为你的消息（当前模型不支持图片输出）
+
+AI 说：Here it is
+
+AI 生成的图片（1 张）：",
+            "type": "text",
+          },
+          {
+            "source": {
+              "data": "QUFBQQ==",
+              "media_type": "image/png",
+              "type": "base64",
+            },
+            "type": "image",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "text": "Make it blue",
+            "type": "text",
+          },
+          {
+            "source": {
+              "data": "QkJCQg==",
+              "media_type": "image/png",
+              "type": "base64",
+            },
+            "type": "image",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "model": "claude-sonnet-5-5",
+    "stream": true,
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude native tools with builtins sonnet-5-5 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "claude-sonnet-5-5",
+    "stream": true,
+    "tools": [
+      {
+        "name": "code_execution",
+        "type": "code_execution_20250825",
+      },
+      {
+        "max_uses": 5,
+        "name": "web_search",
+        "type": "web_search_20250305",
+      },
+      {
+        "description": "Get the weather for a city",
+        "input_schema": {
+          "properties": {
+            "city": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "city",
+          ],
+          "type": "object",
+        },
+        "name": "get_weather",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-beta": "code-execution-2025-08-25,advanced-tool-use-2025-11-20,files-api-2025-04-14",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude non-stream sonnet-5-5 1`] = `
+{
+  "body": {
+    "max_tokens": 16000,
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "claude-sonnet-5-5",
+    "stream": false,
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude prefill sonnet-4-5 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": "Opening user line",
+        "role": "user",
+      },
+      {
+        "content": "Opening assistant line",
+        "role": "assistant",
+      },
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+      {
+        "content": "Sure, here is",
+        "role": "assistant",
+      },
+    ],
+    "model": "claude-sonnet-4-5",
+    "stream": true,
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude rich history adaptive opus-5-5 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "Describe this image",
+            "type": "text",
+          },
+          {
+            "source": {
+              "data": "QUFBQQ==",
+              "media_type": "image/png",
+              "type": "base64",
+            },
+            "type": "image",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "signature": "sig-a-claude",
+            "thinking": "Looking at the image",
+            "type": "thinking",
+          },
+          {
+            "text": "It is a cat.",
+            "type": "text",
+          },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": "What is the weather in Paris?",
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "signature": "sig-b-claude",
+            "thinking": "Need the weather tool",
+            "type": "thinking",
+          },
+          {
+            "id": "toolu_w1",
+            "input": {
+              "city": "Paris",
+            },
+            "name": "get_weather",
+            "type": "tool_use",
+          },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": [
+          {
+            "content": "Sunny, 22C",
+            "tool_use_id": "toolu_w1",
+            "type": "tool_result",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": "It is sunny in Paris.",
+        "role": "assistant",
+      },
+      {
+        "content": "And tomorrow?",
+        "role": "user",
+      },
+    ],
+    "model": "claude-opus-5-5",
+    "output_config": {
+      "effort": "high",
+    },
+    "stream": true,
+    "thinking": {
+      "display": "summarized",
+      "type": "adaptive",
+    },
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude sampling params opus-5-5 1`] = `
+{
+  "body": {
+    "max_tokens": 4000,
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "claude-opus-5-5",
+    "stream": true,
+    "temperature": 0.7,
+    "top_k": 40,
+    "top_p": 0.9,
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude sampling params sonnet-4-5 dated 1`] = `
+{
+  "body": {
+    "max_tokens": 4000,
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "claude-sonnet-4-5-20250929",
+    "stream": true,
+    "temperature": 0.7,
+    "top_k": 40,
+    "top_p": 0.9,
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude sampling params with budget thinking opus-4-6 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "claude-opus-4-6",
+    "stream": true,
+    "temperature": 1,
+    "thinking": {
+      "budget_tokens": 8192,
+      "type": "enabled",
+    },
+    "top_k": 40,
+    "top_p": 0.8,
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude system monitor prefill sonnet-5-5 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": "Opening user line",
+        "role": "user",
+      },
+      {
+        "content": "Opening assistant line",
+        "role": "assistant",
+      },
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+      {
+        "content": "Sure, here is",
+        "role": "assistant",
+      },
+    ],
+    "model": "claude-sonnet-5-5",
+    "stream": true,
+    "system": "You are helpful.
+
+[MONITOR CONTEXT]",
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude thinking off haiku-5-5 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "claude-haiku-5-5",
+    "stream": true,
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude thinking off opus-4-8 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "claude-opus-4-8",
+    "stream": true,
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude xml tools 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "claude-opus-5-5",
+    "stream": true,
+    "system": "
+
+In this environment you have access to a set of tools you can use to answer the user's question.
+
+## Tool Use Formatting
+
+Tool use is formatted using XML-style tags. The tool name is enclosed in opening and closing tags, and each parameter is similarly enclosed within its own set of tags. Here's the structure:
+
+<tool_use>
+  <name>{tool_name}</name>
+  <arguments>{json_arguments}</arguments>
+</tool_use>
+
+## Available Tools
+
+<tool>
+  <name>get_weather</name>
+  <description>Get the weather for a city</description>
+  <arguments>{&quot;jsonSchema&quot;:{&quot;type&quot;:&quot;object&quot;,&quot;properties&quot;:{&quot;city&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;required&quot;:[&quot;city&quot;]}}</arguments>
+</tool>
+
+## Tool Use Examples
+
+Here are some examples demonstrating proper tool use:
+
+---
+User: What is the current time?
+
+Assistant: I will use the datetime tool to get the current time.
+<tool_use>
+  <name>datetime</name>
+  <arguments>{"action": "current"}</arguments>
+</tool_use>
+
+User: <tool_use_result>
+  <name>datetime</name>
+  <result>2025-12-14 15:30:00</result>
+</tool_use_result>
+
+Assistant: The current time is 15:30:00 on December 14, 2025.
+
+---
+User: Search for the latest AI news.
+
+Assistant: I will search for the latest AI news using the web_search tool.
+<tool_use>
+  <name>web_search</name>
+  <arguments>{"query": "latest AI news 2025"}</arguments>
+</tool_use>
+
+---
+
+## Extended Thinking with Tools
+
+You can use <thinking> tags to show your reasoning process BEFORE calling tools:
+
+<thinking>I need to check the weather in Tokyo, so I will call the weather tool.</thinking>
+<tool_use>
+  <name>weather</name>
+  <arguments>{"location": "Tokyo"}</arguments>
+</tool_use>
+
+## Tool Use Rules
+
+Here are the rules you MUST follow:
+1. Always use the correct parameter values. Never use variable names, use actual values.
+2. Call a tool only when needed. Do not call tools if you can answer directly.
+3. If no tool is needed, just answer the question directly.
+4. **CRITICAL**: Never repeat the exact same tool call with the same parameters.
+5. **CRITICAL**: Simply mentioning a tool in <thinking> does NOT execute it. You MUST output the <tool_use> XML block.
+6. Use the EXACT format shown above. Do not use any other format.
+
+Now Begin! If you use tools correctly, you will be rewarded.
+",
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > gemini api key in header 1`] = `
+{
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Hello",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Hi! How can I help?",
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "text": "Tell me a joke",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "generationConfig": {
+      "temperature": 1,
+      "topK": 40,
+      "topP": 0.95,
+    },
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+        "threshold": "BLOCK_NONE",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "x-goog-api-key": "test-key",
+  },
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse",
+}
+`;
+
+exports[`请求体矩阵快照 > gemini defaults 3.8-flash with 2K select 1`] = `
+{
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Hello",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Hi! How can I help?",
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "text": "Tell me a joke",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "generationConfig": {
+      "imageConfig": {
+        "imageSize": "2K",
+      },
+      "responseModalities": [
+        "TEXT",
+        "IMAGE",
+      ],
+      "temperature": 1,
+      "topK": 40,
+      "topP": 0.95,
+    },
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+        "threshold": "BLOCK_NONE",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+  },
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:streamGenerateContent?key=test-key&alt=sse",
+}
+`;
+
+exports[`请求体矩阵快照 > gemini defaults 3.8-flash without image size 1`] = `
+{
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Hello",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Hi! How can I help?",
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "text": "Tell me a joke",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "generationConfig": {
+      "temperature": 1,
+      "topK": 40,
+      "topP": 0.95,
+    },
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+        "threshold": "BLOCK_NONE",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+  },
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:streamGenerateContent?key=test-key&alt=sse",
+}
+`;
+
+exports[`请求体矩阵快照 > gemini image history with capabilities 1`] = `
+{
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Draw a cat",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "[*] 第 2 条消息中 AI 的回复已转为你的消息（当前模型不支持图片输出）
+
+AI 说：Here it is
+
+AI 生成的图片（1 张）：",
+          },
+          {
+            "inlineData": {
+              "data": "QUFBQQ==",
+              "mimeType": "image/png",
+            },
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Make it blue",
+          },
+          {
+            "inlineData": {
+              "data": "QkJCQg==",
+              "mimeType": "image/png",
+            },
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "generationConfig": {
+      "temperature": 1,
+      "topK": 40,
+      "topP": 0.95,
+    },
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+        "threshold": "BLOCK_NONE",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+  },
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:streamGenerateContent?key=test-key&alt=sse",
+}
+`;
+
+exports[`请求体矩阵快照 > gemini native tools with builtins 1`] = `
+{
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Hello",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Hi! How can I help?",
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "text": "Tell me a joke",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "generationConfig": {
+      "temperature": 1,
+      "topK": 40,
+      "topP": 0.95,
+    },
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+        "threshold": "BLOCK_NONE",
+      },
+    ],
+    "tools": [
+      {
+        "codeExecution": {},
+      },
+      {
+        "googleSearch": {},
+      },
+      {
+        "urlContext": {},
+      },
+      {
+        "functionDeclarations": [
+          {
+            "description": "Get the weather for a city",
+            "name": "get_weather",
+            "parameters": {
+              "properties": {
+                "city": {
+                  "type": "string",
+                },
+              },
+              "required": [
+                "city",
+              ],
+              "type": "object",
+            },
+          },
+        ],
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+  },
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:streamGenerateContent?key=test-key&alt=sse",
+}
+`;
+
+exports[`请求体矩阵快照 > gemini non-stream 4-argon 1`] = `
+{
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Hello",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Hi! How can I help?",
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "text": "Tell me a joke",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "generationConfig": {
+      "temperature": 1,
+      "topK": 40,
+      "topP": 0.95,
+    },
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+        "threshold": "BLOCK_NONE",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+  },
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-4-argon:generateContent?key=test-key",
+}
+`;
+
+exports[`请求体矩阵快照 > gemini rich history 1`] = `
+{
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Describe this image",
+          },
+          {
+            "inlineData": {
+              "data": "QUFBQQ==",
+              "mimeType": "image/png",
+            },
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Looking at the image",
+            "thought": true,
+            "thoughtSignature": "sig-a-gemini",
+          },
+          {
+            "text": "It is a cat.",
+            "thoughtSignature": "sig-a-gemini",
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "text": "What is the weather in Paris?",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Need the weather tool",
+            "thought": true,
+            "thoughtSignature": "sig-fc-w1",
+          },
+          {
+            "functionCall": {
+              "args": {
+                "city": "Paris",
+              },
+              "name": "get_weather",
+            },
+            "thoughtSignature": "sig-fc-w1",
+          },
+          {
+            "text": "It is sunny in Paris.",
+            "thoughtSignature": "sig-fc-w1",
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "w1",
+              "name": "get_weather",
+              "response": {
+                "result": "Sunny, 22C",
+              },
+            },
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "And tomorrow?",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "generationConfig": {
+      "temperature": 1,
+      "topK": 40,
+      "topP": 0.95,
+    },
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+        "threshold": "BLOCK_NONE",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+  },
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:streamGenerateContent?key=test-key&alt=sse",
+}
+`;
+
+exports[`请求体矩阵快照 > gemini sampling params 2.5-flash 1`] = `
+{
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Hello",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Hi! How can I help?",
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "text": "Tell me a joke",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "generationConfig": {
+      "maxOutputTokens": 8192,
+      "temperature": 0.7,
+      "topK": 20,
+      "topP": 0.9,
+    },
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+        "threshold": "BLOCK_NONE",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+  },
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?key=test-key&alt=sse",
+}
+`;
+
+exports[`请求体矩阵快照 > gemini sampling params 4-argon 1`] = `
+{
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Hello",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Hi! How can I help?",
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "text": "Tell me a joke",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "generationConfig": {
+      "maxOutputTokens": 8192,
+      "temperature": 0.7,
+      "topK": 20,
+      "topP": 0.9,
+    },
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+        "threshold": "BLOCK_NONE",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+  },
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-4-argon:streamGenerateContent?key=test-key&alt=sse",
+}
+`;
+
+exports[`请求体矩阵快照 > gemini signature placement 1`] = `
+{
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Compare Paris and Rome",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Plan both lookups",
+            "thought": true,
+            "thoughtSignature": "sig-call-a",
+          },
+          {
+            "functionCall": {
+              "args": {
+                "city": "Paris",
+              },
+              "name": "get_weather",
+            },
+            "thoughtSignature": "sig-call-a",
+          },
+          {
+            "functionCall": {
+              "args": {
+                "city": "Rome",
+              },
+              "name": "get_weather",
+            },
+            "thoughtSignature": "sig-call-a",
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "functionResponse": {
+              "id": "wa",
+              "name": "get_weather",
+              "response": {
+                "result": "Sunny",
+              },
+            },
+          },
+          {
+            "functionResponse": {
+              "id": "wb",
+              "name": "get_weather",
+              "response": {
+                "result": "Rain",
+              },
+            },
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Summarize",
+            "thought": true,
+            "thoughtSignature": "sig-summary",
+          },
+          {
+            "text": "Paris is sunny. ",
+            "thoughtSignature": "sig-summary",
+          },
+          {
+            "text": "Rome is rainy.",
+            "thoughtSignature": "sig-summary",
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "text": "Thanks",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "generationConfig": {
+      "temperature": 1,
+      "topK": 40,
+      "topP": 0.95,
+    },
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+        "threshold": "BLOCK_NONE",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+  },
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-4-argon:streamGenerateContent?key=test-key&alt=sse",
+}
+`;
+
+exports[`请求体矩阵快照 > gemini system parts monitor prefill 1`] = `
+{
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Opening user line",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Opening assistant line",
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "text": "Hello",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Hi! How can I help?",
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "text": "Tell me a joke",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Sure, here is",
+          },
+        ],
+        "role": "model",
+      },
+    ],
+    "generationConfig": {
+      "temperature": 1,
+      "topK": 40,
+      "topP": 0.95,
+    },
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+        "threshold": "BLOCK_NONE",
+      },
+    ],
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "Part one",
+        },
+        {
+          "text": "Part two",
+        },
+        {
+          "text": "
+
+[MONITOR CONTEXT]",
+        },
+      ],
+    },
+  },
+  "headers": {
+    "Content-Type": "application/json",
+  },
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:streamGenerateContent?key=test-key&alt=sse",
+}
+`;
+
+exports[`请求体矩阵快照 > gemini thinking custom 2.5-flash 1`] = `
+{
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Hello",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Hi! How can I help?",
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "text": "Tell me a joke",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "generationConfig": {
+      "temperature": 1,
+      "thinkingConfig": {
+        "includeThoughts": true,
+        "thinkingBudget": 12000,
+      },
+      "topK": 40,
+      "topP": 0.95,
+    },
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+        "threshold": "BLOCK_NONE",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+  },
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?key=test-key&alt=sse",
+}
+`;
+
+exports[`请求体矩阵快照 > gemini thinking high 4-argon 1`] = `
+{
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Hello",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Hi! How can I help?",
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "text": "Tell me a joke",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "generationConfig": {
+      "temperature": 1,
+      "thinkingConfig": {
+        "includeThoughts": true,
+        "thinkingBudget": 16384,
+      },
+      "topK": 40,
+      "topP": 0.95,
+    },
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+        "threshold": "BLOCK_NONE",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+  },
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-4-argon:streamGenerateContent?key=test-key&alt=sse",
+}
+`;
+
+exports[`请求体矩阵快照 > gemini thinking low 3.1-flash-lite-image 4K 1`] = `
+{
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Hello",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Hi! How can I help?",
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "text": "Tell me a joke",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "generationConfig": {
+      "imageConfig": {
+        "imageSize": "4K",
+      },
+      "responseModalities": [
+        "TEXT",
+        "IMAGE",
+      ],
+      "temperature": 1,
+      "thinkingConfig": {
+        "includeThoughts": true,
+        "thinkingLevel": "LOW",
+      },
+      "topK": 40,
+      "topP": 0.95,
+    },
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+        "threshold": "BLOCK_NONE",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+  },
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-image:streamGenerateContent?key=test-key&alt=sse",
+}
+`;
+
+exports[`请求体矩阵快照 > gemini thinking low nano-banana-2.1 1`] = `
+{
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Hello",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Hi! How can I help?",
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "text": "Tell me a joke",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "generationConfig": {
+      "imageConfig": {
+        "imageSize": "2K",
+      },
+      "responseModalities": [
+        "TEXT",
+        "IMAGE",
+      ],
+      "temperature": 1,
+      "thinkingConfig": {
+        "includeThoughts": true,
+        "thinkingBudget": 4096,
+      },
+      "topK": 40,
+      "topP": 0.95,
+    },
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+        "threshold": "BLOCK_NONE",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+  },
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-nano-banana-2.1:streamGenerateContent?key=test-key&alt=sse",
+}
+`;
+
+exports[`请求体矩阵快照 > gemini thinking medium 3.8-flash 1`] = `
+{
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Hello",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Hi! How can I help?",
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "text": "Tell me a joke",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "generationConfig": {
+      "temperature": 1,
+      "thinkingConfig": {
+        "includeThoughts": true,
+        "thinkingLevel": "HIGH",
+      },
+      "topK": 40,
+      "topP": 0.95,
+    },
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+        "threshold": "BLOCK_NONE",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+  },
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:streamGenerateContent?key=test-key&alt=sse",
+}
+`;
+
+exports[`请求体矩阵快照 > gemini thinking minimal 3.6-flash 1`] = `
+{
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Hello",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Hi! How can I help?",
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "text": "Tell me a joke",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "generationConfig": {
+      "temperature": 1,
+      "thinkingConfig": {
+        "includeThoughts": true,
+        "thinkingLevel": "LOW",
+      },
+      "topK": 40,
+      "topP": 0.95,
+    },
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+        "threshold": "BLOCK_NONE",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+  },
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:streamGenerateContent?key=test-key&alt=sse",
+}
+`;
+
+exports[`请求体矩阵快照 > gemini thinking minimal 3.8-flash 1`] = `
+{
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Hello",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Hi! How can I help?",
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "text": "Tell me a joke",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "generationConfig": {
+      "temperature": 1,
+      "thinkingConfig": {
+        "includeThoughts": true,
+        "thinkingLevel": "LOW",
+      },
+      "topK": 40,
+      "topP": 0.95,
+    },
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+        "threshold": "BLOCK_NONE",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+  },
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:streamGenerateContent?key=test-key&alt=sse",
+}
+`;
+
+exports[`请求体矩阵快照 > gemini thinking off 4-argon 1`] = `
+{
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Hello",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Hi! How can I help?",
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "text": "Tell me a joke",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "generationConfig": {
+      "temperature": 1,
+      "topK": 40,
+      "topP": 0.95,
+    },
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+        "threshold": "BLOCK_NONE",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+  },
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-4-argon:streamGenerateContent?key=test-key&alt=sse",
+}
+`;
+
+exports[`请求体矩阵快照 > gemini unknown proxy model with 2K select 1`] = `
+{
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Hello",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Hi! How can I help?",
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "text": "Tell me a joke",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "generationConfig": {
+      "imageConfig": {
+        "imageSize": "2K",
+      },
+      "responseModalities": [
+        "TEXT",
+        "IMAGE",
+      ],
+      "temperature": 1,
+      "topK": 40,
+      "topP": 0.95,
+    },
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+        "threshold": "BLOCK_NONE",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+  },
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-proxy-x:streamGenerateContent?key=test-key&alt=sse",
+}
+`;
+
+exports[`请求体矩阵快照 > gemini vertex endpoint 1`] = `
+{
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Hello",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Hi! How can I help?",
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "text": "Tell me a joke",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "generationConfig": {
+      "temperature": 1,
+      "topK": 40,
+      "topP": 0.95,
+    },
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "OFF",
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "OFF",
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "OFF",
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "OFF",
+      },
+      {
+        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+        "threshold": "OFF",
+      },
+      {
+        "category": "HARM_CATEGORY_IMAGE_HATE",
+        "threshold": "OFF",
+      },
+      {
+        "category": "HARM_CATEGORY_IMAGE_DANGEROUS_CONTENT",
+        "threshold": "OFF",
+      },
+      {
+        "category": "HARM_CATEGORY_IMAGE_HARASSMENT",
+        "threshold": "OFF",
+      },
+      {
+        "category": "HARM_CATEGORY_IMAGE_SEXUALLY_EXPLICIT",
+        "threshold": "OFF",
+      },
+      {
+        "category": "HARM_CATEGORY_JAILBREAK",
+        "threshold": "OFF",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+  },
+  "url": "https://aiplatform.googleapis.com/v1beta1/projects/demo/locations/global/publishers/google/v1beta/models/gemini-3.8-flash:streamGenerateContent?key=test-key&alt=sse",
+}
+`;
+
+exports[`请求体矩阵快照 > gemini xml tools 1`] = `
+{
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Hello",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "Hi! How can I help?",
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "text": "Tell me a joke",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "generationConfig": {
+      "temperature": 1,
+      "topK": 40,
+      "topP": 0.95,
+    },
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "BLOCK_NONE",
+      },
+      {
+        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+        "threshold": "BLOCK_NONE",
+      },
+    ],
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "
+
+In this environment you have access to a set of tools you can use to answer the user's question.
+
+## Tool Use Formatting
+
+Tool use is formatted using XML-style tags. The tool name is enclosed in opening and closing tags, and each parameter is similarly enclosed within its own set of tags. Here's the structure:
+
+<tool_use>
+  <name>{tool_name}</name>
+  <arguments>{json_arguments}</arguments>
+</tool_use>
+
+## Available Tools
+
+<tool>
+  <name>get_weather</name>
+  <description>Get the weather for a city</description>
+  <arguments>{&quot;jsonSchema&quot;:{&quot;type&quot;:&quot;object&quot;,&quot;properties&quot;:{&quot;city&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;required&quot;:[&quot;city&quot;]}}</arguments>
+</tool>
+
+## Tool Use Examples
+
+Here are some examples demonstrating proper tool use:
+
+---
+User: What is the current time?
+
+Assistant: I will use the datetime tool to get the current time.
+<tool_use>
+  <name>datetime</name>
+  <arguments>{"action": "current"}</arguments>
+</tool_use>
+
+User: <tool_use_result>
+  <name>datetime</name>
+  <result>2025-12-14 15:30:00</result>
+</tool_use_result>
+
+Assistant: The current time is 15:30:00 on December 14, 2025.
+
+---
+User: Search for the latest AI news.
+
+Assistant: I will search for the latest AI news using the web_search tool.
+<tool_use>
+  <name>web_search</name>
+  <arguments>{"query": "latest AI news 2025"}</arguments>
+</tool_use>
+
+---
+
+## Extended Thinking with Tools
+
+You can use <thinking> tags to show your reasoning process BEFORE calling tools:
+
+<thinking>I need to check the weather in Tokyo, so I will call the weather tool.</thinking>
+<tool_use>
+  <name>weather</name>
+  <arguments>{"location": "Tokyo"}</arguments>
+</tool_use>
+
+## Tool Use Rules
+
+Here are the rules you MUST follow:
+1. Always use the correct parameter values. Never use variable names, use actual values.
+2. Call a tool only when needed. Do not call tools if you can answer directly.
+3. If no tool is needed, just answer the question directly.
+4. **CRITICAL**: Never repeat the exact same tool call with the same parameters.
+5. **CRITICAL**: Simply mentioning a tool in <thinking> does NOT execute it. You MUST output the <tool_use> XML block.
+6. Use the EXACT format shown above. Do not use any other format.
+
+Now Begin! If you use tools correctly, you will be rewarded.
+",
+        },
+      ],
+    },
+  },
+  "headers": {
+    "Content-Type": "application/json",
+  },
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:streamGenerateContent?key=test-key&alt=sse",
+}
+`;
+
+exports[`请求体矩阵快照 > image defaults sunburst 1`] = `
+{
+  "body": {
+    "images": [
+      {
+        "image_url": "data:image/png;base64,QkJCQg==",
+      },
+    ],
+    "model": "gpt-image-2.5-sunburst",
+    "n": 1,
+    "partial_images": 0,
+    "prompt": "Same fox at night",
+    "quality": "high",
+    "size": "1024x1024",
+    "stream": true,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/images/edits",
+}
+`;
+
+exports[`请求体矩阵快照 > image edit gpt-image-1.5 with input fidelity 1`] = `
+{
+  "body": {
+    "images": [
+      {
+        "image_url": "data:image/png;base64,QkJCQg==",
+      },
+    ],
+    "input_fidelity": "high",
+    "model": "gpt-image-1.5",
+    "n": 1,
+    "output_format": "webp",
+    "partial_images": 0,
+    "prompt": "Same fox at night",
+    "size": "1024x1536",
+    "stream": true,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/images/edits",
+}
+`;
+
+exports[`请求体矩阵快照 > image edit gpt-image-2 with input fidelity 1`] = `
+{
+  "body": {
+    "images": [
+      {
+        "image_url": "data:image/png;base64,QkJCQg==",
+      },
+    ],
+    "input_fidelity": "high",
+    "model": "gpt-image-2",
+    "n": 1,
+    "partial_images": 0,
+    "prompt": "Same fox at night",
+    "quality": "medium",
+    "size": "1536x1024",
+    "stream": true,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/images/edits",
+}
+`;
+
+exports[`请求体矩阵快照 > responses defaults 1`] = `
+{
+  "body": {
+    "include": [
+      "reasoning.encrypted_content",
+    ],
+    "input": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-5.5",
+    "stream": true,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/responses",
+}
+`;
+
+exports[`请求体矩阵快照 > responses image history with capabilities 1`] = `
+{
+  "body": {
+    "include": [
+      "reasoning.encrypted_content",
+    ],
+    "input": [
+      {
+        "content": "Draw a cat",
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "text": "Here it is",
+            "type": "text",
+          },
+          {
+            "image_url": {
+              "url": "data:image/png;base64,QUFBQQ==",
+            },
+            "type": "image_url",
+          },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": [
+          {
+            "text": "Make it blue",
+            "type": "text",
+          },
+          {
+            "image_url": {
+              "url": "data:image/png;base64,QkJCQg==",
+            },
+            "type": "image_url",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "model": "gpt-5.5",
+    "stream": true,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/responses",
+}
+`;
+
+exports[`请求体矩阵快照 > responses native tools with builtins gpt-6.1-sol 1`] = `
+{
+  "body": {
+    "include": [
+      "reasoning.encrypted_content",
+    ],
+    "input": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-6.1-sol",
+    "stream": true,
+    "tool_choice": "auto",
+    "tools": [
+      {
+        "type": "code_interpreter",
+      },
+      {
+        "function": {
+          "description": "Search the web for current information",
+          "name": "web_search",
+          "parameters": {
+            "properties": {
+              "query": {
+                "description": "Search query",
+                "type": "string",
+              },
+            },
+            "required": [
+              "query",
+            ],
+            "type": "object",
+          },
+        },
+        "type": "function",
+      },
+      {
+        "description": "Get the weather for a city",
+        "name": "get_weather",
+        "parameters": {
+          "properties": {
+            "city": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "city",
+          ],
+          "type": "object",
+        },
+        "type": "function",
+      },
+    ],
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/responses",
+}
+`;
+
+exports[`请求体矩阵快照 > responses non-stream 1`] = `
+{
+  "body": {
+    "include": [
+      "reasoning.encrypted_content",
+    ],
+    "input": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-5.5",
+    "stream": false,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/responses",
+}
+`;
+
+exports[`请求体矩阵快照 > responses rich history 1`] = `
+{
+  "body": {
+    "include": [
+      "reasoning.encrypted_content",
+    ],
+    "input": [
+      {
+        "content": [
+          {
+            "text": "Describe this image",
+            "type": "text",
+          },
+          {
+            "image_url": {
+              "url": "data:image/png;base64,QUFBQQ==",
+            },
+            "type": "image_url",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "encrypted_content": "enc_rs_1",
+        "id": "rs_1",
+        "summary": [],
+        "type": "reasoning",
+      },
+      {
+        "content": "It is a cat.",
+        "role": "assistant",
+      },
+      {
+        "content": "What is the weather in Paris?",
+        "role": "user",
+      },
+      {
+        "encrypted_content": "enc_rs_2",
+        "id": "rs_2",
+        "summary": [],
+        "type": "reasoning",
+      },
+      {
+        "arguments": "{"city":"Paris"}",
+        "call_id": "call_w1",
+        "id": "fc_item_w1",
+        "name": "get_weather",
+        "type": "function_call",
+      },
+      {
+        "call_id": "call_w1",
+        "output": "Sunny, 22C",
+        "type": "function_call_output",
+      },
+      {
+        "content": "It is sunny in Paris.",
+        "role": "assistant",
+      },
+      {
+        "content": "And tomorrow?",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-5.5",
+    "stream": true,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/responses",
+}
+`;
+
+exports[`请求体矩阵快照 > responses sampling params gpt-5.5 1`] = `
+{
+  "body": {
+    "frequency_penalty": 0.5,
+    "include": [
+      "reasoning.encrypted_content",
+    ],
+    "input": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "max_tokens": 1000,
+    "model": "gpt-5.5",
+    "presence_penalty": 0.3,
+    "stream": true,
+    "temperature": 0.7,
+    "top_p": 0.9,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/responses",
+}
+`;
+
+exports[`请求体矩阵快照 > responses sampling params unknown model 1`] = `
+{
+  "body": {
+    "frequency_penalty": 0.5,
+    "include": [
+      "reasoning.encrypted_content",
+    ],
+    "input": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "max_tokens": 1000,
+    "model": "my-proxy-model",
+    "presence_penalty": 0.3,
+    "stream": true,
+    "temperature": 0.7,
+    "top_p": 0.9,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/responses",
+}
+`;
+
+exports[`请求体矩阵快照 > responses system monitor prefill 1`] = `
+{
+  "body": {
+    "include": [
+      "reasoning.encrypted_content",
+    ],
+    "input": [
+      {
+        "content": "You are helpful.
+
+[MONITOR CONTEXT]",
+        "role": "system",
+      },
+      {
+        "content": "Opening user line",
+        "role": "user",
+      },
+      {
+        "content": "Opening assistant line",
+        "role": "assistant",
+      },
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+      {
+        "content": "Sure, here is",
+        "role": "assistant",
+      },
+    ],
+    "model": "gpt-5.5",
+    "stream": true,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/responses",
+}
+`;
+
+exports[`请求体矩阵快照 > responses thinking high 1`] = `
+{
+  "body": {
+    "include": [
+      "reasoning.encrypted_content",
+    ],
+    "input": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-5.5",
+    "reasoning": {
+      "effort": "high",
+      "summary": "auto",
+    },
+    "stream": true,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/responses",
+}
+`;
+
+exports[`请求体矩阵快照 > responses thinking off with none mode gpt-6-astra 1`] = `
+{
+  "body": {
+    "include": [
+      "reasoning.encrypted_content",
+    ],
+    "input": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-6-astra",
+    "reasoning": {
+      "effort": "none",
+    },
+    "stream": true,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/responses",
+}
+`;
+
+exports[`请求体矩阵快照 > responses thinking xhigh gpt-6.1-sol 1`] = `
+{
+  "body": {
+    "include": [
+      "reasoning.encrypted_content",
+    ],
+    "input": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-6.1-sol",
+    "reasoning": {
+      "effort": "xhigh",
+      "summary": "auto",
+    },
+    "stream": true,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/responses",
+}
+`;
+
+exports[`请求体矩阵快照 > responses verbosity low 1`] = `
+{
+  "body": {
+    "include": [
+      "reasoning.encrypted_content",
+    ],
+    "input": [
+      {
+        "content": "Hello",
+        "role": "user",
+      },
+      {
+        "content": "Hi! How can I help?",
+        "role": "assistant",
+      },
+      {
+        "content": "Tell me a joke",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-5.5",
+    "stream": true,
+    "text": {
+      "verbosity": "low",
+    },
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/responses",
+}
+`;
