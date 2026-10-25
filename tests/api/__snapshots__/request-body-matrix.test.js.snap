@@ -43,6 +43,9 @@ exports[`请求体矩阵快照 > chat defaults 1`] = `
     ],
     "model": "gpt-5.5",
     "stream": true,
+    "stream_options": {
+      "include_usage": true,
+    },
   },
   "headers": {
     "Authorization": "Bearer test-key",
@@ -97,6 +100,9 @@ AI 生成的图片（1 张）：",
     ],
     "model": "gpt-5.5",
     "stream": true,
+    "stream_options": {
+      "include_usage": true,
+    },
   },
   "headers": {
     "Authorization": "Bearer test-key",
@@ -126,6 +132,9 @@ exports[`请求体矩阵快照 > chat native tools gpt-5.5 1`] = `
     "model": "gpt-5.5",
     "parallel_tool_calls": true,
     "stream": true,
+    "stream_options": {
+      "include_usage": true,
+    },
     "tool_choice": "auto",
     "tools": [
       {
@@ -175,7 +184,11 @@ exports[`请求体矩阵快照 > chat native tools gpt-6-sol 1`] = `
     ],
     "model": "gpt-6-sol",
     "parallel_tool_calls": true,
+    "reasoning_effort": "none",
     "stream": true,
+    "stream_options": {
+      "include_usage": true,
+    },
     "tool_choice": "auto",
     "tools": [
       {
@@ -224,51 +237,10 @@ exports[`请求体矩阵快照 > chat native tools with builtins gpt-6-astra 1`]
       },
     ],
     "model": "gpt-6-astra",
-    "parallel_tool_calls": true,
     "stream": true,
-    "tool_choice": "auto",
-    "tools": [
-      {
-        "type": "code_interpreter",
-      },
-      {
-        "function": {
-          "description": "Search the web for current information",
-          "name": "web_search",
-          "parameters": {
-            "properties": {
-              "query": {
-                "description": "Search query",
-                "type": "string",
-              },
-            },
-            "required": [
-              "query",
-            ],
-            "type": "object",
-          },
-        },
-        "type": "function",
-      },
-      {
-        "function": {
-          "description": "Get the weather for a city",
-          "name": "get_weather",
-          "parameters": {
-            "properties": {
-              "city": {
-                "type": "string",
-              },
-            },
-            "required": [
-              "city",
-            ],
-            "type": "object",
-          },
-        },
-        "type": "function",
-      },
-    ],
+    "stream_options": {
+      "include_usage": true,
+    },
   },
   "headers": {
     "Authorization": "Bearer test-key",
@@ -360,6 +332,9 @@ exports[`请求体矩阵快照 > chat rich history 1`] = `
     ],
     "model": "gpt-5.5",
     "stream": true,
+    "stream_options": {
+      "include_usage": true,
+    },
   },
   "headers": {
     "Authorization": "Bearer test-key",
@@ -372,7 +347,7 @@ exports[`请求体矩阵快照 > chat rich history 1`] = `
 exports[`请求体矩阵快照 > chat sampling params gpt-4o 1`] = `
 {
   "body": {
-    "max_tokens": 1000,
+    "max_completion_tokens": 1000,
     "messages": [
       {
         "content": "Hello",
@@ -389,6 +364,9 @@ exports[`请求体矩阵快照 > chat sampling params gpt-4o 1`] = `
     ],
     "model": "gpt-4o",
     "stream": true,
+    "stream_options": {
+      "include_usage": true,
+    },
     "temperature": 0.7,
   },
   "headers": {
@@ -402,8 +380,7 @@ exports[`请求体矩阵快照 > chat sampling params gpt-4o 1`] = `
 exports[`请求体矩阵快照 > chat sampling params gpt-5.5 1`] = `
 {
   "body": {
-    "frequency_penalty": 0.5,
-    "max_tokens": 1000,
+    "max_completion_tokens": 1000,
     "messages": [
       {
         "content": "Hello",
@@ -419,10 +396,10 @@ exports[`请求体矩阵快照 > chat sampling params gpt-5.5 1`] = `
       },
     ],
     "model": "gpt-5.5",
-    "presence_penalty": 0.3,
     "stream": true,
-    "temperature": 0.7,
-    "top_p": 0.9,
+    "stream_options": {
+      "include_usage": true,
+    },
   },
   "headers": {
     "Authorization": "Bearer test-key",
@@ -435,7 +412,7 @@ exports[`请求体矩阵快照 > chat sampling params gpt-5.5 1`] = `
 exports[`请求体矩阵快照 > chat sampling params gpt-6-sol effort none 1`] = `
 {
   "body": {
-    "max_tokens": 2000,
+    "max_completion_tokens": 2000,
     "messages": [
       {
         "content": "Hello",
@@ -451,7 +428,11 @@ exports[`请求体矩阵快照 > chat sampling params gpt-6-sol effort none 1`] 
       },
     ],
     "model": "gpt-6-sol",
+    "reasoning_effort": "none",
     "stream": true,
+    "stream_options": {
+      "include_usage": true,
+    },
     "temperature": 0.2,
   },
   "headers": {
@@ -532,6 +513,9 @@ exports[`请求体矩阵快照 > chat system monitor prefill 1`] = `
     ],
     "model": "gpt-5.5",
     "stream": true,
+    "stream_options": {
+      "include_usage": true,
+    },
   },
   "headers": {
     "Authorization": "Bearer test-key",
@@ -561,6 +545,9 @@ exports[`请求体矩阵快照 > chat thinking custom budget 1`] = `
     "model": "gpt-5.5",
     "reasoning_effort": "high",
     "stream": true,
+    "stream_options": {
+      "include_usage": true,
+    },
   },
   "headers": {
     "Authorization": "Bearer test-key",
@@ -590,6 +577,9 @@ exports[`请求体矩阵快照 > chat thinking high 1`] = `
     "model": "gpt-5.5",
     "reasoning_effort": "high",
     "stream": true,
+    "stream_options": {
+      "include_usage": true,
+    },
   },
   "headers": {
     "Authorization": "Bearer test-key",
@@ -619,6 +609,9 @@ exports[`请求体矩阵快照 > chat thinking minimal gpt-5 1`] = `
     "model": "gpt-5",
     "reasoning_effort": "minimal",
     "stream": true,
+    "stream_options": {
+      "include_usage": true,
+    },
   },
   "headers": {
     "Authorization": "Bearer test-key",
@@ -646,8 +639,11 @@ exports[`请求体矩阵快照 > chat thinking minimal gpt-6.1-sol 1`] = `
       },
     ],
     "model": "gpt-6.1-sol",
-    "reasoning_effort": "minimal",
+    "reasoning_effort": "low",
     "stream": true,
+    "stream_options": {
+      "include_usage": true,
+    },
   },
   "headers": {
     "Authorization": "Bearer test-key",
@@ -675,7 +671,11 @@ exports[`请求体矩阵快照 > chat thinking off with none mode 1`] = `
       },
     ],
     "model": "gpt-5.5",
+    "reasoning_effort": "none",
     "stream": true,
+    "stream_options": {
+      "include_usage": true,
+    },
   },
   "headers": {
     "Authorization": "Bearer test-key",
@@ -704,6 +704,9 @@ exports[`请求体矩阵快照 > chat thinking off with none mode gpt-6-astra 1`
     ],
     "model": "gpt-6-astra",
     "stream": true,
+    "stream_options": {
+      "include_usage": true,
+    },
   },
   "headers": {
     "Authorization": "Bearer test-key",
@@ -733,6 +736,9 @@ exports[`请求体矩阵快照 > chat thinking xhigh gpt-6-astra 1`] = `
     "model": "gpt-6-astra",
     "reasoning_effort": "xhigh",
     "stream": true,
+    "stream_options": {
+      "include_usage": true,
+    },
   },
   "headers": {
     "Authorization": "Bearer test-key",
@@ -761,9 +767,10 @@ exports[`请求体矩阵快照 > chat verbosity low 1`] = `
     ],
     "model": "gpt-5.5",
     "stream": true,
-    "text": {
-      "verbosity": "low",
+    "stream_options": {
+      "include_usage": true,
     },
+    "verbosity": "low",
   },
   "headers": {
     "Authorization": "Bearer test-key",
@@ -792,8 +799,8 @@ exports[`请求体矩阵快照 > chat verbosity low gpt-4o 1`] = `
     ],
     "model": "gpt-4o",
     "stream": true,
-    "text": {
-      "verbosity": "low",
+    "stream_options": {
+      "include_usage": true,
     },
   },
   "headers": {
@@ -900,6 +907,9 @@ Now Begin! If you use tools correctly, you will be rewarded.
     ],
     "model": "gpt-5.5",
     "stream": true,
+    "stream_options": {
+      "include_usage": true,
+    },
   },
   "headers": {
     "Authorization": "Bearer test-key",
@@ -3995,6 +4005,7 @@ exports[`请求体矩阵快照 > responses defaults 1`] = `
       },
       {
         "content": "Hi! How can I help?",
+        "phase": "final_answer",
         "role": "assistant",
       },
       {
@@ -4003,6 +4014,7 @@ exports[`请求体矩阵快照 > responses defaults 1`] = `
       },
     ],
     "model": "gpt-5.5",
+    "store": false,
     "stream": true,
   },
   "headers": {
@@ -4032,13 +4044,11 @@ exports[`请求体矩阵快照 > responses image history with capabilities 1`] =
 AI 说：Here it is
 
 AI 生成的图片（1 张）：",
-            "type": "text",
+            "type": "input_text",
           },
           {
-            "image_url": {
-              "url": "data:image/png;base64,QUFBQQ==",
-            },
-            "type": "image_url",
+            "image_url": "data:image/png;base64,QUFBQQ==",
+            "type": "input_image",
           },
         ],
         "role": "user",
@@ -4047,19 +4057,18 @@ AI 生成的图片（1 张）：",
         "content": [
           {
             "text": "Make it blue",
-            "type": "text",
+            "type": "input_text",
           },
           {
-            "image_url": {
-              "url": "data:image/png;base64,QkJCQg==",
-            },
-            "type": "image_url",
+            "image_url": "data:image/png;base64,QkJCQg==",
+            "type": "input_image",
           },
         ],
         "role": "user",
       },
     ],
     "model": "gpt-5.5",
+    "store": false,
     "stream": true,
   },
   "headers": {
@@ -4083,6 +4092,7 @@ exports[`请求体矩阵快照 > responses native tools with builtins gpt-6.1-so
       },
       {
         "content": "Hi! How can I help?",
+        "phase": "final_answer",
         "role": "assistant",
       },
       {
@@ -4091,30 +4101,18 @@ exports[`请求体矩阵快照 > responses native tools with builtins gpt-6.1-so
       },
     ],
     "model": "gpt-6.1-sol",
+    "store": false,
     "stream": true,
     "tool_choice": "auto",
     "tools": [
       {
+        "container": {
+          "type": "auto",
+        },
         "type": "code_interpreter",
       },
       {
-        "function": {
-          "description": "Search the web for current information",
-          "name": "web_search",
-          "parameters": {
-            "properties": {
-              "query": {
-                "description": "Search query",
-                "type": "string",
-              },
-            },
-            "required": [
-              "query",
-            ],
-            "type": "object",
-          },
-        },
-        "type": "function",
+        "type": "web_search",
       },
       {
         "description": "Get the weather for a city",
@@ -4155,6 +4153,7 @@ exports[`请求体矩阵快照 > responses non-stream 1`] = `
       },
       {
         "content": "Hi! How can I help?",
+        "phase": "final_answer",
         "role": "assistant",
       },
       {
@@ -4163,6 +4162,7 @@ exports[`请求体矩阵快照 > responses non-stream 1`] = `
       },
     ],
     "model": "gpt-5.5",
+    "store": false,
     "stream": false,
   },
   "headers": {
@@ -4184,13 +4184,11 @@ exports[`请求体矩阵快照 > responses rich history 1`] = `
         "content": [
           {
             "text": "Describe this image",
-            "type": "text",
+            "type": "input_text",
           },
           {
-            "image_url": {
-              "url": "data:image/png;base64,QUFBQQ==",
-            },
-            "type": "image_url",
+            "image_url": "data:image/png;base64,QUFBQQ==",
+            "type": "input_image",
           },
         ],
         "role": "user",
@@ -4203,6 +4201,7 @@ exports[`请求体矩阵快照 > responses rich history 1`] = `
       },
       {
         "content": "It is a cat.",
+        "phase": "final_answer",
         "role": "assistant",
       },
       {
@@ -4229,6 +4228,7 @@ exports[`请求体矩阵快照 > responses rich history 1`] = `
       },
       {
         "content": "It is sunny in Paris.",
+        "phase": "final_answer",
         "role": "assistant",
       },
       {
@@ -4237,6 +4237,7 @@ exports[`请求体矩阵快照 > responses rich history 1`] = `
       },
     ],
     "model": "gpt-5.5",
+    "store": false,
     "stream": true,
   },
   "headers": {
@@ -4250,7 +4251,6 @@ exports[`请求体矩阵快照 > responses rich history 1`] = `
 exports[`请求体矩阵快照 > responses sampling params gpt-5.5 1`] = `
 {
   "body": {
-    "frequency_penalty": 0.5,
     "include": [
       "reasoning.encrypted_content",
     ],
@@ -4261,6 +4261,7 @@ exports[`请求体矩阵快照 > responses sampling params gpt-5.5 1`] = `
       },
       {
         "content": "Hi! How can I help?",
+        "phase": "final_answer",
         "role": "assistant",
       },
       {
@@ -4268,12 +4269,10 @@ exports[`请求体矩阵快照 > responses sampling params gpt-5.5 1`] = `
         "role": "user",
       },
     ],
-    "max_tokens": 1000,
+    "max_output_tokens": 1000,
     "model": "gpt-5.5",
-    "presence_penalty": 0.3,
+    "store": false,
     "stream": true,
-    "temperature": 0.7,
-    "top_p": 0.9,
   },
   "headers": {
     "Authorization": "Bearer test-key",
@@ -4286,7 +4285,6 @@ exports[`请求体矩阵快照 > responses sampling params gpt-5.5 1`] = `
 exports[`请求体矩阵快照 > responses sampling params unknown model 1`] = `
 {
   "body": {
-    "frequency_penalty": 0.5,
     "include": [
       "reasoning.encrypted_content",
     ],
@@ -4304,9 +4302,9 @@ exports[`请求体矩阵快照 > responses sampling params unknown model 1`] = `
         "role": "user",
       },
     ],
-    "max_tokens": 1000,
+    "max_output_tokens": 1000,
     "model": "my-proxy-model",
-    "presence_penalty": 0.3,
+    "store": false,
     "stream": true,
     "temperature": 0.7,
     "top_p": 0.9,
@@ -4346,6 +4344,7 @@ exports[`请求体矩阵快照 > responses system monitor prefill 1`] = `
       },
       {
         "content": "Hi! How can I help?",
+        "phase": "final_answer",
         "role": "assistant",
       },
       {
@@ -4358,6 +4357,7 @@ exports[`请求体矩阵快照 > responses system monitor prefill 1`] = `
       },
     ],
     "model": "gpt-5.5",
+    "store": false,
     "stream": true,
   },
   "headers": {
@@ -4381,6 +4381,7 @@ exports[`请求体矩阵快照 > responses thinking high 1`] = `
       },
       {
         "content": "Hi! How can I help?",
+        "phase": "final_answer",
         "role": "assistant",
       },
       {
@@ -4393,6 +4394,7 @@ exports[`请求体矩阵快照 > responses thinking high 1`] = `
       "effort": "high",
       "summary": "auto",
     },
+    "store": false,
     "stream": true,
   },
   "headers": {
@@ -4416,6 +4418,7 @@ exports[`请求体矩阵快照 > responses thinking off with none mode gpt-6-ast
       },
       {
         "content": "Hi! How can I help?",
+        "phase": "final_answer",
         "role": "assistant",
       },
       {
@@ -4424,9 +4427,7 @@ exports[`请求体矩阵快照 > responses thinking off with none mode gpt-6-ast
       },
     ],
     "model": "gpt-6-astra",
-    "reasoning": {
-      "effort": "none",
-    },
+    "store": false,
     "stream": true,
   },
   "headers": {
@@ -4450,6 +4451,7 @@ exports[`请求体矩阵快照 > responses thinking xhigh gpt-6.1-sol 1`] = `
       },
       {
         "content": "Hi! How can I help?",
+        "phase": "final_answer",
         "role": "assistant",
       },
       {
@@ -4462,6 +4464,7 @@ exports[`请求体矩阵快照 > responses thinking xhigh gpt-6.1-sol 1`] = `
       "effort": "xhigh",
       "summary": "auto",
     },
+    "store": false,
     "stream": true,
   },
   "headers": {
@@ -4485,6 +4488,7 @@ exports[`请求体矩阵快照 > responses verbosity low 1`] = `
       },
       {
         "content": "Hi! How can I help?",
+        "phase": "final_answer",
         "role": "assistant",
       },
       {
@@ -4493,6 +4497,7 @@ exports[`请求体矩阵快照 > responses verbosity low 1`] = `
       },
     ],
     "model": "gpt-5.5",
+    "store": false,
     "stream": true,
     "text": {
       "verbosity": "low",

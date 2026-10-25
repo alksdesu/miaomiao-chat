@@ -33,13 +33,13 @@ export function captureReasoningIntent(stateRef = state) {
 }
 
 /**
- * 预算制格式没有 minimal / xhigh 档，归到相邻档位
+ * 预算制格式没有 minimal / xhigh / max 档，归到相邻档位
  * @param {string} strength
  * @returns {string}
  */
 export function normalizeBudgetStrength(strength) {
     if (strength === 'minimal') return 'low';
-    if (strength === 'xhigh') return 'high';
+    if (strength === 'xhigh' || strength === 'max') return 'high';
     return strength;
 }
 

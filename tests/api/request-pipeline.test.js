@@ -368,7 +368,8 @@ describe('能力过滤时机', () => {
         });
         expect(responsesAdapter.partsToAPIMessages.mock.calls[0][1]).toEqual({
             injectReasoning: true,
-            isXmlMode: false
+            isXmlMode: false,
+            profile: expect.objectContaining({ family: 'openai' })
         });
 
         const otherAdapter = createStubAdapter({ apiFormat: 'openai' });
@@ -379,7 +380,8 @@ describe('能力过滤时机', () => {
         });
         expect(otherAdapter.partsToAPIMessages.mock.calls[0][1]).toEqual({
             injectReasoning: false,
-            isXmlMode: false
+            isXmlMode: false,
+            profile: expect.objectContaining({ family: 'openai' })
         });
     });
 

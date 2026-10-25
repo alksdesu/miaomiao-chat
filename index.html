@@ -855,6 +855,13 @@
                         </button>
                         <button
                             class="strength-btn"
+                            data-strength="max"
+                            title="最大思考深度，型号不支持时按可用的最高档发送"
+                        >
+                            最大
+                        </button>
+                        <button
+                            class="strength-btn"
                             data-strength="custom"
                             title="自定义 token 预算"
                         >
@@ -888,10 +895,11 @@
                             <input type="checkbox" id="thinking-none-mode" />
                             <span class="slider"></span>
                         </label>
-                        <span>关闭时发送 None（Responses API 模式）</span>
+                        <span>关闭思维链时发送 none</span>
                     </div>
                     <p class="settings-hint">
-                        开启后，关闭思维链会发送 reasoning.effort=none 而非不传参数
+                        仅 OpenAI 格式：Responses 发送 reasoning.effort=none，Chat Completions
+                        只对已识别的型号发送 reasoning_effort=none；型号不支持 none 时不发送
                     </p>
 
                     <!-- Claude Adaptive Thinking -->
@@ -974,7 +982,8 @@
                         </select>
                     </div>
                     <p class="settings-hint">
-                        开启后发送 text.verbosity 参数（所有格式都发送，由 API 自行判断是否支持）
+                        仅 OpenAI 格式：Chat Completions 发送 verbosity，Responses 发送
+                        text.verbosity；不支持的型号自动忽略
                     </p>
                 </div>
 

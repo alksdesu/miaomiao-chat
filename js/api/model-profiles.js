@@ -235,7 +235,9 @@ const OPENAI_BASE = Object.freeze({
     chatTools: 'always',
     maxTokensParam: 'max_tokens',
     verbosity: true,
-    streamUsage: false
+    streamUsage: false,
+    // Responses 回放 assistant 消息时带回 phase（commentary / final_answer）
+    assistantPhase: false
 });
 
 function openaiReasoning(efforts, defaultEffort, overrides = {}) {
@@ -246,6 +248,7 @@ function openaiReasoning(efforts, defaultEffort, overrides = {}) {
         maxTokensParam: 'max_completion_tokens',
         verbosity: true,
         streamUsage: true,
+        assistantPhase: false,
         ...overrides
     };
 }
@@ -256,7 +259,8 @@ const OPENAI_NON_REASONING = {
     chatTools: 'always',
     maxTokensParam: 'max_completion_tokens',
     verbosity: false,
-    streamUsage: true
+    streamUsage: true,
+    assistantPhase: false
 };
 
 const EFFORTS_NONE_TO_MAX = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
@@ -265,12 +269,15 @@ const EFFORTS_NONE_TO_XHIGH = ['none', 'low', 'medium', 'high', 'xhigh'];
 // Astra / 6.1 Sol 不支持 none：采样参数永远被拒，Chat Completions 也不能带工具
 const GPT6_STRICT = openaiReasoning(['low', 'medium', 'high', 'xhigh', 'max'], 'medium', {
     sampling: 'never',
-    chatTools: 'never'
+    chatTools: 'never',
+    assistantPhase: true
 });
 // 6 Sol / Luna：effort 为 none 时才接受采样参数，Chat Completions 也只在 none 时能带工具
 const GPT6_NONE_CAPABLE = openaiReasoning(EFFORTS_NONE_TO_MAX, 'medium', {
-    chatTools: 'effort-none'
+    chatTools: 'effort-none',
+    assistantPhase: true
 });
+const GPT56 = openaiReasoning(EFFORTS_NONE_TO_MAX, 'medium', { assistantPhase: true });
 
 const VARIANT_SUFFIXES = ['pro', 'codex', 'chat', 'chat-latest'];
 
@@ -287,35 +294,23 @@ const OPENAI_RULES = [
         match: modelToken('gpt-6-luna', VARIANT_SUFFIXES),
         profile: GPT6_NONE_CAPABLE
     },
-    {
-        id: 'gpt-5.6-sol',
-        match: modelToken('gpt-5.6-sol', VARIANT_SUFFIXES),
-        profile: openaiReasoning(EFFORTS_NONE_TO_MAX, 'medium')
-    },
+    { id: 'gpt-5.6-sol', match: modelToken('gpt-5.6-sol', VARIANT_SUFFIXES), profile: GPT56 },
     {
         id: 'gpt-5.6-terra',
         match: modelToken('gpt-5.6-terra', VARIANT_SUFFIXES),
-        profile: openaiReasoning(EFFORTS_NONE_TO_MAX, 'medium')
+        profile: GPT56
     },
-    {
-        id: 'gpt-5.6-luna',
-        match: modelToken('gpt-5.6-luna', VARIANT_SUFFIXES),
-        profile: openaiReasoning(EFFORTS_NONE_TO_MAX, 'medium')
-    },
-    {
-        id: 'gpt-5.6',
-        match: modelToken('gpt-5.6', VARIANT_SUFFIXES),
-        profile: openaiReasoning(EFFORTS_NONE_TO_MAX, 'medium')
-    },
+    { id: 'gpt-5.6-luna', match: modelToken('gpt-5.6-luna', VARIANT_SUFFIXES), profile: GPT56 },
+    { id: 'gpt-5.6', match: modelToken('gpt-5.6', VARIANT_SUFFIXES), profile: GPT56 },
     {
         id: 'gpt-5.5',
         match: modelToken('gpt-5.5', VARIANT_SUFFIXES),
-        profile: openaiReasoning(EFFORTS_NONE_TO_XHIGH, 'medium')
+        profile: openaiReasoning(EFFORTS_NONE_TO_XHIGH, 'medium', { assistantPhase: true })
     },
     {
         id: 'gpt-5.4',
         match: modelToken('gpt-5.4', VARIANT_SUFFIXES),
-        profile: openaiReasoning(EFFORTS_NONE_TO_XHIGH, 'none')
+        profile: openaiReasoning(EFFORTS_NONE_TO_XHIGH, 'none', { assistantPhase: true })
     },
     {
         id: 'gpt-5.2',

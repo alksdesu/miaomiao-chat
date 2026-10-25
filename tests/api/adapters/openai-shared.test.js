@@ -28,8 +28,14 @@ vi.mock('../../../js/utils/logger.js', () => ({
 import {
     stringifyToolResult,
     assembleOpenAIConversation,
-    applyOpenAITools
+    applyOpenAITools,
+    resolveOpenAIEffort,
+    canSendOpenAINoneEffort,
+    buildOpenAISampling,
+    resolveOpenAIVerbosity,
+    pushResponsesFunctionCallPair
 } from '../../../js/api/adapters/openai-shared.js';
+import { resolveModelProfile } from '../../../js/api/model-profiles.js';
 
 describe('stringifyToolResult', () => {
     it('null 返回 fallback', () => {
@@ -174,5 +180,143 @@ describe('applyOpenAITools', () => {
         applyOpenAITools(body, conversation, tools, { isXmlMode: true, logTag: 't' });
         expect(body.tools).toBeUndefined();
         expect(conversation[0].content).toContain('get_weather');
+    });
+});
+
+// ========== 生成参数辅助 ==========
+
+describe('resolveOpenAIEffort', () => {
+    it('未识别的型号原样发送，custom 与未知档位回落 high', () => {
+        const notices = [];
+        expect(resolveOpenAIEffort('max', null, notices)).toBe('max');
+        expect(resolveOpenAIEffort('custom', null, notices)).toBe('high');
+        expect(resolveOpenAIEffort('none', null, notices)).toBe('high');
+        expect(notices).toEqual([]);
+    });
+
+    it('优先收敛到更低的支持档位，没有时向上收敛', () => {
+        const notices = [];
+        expect(
+            resolveOpenAIEffort('max', ['none', 'low', 'medium', 'high', 'xhigh'], notices)
+        ).toBe('xhigh');
+        expect(resolveOpenAIEffort('minimal', ['low', 'medium'], notices)).toBe('low');
+        expect(resolveOpenAIEffort('minimal', ['none', 'low'], notices)).toBe('low');
+        expect(notices).toHaveLength(3);
+    });
+});
+
+describe('canSendOpenAINoneEffort', () => {
+    it('未识别或支持 none 的型号可以发送', () => {
+        const notices = [];
+        expect(canSendOpenAINoneEffort(resolveModelProfile('openai', 'x-model'), notices)).toBe(
+            true
+        );
+        expect(canSendOpenAINoneEffort(resolveModelProfile('openai', 'gpt-5.5'), notices)).toBe(
+            true
+        );
+        expect(notices).toEqual([]);
+    });
+
+    it('已识别但不支持 none 的型号不发送并提示', () => {
+        const notices = [];
+        expect(canSendOpenAINoneEffort(resolveModelProfile('openai', 'gpt-6-astra'), notices)).toBe(
+            false
+        );
+        expect(notices).toEqual([expect.objectContaining({ key: 'openai.effort-none' })]);
+    });
+});
+
+describe('buildOpenAISampling', () => {
+    const userParams = {
+        temperature: 0.5,
+        top_p: 0.9,
+        frequency_penalty: 0.1,
+        presence_penalty: null,
+        max_tokens: 100
+    };
+
+    it('总是接受时只发送用户设置过的值，不含 max_tokens', () => {
+        expect(
+            buildOpenAISampling(userParams, { rule: 'always', effectiveEffort: null, notices: [] })
+        ).toEqual({ temperature: 0.5, top_p: 0.9, frequency_penalty: 0.1 });
+    });
+
+    it('不支持 penalty 时只保留 temperature 与 top_p', () => {
+        expect(
+            buildOpenAISampling(userParams, {
+                rule: 'always',
+                effectiveEffort: null,
+                penalties: false,
+                notices: []
+            })
+        ).toEqual({ temperature: 0.5, top_p: 0.9 });
+    });
+
+    it('effort-none 规则按实际生效的推理强度决定', () => {
+        const notices = [];
+        expect(
+            buildOpenAISampling(userParams, {
+                rule: 'effort-none',
+                effectiveEffort: 'none',
+                notices
+            })
+        ).toEqual({ temperature: 0.5, top_p: 0.9, frequency_penalty: 0.1 });
+        expect(
+            buildOpenAISampling(userParams, {
+                rule: 'effort-none',
+                effectiveEffort: 'medium',
+                notices
+            })
+        ).toEqual({});
+        expect(notices).toEqual([expect.objectContaining({ key: 'openai.sampling' })]);
+    });
+
+    it('没有设置采样参数时不提示', () => {
+        const notices = [];
+        expect(
+            buildOpenAISampling(
+                { temperature: null, top_p: null },
+                { rule: 'never', effectiveEffort: null, notices }
+            )
+        ).toEqual({});
+        expect(notices).toEqual([]);
+    });
+});
+
+describe('resolveOpenAIVerbosity', () => {
+    it('型号不支持时返回 null 并提示', () => {
+        const notices = [];
+        expect(resolveOpenAIVerbosity('low', { verbosity: false }, notices)).toBeNull();
+        expect(notices).toHaveLength(1);
+        expect(resolveOpenAIVerbosity('low', { verbosity: true }, [])).toBe('low');
+        expect(resolveOpenAIVerbosity(null, { verbosity: true }, [])).toBeNull();
+    });
+});
+
+describe('pushResponsesFunctionCallPair', () => {
+    const part = {
+        id: 'w1',
+        call_id: 'call_w1',
+        responseItemId: 'fc_w1',
+        name: 'get_weather',
+        args: { city: 'Paris' },
+        result: { content: 'Sunny' }
+    };
+
+    it('默认带上 function_call 的 item id', () => {
+        const out = [];
+        pushResponsesFunctionCallPair(out, part);
+        expect(out[0]).toMatchObject({ type: 'function_call', id: 'fc_w1', call_id: 'call_w1' });
+        expect(out[1]).toEqual({
+            type: 'function_call_output',
+            call_id: 'call_w1',
+            output: 'Sunny'
+        });
+    });
+
+    it('同轮推理项无法回放时不带 item id', () => {
+        const out = [];
+        pushResponsesFunctionCallPair(out, part, { includeItemId: false });
+        expect(out[0]).not.toHaveProperty('id');
     });
 });

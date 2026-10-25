@@ -145,12 +145,12 @@ describe('OpenAI Chat', () => {
             expect(generate('openai').verbosityCfg).toBeNull();
         });
 
-        it('启用且有档位', () => {
+        it('启用且有档位时以顶层 verbosity 发送', () => {
             expect(
                 generate('openai', {
                     settings: { verbosityEnabled: true, outputVerbosity: 'high' }
                 }).verbosityCfg
-            ).toEqual({ text: { verbosity: 'high' } });
+            ).toEqual({ verbosity: 'high' });
         });
 
         it('启用但档位为空字符串时为 null', () => {
@@ -165,19 +165,27 @@ describe('OpenAI Chat', () => {
 // ========== OpenAI Responses ==========
 
 describe('OpenAI Responses', () => {
-    it('共用 openai 参数组', () => {
+    it('共用 openai 参数组，输出上限字段为 max_output_tokens', () => {
         const { modelParams } = generate('openai-responses', {
             paramsKey: 'openai',
             params: { temperature: 0.8, max_tokens: 2048 }
         });
-        expect(modelParams).toEqual({ temperature: 0.8, max_tokens: 2048 });
+        expect(modelParams).toEqual({ temperature: 0.8, max_output_tokens: 2048 });
     });
 
-    it('penalty 参数照常发送', () => {
-        expect(
-            generate('openai-responses', { paramsKey: 'openai', params: OPENAI_FULL_PARAMS })
-                .modelParams
-        ).toEqual(OPENAI_FULL_PARAMS);
+    it('Responses 不支持 penalty 参数，丢弃并提示', () => {
+        const result = generate('openai-responses', {
+            paramsKey: 'openai',
+            params: OPENAI_FULL_PARAMS
+        });
+        expect(result.modelParams).toEqual({
+            temperature: 0.7,
+            top_p: 0.9,
+            max_output_tokens: 1024
+        });
+        expect(result.notices).toEqual([
+            expect.objectContaining({ key: 'openai-responses.penalties' })
+        ]);
     });
 
     describe('thinkingCfg', () => {
@@ -365,6 +373,158 @@ describe('Gemini', () => {
             generate('gemini', { settings: { verbosityEnabled: true, outputVerbosity: 'low' } })
                 .verbosityCfg
         ).toBeNull();
+    });
+});
+
+// ========== OpenAI 按型号约束 ==========
+
+describe('OpenAI 按型号约束', () => {
+    const chat = (model, { settings = {}, params = null, nativeTools = false } = {}) => {
+        const stateRef = { ...createState(), ...settings };
+        if (params) stateRef.modelParams.openai = { ...stateRef.modelParams.openai, ...params };
+        return getAdapter('openai').buildGenerationParams(
+            captureGenerationSettings('openai', stateRef),
+            { model, profile: resolveModelProfile('openai', model), nativeTools }
+        );
+    };
+    const responses = (model, options = {}) =>
+        generate('openai-responses', { model, paramsKey: 'openai', ...options });
+
+    describe('Chat Completions', () => {
+        it('已识别的型号用 max_completion_tokens，未识别的沿用 max_tokens', () => {
+            const params = { max_tokens: 1000 };
+            expect(chat('gpt-5.5', { params }).modelParams).toEqual({
+                max_completion_tokens: 1000
+            });
+            expect(chat('my-proxy-model', { params }).modelParams).toEqual({ max_tokens: 1000 });
+        });
+
+        it('max 强度对未识别的型号原样发送，对不支持的型号收敛并提示', () => {
+            const settings = { thinkingEnabled: true, thinkingStrength: 'max' };
+            expect(chat('my-proxy-model', { settings }).thinkingCfg).toEqual({
+                reasoning_effort: 'max'
+            });
+            const result = chat('gpt-5.5', { settings });
+            expect(result.thinkingCfg).toEqual({ reasoning_effort: 'xhigh' });
+            expect(result.notices).toEqual([
+                expect.objectContaining({
+                    key: 'openai.effort',
+                    message: expect.stringContaining('max')
+                })
+            ]);
+        });
+
+        it('没有更低档位时向上收敛，不会收敛到 none', () => {
+            const settings = { thinkingEnabled: true, thinkingStrength: 'minimal' };
+            expect(chat('gpt-6.1-sol', { settings }).thinkingCfg).toEqual({
+                reasoning_effort: 'low'
+            });
+            expect(chat('gpt-5.5', { settings }).thinkingCfg).toEqual({
+                reasoning_effort: 'low'
+            });
+        });
+
+        it('非推理型号不发 reasoning_effort 与 verbosity 并提示', () => {
+            const result = chat('gpt-4o', {
+                settings: {
+                    thinkingEnabled: true,
+                    verbosityEnabled: true,
+                    outputVerbosity: 'low'
+                }
+            });
+            expect(result.thinkingCfg).toBeNull();
+            expect(result.verbosityCfg).toBeNull();
+            expect(result.notices.map((notice) => notice.key)).toEqual([
+                'openai.reasoning-unsupported',
+                'openai.verbosity'
+            ]);
+        });
+
+        it('只在推理强度为 none 时接受采样参数的型号按实际生效的强度判断', () => {
+            const params = { temperature: 0.5, top_p: 0.9, frequency_penalty: 0.2 };
+            const byDefault = chat('gpt-5.5', { params });
+            expect(byDefault.modelParams).toEqual({});
+            expect(byDefault.notices).toEqual([
+                expect.objectContaining({ key: 'openai.sampling' })
+            ]);
+            // gpt-5.4 的默认推理强度就是 none
+            expect(chat('gpt-5.4', { params }).modelParams).toEqual(params);
+            expect(
+                chat('gpt-5.5', { params, settings: { thinkingNoneMode: true } }).modelParams
+            ).toEqual(params);
+        });
+
+        it('完全不接受采样参数的型号丢弃并提示', () => {
+            const result = chat('gpt-5', { params: { temperature: 0.5 } });
+            expect(result.modelParams).toEqual({});
+            expect(result.notices[0].message).toContain('不接受');
+        });
+
+        it('关闭推理时只对已识别且支持 none 的型号发送 none', () => {
+            const settings = { thinkingNoneMode: true };
+            expect(chat('gpt-5.5', { settings }).thinkingCfg).toEqual({
+                reasoning_effort: 'none'
+            });
+            expect(chat('my-proxy-model', { settings }).thinkingCfg).toBeNull();
+            const astra = chat('gpt-6-astra', { settings });
+            expect(astra.thinkingCfg).toBeNull();
+            expect(astra.notices).toEqual([expect.objectContaining({ key: 'openai.effort-none' })]);
+        });
+
+        it('只在推理强度为 none 时能带工具的型号带原生工具时改为 none 并提示', () => {
+            const settings = { thinkingEnabled: true, thinkingStrength: 'high' };
+            const withTools = chat('gpt-6-sol', { settings, nativeTools: true });
+            expect(withTools.thinkingCfg).toEqual({ reasoning_effort: 'none' });
+            expect(withTools.notices).toEqual([
+                expect.objectContaining({ key: 'openai.chat-tools-effort' })
+            ]);
+            expect(chat('gpt-6-sol', { settings }).thinkingCfg).toEqual({
+                reasoning_effort: 'high'
+            });
+        });
+    });
+
+    describe('Responses', () => {
+        it('关闭推理时未识别的型号沿用 none 设置，已识别但不支持 none 的型号省略并提示', () => {
+            const settings = { thinkingNoneMode: true };
+            expect(responses('my-proxy-model', { settings }).thinkingCfg).toEqual({
+                reasoning: { effort: 'none' }
+            });
+            const astra = responses('gpt-6-astra', { settings });
+            expect(astra.thinkingCfg).toBeNull();
+            expect(astra.notices).toEqual([expect.objectContaining({ key: 'openai.effort-none' })]);
+        });
+
+        it('推理强度收敛到型号支持的档位', () => {
+            expect(
+                responses('gpt-6-astra', {
+                    settings: { thinkingEnabled: true, thinkingStrength: 'minimal' }
+                }).thinkingCfg
+            ).toEqual({ reasoning: { effort: 'low', summary: 'auto' } });
+        });
+
+        it('输出详细度写在 text.verbosity', () => {
+            expect(
+                responses('gpt-5.5', {
+                    settings: { verbosityEnabled: true, outputVerbosity: 'low' }
+                }).verbosityCfg
+            ).toEqual({ text: { verbosity: 'low' } });
+        });
+
+        it('采样参数按实际生效的推理强度判断', () => {
+            expect(
+                responses('gpt-5.5', {
+                    params: { temperature: 0.5 },
+                    settings: { thinkingEnabled: true, thinkingStrength: 'low' }
+                }).modelParams
+            ).toEqual({});
+            expect(
+                responses('gpt-5.5', {
+                    params: { temperature: 0.5 },
+                    settings: { thinkingNoneMode: true }
+                }).modelParams
+            ).toEqual({ temperature: 0.5 });
+        });
     });
 });
 

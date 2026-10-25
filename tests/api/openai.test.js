@@ -137,22 +137,14 @@ describe('openai API', () => {
         expect(options.signal).toBe(controller.signal);
     });
 
-    it('code execution 启用时添加 code_interpreter 工具', async () => {
+    it('Chat Completions 不附带代码执行与联网搜索工具', async () => {
         state.codeExecutionEnabled = true;
-        await sendOpenAIRequest('https://api.openai.com/v1/chat/completions', 'sk-test', 'gpt-4');
-
-        const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
-        expect(body.tools).toBeDefined();
-        expect(body.tools.some((t) => t.type === 'code_interpreter')).toBe(true);
-    });
-
-    it('web search 启用时添加搜索工具', async () => {
         state.webSearchEnabled = true;
         await sendOpenAIRequest('https://api.openai.com/v1/chat/completions', 'sk-test', 'gpt-4');
 
         const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
-        expect(body.tools).toBeDefined();
-        expect(body.tools.some((t) => t.function?.name === 'web_search')).toBe(true);
+        expect((body.tools || []).some((t) => t.type === 'code_interpreter')).toBe(false);
+        expect((body.tools || []).some((t) => t.function?.name === 'web_search')).toBe(false);
     });
 
     it('过滤错误消息', async () => {

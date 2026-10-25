@@ -180,7 +180,8 @@ async function filterAndConvertMessages(adapter, requestProfile, sessionId, sour
 
     return adapter.partsToAPIMessages(filtered, {
         injectReasoning: adapter.apiFormat === 'openai-responses',
-        isXmlMode: requestProfile.isXmlMode
+        isXmlMode: requestProfile.isXmlMode,
+        profile: requestProfile.profile
     });
 }
 

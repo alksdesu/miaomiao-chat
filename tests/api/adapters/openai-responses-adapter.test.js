@@ -61,7 +61,8 @@ vi.mock('../../../js/utils/media.js', () => ({
 }));
 
 import { openaiResponsesAdapter } from '../../../js/api/adapters/openai-responses-adapter.js';
-import { PartType } from '../../../js/messages/schema.js';
+import { PartType, MediaKind } from '../../../js/messages/schema.js';
+import { resolveModelProfile } from '../../../js/api/model-profiles.js';
 import { state } from '../../../js/core/state.js';
 import { getCurrentProvider } from '../../../js/providers/manager.js';
 
@@ -112,6 +113,182 @@ describe('toOpenAIMessages', () => {
         const msgs = [newMsg('assistant', [{ type: PartType.TEXT, text: '回答' }])];
         const out = openaiResponsesAdapter.partsToAPIMessages(msgs, { injectReasoning: true });
         expect(out).toHaveLength(1);
+    });
+});
+
+// ========== Responses 输入项格式 ==========
+
+describe('partsToAPIMessages 输入项格式', () => {
+    const phaseProfile = resolveModelProfile('openai-responses', 'gpt-5.5');
+    const toolPart = (id, turn, extra = {}) => ({
+        type: PartType.TOOL_CALL,
+        id,
+        name: 'get_weather',
+        args: { city: 'Paris' },
+        state: 'done',
+        result: { content: 'Sunny' },
+        responseItemId: `fc_${id}`,
+        call_id: `call_${id}`,
+        ...(turn ? { _turn: turn } : {}),
+        ...extra
+    });
+
+    it('user 消息使用 input_text / input_image / input_file', () => {
+        const out = openaiResponsesAdapter.partsToAPIMessages([
+            newMsg('user', [
+                { type: PartType.TEXT, text: '看图' },
+                { type: PartType.MEDIA, media: MediaKind.IMAGE, url: 'data:image/png;base64,AAAA' },
+                {
+                    type: PartType.FILE,
+                    name: 'a.pdf',
+                    url: 'data:application/pdf;base64,JVBE',
+                    encoding: 'base64'
+                }
+            ])
+        ]);
+        expect(out).toEqual([
+            {
+                role: 'user',
+                content: [
+                    { type: 'input_text', text: '看图' },
+                    { type: 'input_image', image_url: 'data:image/png;base64,AAAA' },
+                    {
+                        type: 'input_file',
+                        filename: 'a.pdf',
+                        file_data: 'data:application/pdf;base64,JVBE'
+                    }
+                ]
+            }
+        ]);
+    });
+
+    it('只有一段文本时简化为字符串', () => {
+        expect(
+            openaiResponsesAdapter.partsToAPIMessages([
+                newMsg('user', [{ type: PartType.TEXT, text: 'hi' }])
+            ])
+        ).toEqual([{ role: 'user', content: 'hi' }]);
+    });
+
+    it('assistant 消息只回放文本，生成的图片不进入输入', () => {
+        const out = openaiResponsesAdapter.partsToAPIMessages([
+            newMsg('assistant', [
+                { type: PartType.TEXT, text: '这是图' },
+                { type: PartType.MEDIA, media: MediaKind.IMAGE, url: 'data:image/png;base64,AAAA' },
+                { type: PartType.TEXT, text: '还有说明' }
+            ])
+        ]);
+        expect(out).toEqual([{ role: 'assistant', content: '这是图\n\n还有说明' }]);
+    });
+
+    it('支持 phase 的型号按轮次标注前言与最终回答', () => {
+        const msg = newMsg(
+            'assistant',
+            [
+                { type: PartType.TEXT, text: '我先查一下天气' },
+                toolPart('w1'),
+                { type: PartType.TEXT, text: '巴黎晴', _turn: 1 }
+            ],
+            {
+                meta: {
+                    raw: {
+                        openai: {
+                            reasoningItems: [
+                                { id: 'rs_1', encrypted_content: 'enc_1', summary: [] }
+                            ]
+                        }
+                    }
+                }
+            }
+        );
+        const out = openaiResponsesAdapter.partsToAPIMessages([msg], { profile: phaseProfile });
+        expect(out).toEqual([
+            { type: 'reasoning', id: 'rs_1', encrypted_content: 'enc_1', summary: [] },
+            { role: 'assistant', content: '我先查一下天气', phase: 'commentary' },
+            {
+                type: 'function_call',
+                id: 'fc_w1',
+                call_id: 'call_w1',
+                name: 'get_weather',
+                arguments: '{"city":"Paris"}'
+            },
+            { type: 'function_call_output', call_id: 'call_w1', output: 'Sunny' },
+            { role: 'assistant', content: '巴黎晴', phase: 'final_answer' }
+        ]);
+    });
+
+    it('不支持 phase 的型号不带 phase 字段', () => {
+        const out = openaiResponsesAdapter.partsToAPIMessages(
+            [newMsg('assistant', [{ type: PartType.TEXT, text: '回答' }])],
+            { profile: resolveModelProfile('openai-responses', 'my-proxy-model') }
+        );
+        expect(out).toEqual([{ role: 'assistant', content: '回答' }]);
+    });
+
+    it('只有 id 的推理项无法回放：跳过推理项且同轮 function_call 不带 item id', () => {
+        const msg = newMsg('assistant', [toolPart('w1')], {
+            meta: { raw: { openai: { reasoningItems: [{ id: 'rs_1', summary: [] }] } } }
+        });
+        const out = openaiResponsesAdapter.partsToAPIMessages([msg]);
+        expect(out.some((item) => item.type === 'reasoning')).toBe(false);
+        expect(out[0]).toEqual({
+            type: 'function_call',
+            call_id: 'call_w1',
+            name: 'get_weather',
+            arguments: '{"city":"Paris"}'
+        });
+    });
+
+    it('没有文本的 assistant 轮次不产生空消息', () => {
+        const out = openaiResponsesAdapter.partsToAPIMessages([
+            newMsg('assistant', [
+                { type: PartType.MEDIA, media: MediaKind.IMAGE, url: 'data:image/png;base64,AAAA' }
+            ])
+        ]);
+        expect(out).toEqual([]);
+    });
+});
+
+describe('Responses 请求体与内置工具', () => {
+    it('内置工具使用服务端原生工具', () => {
+        expect(
+            openaiResponsesAdapter.collectBuiltinTools({
+                codeExecutionEnabled: true,
+                webSearchEnabled: true
+            })
+        ).toEqual([
+            { type: 'code_interpreter', container: { type: 'auto' } },
+            { type: 'web_search' }
+        ]);
+    });
+
+    it('XML 模式下不附带服务端工具', () => {
+        expect(
+            openaiResponsesAdapter.collectBuiltinTools({
+                codeExecutionEnabled: true,
+                webSearchEnabled: true,
+                xmlToolCallingEnabled: true
+            })
+        ).toEqual([]);
+    });
+
+    it('不在服务端保存对话，并请求加密推理内容', () => {
+        const body = openaiResponsesAdapter.buildRequestBody({
+            messages: [{ role: 'user', content: 'hi' }],
+            model: 'gpt-5.5',
+            modelParams: {},
+            thinkingCfg: null,
+            verbosityCfg: null,
+            systemCtx: {},
+            prefill: null,
+            tools: [],
+            isXmlMode: false,
+            profile: resolveModelProfile('openai-responses', 'gpt-5.5'),
+            notices: [],
+            state: { streamEnabled: true }
+        });
+        expect(body.store).toBe(false);
+        expect(body.include).toEqual(['reasoning.encrypted_content']);
     });
 });
 

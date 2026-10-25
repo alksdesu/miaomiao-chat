@@ -14,168 +14,145 @@ import { normalizeResponsesStop } from '../../messages/stop-reason.js';
 
 import {
     isTextFile,
-    hasNonEmptyContent,
     buildResponsesReasoningItems,
     getReasoningItemTurn,
     stripInternalReasoningFields,
     getPartTurn,
-    getSortedToolCallTurns,
     pushResponsesFunctionCallPair,
     buildOpenAIAuthHeaders,
-    collectOpenAIBuiltinTools,
     assembleOpenAIConversation,
     applyOpenAITools,
-    normalizeOpenAIEffort,
-    buildOpenAISamplingParams,
-    buildOpenAIVerbosityConfig
+    resolveOpenAIEffort,
+    canSendOpenAINoneEffort,
+    buildOpenAISampling,
+    resolveOpenAIVerbosity
 } from './openai-shared.js';
-import { getMappedId, ensureIdMap } from '../format-converter.js';
+import { ensureIdMap } from '../format-converter.js';
 
 // ========== partsToAPIMessages ==========
 
 /**
+ * user / system 消息内容：input_text / input_image / input_file；视频与音频没有对应类型，按中转约定透传
+ */
+function buildInputContent(parts) {
+    const content = [];
+    for (const p of parts || []) {
+        switch (p.type) {
+            case PartType.TEXT:
+                content.push({ type: 'input_text', text: p.text });
+                break;
+            case PartType.MEDIA:
+                if (p.media === MediaKind.IMAGE) {
+                    content.push({ type: 'input_image', image_url: p.url });
+                } else if (p.media === MediaKind.VIDEO) {
+                    content.push({
+                        type: 'video_url',
+                        video_url: { url: p.url, mime_type: p.mime }
+                    });
+                } else if (p.media === MediaKind.AUDIO) {
+                    const audioParsed = parseDataURL(p.url);
+                    if (audioParsed) {
+                        const fmt = (audioParsed.mimeType || '').split('/').pop() || 'wav';
+                        content.push({
+                            type: 'input_audio',
+                            input_audio: { data: audioParsed.base64, format: fmt }
+                        });
+                    }
+                }
+                break;
+            case PartType.FILE:
+                if (isTextFile(p)) {
+                    content.push({
+                        type: 'input_text',
+                        text: `<document name="${p.name}">\n${p.url}\n</document>`
+                    });
+                } else {
+                    content.push({ type: 'input_file', filename: p.name, file_data: p.url });
+                }
+                break;
+        }
+    }
+    if (content.length === 1 && content[0].type === 'input_text') return content[0].text;
+    return content;
+}
+
+// assistant 消息只能回放文本；生成的图片没有可回放的输入形式
+function joinAssistantText(parts) {
+    return parts
+        .filter((p) => p.type === PartType.TEXT && p.text)
+        .map((p) => p.text)
+        .join('\n\n');
+}
+
+function isReplayableToolCall(p) {
+    return (
+        p.type === PartType.TOOL_CALL && p.mode !== ToolMode.XML && p.state !== ToolState.SKIPPED
+    );
+}
+
+/**
  * 新格式 → OpenAI Responses API items 数组
  *
- * Responses API 对 reasoning 模型校验严格：每轮 function_call 必须带回原始 reasoning item。
- * continuation 后 _turn 标记还原 turn 边界，按序输出 reasoning → function_call → function_call_output。
+ * assistant 消息按 _turn 还原每轮的输出顺序：reasoning → 本轮文本 → function_call → function_call_output。
+ * 带工具调用那一轮的文本是前言（commentary），没有工具调用的那一轮是最终回答（final_answer）
+ *
+ * @param {Array} msgs
+ * @param {{ injectReasoning?: boolean, profile?: Object }} [opts]
  */
 function partsToAPIMessages(msgs, opts = {}) {
     const out = [];
     const injectReasoning = opts.injectReasoning !== false; // 默认开启
+    const withPhase = opts.profile?.assistantPhase === true;
+
+    const pushAssistantText = (text, phase) => {
+        if (!text.trim()) return;
+        out.push({ role: 'assistant', content: text, ...(withPhase ? { phase } : {}) });
+    };
 
     for (const msg of msgs) {
         if (msg.error) continue;
 
-        const role = msg.role;
-
-        const contentItems = [];
-        const toolCalls = [];
-        let hasToolCalls = false;
-
-        // 旧数据未补齐 idMap 时 getMappedId 每次返回新临时 id：同一 part 在 toolCalls 数组
-        // (L96) 和 pushResponsesFunctionCallPair (L155 → openai-shared.js call_id 兜底分支)
-        // 会拿到不同 id，function_call 与 function_call_output 配对错位触发 Responses API 400。
-        // 入口主动 ensureIdMap 持久化三槽，保证后续 getMappedId 都命中同一槽
-        for (const p of msg.parts || []) {
-            if (p.type === PartType.TOOL_CALL) ensureIdMap(p);
-        }
-
-        for (const p of msg.parts || []) {
-            switch (p.type) {
-                case PartType.TEXT:
-                    contentItems.push({ type: 'text', text: p.text });
-                    break;
-                case PartType.MEDIA:
-                    if (p.media === MediaKind.IMAGE) {
-                        contentItems.push({ type: 'image_url', image_url: { url: p.url } });
-                    } else if (p.media === MediaKind.VIDEO) {
-                        contentItems.push({
-                            type: 'video_url',
-                            video_url: { url: p.url, mime_type: p.mime }
-                        });
-                    } else if (p.media === MediaKind.AUDIO) {
-                        const audioParsed = parseDataURL(p.url);
-                        if (audioParsed) {
-                            const fmt = (audioParsed.mimeType || '').split('/').pop() || 'wav';
-                            contentItems.push({
-                                type: 'input_audio',
-                                input_audio: { data: audioParsed.base64, format: fmt }
-                            });
-                        }
-                    }
-                    break;
-                case PartType.FILE: {
-                    if (isTextFile(p)) {
-                        contentItems.push({
-                            type: 'text',
-                            text: `<document name="${p.name}">\n${p.url}\n</document>`
-                        });
-                    } else {
-                        contentItems.push({
-                            type: 'file',
-                            file: { filename: p.name, file_data: p.url }
-                        });
-                    }
-                    break;
-                }
-                case PartType.TOOL_CALL:
-                    if (p.mode === ToolMode.XML) break;
-                    if (p.state === ToolState.SKIPPED) break; // 多回复 BufferedSink 拦截不下发
-                    hasToolCalls = true;
-                    // 此 toolCalls 仅供 hasToolCalls 路径分支判定，id 不进 out（实际写入由 pushResponsesFunctionCallPair）
-                    // 仍走 getMappedId 保持代码一致性，方便后续扩展直接读 toolCalls 数组
-                    toolCalls.push({
-                        id: getMappedId(p, 'openai'),
-                        type: 'function',
-                        function: {
-                            name: p.name,
-                            arguments:
-                                typeof p.args === 'string' ? p.args : JSON.stringify(p.args || {})
-                        }
-                    });
-                    break;
-            }
-        }
-
-        let content;
-        if (contentItems.length === 0) {
-            content = '';
-        } else if (contentItems.length === 1 && contentItems[0].type === 'text') {
-            content = contentItems[0].text;
-        } else {
-            content = contentItems;
-        }
-
-        // Responses API：在 assistant 输出项前注入 reasoning item。
-        // 必须带 summary 字段，否则接口会报 input[n].summary 缺失。
-        const reasoningItems =
-            injectReasoning && role === 'assistant' ? buildResponsesReasoningItems(msg) : [];
-
-        if (!hasToolCalls) {
-            out.push(...reasoningItems.map(stripInternalReasoningFields));
-            out.push({ role, content });
-            if (msg.role === Role.ASSISTANT) {
-                appendXmlToolResultsForMessage(out, msg);
-            }
+        if (msg.role !== Role.ASSISTANT) {
+            out.push({ role: msg.role, content: buildInputContent(msg.parts) });
             continue;
         }
 
-        // Responses API 对 reasoning 模型的工具调用校验很严格：
-        // 每一轮 function_call 必须带回同一轮原始 reasoning item。
-        // continuation 合并到一条 UI 消息后，这里按 _turn 还原顺序：
-        // reasoning -> function_call -> function_call_output。
-        //
-        // 合并 reasoning turn ∪ tool_call turn：避免"该轮只有 reasoning 无 tool_call"时
-        // reasoning item 被丢弃（违反 reasoning 链对齐）。
-        const toolTurns = new Set(getSortedToolCallTurns(msg.parts));
-        const reasoningTurns = new Set(reasoningItems.map(getReasoningItemTurn));
-        const allTurns = [...new Set([...toolTurns, ...reasoningTurns])].sort((a, b) => a - b);
-        const emittedReasoningKeys = new Set();
+        const parts = msg.parts || [];
+        // 旧数据未补齐 idMap 时 getMappedId 每次返回新临时 id，function_call 与 function_call_output
+        // 会配对错位触发 400；入口主动 ensureIdMap 持久化三槽
+        for (const p of parts) {
+            if (p.type === PartType.TOOL_CALL) ensureIdMap(p);
+        }
 
-        for (const turn of allTurns) {
-            for (const item of reasoningItems) {
-                const key = item.id || item.encrypted_content;
-                if (getReasoningItemTurn(item) !== turn || emittedReasoningKeys.has(key)) continue;
-                if (key) emittedReasoningKeys.add(key);
-                out.push(stripInternalReasoningFields(item));
+        // 请求不保存服务端状态，推理项只能靠加密内容回放；只有 id 的推理项无法解析，直接跳过
+        const reasoningItems = injectReasoning
+            ? buildResponsesReasoningItems(msg).filter((item) => item.encrypted_content)
+            : [];
+        const toolCallTurns = new Set(parts.filter(isReplayableToolCall).map(getPartTurn));
+        const turns = [
+            ...new Set([...parts.map(getPartTurn), ...reasoningItems.map(getReasoningItemTurn)])
+        ].sort((a, b) => a - b);
+
+        for (const turn of turns) {
+            const turnParts = parts.filter((p) => getPartTurn(p) === turn);
+            const turnReasoning = reasoningItems.filter(
+                (item) => getReasoningItemTurn(item) === turn
+            );
+            out.push(...turnReasoning.map(stripInternalReasoningFields));
+            pushAssistantText(
+                joinAssistantText(turnParts),
+                toolCallTurns.has(turn) ? 'commentary' : 'final_answer'
+            );
+            for (const p of turnParts) {
+                if (!isReplayableToolCall(p)) continue;
+                pushResponsesFunctionCallPair(out, p, {
+                    includeItemId: turnReasoning.length > 0
+                });
             }
-
-            for (const p of msg.parts) {
-                if (p.type !== PartType.TOOL_CALL || getPartTurn(p) !== turn) continue;
-                if (p.mode === ToolMode.XML) continue;
-                if (p.state === ToolState.SKIPPED) continue;
-                pushResponsesFunctionCallPair(out, p);
-            }
         }
 
-        if (hasNonEmptyContent(content)) {
-            out.push({ role, content });
-        }
-
-        // XML 模式 tool_call 配对追加紧跟在本条 assistant 之后（per-turn 内嵌）
-        if (msg.role === Role.ASSISTANT) {
-            appendXmlToolResultsForMessage(out, msg);
-        }
+        // XML 模式 tool_call 配对追加紧跟在本条 assistant 之后
+        appendXmlToolResultsForMessage(out, msg);
     }
 
     return out;
@@ -386,8 +363,17 @@ function parseResponse(data, options = {}) {
 
 // ========== 工具构造 ==========
 
+// 服务端工具由 OpenAI 执行；XML 模式下工具写进提示词，服务端工具无法这样调用
 function collectBuiltinTools(stateRef) {
-    return collectOpenAIBuiltinTools(stateRef);
+    if (stateRef.xmlToolCallingEnabled) return [];
+    const tools = [];
+    if (stateRef.codeExecutionEnabled) {
+        tools.push({ type: 'code_interpreter', container: { type: 'auto' } });
+    }
+    if (stateRef.webSearchEnabled) {
+        tools.push({ type: 'web_search' });
+    }
+    return tools;
 }
 
 function formatSystemTools(systemTools) {
@@ -397,28 +383,67 @@ function formatSystemTools(systemTools) {
 // ========== 生成参数 ==========
 
 /**
- * 思维链关闭时按用户选择显式发送 effort none，否则不带 reasoning 字段
- * @param {import('../reasoning.js').ReasoningIntent} reasoning
+ * 开启推理时按型号收敛档位并请求摘要；关闭时按用户选择显式发送 none（型号不支持 none 时省略）
  * @returns {Object|null}
  */
-function buildReasoningConfig(reasoning) {
-    if (!reasoning.enabled) {
-        return reasoning.sendNoneWhenDisabled ? { reasoning: { effort: 'none' } } : null;
+function buildReasoningConfig(reasoning, profile, notices) {
+    if (!profile.reasoning.supported) {
+        if (reasoning.enabled) {
+            notices.push({
+                key: 'openai.reasoning-unsupported',
+                message: '当前模型不支持推理强度参数，已忽略'
+            });
+        }
+        return null;
     }
-    return {
-        reasoning: { effort: normalizeOpenAIEffort(reasoning.strength), summary: 'auto' }
-    };
+    if (reasoning.enabled) {
+        return {
+            reasoning: {
+                effort: resolveOpenAIEffort(reasoning.strength, profile.reasoning.efforts, notices),
+                summary: 'auto'
+            }
+        };
+    }
+    if (reasoning.sendNoneWhenDisabled && canSendOpenAINoneEffort(profile, notices)) {
+        return { reasoning: { effort: 'none' } };
+    }
+    return null;
 }
 
 /**
  * @param {import('../params.js').GenerationSettings} settings
+ * @param {{ profile: Object }} ctx
  * @returns {import('./format-adapter-types.js').GenerationParams}
  */
-function buildGenerationParams(settings) {
+function buildGenerationParams(settings, { profile }) {
+    const { userParams, reasoning } = settings;
+    const notices = [];
+    const thinkingCfg = buildReasoningConfig(reasoning, profile, notices);
+
+    const penalties = ['frequency_penalty', 'presence_penalty'].filter(
+        (key) => userParams[key] !== null && userParams[key] !== undefined
+    );
+    if (penalties.length > 0) {
+        notices.push({
+            key: 'openai-responses.penalties',
+            message: `Responses API 不支持 ${penalties.join(' / ')}，已忽略`
+        });
+    }
+
+    const modelParams = buildOpenAISampling(userParams, {
+        rule: profile.sampling,
+        effectiveEffort: thinkingCfg?.reasoning?.effort ?? profile.reasoning.defaultEffort,
+        penalties: false,
+        notices
+    });
+    if (userParams.max_tokens !== null) modelParams.max_output_tokens = userParams.max_tokens;
+
+    const verbosity = resolveOpenAIVerbosity(settings.verbosity, profile, notices);
     return {
-        modelParams: buildOpenAISamplingParams(settings.userParams),
-        thinkingCfg: buildReasoningConfig(settings.reasoning),
-        verbosityCfg: buildOpenAIVerbosityConfig(settings.verbosity)
+        modelParams,
+        thinkingCfg,
+        verbosityCfg: verbosity ? { text: { verbosity } } : null,
+        notices
     };
 }
 
@@ -444,7 +469,9 @@ function buildRequestBody(ctx) {
         model: model,
         stream: stateRef.streamEnabled,
         input: conversation,
-        // 请求返回加密的推理内容（用于多轮对话保持思维链上下文）
+        // 每轮都回放完整历史，不需要服务端保存对话
+        store: false,
+        // 不保存时推理项只能靠加密内容在多轮对话里回放
         include: ['reasoning.encrypted_content']
     };
 

@@ -8,7 +8,6 @@
 import { logger } from '../../utils/logger.js';
 import { parseDataURL } from '../../utils/file-helpers.js';
 import { getMappedId } from '../format-converter.js';
-import { PartType } from '../../messages/schema.js';
 import { TOOL_INTERRUPTED_MESSAGE } from '../../utils/constants.js';
 import { injectToolsToOpenAI, getXMLInjectionStats } from '../../tools/tool-injection.js';
 
@@ -57,12 +56,6 @@ export function stringifyToolResult(result, fallback = TOOL_INTERRUPTED_MESSAGE)
     if (result.content !== undefined) return safeStringify(result.content);
     if (result.error !== undefined) return safeStringify({ error: result.error });
     return safeStringify(result);
-}
-
-export function hasNonEmptyContent(content) {
-    if (typeof content === 'string') return content.trim().length > 0;
-    if (Array.isArray(content)) return content.length > 0;
-    return content != null;
 }
 
 // ========== Responses API reasoning items 处理 ==========
@@ -151,23 +144,25 @@ export function getPartTurn(part) {
     return part?._turn ?? 0;
 }
 
-export function getSortedToolCallTurns(parts) {
-    return Array.from(
-        new Set((parts || []).filter((p) => p.type === PartType.TOOL_CALL).map(getPartTurn))
-    ).sort((a, b) => a - b);
-}
-
-export function pushResponsesFunctionCallPair(out, p) {
+/**
+ * @param {Array} out
+ * @param {Object} p tool_call part
+ * @param {{ includeItemId?: boolean }} [options] 同轮推理项无法回放时不带 item id，
+ *     否则服务端会按 id 找到原推理项并以缺少推理项拒绝请求
+ */
+export function pushResponsesFunctionCallPair(out, p, { includeItemId = true } = {}) {
     // 优先 part.call_id（同轮 OpenAI 原生 call_id），其次 part.idMap.openai（跨格式映射或 lazy 补齐）
     const callId = p.call_id || getMappedId(p, 'openai');
-    const functionCallItemId = buildResponsesFunctionCallItemId(getResponsesItemId(p), callId);
-    out.push({
+    const functionCall = {
         type: 'function_call',
-        id: functionCallItemId,
         call_id: callId,
         name: p.name,
         arguments: typeof p.args === 'string' ? p.args : JSON.stringify(p.args || {})
-    });
+    };
+    if (includeItemId) {
+        functionCall.id = buildResponsesFunctionCallItemId(getResponsesItemId(p), callId);
+    }
+    out.push(functionCall);
     out.push({
         type: 'function_call_output',
         call_id: callId,
@@ -244,21 +239,90 @@ export function applyOpenAITools(
 
 // ========== 生成参数 ==========
 
-const OPENAI_EFFORTS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh']);
+// 推理强度由低到高
+const OPENAI_EFFORTS = Object.freeze(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+const OPENAI_SAMPLING_KEYS = Object.freeze([
+    'temperature',
+    'top_p',
+    'frequency_penalty',
+    'presence_penalty'
+]);
 
 /**
- * 设置面板强度 → reasoning effort；custom 及其他格式专属档位回落 high
+ * 开启推理时的 effort：设置面板强度归一（custom 回落 high），再收敛到型号支持的档位，不会收敛到 none
  * @param {string} strength
+ * @param {string[]|null} supported 型号支持的档位；null 表示未识别，原样发送
+ * @param {import('../request-notices.js').RequestNotice[]} notices
  * @returns {string}
  */
-export function normalizeOpenAIEffort(strength) {
-    return OPENAI_EFFORTS.includes(strength) ? strength : 'high';
+export function resolveOpenAIEffort(strength, supported, notices) {
+    const requested = OPENAI_EFFORTS.includes(strength) && strength !== 'none' ? strength : 'high';
+    if (!supported || supported.includes(requested)) return requested;
+
+    const usable = OPENAI_EFFORTS.filter((level) => level !== 'none' && supported.includes(level));
+    if (usable.length === 0) return requested;
+    const rank = OPENAI_EFFORTS.indexOf(requested);
+    const lower = usable.filter((level) => OPENAI_EFFORTS.indexOf(level) < rank);
+    const effort = lower.length > 0 ? lower[lower.length - 1] : usable[0];
+    notices.push({
+        key: 'openai.effort',
+        message: `当前模型不支持推理强度 ${requested}，已改用 ${effort}`
+    });
+    return effort;
 }
 
 /**
- * OpenAI 系采样参数：仅发送用户显式设置的值
+ * 关闭推理时是否发送 none：未识别的型号沿用用户设置，已识别但不支持 none 的型号省略并提示
+ * @returns {boolean}
+ */
+export function canSendOpenAINoneEffort(profile, notices) {
+    const supported = profile.reasoning?.efforts;
+    if (!profile.known || !supported || supported.includes('none')) return true;
+    notices.push({
+        key: 'openai.effort-none',
+        message: '当前模型不支持关闭推理（none），将按模型默认推理强度回复'
+    });
+    return false;
+}
+
+/**
+ * 用户显式设置的采样参数；型号完全不接受、或只在 effort 为 none 时接受时丢弃并提示
  * @param {Object} userParams
- * @param {{ penalties?: boolean }} [options] OpenClaw 网关不接受 penalty 参数
+ * @param {Object} options
+ * @param {'always'|'never'|'effort-none'} options.rule
+ * @param {string|null} options.effectiveEffort 实际生效的推理强度（含型号默认值）
+ * @param {boolean} [options.penalties] 是否支持 frequency / presence penalty
+ * @param {import('../request-notices.js').RequestNotice[]} options.notices
+ * @returns {Object}
+ */
+export function buildOpenAISampling(
+    userParams,
+    { rule, effectiveEffort, penalties = true, notices }
+) {
+    const keys = penalties ? OPENAI_SAMPLING_KEYS : OPENAI_SAMPLING_KEYS.slice(0, 2);
+    const requested = keys.filter(
+        (key) => userParams[key] !== null && userParams[key] !== undefined
+    );
+    if (requested.length === 0) return {};
+
+    const blocked = rule === 'never' || (rule === 'effort-none' && effectiveEffort !== 'none');
+    if (blocked) {
+        notices.push({
+            key: 'openai.sampling',
+            message:
+                rule === 'never'
+                    ? `当前模型不接受自定义 ${requested.join(' / ')}，已忽略`
+                    : `当前模型只在推理强度为 none 时接受 ${requested.join(' / ')}，已忽略`
+        });
+        return {};
+    }
+    return Object.fromEntries(requested.map((key) => [key, userParams[key]]));
+}
+
+/**
+ * OpenClaw 网关沿用 Chat 字段名，不接受 penalty 参数
+ * @param {Object} userParams
+ * @param {{ penalties?: boolean }} [options]
  * @returns {Object}
  */
 export function buildOpenAISamplingParams(userParams, { penalties = true } = {}) {
@@ -278,14 +342,21 @@ export function buildOpenAISamplingParams(userParams, { penalties = true } = {})
 }
 
 /**
- * @param {string|null} verbosity
- * @returns {Object|null}
+ * @returns {string|null} 型号不支持输出详细度时返回 null 并提示
  */
-export function buildOpenAIVerbosityConfig(verbosity) {
-    return verbosity ? { text: { verbosity } } : null;
+export function resolveOpenAIVerbosity(verbosity, profile, notices) {
+    if (!verbosity) return null;
+    if (profile.verbosity === false) {
+        notices.push({
+            key: 'openai.verbosity',
+            message: '当前模型不支持输出详细度参数，已忽略'
+        });
+        return null;
+    }
+    return verbosity;
 }
 
-// ========== OpenAI 两家共享：headers + builtin tools ==========
+// ========== OpenAI 两家共享：headers ==========
 
 /**
  * OpenAI Chat / Responses 共用认证 header
@@ -294,33 +365,4 @@ export function buildOpenAIAuthHeaders(apiKey) {
     return {
         Authorization: `Bearer ${apiKey}`
     };
-}
-
-/**
- * OpenAI 内置工具列表（code_interpreter + web_search function 声明）
- * Chat 与 Responses 两 adapter 共用，差异仅在 tools 字段位置/parallel_tool_calls 设置
- * @param {Object} state - 全局 state 引用
- */
-export function collectOpenAIBuiltinTools(state) {
-    const tools = [];
-    if (state.codeExecutionEnabled) {
-        tools.push({ type: 'code_interpreter' });
-    }
-    if (state.webSearchEnabled) {
-        tools.push({
-            type: 'function',
-            function: {
-                name: 'web_search',
-                description: 'Search the web for current information',
-                parameters: {
-                    type: 'object',
-                    properties: {
-                        query: { type: 'string', description: 'Search query' }
-                    },
-                    required: ['query']
-                }
-            }
-        });
-    }
-    return tools;
 }

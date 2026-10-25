@@ -147,9 +147,9 @@ const _rawState = {
     // 功能开关
     streamEnabled: true,
     thinkingEnabled: false,
-    thinkingStrength: 'high', // 'low' | 'medium' | 'high' | 'custom'
+    thinkingStrength: 'high', // 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'custom'
     thinkingBudget: 32768,
-    thinkingNoneMode: false, // 关闭时是否发送 none（Responses API 模式）
+    thinkingNoneMode: false, // 关闭思维链时是否发送 effort none（仅 OpenAI 格式）
     claudeAdaptiveThinking: false, // Claude adaptive thinking 模式
     claudeEffortLevel: 'high', // Claude adaptive effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
     claudeShowThinking: true, // 是否显式请求返回思考摘要（display: summarized）

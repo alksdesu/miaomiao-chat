@@ -60,13 +60,14 @@ describe('captureReasoningIntent', () => {
 });
 
 describe('normalizeBudgetStrength', () => {
-    it('minimal 归到 low，xhigh 归到 high', () => {
+    it('minimal 归到 low，xhigh / max 归到 high', () => {
         expect(normalizeBudgetStrength('minimal')).toBe('low');
         expect(normalizeBudgetStrength('xhigh')).toBe('high');
+        expect(normalizeBudgetStrength('max')).toBe('high');
     });
 
     it('其他档位原样返回', () => {
-        for (const strength of ['low', 'medium', 'high', 'custom', 'max']) {
+        for (const strength of ['low', 'medium', 'high', 'custom']) {
             expect(normalizeBudgetStrength(strength)).toBe(strength);
         }
     });
@@ -79,9 +80,10 @@ describe('resolveThinkingBudget', () => {
         expect(resolveThinkingBudget(intent({ strength: 'high' }), BUDGETS)).toBe(300);
     });
 
-    it('minimal / xhigh 先归到相邻档位', () => {
+    it('minimal / xhigh / max 先归到相邻档位', () => {
         expect(resolveThinkingBudget(intent({ strength: 'minimal' }), BUDGETS)).toBe(100);
         expect(resolveThinkingBudget(intent({ strength: 'xhigh' }), BUDGETS)).toBe(300);
+        expect(resolveThinkingBudget(intent({ strength: 'max' }), BUDGETS)).toBe(300);
     });
 
     it('custom 使用用户预算', () => {
@@ -91,7 +93,7 @@ describe('resolveThinkingBudget', () => {
     });
 
     it('未知档位回落 fallback', () => {
-        expect(resolveThinkingBudget(intent({ strength: 'max' }), BUDGETS)).toBe(16384);
-        expect(resolveThinkingBudget(intent({ strength: 'max' }), BUDGETS, 42)).toBe(42);
+        expect(resolveThinkingBudget(intent({ strength: 'turbo' }), BUDGETS)).toBe(16384);
+        expect(resolveThinkingBudget(intent({ strength: 'turbo' }), BUDGETS, 42)).toBe(42);
     });
 });

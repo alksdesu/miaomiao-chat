@@ -18,12 +18,12 @@ import {
     isTextFile,
     stringifyToolResult,
     buildOpenAIAuthHeaders,
-    collectOpenAIBuiltinTools,
     assembleOpenAIConversation,
     applyOpenAITools,
-    normalizeOpenAIEffort,
-    buildOpenAISamplingParams,
-    buildOpenAIVerbosityConfig
+    resolveOpenAIEffort,
+    canSendOpenAINoneEffort,
+    buildOpenAISampling,
+    resolveOpenAIVerbosity
 } from './openai-shared.js';
 import { getMappedId, ensureIdMap } from '../format-converter.js';
 
@@ -340,8 +340,9 @@ function parseResponse(data, options = {}) {
 
 // ========== 工具构造 ==========
 
-function collectBuiltinTools(stateRef) {
-    return collectOpenAIBuiltinTools(stateRef);
+// Chat Completions 没有代码执行与联网搜索工具，这两项只在 Responses 格式提供
+function collectBuiltinTools() {
+    return [];
 }
 
 function formatSystemTools(systemTools) {
@@ -352,17 +353,59 @@ function formatSystemTools(systemTools) {
 // ========== 生成参数 ==========
 
 /**
+ * 未识别的型号只在开启推理时发送 reasoning_effort；已识别且支持 none 的型号关闭推理时按设置发送 none
+ * @returns {string|null}
+ */
+function resolveChatEffort(reasoning, profile, notices) {
+    if (!profile.reasoning.supported) {
+        if (reasoning.enabled) {
+            notices.push({
+                key: 'openai.reasoning-unsupported',
+                message: '当前模型不支持推理强度参数，已忽略'
+            });
+        }
+        return null;
+    }
+    if (reasoning.enabled) {
+        return resolveOpenAIEffort(reasoning.strength, profile.reasoning.efforts, notices);
+    }
+    if (!reasoning.sendNoneWhenDisabled || !profile.known) return null;
+    return canSendOpenAINoneEffort(profile, notices) ? 'none' : null;
+}
+
+/**
  * @param {import('../params.js').GenerationSettings} settings
+ * @param {{ profile: Object, nativeTools: boolean }} ctx
  * @returns {import('./format-adapter-types.js').GenerationParams}
  */
-function buildGenerationParams(settings) {
-    const { reasoning } = settings;
+function buildGenerationParams(settings, { profile, nativeTools }) {
+    const { userParams, reasoning } = settings;
+    const notices = [];
+
+    let effort = resolveChatEffort(reasoning, profile, notices);
+    if (nativeTools && profile.chatTools === 'effort-none' && effort !== 'none') {
+        effort = 'none';
+        notices.push({
+            key: 'openai.chat-tools-effort',
+            message:
+                '当前模型在 Chat Completions 中只有推理强度为 none 时才能使用工具，已改为 none；需要推理时请改用 Responses 格式'
+        });
+    }
+
+    const modelParams = buildOpenAISampling(userParams, {
+        rule: profile.sampling,
+        effectiveEffort: effort ?? profile.reasoning.defaultEffort,
+        notices
+    });
+    // 推理模型不接受 max_tokens；未识别的型号沿用 max_tokens 兼容各类中转
+    if (userParams.max_tokens !== null) modelParams[profile.maxTokensParam] = userParams.max_tokens;
+
+    const verbosity = resolveOpenAIVerbosity(settings.verbosity, profile, notices);
     return {
-        modelParams: buildOpenAISamplingParams(settings.userParams),
-        thinkingCfg: reasoning.enabled
-            ? { reasoning_effort: normalizeOpenAIEffort(reasoning.strength) }
-            : null,
-        verbosityCfg: buildOpenAIVerbosityConfig(settings.verbosity)
+        modelParams,
+        thinkingCfg: effort ? { reasoning_effort: effort } : null,
+        verbosityCfg: verbosity ? { verbosity } : null,
+        notices
     };
 }
 
@@ -382,6 +425,8 @@ function buildRequestBody(ctx) {
         prefill,
         tools,
         isXmlMode,
+        profile,
+        notices,
         state: stateRef
     } = ctx;
 
@@ -391,12 +436,31 @@ function buildRequestBody(ctx) {
         stream: stateRef.streamEnabled,
         messages: conversation
     };
+    // 流式默认不返回 usage；未识别的型号不加，部分中转不认 stream_options
+    if (stateRef.streamEnabled && profile?.streamUsage) {
+        requestBody.stream_options = { include_usage: true };
+    }
 
     Object.assign(requestBody, modelParams);
     if (thinkingCfg) Object.assign(requestBody, thinkingCfg);
     if (verbosityCfg) Object.assign(requestBody, verbosityCfg);
 
-    applyOpenAITools(requestBody, conversation, tools, {
+    if (stateRef.codeExecutionEnabled || stateRef.webSearchEnabled) {
+        notices.push({
+            key: 'openai.chat-builtin-tools',
+            message: 'Chat Completions 不提供代码执行与联网搜索工具，需要时请改用 Responses 格式'
+        });
+    }
+
+    const nativeToolsBlocked = !isXmlMode && tools.length > 0 && profile?.chatTools === 'never';
+    if (nativeToolsBlocked) {
+        notices.push({
+            key: 'openai.chat-tools',
+            message:
+                '当前模型在 Chat Completions 中不支持工具调用，本次请求未附带工具；需要工具时请改用 Responses 格式'
+        });
+    }
+    applyOpenAITools(requestBody, conversation, nativeToolsBlocked ? [] : tools, {
         isXmlMode,
         logTag: 'openai-chat',
         nativeFields: { parallel_tool_calls: true }

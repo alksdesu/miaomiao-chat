@@ -1,6 +1,7 @@
 /* ========== 思维链强度选择 ========== */
 .thinking-strength {
     display: flex;
+    flex-wrap: wrap;
     gap: 8px;
     margin-top: 10px;
 }
@@ -17,7 +18,8 @@
     cursor: pointer;
     border-radius: 4px;
     transition: all var(--duration-fast) var(--ease);
-    min-width: 0; /* 允许按钮缩小 */
+    white-space: nowrap;
+    min-width: min-content; /* 窄屏放不下时整行换行，不把文字挤成两行 */
 }
 
 .strength-btn:hover {

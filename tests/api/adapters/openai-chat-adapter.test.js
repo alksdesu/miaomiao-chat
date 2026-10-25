@@ -61,6 +61,7 @@ vi.mock('../../../js/utils/media.js', () => ({
 }));
 
 import { openaiChatAdapter } from '../../../js/api/adapters/openai-chat-adapter.js';
+import { resolveModelProfile } from '../../../js/api/model-profiles.js';
 import { PartType, MediaKind, Role } from '../../../js/messages/schema.js';
 import { state } from '../../../js/core/state.js';
 import { getCurrentProvider } from '../../../js/providers/manager.js';
@@ -500,5 +501,68 @@ describe('to* 在 part.mode === xml 时跳过 native 工具调用块', () => {
         const out = openaiChatAdapter.partsToAPIMessages(msgs);
         // 缺失 mode 不触发 XML 跳过，正常产生 tool_calls
         expect(out[0].tool_calls).toHaveLength(1);
+    });
+});
+
+// ========== 请求体按型号约束 ==========
+
+describe('buildRequestBody 按型号约束', () => {
+    const weatherTool = {
+        type: 'function',
+        function: { name: 'get_weather', parameters: { type: 'object', properties: {} } }
+    };
+    const ctx = (model, overrides = {}) => ({
+        messages: [{ role: 'user', content: 'hi' }],
+        model,
+        modelParams: {},
+        thinkingCfg: null,
+        verbosityCfg: null,
+        systemCtx: {},
+        prefill: null,
+        tools: [],
+        isXmlMode: false,
+        profile: resolveModelProfile('openai', model),
+        notices: [],
+        state: { streamEnabled: true },
+        ...overrides
+    });
+
+    it('流式请求对已识别的型号请求 usage，未识别的不加 stream_options', () => {
+        expect(openaiChatAdapter.buildRequestBody(ctx('gpt-5.5')).stream_options).toEqual({
+            include_usage: true
+        });
+        expect(
+            openaiChatAdapter.buildRequestBody(ctx('my-proxy-model')).stream_options
+        ).toBeUndefined();
+        expect(
+            openaiChatAdapter.buildRequestBody(ctx('gpt-5.5', { state: { streamEnabled: false } }))
+                .stream_options
+        ).toBeUndefined();
+    });
+
+    it('Chat Completions 中不支持工具的型号不附带原生工具并提示', () => {
+        const requestCtx = ctx('gpt-6-astra', { tools: [weatherTool] });
+        const body = openaiChatAdapter.buildRequestBody(requestCtx);
+        expect(body.tools).toBeUndefined();
+        expect(body.tool_choice).toBeUndefined();
+        expect(requestCtx.notices).toEqual([expect.objectContaining({ key: 'openai.chat-tools' })]);
+    });
+
+    it('XML 模式下工具写进提示词，不受原生工具限制', () => {
+        const requestCtx = ctx('gpt-6-astra', { tools: [weatherTool], isXmlMode: true });
+        const body = openaiChatAdapter.buildRequestBody(requestCtx);
+        expect(body.messages[0].role).toBe('system');
+        expect(requestCtx.notices).toEqual([]);
+    });
+
+    it('开启代码执行或联网搜索时提示改用 Responses 格式', () => {
+        const requestCtx = ctx('gpt-5.5', {
+            state: { streamEnabled: true, webSearchEnabled: true }
+        });
+        openaiChatAdapter.buildRequestBody(requestCtx);
+        expect(requestCtx.notices).toEqual([
+            expect.objectContaining({ key: 'openai.chat-builtin-tools' })
+        ]);
+        expect(openaiChatAdapter.collectBuiltinTools()).toEqual([]);
     });
 });
