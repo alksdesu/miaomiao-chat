@@ -1,238 +1,34 @@
 /**
- * API 请求参数构建器
- * 根据不同 API 格式构建请求参数
+ * 请求参数采集
+ * 读取设置面板里的原始参数快照，wire 格式的字段名与取值约束由各 adapter.buildGenerationParams 负责
  */
 
-import { logger } from '../utils/logger.js';
 import { state } from '../core/state.js';
-import {
-    CLAUDE_DEFAULT_MAX_TOKENS_STREAM,
-    CLAUDE_DEFAULT_MAX_TOKENS_NON_STREAM
-} from '../utils/constants.js';
-import { buildOpenAIImageParams } from './image-params.js';
+import { captureReasoningIntent } from './reasoning.js';
 
 /**
- * 构建模型参数
- * @param {string} format - API 格式 ('openai'|'gemini'|'claude')
- * @returns {Object} 格式化的参数对象
+ * @typedef {Object} GenerationSettings
+ * @property {Object}  userParams    state.modelParams[apiFormat] 的副本（Responses / OpenClaw 共用 openai 参数）
+ * @property {import('./reasoning.js').ReasoningIntent} reasoning
+ * @property {string|null} verbosity 启用输出详细度时的档位
+ * @property {boolean} streamEnabled
  */
-export function buildModelParams(format) {
-    const params = state.modelParams[format] || state.modelParams['openai'] || {};
-    const result = {};
-
-    switch (format) {
-        case 'openai-image':
-            return buildOpenAIImageParams(params, state.streamEnabled);
-
-        case 'openai':
-        case 'openai-responses':
-        case 'openclaw':
-            // OpenAI / Responses / OpenClaw：仅添加非空参数
-            if (params.temperature !== null) result.temperature = params.temperature;
-            if (params.max_tokens !== null) result.max_tokens = params.max_tokens;
-            if (params.top_p !== null) result.top_p = params.top_p;
-            if (format !== 'openclaw') {
-                // penalty 参数仅 OpenAI 原生格式使用
-                if (params.frequency_penalty !== null)
-                    result.frequency_penalty = params.frequency_penalty;
-                if (params.presence_penalty !== null)
-                    result.presence_penalty = params.presence_penalty;
-            }
-            break;
-
-        case 'gemini':
-            // Gemini：采样参数保留默认值；maxOutputTokens 仅在用户显式设置时传，
-            // 缺省交给模型自身上限，避免固定 8192 截断长输出
-            result.temperature = params.temperature !== null ? params.temperature : 1;
-            result.topK = params.topK !== null ? params.topK : 40;
-            result.topP = params.topP !== null ? params.topP : 0.95;
-            if (params.maxOutputTokens !== null) {
-                result.maxOutputTokens = params.maxOutputTokens;
-            }
-            break;
-
-        case 'claude': {
-            // Messages API 要求 max_tokens 必填，缺失直接 400；它是 thinking 与正文共享的总输出上限
-            result.max_tokens =
-                params.max_tokens !== null
-                    ? params.max_tokens
-                    : state.streamEnabled
-                      ? CLAUDE_DEFAULT_MAX_TOKENS_STREAM
-                      : CLAUDE_DEFAULT_MAX_TOKENS_NON_STREAM;
-            if (params.temperature !== null) result.temperature = params.temperature;
-            if (params.top_p !== null) result.top_p = params.top_p;
-            // Extended Thinking 要求 temperature 必须为 1
-            if (
-                state.thinkingEnabled &&
-                result.temperature !== undefined &&
-                result.temperature !== 1
-            ) {
-                logger.debug('[Params] Claude thinking 模式强制 temperature=1');
-                result.temperature = 1;
-            }
-            if (params.top_k !== null) result.top_k = params.top_k;
-            break;
-        }
-    }
-
-    return result;
-}
 
 /**
- * 构建 Responses API 思维链配置
+ * @param {string} apiFormat
+ * @param {Object} [stateRef]
+ * @returns {GenerationSettings}
  */
-function buildResponsesAPIThinking() {
-    if (!state.thinkingEnabled) {
-        // 关闭思维链：根据 thinkingNoneMode 决定行为
-        if (state.thinkingNoneMode) {
-            // 开启 None 模式：明确发送 none
-            return {
-                reasoning: { effort: 'none' }
-            };
-        } else {
-            // 关闭 None 模式：不发送参数
-            return null;
-        }
-    }
-
-    // 启用时：minimal/low/medium/high/xhigh
-    let effort = state.thinkingStrength;
-    if (effort === 'custom') {
-        effort = 'high';
-    } else if (
-        effort !== 'minimal' &&
-        effort !== 'low' &&
-        effort !== 'medium' &&
-        effort !== 'high' &&
-        effort !== 'xhigh'
-    ) {
-        // 其他格式误用了 OpenAI 特有的值，默认转换为 high
-        effort = 'high';
-    }
-
+export function captureGenerationSettings(apiFormat, stateRef = state) {
+    const modelParams = stateRef.modelParams || {};
+    const userParams = modelParams[apiFormat] || modelParams.openai || {};
     return {
-        reasoning: {
-            effort,
-            summary: 'auto' // 获取推理摘要
-        }
+        userParams: { ...userParams },
+        reasoning: captureReasoningIntent(stateRef),
+        verbosity:
+            stateRef.verbosityEnabled && stateRef.outputVerbosity ? stateRef.outputVerbosity : null,
+        streamEnabled: !!stateRef.streamEnabled
     };
-}
-
-/**
- * 构建思维链配置
- * @param {string} format - API 格式 ('openai'|'openai-responses'|'gemini'|'claude')
- * @param {string} model - 模型名称（Gemini 需要判断版本）
- * @returns {Object|null} 思维链配置对象，或 null（如果未启用）
- */
-export function buildThinkingConfig(format, model = '') {
-    // 通用 budget 映射
-    const budgetMaps = {
-        openai: null, // OpenAI 使用 effort 而非 budget
-        'openai-responses': null, // Responses API 使用 effort
-        gemini: { low: 4096, medium: 8192, high: 16384 },
-        claude: { low: 2048, medium: 8192, high: 16384 }
-    };
-
-    // OpenClaw 透传思维链配置给底层模型
-    if (format === 'openclaw') {
-        if (!state.thinkingEnabled) return null;
-        // 使用通用 budget 模式
-        return { thinking: { budget_tokens: state.thinkingBudget || 8192 } };
-    }
-
-    // 处理 OpenAI 特有的 minimal 和 xhigh 值
-    let normalizedStrength = state.thinkingStrength;
-    if (format !== 'openai' && format !== 'openai-responses') {
-        if (normalizedStrength === 'minimal') normalizedStrength = 'low';
-        else if (normalizedStrength === 'xhigh') normalizedStrength = 'high';
-    }
-
-    const budget =
-        normalizedStrength === 'custom'
-            ? state.thinkingBudget
-            : budgetMaps[format]?.[normalizedStrength] || 16384;
-
-    switch (format) {
-        case 'openai': {
-            // Chat Completions API 格式
-            if (!state.thinkingEnabled) return null;
-            let effort = state.thinkingStrength;
-            if (effort === 'custom') {
-                effort = 'high';
-            } else if (
-                effort !== 'minimal' &&
-                effort !== 'low' &&
-                effort !== 'medium' &&
-                effort !== 'high' &&
-                effort !== 'xhigh'
-            ) {
-                // 其他格式误用了 OpenAI 特有的值，默认转换为 high
-                effort = 'high';
-            }
-            return { reasoning_effort: effort };
-        }
-
-        case 'openai-responses':
-            // Responses API 格式（嵌套的 reasoning 对象）
-            return buildResponsesAPIThinking();
-
-        case 'gemini': {
-            // 检查是否启用思考链
-            if (!state.thinkingEnabled) return null;
-
-            // Gemini 需要检测版本
-            const isGemini3 = model.includes('gemini-3') || model.includes('gemini3');
-
-            if (isGemini3) {
-                const level = normalizedStrength === 'low' ? 'LOW' : 'HIGH';
-                return { thinkingConfig: { thinkingLevel: level, includeThoughts: true } };
-            }
-            // Gemini 2.5 或其他版本使用 thinkingBudget
-            return { thinkingConfig: { thinkingBudget: budget, includeThoughts: true } };
-        }
-
-        case 'claude':
-            // 检查是否启用思考链
-            if (!state.thinkingEnabled) return null;
-
-            // Adaptive Thinking 模式
-            if (state.claudeAdaptiveThinking) {
-                const VALID_CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
-                const raw = state.claudeEffortLevel;
-                const effort = VALID_CLAUDE_EFFORTS.includes(raw) ? raw : 'high';
-                const thinking = { type: 'adaptive' };
-                if (state.claudeShowThinking) {
-                    thinking.display = 'summarized';
-                }
-                return {
-                    thinking,
-                    output_config: { effort }
-                };
-            }
-
-            // 传统 budget_tokens 模式
-            return { thinking: { type: 'enabled', budget_tokens: budget } };
-
-        default:
-            return null;
-    }
-}
-
-/**
- * 构建输出详细度配置
- * 注意：所有格式都发送此参数，由 API 自行判断是否支持
- * @returns {Object|null} 详细度配置对象，或 null（如果未启用）
- */
-export function buildVerbosityConfig() {
-    // 只有启用时才发送参数
-    if (state.verbosityEnabled && state.outputVerbosity) {
-        return {
-            text: {
-                verbosity: state.outputVerbosity
-            }
-        };
-    }
-    return null;
 }
 
 /**

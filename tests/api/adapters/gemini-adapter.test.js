@@ -438,3 +438,126 @@ describe('to* 在 part.mode === xml 时跳过 native 工具调用块', () => {
         expect(out[1].content).toContain('<tool_use_result>');
     });
 });
+
+// ========== 格式专属设置与请求定位 ==========
+
+describe('captureFormatSettings', () => {
+    const baseState = {
+        geminiApiKeyInHeader: false,
+        imageSize: '2K',
+        geminiSystemPartsEnabled: false,
+        geminiSystemParts: []
+    };
+
+    it('读取 API Key 传递方式与出图尺寸', () => {
+        expect(
+            geminiAdapter.captureFormatSettings({
+                ...baseState,
+                geminiApiKeyInHeader: true,
+                imageSize: '4K'
+            })
+        ).toEqual({ apiKeyInHeader: true, imageSize: '4K', systemParts: null });
+    });
+
+    it('出图尺寸缺省为空字符串', () => {
+        expect(
+            geminiAdapter.captureFormatSettings({ ...baseState, imageSize: undefined }).imageSize
+        ).toBe('');
+    });
+
+    it('多段 system parts 开启时过滤空段并替换模板变量', () => {
+        const settings = geminiAdapter.captureFormatSettings({
+            ...baseState,
+            geminiSystemPartsEnabled: true,
+            geminiSystemParts: [{ text: 'P1 {{char}}' }, { text: '   ' }, { text: 'P2' }]
+        });
+        expect(settings.systemParts).toEqual([{ text: 'P1 Assistant' }, { text: 'P2' }]);
+    });
+
+    it('开关关闭或全为空段时 systemParts 为 null', () => {
+        expect(
+            geminiAdapter.captureFormatSettings({
+                ...baseState,
+                geminiSystemParts: [{ text: 'P1' }]
+            }).systemParts
+        ).toBeNull();
+        expect(
+            geminiAdapter.captureFormatSettings({
+                ...baseState,
+                geminiSystemPartsEnabled: true,
+                geminiSystemParts: [{ text: '' }]
+            }).systemParts
+        ).toBeNull();
+    });
+});
+
+describe('API Key 传递与端点', () => {
+    const profile = (overrides = {}) => ({
+        streamEnabled: true,
+        providerApiFormat: 'gemini',
+        formatSettings: { apiKeyInHeader: false, imageSize: '', systemParts: null },
+        ...overrides
+    });
+
+    it('query 模式：key 放在 URL，流式追加 alt=sse', () => {
+        const requestProfile = profile();
+        expect(geminiAdapter.buildHeaders('k1', { requestProfile })).toEqual({});
+        expect(geminiAdapter.buildQueryString('k1', { requestProfile })).toBe('key=k1&alt=sse');
+        expect(
+            geminiAdapter.buildQueryString('k1', {
+                requestProfile: profile({ streamEnabled: false })
+            })
+        ).toBe('key=k1');
+    });
+
+    it('header 模式：key 放在 x-goog-api-key，URL 只保留 alt=sse', () => {
+        const formatSettings = { apiKeyInHeader: true, imageSize: '', systemParts: null };
+        expect(
+            geminiAdapter.buildHeaders('k1', { requestProfile: profile({ formatSettings }) })
+        ).toEqual({ 'x-goog-api-key': 'k1' });
+        expect(
+            geminiAdapter.buildQueryString('k1', { requestProfile: profile({ formatSettings }) })
+        ).toBe('alt=sse');
+        expect(
+            geminiAdapter.buildQueryString('k1', {
+                requestProfile: profile({ formatSettings, streamEnabled: false })
+            })
+        ).toBe('');
+    });
+
+    it('原生 Gemini provider 拼接 models 路径并清理其他格式残留', () => {
+        expect(
+            geminiAdapter.resolveEndpoint(
+                'https://example.com/v1/chat/completions',
+                'gemini-3.8-flash',
+                true,
+                {},
+                { requestProfile: profile() }
+            )
+        ).toBe('https://example.com/v1beta/models/gemini-3.8-flash:streamGenerateContent');
+        expect(
+            geminiAdapter.resolveEndpoint(
+                'https://example.com/',
+                'gemini-3.8-flash',
+                false,
+                {},
+                {
+                    requestProfile: profile()
+                }
+            )
+        ).toBe('https://example.com/v1beta/models/gemini-3.8-flash:generateContent');
+    });
+
+    it('统一代理 provider 保持原端点，不读取当前全局 provider', () => {
+        getCurrentProvider.mockReturnValue({ apiFormat: 'gemini' });
+        expect(
+            geminiAdapter.resolveEndpoint(
+                'https://proxy.example.com/v1/chat/completions/',
+                'gemini-3.8-flash',
+                true,
+                {},
+                { requestProfile: profile({ providerApiFormat: 'openai' }) }
+            )
+        ).toBe('https://proxy.example.com/v1/chat/completions');
+    });
+});

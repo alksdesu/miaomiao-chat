@@ -16,19 +16,15 @@ vi.mock('../../js/core/state.js', () => ({
         xmlToolCallingEnabled: false,
         thinkingEnabled: false,
         customHeaders: [],
-        computerUsePermissions: {}
+        computerUsePermissions: {},
+        modelParams: {
+            claude: { temperature: null, max_tokens: 4096, top_p: null, top_k: null }
+        }
     }
 }));
 
 vi.mock('../../js/utils/logger.js', () => ({
     logger: { warn: vi.fn(), debug: vi.fn(), error: vi.fn(), info: vi.fn() }
-}));
-
-vi.mock('../../js/api/params.js', () => ({
-    buildModelParams: vi.fn(() => ({ max_tokens: 4096 })),
-    buildThinkingConfig: vi.fn(() => null),
-    buildVerbosityConfig: vi.fn(() => null),
-    getCustomHeadersObject: vi.fn(() => ({}))
 }));
 
 vi.mock('../../js/utils/prefill.js', () => ({

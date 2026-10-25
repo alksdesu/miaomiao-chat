@@ -4,6 +4,7 @@ import {
     parseOpenAIImageStream
 } from '../../stream/parser-openai-image.js';
 import { buildOpenAIAuthHeaders } from './openai-shared.js';
+import { buildOpenAIImageParams } from '../image-params.js';
 
 const OUTPUT_MIME_TYPES = Object.freeze({
     png: 'image/png',
@@ -108,6 +109,18 @@ function formatSystemTools() {
     return [];
 }
 
+/**
+ * @param {import('../params.js').GenerationSettings} settings
+ * @returns {import('./format-adapter-types.js').GenerationParams}
+ */
+function buildGenerationParams(settings) {
+    return {
+        modelParams: buildOpenAIImageParams(settings.userParams, settings.streamEnabled),
+        thinkingCfg: null,
+        verbosityCfg: null
+    };
+}
+
 function buildRequestBody({ messages, model, modelParams, state: stateRef }) {
     if (typeof model !== 'string' || !model.trim()) {
         throw new Error('请先为图片提供商选择或添加模型');
@@ -198,9 +211,7 @@ export const openaiImageAdapter = Object.freeze({
     requestFeatures: Object.freeze({
         system: false,
         prefill: false,
-        tools: false,
-        thinking: false,
-        verbosity: false
+        tools: false
     }),
 
     parserClass: OpenAIImageStreamParser,
@@ -211,6 +222,7 @@ export const openaiImageAdapter = Object.freeze({
 
     collectBuiltinTools,
     formatSystemTools,
+    buildGenerationParams,
     buildRequestBody,
     resolveEndpoint,
     buildHeaders,

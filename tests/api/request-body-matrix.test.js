@@ -76,7 +76,7 @@ const h = vi.hoisted(() => {
 
     return {
         state: createDefaultState(),
-        elements: { imageSizeSelect: null },
+        elements: {},
         provider: { id: 'provider-1', name: 'Provider', apiFormat: 'openai' },
         capabilities: null,
         electron: false,
@@ -323,7 +323,7 @@ const PREFILL = {
  * @property {Object|null} [capabilities]
  * @property {boolean} [electron]
  * @property {boolean} [systemTools]
- * @property {string|null} [imageSize]  elements.imageSizeSelect.value；null 表示控件不存在
+ * @property {string} [imageSize]  state.imageSize（Gemini 出图尺寸）
  */
 
 /** @type {MatrixCase[]} */
@@ -938,7 +938,6 @@ function resetEnvironment() {
     const fresh = h.createDefaultState();
     for (const key of Object.keys(h.state)) delete h.state[key];
     Object.assign(h.state, fresh);
-    h.elements.imageSizeSelect = null;
     h.capabilities = null;
     h.electron = false;
     h.systemToolsEnabled = false;
@@ -961,8 +960,8 @@ function applyCase(spec) {
     h.capabilities = spec.capabilities ?? null;
     h.electron = !!spec.electron;
     h.systemToolsEnabled = !!spec.systemTools;
-    if (spec.imageSize !== undefined && spec.imageSize !== null) {
-        h.elements.imageSizeSelect = { value: spec.imageSize };
+    if (spec.imageSize !== undefined) {
+        h.state.imageSize = spec.imageSize;
     }
 }
 

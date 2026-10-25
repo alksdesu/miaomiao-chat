@@ -5,7 +5,6 @@
  */
 
 import { logger } from '../../utils/logger.js';
-import { state } from '../../core/state.js';
 import { PartType, MediaKind, Role, ToolMode, ToolState } from '../../messages/schema.js';
 import { parseDataURL } from '../../utils/file-helpers.js';
 import { extractXMLToolCalls, appendXmlToolResultsForMessage } from '../../tools/xml-formatter.js';
@@ -23,7 +22,10 @@ import {
     getSortedToolCallTurns,
     pushResponsesFunctionCallPair,
     buildOpenAIAuthHeaders,
-    collectOpenAIBuiltinTools
+    collectOpenAIBuiltinTools,
+    normalizeOpenAIEffort,
+    buildOpenAISamplingParams,
+    buildOpenAIVerbosityConfig
 } from './openai-shared.js';
 import { getMappedId, ensureIdMap } from '../format-converter.js';
 
@@ -182,7 +184,7 @@ function partsToAPIMessages(msgs, opts = {}) {
 function parseResponse(data, options = {}) {
     // 响应结构: { output: [...], output_text: "..." }
     if (data.error) return null;
-    const xmlMode = options.isXmlMode ?? state.xmlToolCallingEnabled;
+    const xmlMode = options.isXmlMode === true;
 
     // 1. 优先检测工具调用（function_call 类型）
     if (data.output && Array.isArray(data.output)) {
@@ -379,6 +381,34 @@ function formatSystemTools(systemTools) {
     return systemTools;
 }
 
+// ========== 生成参数 ==========
+
+/**
+ * 思维链关闭时按用户选择显式发送 effort none，否则不带 reasoning 字段
+ * @param {import('../reasoning.js').ReasoningIntent} reasoning
+ * @returns {Object|null}
+ */
+function buildReasoningConfig(reasoning) {
+    if (!reasoning.enabled) {
+        return reasoning.sendNoneWhenDisabled ? { reasoning: { effort: 'none' } } : null;
+    }
+    return {
+        reasoning: { effort: normalizeOpenAIEffort(reasoning.strength), summary: 'auto' }
+    };
+}
+
+/**
+ * @param {import('../params.js').GenerationSettings} settings
+ * @returns {import('./format-adapter-types.js').GenerationParams}
+ */
+function buildGenerationParams(settings) {
+    return {
+        modelParams: buildOpenAISamplingParams(settings.userParams),
+        thinkingCfg: buildReasoningConfig(settings.reasoning),
+        verbosityCfg: buildOpenAIVerbosityConfig(settings.verbosity)
+    };
+}
+
 // ========== buildRequestBody ==========
 
 function buildRequestBody(ctx) {
@@ -498,6 +528,7 @@ export const openaiResponsesAdapter = Object.freeze({
 
     collectBuiltinTools,
     formatSystemTools,
+    buildGenerationParams,
     buildRequestBody,
     resolveEndpoint,
     buildHeaders,

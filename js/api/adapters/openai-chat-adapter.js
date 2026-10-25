@@ -5,7 +5,6 @@
  */
 
 import { logger } from '../../utils/logger.js';
-import { state } from '../../core/state.js';
 import { PartType, MediaKind, Role, ToolMode, ToolState } from '../../messages/schema.js';
 import { parseDataURL } from '../../utils/file-helpers.js';
 import { parseMarkdownImages } from '../../utils/markdown-image-parser.js';
@@ -19,7 +18,10 @@ import {
     isTextFile,
     stringifyToolResult,
     buildOpenAIAuthHeaders,
-    collectOpenAIBuiltinTools
+    collectOpenAIBuiltinTools,
+    normalizeOpenAIEffort,
+    buildOpenAISamplingParams,
+    buildOpenAIVerbosityConfig
 } from './openai-shared.js';
 import { getMappedId, ensureIdMap } from '../format-converter.js';
 
@@ -178,8 +180,7 @@ function parseResponse(data, options = {}) {
 
     const message = data.choices[0].message;
     const finishReason = data.choices[0].finish_reason;
-    // 入口一次性快照 XML toggle，整段解析期间复用同一值
-    const xmlMode = options.isXmlMode ?? state.xmlToolCallingEnabled;
+    const xmlMode = options.isXmlMode === true;
 
     // 检测原生 tool_calls（仅在非 XML 模式）
     if (message.tool_calls && finishReason === 'tool_calls' && !xmlMode) {
@@ -342,6 +343,23 @@ function formatSystemTools(systemTools) {
     return systemTools;
 }
 
+// ========== 生成参数 ==========
+
+/**
+ * @param {import('../params.js').GenerationSettings} settings
+ * @returns {import('./format-adapter-types.js').GenerationParams}
+ */
+function buildGenerationParams(settings) {
+    const { reasoning } = settings;
+    return {
+        modelParams: buildOpenAISamplingParams(settings.userParams),
+        thinkingCfg: reasoning.enabled
+            ? { reasoning_effort: normalizeOpenAIEffort(reasoning.strength) }
+            : null,
+        verbosityCfg: buildOpenAIVerbosityConfig(settings.verbosity)
+    };
+}
+
 // ========== buildRequestBody ==========
 
 /**
@@ -466,6 +484,7 @@ export const openaiChatAdapter = Object.freeze({
 
     collectBuiltinTools,
     formatSystemTools,
+    buildGenerationParams,
     buildRequestBody,
     resolveEndpoint,
     buildHeaders,

@@ -16,9 +16,7 @@ vi.mock('../../js/core/state.js', () => ({
         monitorEnabled: false,
         prefillEnabled: false,
         streamEnabled: true,
-        xmlToolCallingEnabled: false,
-        geminiSystemPartsEnabled: false,
-        geminiSystemParts: []
+        xmlToolCallingEnabled: false
     }
 }));
 
@@ -47,9 +45,12 @@ vi.mock('../../js/utils/prefill.js', () => ({
 }));
 
 vi.mock('../../js/api/params.js', () => ({
-    buildModelParams: vi.fn(() => ({ temperature: 0.7 })),
-    buildThinkingConfig: vi.fn(() => null),
-    buildVerbosityConfig: vi.fn(() => null),
+    captureGenerationSettings: vi.fn((apiFormat) => ({
+        userParams: { temperature: 0.7, apiFormat },
+        reasoning: { enabled: false },
+        verbosity: null,
+        streamEnabled: true
+    })),
     getCustomHeadersObject: vi.fn(() => ({ 'X-Custom': 'value' }))
 }));
 
@@ -61,11 +62,11 @@ vi.mock('../../js/devtools/context-builder.js', () => ({
     buildDevToolsContext: vi.fn(() => '\n\n[MONITOR CONTEXT]\n')
 }));
 
-import { executeRequest } from '../../js/api/request-pipeline.js';
+import { executeRequest, captureRequestProfile } from '../../js/api/request-pipeline.js';
 import { state } from '../../js/core/state.js';
 import { filterMessagesByCapabilities } from '../../js/utils/message-filter.js';
 import { getCurrentModelCapabilities } from '../../js/providers/manager.js';
-import { buildThinkingConfig, buildVerbosityConfig } from '../../js/api/params.js';
+import { captureGenerationSettings } from '../../js/api/params.js';
 
 // ---------- stub adapter 工厂 ----------
 
@@ -86,6 +87,11 @@ function createStubAdapter(overrides = {}) {
 
         collectBuiltinTools: vi.fn(() => [{ name: 'builtin_tool' }]),
         formatSystemTools: vi.fn((tools) => tools),
+        buildGenerationParams: vi.fn((settings) => ({
+            modelParams: { temperature: settings.userParams.temperature },
+            thinkingCfg: null,
+            verbosityCfg: null
+        })),
         buildRequestBody: vi.fn(({ messages, model, modelParams, tools }) => ({
             model,
             messages,
@@ -112,8 +118,6 @@ beforeEach(() => {
     state.prefillEnabled = false;
     state.streamEnabled = true;
     state.xmlToolCallingEnabled = false;
-    state.geminiSystemPartsEnabled = false;
-    state.geminiSystemParts = [];
 
     getCurrentModelCapabilities.mockReturnValue(null);
     filterMessagesByCapabilities.mockImplementation((msgs) =>
@@ -269,7 +273,7 @@ describe('executeRequest 编排顺序', () => {
 });
 
 describe('adapter 请求能力声明', () => {
-    it('关闭聊天特性时跳过 system、prefill、tools、thinking 和 verbosity', async () => {
+    it('关闭聊天特性时跳过 system、prefill 和 tools', async () => {
         state.systemPrompt = 'system';
         state.monitorEnabled = true;
         state.prefillEnabled = true;
@@ -277,9 +281,7 @@ describe('adapter 请求能力声明', () => {
             requestFeatures: {
                 system: false,
                 prefill: false,
-                tools: false,
-                thinking: false,
-                verbosity: false
+                tools: false
             }
         });
 
@@ -291,8 +293,7 @@ describe('adapter 请求能力声明', () => {
 
         expect(adapter.collectBuiltinTools).not.toHaveBeenCalled();
         expect(adapter.formatSystemTools).not.toHaveBeenCalled();
-        expect(buildThinkingConfig).not.toHaveBeenCalled();
-        expect(buildVerbosityConfig).not.toHaveBeenCalled();
+        expect(adapter.buildGenerationParams).toHaveBeenCalledTimes(1);
         expect(adapter.buildRequestBody).toHaveBeenCalledWith(
             expect.objectContaining({ systemCtx: {}, prefill: null, tools: [] })
         );
@@ -437,9 +438,10 @@ describe('SystemContext 装配', () => {
         });
 
         const ctx = adapter.buildRequestBody.mock.calls[0][0];
-        expect(ctx.systemCtx.systemPrompt).toBe('processed:Be helpful');
-        expect(ctx.systemCtx.monitorContext).toBeNull();
-        expect(ctx.systemCtx.geminiSystemParts).toBeNull();
+        expect(ctx.systemCtx).toEqual({
+            systemPrompt: 'processed:Be helpful',
+            monitorContext: null
+        });
     });
 
     it('systemPrompt 为空时 systemCtx.systemPrompt = null', async () => {
@@ -468,11 +470,98 @@ describe('SystemContext 装配', () => {
         const ctx = adapter.buildRequestBody.mock.calls[0][0];
         expect(ctx.systemCtx.monitorContext).toBe('\n\n[MONITOR CONTEXT]\n');
     });
+});
 
-    it('geminiSystemPartsEnabled + 非空数组时拼出 geminiSystemParts', async () => {
+// ========== 格式专属设置 ==========
+
+describe('格式专属设置', () => {
+    it('adapter.captureFormatSettings 读取 state，结果经 requestProfile 透传到请求构造', async () => {
+        const adapter = createStubAdapter({
+            captureFormatSettings: vi.fn((stateRef) => ({ marker: stateRef.systemPrompt }))
+        });
+        state.systemPrompt = 'from-state';
+
+        await executeRequest(adapter, {
+            endpoint: 'https://api.example.com',
+            apiKey: 'k',
+            model: 'm'
+        });
+
+        expect(adapter.captureFormatSettings).toHaveBeenCalledWith(state);
+        const expected = { marker: 'from-state' };
+        expect(adapter.buildRequestBody.mock.calls[0][0].formatSettings).toEqual(expected);
+        expect(adapter.buildHeaders.mock.calls[0][1].requestProfile.formatSettings).toEqual(
+            expected
+        );
+        expect(adapter.buildQueryString.mock.calls[0][1].requestProfile.formatSettings).toEqual(
+            expected
+        );
+    });
+
+    it('adapter 未实现 captureFormatSettings 时 formatSettings 为 null', async () => {
         const adapter = createStubAdapter();
-        state.geminiSystemPartsEnabled = true;
-        state.geminiSystemParts = [{ text: 'P1' }, { text: 'P2' }, { text: '' }];
+
+        await executeRequest(adapter, {
+            endpoint: 'https://api.example.com',
+            apiKey: 'k',
+            model: 'm'
+        });
+
+        expect(adapter.buildRequestBody.mock.calls[0][0].formatSettings).toBeNull();
+    });
+
+    it('formatSettings 在捕获时固化，之后修改 state 不影响复用同一 requestProfile 的请求', async () => {
+        const adapter = createStubAdapter({
+            captureFormatSettings: (stateRef) => ({ prompt: stateRef.systemPrompt })
+        });
+        state.systemPrompt = 'before';
+        const requestProfile = captureRequestProfile(adapter, 'm');
+        state.systemPrompt = 'after';
+
+        await executeRequest(adapter, {
+            endpoint: 'https://api.example.com',
+            apiKey: 'k',
+            model: 'm',
+            requestProfile
+        });
+
+        expect(adapter.buildRequestBody.mock.calls[0][0].formatSettings).toEqual({
+            prompt: 'before'
+        });
+    });
+});
+
+// ========== 生成参数 ==========
+
+describe('生成参数', () => {
+    it('按 adapter.apiFormat 采集设置并交给 adapter.buildGenerationParams', async () => {
+        const adapter = createStubAdapter({ apiFormat: 'claude' });
+
+        await executeRequest(adapter, {
+            endpoint: 'https://api.example.com',
+            apiKey: 'k',
+            model: 'claude-opus-5-5'
+        });
+
+        expect(captureGenerationSettings).toHaveBeenCalledWith('claude');
+        const [settings, ctx] = adapter.buildGenerationParams.mock.calls[0];
+        expect(settings.userParams.apiFormat).toBe('claude');
+        expect(ctx.model).toBe('claude-opus-5-5');
+        expect(ctx.profile).toMatchObject({
+            id: 'claude-opus-5-5',
+            known: true,
+            family: 'claude'
+        });
+    });
+
+    it('adapter 输出的 modelParams / thinkingCfg / verbosityCfg 原样进入请求构造', async () => {
+        const adapter = createStubAdapter({
+            buildGenerationParams: vi.fn(() => ({
+                modelParams: { max_tokens: 100 },
+                thinkingCfg: { reasoning_effort: 'low' },
+                verbosityCfg: { text: { verbosity: 'low' } }
+            }))
+        });
 
         await executeRequest(adapter, {
             endpoint: 'https://api.example.com',
@@ -481,24 +570,34 @@ describe('SystemContext 装配', () => {
         });
 
         const ctx = adapter.buildRequestBody.mock.calls[0][0];
-        expect(ctx.systemCtx.geminiSystemParts).toEqual([
-            { text: 'processed:P1' },
-            { text: 'processed:P2' }
-        ]);
+        expect(ctx.modelParams).toEqual({ max_tokens: 100 });
+        expect(ctx.thinkingCfg).toEqual({ reasoning_effort: 'low' });
+        expect(ctx.verbosityCfg).toEqual({ text: { verbosity: 'low' } });
     });
 
-    it('geminiSystemPartsEnabled=false 时 geminiSystemParts 为 null', async () => {
+    it('requestProfile 复用时不再重新计算生成参数', async () => {
         const adapter = createStubAdapter();
-        state.geminiSystemPartsEnabled = false;
-        state.geminiSystemParts = [{ text: 'P1' }];
+        const requestProfile = captureRequestProfile(adapter, 'm');
+        adapter.buildGenerationParams.mockClear();
 
         await executeRequest(adapter, {
             endpoint: 'https://api.example.com',
             apiKey: 'k',
-            model: 'm'
+            model: 'm',
+            requestProfile
         });
 
-        expect(adapter.buildRequestBody.mock.calls[0][0].systemCtx.geminiSystemParts).toBeNull();
+        expect(adapter.buildGenerationParams).not.toHaveBeenCalled();
+        expect(adapter.buildRequestBody.mock.calls[0][0].modelParams).toEqual({
+            temperature: 0.7
+        });
+    });
+
+    it('未识别格式的模型能力为宽松默认值', () => {
+        const adapter = createStubAdapter();
+        const requestProfile = captureRequestProfile(adapter, 'm');
+
+        expect(requestProfile.profile).toEqual({ id: null, known: false, family: null });
     });
 });
 
@@ -579,22 +678,24 @@ describe('Tools 收集', () => {
 // ========== RequestBodyContext 内容 ==========
 
 describe('RequestBodyContext 完整字段', () => {
-    it('buildRequestBody 收到 model / modelParams / thinkingCfg / verbosityCfg / isXmlMode / state / endpoint', async () => {
-        const adapter = createStubAdapter();
+    it('buildRequestBody 收到 model / 生成参数 / isXmlMode / profile / formatSettings / state / endpoint', async () => {
+        const adapter = createStubAdapter({ apiFormat: 'openai' });
         state.xmlToolCallingEnabled = true;
 
         await executeRequest(adapter, {
             endpoint: 'https://api.example.com/v1',
             apiKey: 'k',
-            model: 'gpt-4'
+            model: 'gpt-4o'
         });
 
         const ctx = adapter.buildRequestBody.mock.calls[0][0];
-        expect(ctx.model).toBe('gpt-4');
+        expect(ctx.model).toBe('gpt-4o');
         expect(ctx.modelParams).toEqual({ temperature: 0.7 });
         expect(ctx.thinkingCfg).toBeNull();
         expect(ctx.verbosityCfg).toBeNull();
         expect(ctx.isXmlMode).toBe(true);
+        expect(ctx.profile).toMatchObject({ id: 'gpt-4o', known: true, family: 'openai' });
+        expect(ctx.formatSettings).toBeNull();
         expect(ctx.state).toEqual(
             expect.objectContaining({ streamEnabled: true, xmlToolCallingEnabled: true })
         );

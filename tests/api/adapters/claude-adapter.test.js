@@ -675,3 +675,49 @@ describe('to* 在 part.mode === xml 时跳过 native 工具调用块', () => {
         }
     });
 });
+
+// ========== buildHeaders ==========
+
+describe('buildHeaders', () => {
+    it('基础认证与版本头', () => {
+        expect(claudeAdapter.buildHeaders('sk-ant', { state: {} })).toEqual({
+            'x-api-key': 'sk-ant',
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true'
+        });
+    });
+
+    it('code execution 开启时合并 beta 头', () => {
+        const headers = claudeAdapter.buildHeaders('sk-ant', {
+            state: { codeExecutionEnabled: true }
+        });
+        expect(headers['anthropic-beta']).toBe(
+            'code-execution-2025-08-25,advanced-tool-use-2025-11-20,files-api-2025-04-14'
+        );
+    });
+
+    it('只读请求快照，不读全局 state', () => {
+        state.codeExecutionEnabled = true;
+        try {
+            expect(
+                claudeAdapter.buildHeaders('sk-ant', { state: { codeExecutionEnabled: false } })[
+                    'anthropic-beta'
+                ]
+            ).toBeUndefined();
+        } finally {
+            delete state.codeExecutionEnabled;
+        }
+    });
+});
+
+describe('parseResponse XML 模式来源', () => {
+    it('未传 isXmlMode 时按原生协议解析，不读全局 XML 开关', () => {
+        state.xmlToolCallingEnabled = true;
+        const result = claudeAdapter.parseResponse({
+            content: [{ type: 'tool_use', id: 'toolu_1', name: 'search', input: { q: 'x' } }],
+            stop_reason: 'tool_use'
+        });
+        expect(result.hasToolCalls).toBe(true);
+        expect(result.toolCalls[0].mode).toBe('native');
+    });
+});

@@ -18,7 +18,6 @@
  * @typedef {Object} SystemContext
  * @property {string|null} systemPrompt       processVariables 之后的最终文本
  * @property {string|null} monitorContext     buildDevToolsContext 输出（启用 monitor 时）
- * @property {Array|null}  geminiSystemParts  仅 Gemini，多段 system 启用时
  */
 
 /**
@@ -28,17 +27,28 @@
  */
 
 /**
+ * @typedef {Object} GenerationParams
+ * adapter.buildGenerationParams 输出，请求发出前固化在 requestProfile 中，工具续作复用
+ * @property {Object}      modelParams   采样与长度参数（wire 字段名）
+ * @property {Object|null} thinkingCfg   推理配置，由 buildRequestBody 合并进请求体
+ * @property {Object|null} verbosityCfg  输出详细度配置
+ */
+
+/**
  * @typedef {Object} RequestBodyContext
  * @property {Array}    messages       adapter.partsToAPIMessages 输出
  * @property {string}   model          模型 ID
- * @property {Object}   modelParams    buildModelParams 输出
- * @property {Object|null} thinkingCfg buildThinkingConfig 输出
- * @property {Object|null} verbosityCfg buildVerbosityConfig 输出
+ * @property {Object}   modelParams    GenerationParams.modelParams
+ * @property {Object|null} thinkingCfg GenerationParams.thinkingCfg
+ * @property {Object|null} verbosityCfg GenerationParams.verbosityCfg
  * @property {SystemContext} systemCtx
  * @property {PrefillContext|null} prefill
  * @property {Array}    tools          pipeline 收集到的工具列表
  * @property {boolean}  isXmlMode      state.xmlToolCallingEnabled 快照
- * @property {Object}   state          运行时 state 引用（用于读取格式特定开关，如 imageSize、geminiApiKeyInHeader）
+ * @property {Object}   profile        resolveModelProfile 输出（模型能力约束）
+ * @property {Object|null} formatSettings adapter.captureFormatSettings 输出
+ * @property {Object}   state          requestProfile.state 通用开关快照
+ * @property {string}   endpoint       用户配置的原始端点
  */
 
 /**
@@ -69,7 +79,7 @@
  * @property {boolean} [supportsMultipleReplies]
  *     是否使用全局 replyCount；false 时只发一个请求，由格式专属参数控制输出数量。
  * @property {Object} [requestFeatures]
- *     可将 system/prefill/tools/thinking/verbosity 设为 false，跳过聊天格式专属管线。
+ *     可将 system/prefill/tools 设为 false，跳过聊天格式专属管线。
  *
  * 流式层
  * @property {Function} parserClass  BaseStreamParser 子类引用（如 ClaudeStreamParser）
@@ -81,14 +91,18 @@
  * 消息层
  * @property {(msgs: Array, opts?: Object) => Array} partsToAPIMessages
  *     新格式消息数组 → API 原生消息数组（含 XML 模式 tool_result 追加 user 消息）
- * @property {(data: Object) => ParsedReply|null} parseResponse
- *     非流式响应解析
+ * @property {(data: Object, options?: {isXmlMode?: boolean}) => ParsedReply|null} parseResponse
+ *     非流式响应解析；isXmlMode 取自 requestProfile，缺省按原生工具协议解析
  *
  * 请求构造层
  * @property {(state: Object) => Array} collectBuiltinTools
  *     code_execution / web_search / computer_use 三家 schema 不同的内置工具
  * @property {(systemTools: Array) => Array} formatSystemTools
  *     getToolsForAPI 返回的系统工具列表的最终包装（Gemini 独有 functionDeclarations）
+ * @property {(settings: import('../params.js').GenerationSettings, ctx: {model: string, profile: Object}) => GenerationParams} buildGenerationParams
+ *     设置面板的采样 / 推理 / 详细度快照 → 自家 wire 字段
+ * @property {(state: Object) => Object} [captureFormatSettings]
+ *     格式专属设置快照（Gemini 的 API Key 传递方式、出图尺寸、多段 system parts）
  * @property {(ctx: RequestBodyContext) => Object} buildRequestBody
  *     一次性组装最终 requestBody（含 messages/system/tools/params/safetySettings 等所有差异）
  * @property {(baseEndpoint: string, model: string, isStreaming: boolean, requestBody?: Object, ctx?: Object) => string} resolveEndpoint

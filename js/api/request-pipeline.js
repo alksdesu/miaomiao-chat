@@ -2,9 +2,9 @@
  * 请求执行管线
  *
  * 统一编排三家提供商的横切关注点：消息过滤 → partsToAPIMessages → SystemContext →
- * Prefill → Tools → ModelParams → adapter.buildRequestBody → Endpoint/Headers/Query → fetch。
+ * Prefill → Tools → 生成参数 → adapter.buildRequestBody → Endpoint/Headers/Query → fetch。
  *
- * 三家差异本质化下沉到 adapter（buildRequestBody / resolveEndpoint / buildHeaders 等），
+ * 三家差异本质化下沉到 adapter（buildGenerationParams / buildRequestBody / resolveEndpoint 等），
  * pipeline 只负责顺序与共享数据装配。
  */
 
@@ -14,12 +14,8 @@ import { processVariables } from '../utils/variables.js';
 import { filterMessagesByCapabilities } from '../utils/message-filter.js';
 import { getCurrentModelCapabilities, getCurrentProvider, getModelDisplayName } from './current.js';
 import { getPrefillMessages, getOpeningMessages } from '../utils/prefill.js';
-import {
-    buildModelParams,
-    buildThinkingConfig,
-    buildVerbosityConfig,
-    getCustomHeadersObject
-} from './params.js';
+import { captureGenerationSettings, getCustomHeadersObject } from './params.js';
+import { resolveModelProfile } from './model-profiles.js';
 import { buildDevToolsContext } from '../devtools/context-builder.js';
 import { getToolsForAPI } from '../tools/manager.js';
 import { materializeSessionMessages } from '../state/session-message-repository.js';
@@ -54,7 +50,6 @@ export function captureRequestProfile(adapter, model) {
         computerUseEnabled: !!state.computerUseEnabled,
         computerUsePermissions: cloneValue(state.computerUsePermissions),
         xmlToolCallingEnabled: !!state.xmlToolCallingEnabled,
-        geminiApiKeyInHeader: !!state.geminiApiKeyInHeader,
         fastImageCompression: !!state.fastImageCompression,
         streamIdleTimeout: state.streamIdleTimeout,
         requestTimeout: state.requestTimeout
@@ -64,21 +59,22 @@ export function captureRequestProfile(adapter, model) {
         adapter.requestFeatures?.prefill === false ? null : collectPrefill(adapter.apiFormat);
     const tools =
         adapter.requestFeatures?.tools === false ? [] : collectTools(adapter, stateSnapshot);
+    const profile = resolveModelProfile(adapter.apiFormat, model);
+    const generation = adapter.buildGenerationParams(captureGenerationSettings(adapter.apiFormat), {
+        model: model || '',
+        profile
+    });
 
     return {
         state: stateSnapshot,
         streamEnabled: stateSnapshot.streamEnabled,
         replyCount: Number.isInteger(state.replyCount) ? state.replyCount : 1,
         capabilities: cloneValue(capabilities),
-        modelParams: cloneValue(buildModelParams(adapter.apiFormat)),
-        thinkingCfg:
-            adapter.requestFeatures?.thinking === false
-                ? null
-                : cloneValue(buildThinkingConfig(adapter.apiFormat, model)),
-        verbosityCfg:
-            adapter.requestFeatures?.verbosity === false
-                ? null
-                : cloneValue(buildVerbosityConfig()),
+        profile,
+        formatSettings: cloneValue(adapter.captureFormatSettings?.(state) ?? null),
+        modelParams: cloneValue(generation.modelParams),
+        thinkingCfg: cloneValue(generation.thinkingCfg),
+        verbosityCfg: cloneValue(generation.verbosityCfg),
         customHeaders: cloneValue(getCustomHeadersObject()),
         systemCtx: cloneValue(systemCtx),
         prefill: cloneValue(prefill),
@@ -93,14 +89,13 @@ export function captureRequestProfile(adapter, model) {
 }
 
 /**
- * 构造 SystemContext：systemPrompt + monitor 上下文 + Gemini 多段 system parts
- * @returns {Promise<import('./adapters/format-adapter-types.js').SystemContext>}
+ * 构造 SystemContext：systemPrompt + monitor 上下文
+ * @returns {import('./adapters/format-adapter-types.js').SystemContext}
  */
 function buildSystemContext() {
     const ctx = {
         systemPrompt: null,
-        monitorContext: null,
-        geminiSystemParts: null
+        monitorContext: null
     };
 
     if (state.systemPrompt) {
@@ -111,20 +106,6 @@ function buildSystemContext() {
         const devtoolsCtx = buildDevToolsContext();
         if (devtoolsCtx) {
             ctx.monitorContext = devtoolsCtx;
-        }
-    }
-
-    // Gemini 多段 system parts（仅当开关启用且配置有内容时）
-    if (
-        state.geminiSystemPartsEnabled &&
-        Array.isArray(state.geminiSystemParts) &&
-        state.geminiSystemParts.length > 0
-    ) {
-        const parts = state.geminiSystemParts
-            .filter((p) => p.text && p.text.trim())
-            .map((p) => ({ text: processVariables(p.text) }));
-        if (parts.length > 0) {
-            ctx.geminiSystemParts = parts;
         }
     }
 
@@ -249,12 +230,14 @@ export async function executeRequest(
         messages,
         model,
         modelParams: requestProfile.modelParams,
-        thinkingCfg: features.thinking === false ? null : requestProfile.thinkingCfg,
-        verbosityCfg: features.verbosity === false ? null : requestProfile.verbosityCfg,
+        thinkingCfg: requestProfile.thinkingCfg,
+        verbosityCfg: requestProfile.verbosityCfg,
         systemCtx,
         prefill,
         tools,
         isXmlMode: requestProfile.isXmlMode,
+        profile: requestProfile.profile,
+        formatSettings: requestProfile.formatSettings,
         state: requestProfile.state,
         endpoint // Gemini Vertex vs AI Studio safetySettings 需要看 endpoint
     });

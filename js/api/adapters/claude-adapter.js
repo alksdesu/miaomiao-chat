@@ -5,7 +5,6 @@
  */
 
 import { logger } from '../../utils/logger.js';
-import { state } from '../../core/state.js';
 import { PartType, MediaKind, Role, ToolMode, ToolState } from '../../messages/schema.js';
 import { parseDataURL } from '../../utils/file-helpers.js';
 import { extractXMLToolCalls, appendXmlToolResultsForMessage } from '../../tools/xml-formatter.js';
@@ -15,7 +14,15 @@ import { isElectron } from '../../utils/platform.js';
 import { injectToolsToClaude, getXMLInjectionStats } from '../../tools/tool-injection.js';
 import { ClaudeStreamParser, parseClaudeStream } from '../../stream/parser-claude.js';
 import { isTextFile, stringifyToolResult } from './openai-shared.js';
-import { TOOL_INTERRUPTED_MESSAGE } from '../../utils/constants.js';
+import {
+    TOOL_INTERRUPTED_MESSAGE,
+    CLAUDE_DEFAULT_MAX_TOKENS_STREAM,
+    CLAUDE_DEFAULT_MAX_TOKENS_NON_STREAM
+} from '../../utils/constants.js';
+import { resolveThinkingBudget } from '../reasoning.js';
+import { CLAUDE_EFFORTS } from '../model-profiles.js';
+
+const CLAUDE_THINKING_BUDGETS = Object.freeze({ low: 2048, medium: 8192, high: 16384 });
 
 // ========== Turn 分组与内容转换 ==========
 
@@ -314,7 +321,7 @@ function partsToAPIMessages(msgs, _opts = {}) {
 function parseResponse(data, options = {}) {
     if (data.error) return null;
     if (!data.content || data.content.length === 0) return null;
-    const xmlMode = options.isXmlMode ?? state.xmlToolCallingEnabled;
+    const xmlMode = options.isXmlMode === true;
 
     // 1. 优先检测原生工具调用 — 不早 return，下方统一抽取 thinking blocks/signatures/items
     // 让 saveAssistantMessage 落库的 part 含完整 thinking，下轮 resendWithToolResults 重发时
@@ -531,6 +538,69 @@ function formatSystemTools(systemTools) {
     return systemTools;
 }
 
+// ========== 生成参数 ==========
+
+/**
+ * @param {import('../reasoning.js').ReasoningIntent} reasoning
+ * @returns {Object|null}
+ */
+function buildThinkingConfig(reasoning) {
+    if (!reasoning.enabled) return null;
+
+    if (reasoning.adaptive) {
+        const effort = CLAUDE_EFFORTS.includes(reasoning.adaptiveEffort)
+            ? reasoning.adaptiveEffort
+            : 'high';
+        const thinking = { type: 'adaptive' };
+        if (reasoning.showSummary) {
+            thinking.display = 'summarized';
+        }
+        return { thinking, output_config: { effort } };
+    }
+
+    return {
+        thinking: {
+            type: 'enabled',
+            budget_tokens: resolveThinkingBudget(reasoning, CLAUDE_THINKING_BUDGETS)
+        }
+    };
+}
+
+/**
+ * @param {import('../params.js').GenerationSettings} settings
+ * @returns {import('./format-adapter-types.js').GenerationParams}
+ */
+function buildGenerationParams(settings) {
+    const { userParams, reasoning } = settings;
+    // Messages API 要求 max_tokens 必填，缺失直接 400；它是 thinking 与正文共享的总输出上限
+    const modelParams = {
+        max_tokens:
+            userParams.max_tokens !== null
+                ? userParams.max_tokens
+                : settings.streamEnabled
+                  ? CLAUDE_DEFAULT_MAX_TOKENS_STREAM
+                  : CLAUDE_DEFAULT_MAX_TOKENS_NON_STREAM
+    };
+    if (userParams.temperature !== null) modelParams.temperature = userParams.temperature;
+    if (userParams.top_p !== null) modelParams.top_p = userParams.top_p;
+    // Extended Thinking 要求 temperature 必须为 1
+    if (
+        reasoning.enabled &&
+        modelParams.temperature !== undefined &&
+        modelParams.temperature !== 1
+    ) {
+        logger.debug('[claude] thinking 模式强制 temperature=1');
+        modelParams.temperature = 1;
+    }
+    if (userParams.top_k !== null) modelParams.top_k = userParams.top_k;
+
+    return {
+        modelParams,
+        thinkingCfg: buildThinkingConfig(reasoning),
+        verbosityCfg: null
+    };
+}
+
 // ========== buildRequestBody ==========
 
 function buildRequestBody(ctx) {
@@ -559,7 +629,7 @@ function buildRequestBody(ctx) {
         model: model,
         messages: claudeMessages,
         stream: stateRef.streamEnabled,
-        ...modelParams // max_tokens（必填，buildModelParams 保证存在）及其他参数
+        ...modelParams // max_tokens（必填，buildGenerationParams 保证存在）及其他参数
     };
 
     // Claude 的 system 是顶层参数（独立于预填充开关）
@@ -598,8 +668,7 @@ function resolveEndpoint(baseEndpoint, _model, _isStreaming) {
 /**
  * Claude headers：x-api-key + anthropic-version + 智能合并 beta features
  */
-function buildHeaders(apiKey, ctx = {}) {
-    const stateRef = ctx.state || state;
+function buildHeaders(apiKey, { state: stateRef }) {
     const headers = {
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
@@ -659,6 +728,7 @@ export const claudeAdapter = Object.freeze({
 
     collectBuiltinTools,
     formatSystemTools,
+    buildGenerationParams,
     buildRequestBody,
     resolveEndpoint,
     buildHeaders,

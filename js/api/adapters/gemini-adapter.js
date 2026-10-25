@@ -5,19 +5,21 @@
  */
 
 import { logger } from '../../utils/logger.js';
-import { state, elements } from '../../core/state.js';
 import { PartType, Role, ToolMode, ToolState } from '../../messages/schema.js';
 import { parseDataURL } from '../../utils/file-helpers.js';
+import { processVariables } from '../../utils/variables.js';
 import { extractXMLToolCalls, appendXmlToolResultsForMessage } from '../../tools/xml-formatter.js';
 import { parseThinkTags } from '../../stream/think-tag-parser.js';
 import { isVideoMimeType, isAudioMimeType } from '../../utils/media.js';
 import { getMappedId, generateIdSet, ensureIdMap } from '../format-converter.js';
 import { compressImage } from '../../utils/images.js';
-import { getCurrentProvider } from '../current.js';
 import { injectToolsToGemini, getXMLInjectionStats } from '../../tools/tool-injection.js';
 import { GeminiStreamParser, parseGeminiStream } from '../../stream/parser-gemini.js';
 import { isTextFile, stringifyToolResult } from './openai-shared.js';
 import { TOOL_INTERRUPTED_MESSAGE } from '../../utils/constants.js';
+import { normalizeBudgetStrength, resolveThinkingBudget } from '../reasoning.js';
+
+const GEMINI_THINKING_BUDGETS = Object.freeze({ low: 4096, medium: 8192, high: 16384 });
 
 // ========== 辅助 ==========
 
@@ -215,7 +217,7 @@ function partsToAPIMessages(msgs, _opts = {}) {
 function parseResponse(data, options = {}) {
     if (data.error) return null;
     if (!data.candidates || data.candidates.length === 0) return null;
-    const xmlMode = options.isXmlMode ?? state.xmlToolCallingEnabled;
+    const xmlMode = options.isXmlMode === true;
 
     const candidate = data.candidates[0];
     if (!candidate.content || !candidate.content.parts) return null;
@@ -366,6 +368,79 @@ function formatSystemTools(systemTools) {
     return [{ functionDeclarations: systemTools }];
 }
 
+// ========== 生成参数与格式设置 ==========
+
+/**
+ * @param {import('../reasoning.js').ReasoningIntent} reasoning
+ * @param {string} model
+ * @returns {Object|null}
+ */
+function buildThinkingConfig(reasoning, model) {
+    if (!reasoning.enabled) return null;
+
+    const isGemini3 = model.includes('gemini-3') || model.includes('gemini3');
+    if (isGemini3) {
+        const level = normalizeBudgetStrength(reasoning.strength) === 'low' ? 'LOW' : 'HIGH';
+        return { thinkingConfig: { thinkingLevel: level, includeThoughts: true } };
+    }
+    return {
+        thinkingConfig: {
+            thinkingBudget: resolveThinkingBudget(reasoning, GEMINI_THINKING_BUDGETS),
+            includeThoughts: true
+        }
+    };
+}
+
+/**
+ * 采样参数保留默认值；maxOutputTokens 仅在用户显式设置时传，缺省交给模型自身上限
+ * @param {import('../params.js').GenerationSettings} settings
+ * @param {{ model: string }} ctx
+ * @returns {import('./format-adapter-types.js').GenerationParams}
+ */
+function buildGenerationParams(settings, { model }) {
+    const { userParams } = settings;
+    const modelParams = {
+        temperature: userParams.temperature !== null ? userParams.temperature : 1,
+        topK: userParams.topK !== null ? userParams.topK : 40,
+        topP: userParams.topP !== null ? userParams.topP : 0.95
+    };
+    if (userParams.maxOutputTokens !== null) {
+        modelParams.maxOutputTokens = userParams.maxOutputTokens;
+    }
+    return {
+        modelParams,
+        thinkingCfg: buildThinkingConfig(settings.reasoning, model),
+        verbosityCfg: null
+    };
+}
+
+/**
+ * @param {Object} stateRef
+ * @returns {Array<{text: string}>|null}
+ */
+function collectSystemParts(stateRef) {
+    if (!stateRef.geminiSystemPartsEnabled || !Array.isArray(stateRef.geminiSystemParts)) {
+        return null;
+    }
+    const parts = stateRef.geminiSystemParts
+        .filter((p) => p.text && p.text.trim())
+        .map((p) => ({ text: processVariables(p.text) }));
+    return parts.length > 0 ? parts : null;
+}
+
+/**
+ * Gemini 专属设置快照：API Key 传递方式、出图尺寸、多段 system parts
+ * @param {Object} stateRef
+ * @returns {{ apiKeyInHeader: boolean, imageSize: string, systemParts: Array|null }}
+ */
+function captureFormatSettings(stateRef) {
+    return {
+        apiKeyInHeader: !!stateRef.geminiApiKeyInHeader,
+        imageSize: stateRef.imageSize || '',
+        systemParts: collectSystemParts(stateRef)
+    };
+}
+
 // ========== buildRequestBody 辅助 ==========
 
 /**
@@ -451,6 +526,7 @@ function buildGeminiContentsWithSignatures(contents) {
  */
 async function buildRequestBody(ctx) {
     const { messages, modelParams, thinkingCfg, systemCtx, prefill, tools, isXmlMode } = ctx;
+    const { imageSize = '', systemParts: configuredSystemParts = null } = ctx.formatSettings || {};
 
     // ⚠️ 安全检查：如果所有消息都被过滤掉，抛出错误
     if (messages.length === 0) {
@@ -461,7 +537,6 @@ async function buildRequestBody(ctx) {
     const generationConfig = { ...modelParams };
 
     // 图片配置
-    const imageSize = elements.imageSizeSelect?.value;
     if (imageSize) {
         generationConfig.responseModalities = ['TEXT', 'IMAGE'];
         generationConfig.imageConfig = { imageSize };
@@ -518,11 +593,10 @@ async function buildRequestBody(ctx) {
         safetySettings: safetySettings
     };
 
-    // 6. System Instruction（含 monitor 上下文 + geminiSystemParts 多段）
+    // 6. System Instruction：多段 system parts 优先于单段 systemPrompt，monitor 上下文追加在后
     const systemParts = [];
-    if (systemCtx.geminiSystemParts && systemCtx.geminiSystemParts.length > 0) {
-        // 多段 system parts（geminiSystemPartsEnabled）
-        systemParts.push(...systemCtx.geminiSystemParts);
+    if (configuredSystemParts && configuredSystemParts.length > 0) {
+        systemParts.push(...configuredSystemParts);
     } else if (systemCtx.systemPrompt) {
         systemParts.push({ text: systemCtx.systemPrompt });
     }
@@ -556,11 +630,9 @@ async function buildRequestBody(ctx) {
  * - 原生 Gemini provider：清理 OpenAI/Claude 路径残留 → 拼 /v1beta/models/{model}:{action}
  * - 统一代理（OpenAI/Claude/Responses provider 切到 gemini 格式）：保持原 endpoint
  */
-function resolveEndpoint(baseEndpoint, model, isStreaming, _requestBody, ctx = {}) {
+function resolveEndpoint(baseEndpoint, model, isStreaming, _requestBody, { requestProfile }) {
     const action = isStreaming ? 'streamGenerateContent' : 'generateContent';
-    const providerApiFormat =
-        ctx.requestProfile?.providerApiFormat || getCurrentProvider()?.apiFormat;
-    const isNativeGeminiProvider = providerApiFormat === 'gemini';
+    const isNativeGeminiProvider = requestProfile.providerApiFormat === 'gemini';
 
     if (isNativeGeminiProvider) {
         let cleanedEndpoint = baseEndpoint.replace(/\/$/, '');
@@ -577,11 +649,10 @@ function resolveEndpoint(baseEndpoint, model, isStreaming, _requestBody, ctx = {
 }
 
 /**
- * Gemini headers：根据 state.geminiApiKeyInHeader 决定 API key 走 header 还是 query
+ * Gemini headers：按 provider 的 API Key 传递方式决定走 header 还是 query
  */
-function buildHeaders(apiKey, ctx = {}) {
-    const stateRef = ctx.state || state;
-    if (stateRef.geminiApiKeyInHeader) {
+function buildHeaders(apiKey, { requestProfile }) {
+    if (requestProfile.formatSettings?.apiKeyInHeader) {
         return { 'x-goog-api-key': apiKey };
     }
     return {};
@@ -592,12 +663,12 @@ function buildHeaders(apiKey, ctx = {}) {
  * - header 模式：流式加 alt=sse
  * - query 模式：key=...&alt=sse（流式）或 key=...（非流式）
  */
-function buildQueryString(apiKey, ctx = {}) {
-    const stateRef = ctx.state || state;
-    if (stateRef.geminiApiKeyInHeader) {
-        return stateRef.streamEnabled ? 'alt=sse' : '';
+function buildQueryString(apiKey, { requestProfile }) {
+    const { streamEnabled } = requestProfile;
+    if (requestProfile.formatSettings?.apiKeyInHeader) {
+        return streamEnabled ? 'alt=sse' : '';
     }
-    return stateRef.streamEnabled ? `key=${apiKey}&alt=sse` : `key=${apiKey}`;
+    return streamEnabled ? `key=${apiKey}&alt=sse` : `key=${apiKey}`;
 }
 
 // ========== Adapter 对象 + 注册 ==========
@@ -621,6 +692,8 @@ export const geminiAdapter = Object.freeze({
 
     collectBuiltinTools,
     formatSystemTools,
+    buildGenerationParams,
+    captureFormatSettings,
     buildRequestBody,
     resolveEndpoint,
     buildHeaders,

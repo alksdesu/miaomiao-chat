@@ -16,21 +16,17 @@ vi.mock('../../js/core/state.js', () => ({
         geminiApiKeyInHeader: false,
         geminiSystemPartsEnabled: false,
         geminiSystemParts: [],
+        imageSize: '',
         thinkingEnabled: false,
-        customHeaders: []
-    },
-    elements: { imageSizeSelect: null }
+        customHeaders: [],
+        modelParams: {
+            gemini: { temperature: 0.7, topK: null, topP: null, maxOutputTokens: null }
+        }
+    }
 }));
 
 vi.mock('../../js/utils/logger.js', () => ({
     logger: { warn: vi.fn(), debug: vi.fn(), error: vi.fn(), info: vi.fn() }
-}));
-
-vi.mock('../../js/api/params.js', () => ({
-    buildModelParams: vi.fn(() => ({ temperature: 0.7 })),
-    buildThinkingConfig: vi.fn(() => null),
-    buildVerbosityConfig: vi.fn(() => null),
-    getCustomHeadersObject: vi.fn(() => ({}))
 }));
 
 vi.mock('../../js/utils/prefill.js', () => ({
@@ -66,7 +62,7 @@ vi.mock('../../js/tools/tool-injection.js', () => ({
     getXMLInjectionStats: vi.fn(() => ({ estimatedTokens: 0 }))
 }));
 
-import { state, elements } from '../../js/core/state.js';
+import { state } from '../../js/core/state.js';
 import { sendGeminiRequest } from '../../js/api/gemini.js';
 
 describe('gemini API', () => {
@@ -84,7 +80,7 @@ describe('gemini API', () => {
         state.geminiApiKeyInHeader = false;
         state.geminiSystemPartsEnabled = false;
         state.geminiSystemParts = [];
-        elements.imageSizeSelect = null;
+        state.imageSize = '';
 
         fetchSpy = vi.fn(() => Promise.resolve(new Response('{}', { status: 200 })));
         globalThis.fetch = fetchSpy;
@@ -230,6 +226,23 @@ describe('gemini API', () => {
 
         const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
         expect(body.systemInstruction.parts.length).toBe(2);
+    });
+
+    it('出图尺寸取自 state.imageSize', async () => {
+        state.imageSize = '4K';
+        await sendGeminiRequest('https://generativelanguage.googleapis.com', 'key', 'gemini-pro');
+
+        const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+        expect(body.generationConfig.imageConfig).toEqual({ imageSize: '4K' });
+        expect(body.generationConfig.responseModalities).toEqual(['TEXT', 'IMAGE']);
+    });
+
+    it('未设置出图尺寸时不带图片配置', async () => {
+        await sendGeminiRequest('https://generativelanguage.googleapis.com', 'key', 'gemini-pro');
+
+        const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+        expect(body.generationConfig.imageConfig).toBeUndefined();
+        expect(body.generationConfig.responseModalities).toBeUndefined();
     });
 
     it('统一代理模式保持原始端点', async () => {

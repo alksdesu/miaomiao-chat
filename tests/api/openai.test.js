@@ -14,19 +14,21 @@ vi.mock('../../js/core/state.js', () => ({
         webSearchEnabled: false,
         xmlToolCallingEnabled: false,
         thinkingEnabled: false,
-        customHeaders: []
+        customHeaders: [],
+        modelParams: {
+            openai: {
+                temperature: 0.7,
+                max_tokens: null,
+                top_p: null,
+                frequency_penalty: null,
+                presence_penalty: null
+            }
+        }
     }
 }));
 
 vi.mock('../../js/utils/logger.js', () => ({
     logger: { warn: vi.fn(), debug: vi.fn(), error: vi.fn(), info: vi.fn() }
-}));
-
-vi.mock('../../js/api/params.js', () => ({
-    buildModelParams: vi.fn(() => ({ temperature: 0.7 })),
-    buildThinkingConfig: vi.fn(() => null),
-    buildVerbosityConfig: vi.fn(() => null),
-    getCustomHeadersObject: vi.fn(() => ({}))
 }));
 
 vi.mock('../../js/utils/prefill.js', () => ({

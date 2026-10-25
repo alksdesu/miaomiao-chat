@@ -173,6 +173,49 @@ export function pushResponsesFunctionCallPair(out, p) {
     });
 }
 
+// ========== 生成参数 ==========
+
+const OPENAI_EFFORTS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh']);
+
+/**
+ * 设置面板强度 → reasoning effort；custom 及其他格式专属档位回落 high
+ * @param {string} strength
+ * @returns {string}
+ */
+export function normalizeOpenAIEffort(strength) {
+    return OPENAI_EFFORTS.includes(strength) ? strength : 'high';
+}
+
+/**
+ * OpenAI 系采样参数：仅发送用户显式设置的值
+ * @param {Object} userParams
+ * @param {{ penalties?: boolean }} [options] OpenClaw 网关不接受 penalty 参数
+ * @returns {Object}
+ */
+export function buildOpenAISamplingParams(userParams, { penalties = true } = {}) {
+    const result = {};
+    if (userParams.temperature !== null) result.temperature = userParams.temperature;
+    if (userParams.max_tokens !== null) result.max_tokens = userParams.max_tokens;
+    if (userParams.top_p !== null) result.top_p = userParams.top_p;
+    if (penalties) {
+        if (userParams.frequency_penalty !== null) {
+            result.frequency_penalty = userParams.frequency_penalty;
+        }
+        if (userParams.presence_penalty !== null) {
+            result.presence_penalty = userParams.presence_penalty;
+        }
+    }
+    return result;
+}
+
+/**
+ * @param {string|null} verbosity
+ * @returns {Object|null}
+ */
+export function buildOpenAIVerbosityConfig(verbosity) {
+    return verbosity ? { text: { verbosity } } : null;
+}
+
 // ========== OpenAI 两家共享：headers + builtin tools ==========
 
 /**
