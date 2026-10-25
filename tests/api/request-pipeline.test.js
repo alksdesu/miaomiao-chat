@@ -62,11 +62,14 @@ vi.mock('../../js/devtools/context-builder.js', () => ({
     buildDevToolsContext: vi.fn(() => '\n\n[MONITOR CONTEXT]\n')
 }));
 
+vi.mock('../../js/api/request-notices.js', () => ({ emitRequestNotices: vi.fn() }));
+
 import { executeRequest, captureRequestProfile } from '../../js/api/request-pipeline.js';
 import { state } from '../../js/core/state.js';
 import { filterMessagesByCapabilities } from '../../js/utils/message-filter.js';
-import { getCurrentModelCapabilities } from '../../js/providers/manager.js';
+import { getCurrentModelCapabilities, getCurrentProvider } from '../../js/providers/manager.js';
 import { captureGenerationSettings } from '../../js/api/params.js';
+import { emitRequestNotices } from '../../js/api/request-notices.js';
 
 // ---------- stub adapter 工厂 ----------
 
@@ -582,6 +585,102 @@ describe('生成参数', () => {
         const requestProfile = captureRequestProfile(adapter, 'm');
 
         expect(requestProfile.profile).toEqual({ id: null, known: false, family: null });
+    });
+
+    it('模型配置里的官方型号别名优先于模型 ID', () => {
+        getCurrentProvider.mockReturnValueOnce({
+            id: 'provider-1',
+            name: 'Provider',
+            apiFormat: 'claude',
+            models: [{ id: 'my-proxy-model', profileAlias: ' claude-sonnet-5-5 ' }]
+        });
+        const adapter = createStubAdapter({ apiFormat: 'claude' });
+
+        const requestProfile = captureRequestProfile(adapter, 'my-proxy-model');
+
+        expect(requestProfile.profile).toMatchObject({ id: 'claude-sonnet-5-5', known: true });
+    });
+
+    it('能力表先于工具收集解析，工具版本可按型号选择', () => {
+        const adapter = createStubAdapter({ apiFormat: 'claude' });
+
+        captureRequestProfile(adapter, 'claude-opus-5-5');
+
+        expect(adapter.collectBuiltinTools).toHaveBeenCalledWith(
+            expect.any(Object),
+            expect.objectContaining({
+                profile: expect.objectContaining({ id: 'claude-opus-5-5' })
+            })
+        );
+    });
+
+    it('nativeTools 只在有工具且不是 XML 模式时为 true', () => {
+        const adapter = createStubAdapter();
+        captureRequestProfile(adapter, 'm');
+        expect(adapter.buildGenerationParams.mock.calls[0][1].nativeTools).toBe(true);
+
+        state.xmlToolCallingEnabled = true;
+        captureRequestProfile(adapter, 'm');
+        expect(adapter.buildGenerationParams.mock.calls[1][1].nativeTools).toBe(false);
+
+        const noToolsAdapter = createStubAdapter({ requestFeatures: { tools: false } });
+        state.xmlToolCallingEnabled = false;
+        captureRequestProfile(noToolsAdapter, 'm');
+        expect(noToolsAdapter.buildGenerationParams.mock.calls[0][1].nativeTools).toBe(false);
+    });
+});
+
+describe('请求预检提示', () => {
+    it('生成参数与请求体组装的提示合并后按会话弹出', async () => {
+        const adapter = createStubAdapter({
+            buildGenerationParams: vi.fn(() => ({
+                modelParams: {},
+                thinkingCfg: null,
+                verbosityCfg: null,
+                notices: [{ key: 'params', message: '参数已调整' }]
+            })),
+            buildRequestBody: vi.fn((ctx) => {
+                ctx.notices.push({ key: 'body', message: '请求体已调整' });
+                return { model: ctx.model };
+            })
+        });
+
+        await executeRequest(adapter, {
+            endpoint: 'https://api.example.com',
+            apiKey: 'k',
+            model: 'm',
+            sessionId: 'session-9',
+            sourceMessages: state.messages
+        });
+
+        expect(emitRequestNotices).toHaveBeenCalledWith('session-9', [
+            { key: 'params', message: '参数已调整' },
+            { key: 'body', message: '请求体已调整' }
+        ]);
+    });
+
+    it('复用 requestProfile 时不会累积上一次请求体的提示', async () => {
+        const adapter = createStubAdapter({
+            buildRequestBody: vi.fn((ctx) => {
+                ctx.notices.push({ key: 'body', message: '请求体已调整' });
+                return { model: ctx.model };
+            })
+        });
+        const requestProfile = captureRequestProfile(adapter, 'm');
+        const request = {
+            endpoint: 'https://api.example.com',
+            apiKey: 'k',
+            model: 'm',
+            requestProfile
+        };
+
+        await executeRequest(adapter, request);
+        await executeRequest(adapter, request);
+
+        expect(emitRequestNotices.mock.calls[1][1]).toEqual([
+            { key: 'body', message: '请求体已调整' }
+        ]);
+        expect(requestProfile.notices).toEqual([]);
     });
 });
 

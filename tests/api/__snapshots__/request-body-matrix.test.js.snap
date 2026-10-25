@@ -928,13 +928,10 @@ exports[`请求体矩阵快照 > claude adaptive high haiku-4-5 1`] = `
       },
     ],
     "model": "claude-haiku-4-5",
-    "output_config": {
-      "effort": "high",
-    },
     "stream": true,
     "thinking": {
-      "display": "summarized",
-      "type": "adaptive",
+      "budget_tokens": 16384,
+      "type": "enabled",
     },
   },
   "headers": {
@@ -971,12 +968,16 @@ exports[`请求体矩阵快照 > claude adaptive high sonnet-5-5 1`] = `
     },
     "stream": true,
     "thinking": {
+      "block_binding": {
+        "prefix_mismatch_behavior": "drop_block",
+      },
       "display": "summarized",
       "type": "adaptive",
     },
   },
   "headers": {
     "Content-Type": "application/json",
+    "anthropic-beta": "thinking-binding-controls-2026-08-01",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-api-key": "test-key",
@@ -1009,11 +1010,15 @@ exports[`请求体矩阵快照 > claude adaptive max hidden fable-5-1 1`] = `
     },
     "stream": true,
     "thinking": {
+      "block_binding": {
+        "prefix_mismatch_behavior": "drop_block",
+      },
       "type": "adaptive",
     },
   },
   "headers": {
     "Content-Type": "application/json",
+    "anthropic-beta": "thinking-binding-controls-2026-08-01",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-api-key": "test-key",
@@ -1081,7 +1086,7 @@ exports[`请求体矩阵快照 > claude adaptive xhigh opus-4-6 1`] = `
     ],
     "model": "claude-opus-4-6",
     "output_config": {
-      "effort": "xhigh",
+      "effort": "high",
     },
     "stream": true,
     "thinking": {
@@ -1118,14 +1123,21 @@ exports[`请求体矩阵快照 > claude budget thinking custom fable-5-1 1`] = `
       },
     ],
     "model": "claude-fable-5-1",
+    "output_config": {
+      "effort": "low",
+    },
     "stream": true,
     "thinking": {
-      "budget_tokens": 5000,
-      "type": "enabled",
+      "block_binding": {
+        "prefix_mismatch_behavior": "drop_block",
+      },
+      "display": "summarized",
+      "type": "adaptive",
     },
   },
   "headers": {
     "Content-Type": "application/json",
+    "anthropic-beta": "thinking-binding-controls-2026-08-01",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-api-key": "test-key",
@@ -1153,14 +1165,21 @@ exports[`请求体矩阵快照 > claude budget thinking high opus-5-5 1`] = `
       },
     ],
     "model": "claude-opus-5-5",
+    "output_config": {
+      "effort": "high",
+    },
     "stream": true,
     "thinking": {
-      "budget_tokens": 16384,
-      "type": "enabled",
+      "block_binding": {
+        "prefix_mismatch_behavior": "drop_block",
+      },
+      "display": "summarized",
+      "type": "adaptive",
     },
   },
   "headers": {
     "Content-Type": "application/json",
+    "anthropic-beta": "thinking-binding-controls-2026-08-01",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-api-key": "test-key",
@@ -1272,15 +1291,18 @@ exports[`请求体矩阵快照 > claude computer use opus-5-5 1`] = `
       },
     ],
     "model": "claude-opus-5-5",
+    "output_config": {
+      "effort": "low",
+    },
     "stream": true,
-    "tools": [
-      {
-        "display_height_px": 1080,
-        "display_number": 1,
-        "display_width_px": 1920,
-        "name": "computer",
-        "type": "computer_20251124",
+    "thinking": {
+      "block_binding": {
+        "prefix_mismatch_behavior": "drop_block",
       },
+      "display": "summarized",
+      "type": "adaptive",
+    },
+    "tools": [
       {
         "name": "bash",
         "type": "bash_20250124",
@@ -1293,7 +1315,7 @@ exports[`请求体矩阵快照 > claude computer use opus-5-5 1`] = `
   },
   "headers": {
     "Content-Type": "application/json",
-    "anthropic-beta": "computer-use-2025-11-24",
+    "anthropic-beta": "thinking-binding-controls-2026-08-01",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-api-key": "test-key",
@@ -1328,7 +1350,7 @@ exports[`请求体矩阵快照 > claude computer use sonnet-4-5 dated 1`] = `
         "display_number": 1,
         "display_width_px": 1920,
         "name": "computer",
-        "type": "computer_20251124",
+        "type": "computer_20250124",
       },
       {
         "name": "bash",
@@ -1342,7 +1364,7 @@ exports[`请求体矩阵快照 > claude computer use sonnet-4-5 dated 1`] = `
   },
   "headers": {
     "Content-Type": "application/json",
-    "anthropic-beta": "computer-use-2025-11-24",
+    "anthropic-beta": "computer-use-2025-01-24",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-api-key": "test-key",
@@ -1370,11 +1392,21 @@ exports[`请求体矩阵快照 > claude computer use xml mode 1`] = `
       },
     ],
     "model": "claude-opus-5-5",
+    "output_config": {
+      "effort": "low",
+    },
     "stream": true,
+    "thinking": {
+      "block_binding": {
+        "prefix_mismatch_behavior": "drop_block",
+      },
+      "display": "summarized",
+      "type": "adaptive",
+    },
   },
   "headers": {
     "Content-Type": "application/json",
-    "anthropic-beta": "computer-use-2025-11-24",
+    "anthropic-beta": "thinking-binding-controls-2026-08-01",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-api-key": "test-key",
@@ -1402,10 +1434,21 @@ exports[`请求体矩阵快照 > claude defaults opus-5-5 1`] = `
       },
     ],
     "model": "claude-opus-5-5",
+    "output_config": {
+      "effort": "low",
+    },
     "stream": true,
+    "thinking": {
+      "block_binding": {
+        "prefix_mismatch_behavior": "drop_block",
+      },
+      "display": "summarized",
+      "type": "adaptive",
+    },
   },
   "headers": {
     "Content-Type": "application/json",
+    "anthropic-beta": "thinking-binding-controls-2026-08-01",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-api-key": "test-key",
@@ -1463,10 +1506,21 @@ AI 生成的图片（1 张）：",
       },
     ],
     "model": "claude-sonnet-5-5",
+    "output_config": {
+      "effort": "low",
+    },
     "stream": true,
+    "thinking": {
+      "block_binding": {
+        "prefix_mismatch_behavior": "drop_block",
+      },
+      "display": "summarized",
+      "type": "adaptive",
+    },
   },
   "headers": {
     "Content-Type": "application/json",
+    "anthropic-beta": "thinking-binding-controls-2026-08-01",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-api-key": "test-key",
@@ -1494,7 +1548,17 @@ exports[`请求体矩阵快照 > claude native tools with builtins sonnet-5-5 1`
       },
     ],
     "model": "claude-sonnet-5-5",
+    "output_config": {
+      "effort": "low",
+    },
     "stream": true,
+    "thinking": {
+      "block_binding": {
+        "prefix_mismatch_behavior": "drop_block",
+      },
+      "display": "summarized",
+      "type": "adaptive",
+    },
     "tools": [
       {
         "name": "code_execution",
@@ -1524,7 +1588,7 @@ exports[`请求体矩阵快照 > claude native tools with builtins sonnet-5-5 1`
   },
   "headers": {
     "Content-Type": "application/json",
-    "anthropic-beta": "code-execution-2025-08-25,advanced-tool-use-2025-11-20,files-api-2025-04-14",
+    "anthropic-beta": "code-execution-2025-08-25,advanced-tool-use-2025-11-20,files-api-2025-04-14,thinking-binding-controls-2026-08-01",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-api-key": "test-key",
@@ -1552,10 +1616,21 @@ exports[`请求体矩阵快照 > claude non-stream sonnet-5-5 1`] = `
       },
     ],
     "model": "claude-sonnet-5-5",
+    "output_config": {
+      "effort": "low",
+    },
     "stream": false,
+    "thinking": {
+      "block_binding": {
+        "prefix_mismatch_behavior": "drop_block",
+      },
+      "display": "summarized",
+      "type": "adaptive",
+    },
   },
   "headers": {
     "Content-Type": "application/json",
+    "anthropic-beta": "thinking-binding-controls-2026-08-01",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-api-key": "test-key",
@@ -1690,12 +1765,16 @@ exports[`请求体矩阵快照 > claude rich history adaptive opus-5-5 1`] = `
     },
     "stream": true,
     "thinking": {
+      "block_binding": {
+        "prefix_mismatch_behavior": "drop_block",
+      },
       "display": "summarized",
       "type": "adaptive",
     },
   },
   "headers": {
     "Content-Type": "application/json",
+    "anthropic-beta": "thinking-binding-controls-2026-08-01",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-api-key": "test-key",
@@ -1723,13 +1802,21 @@ exports[`请求体矩阵快照 > claude sampling params opus-5-5 1`] = `
       },
     ],
     "model": "claude-opus-5-5",
+    "output_config": {
+      "effort": "low",
+    },
     "stream": true,
-    "temperature": 0.7,
-    "top_k": 40,
-    "top_p": 0.9,
+    "thinking": {
+      "block_binding": {
+        "prefix_mismatch_behavior": "drop_block",
+      },
+      "display": "summarized",
+      "type": "adaptive",
+    },
   },
   "headers": {
     "Content-Type": "application/json",
+    "anthropic-beta": "thinking-binding-controls-2026-08-01",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-api-key": "test-key",
@@ -1797,8 +1884,7 @@ exports[`请求体矩阵快照 > claude sampling params with budget thinking opu
       "budget_tokens": 8192,
       "type": "enabled",
     },
-    "top_k": 40,
-    "top_p": 0.8,
+    "top_p": 0.95,
   },
   "headers": {
     "Content-Type": "application/json",
@@ -1835,19 +1921,26 @@ exports[`请求体矩阵快照 > claude system monitor prefill sonnet-5-5 1`] = 
         "content": "Tell me a joke",
         "role": "user",
       },
-      {
-        "content": "Sure, here is",
-        "role": "assistant",
-      },
     ],
     "model": "claude-sonnet-5-5",
+    "output_config": {
+      "effort": "low",
+    },
     "stream": true,
     "system": "You are helpful.
 
 [MONITOR CONTEXT]",
+    "thinking": {
+      "block_binding": {
+        "prefix_mismatch_behavior": "drop_block",
+      },
+      "display": "summarized",
+      "type": "adaptive",
+    },
   },
   "headers": {
     "Content-Type": "application/json",
+    "anthropic-beta": "thinking-binding-controls-2026-08-01",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-api-key": "test-key",
@@ -1875,10 +1968,21 @@ exports[`请求体矩阵快照 > claude thinking off haiku-5-5 1`] = `
       },
     ],
     "model": "claude-haiku-5-5",
+    "output_config": {
+      "effort": "low",
+    },
     "stream": true,
+    "thinking": {
+      "block_binding": {
+        "prefix_mismatch_behavior": "drop_block",
+      },
+      "display": "summarized",
+      "type": "adaptive",
+    },
   },
   "headers": {
     "Content-Type": "application/json",
+    "anthropic-beta": "thinking-binding-controls-2026-08-01",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-api-key": "test-key",
@@ -1937,6 +2041,9 @@ exports[`请求体矩阵快照 > claude xml tools 1`] = `
       },
     ],
     "model": "claude-opus-5-5",
+    "output_config": {
+      "effort": "low",
+    },
     "stream": true,
     "system": "
 
@@ -2012,9 +2119,17 @@ Here are the rules you MUST follow:
 
 Now Begin! If you use tools correctly, you will be rewarded.
 ",
+    "thinking": {
+      "block_binding": {
+        "prefix_mismatch_behavior": "drop_block",
+      },
+      "display": "summarized",
+      "type": "adaptive",
+    },
   },
   "headers": {
     "Content-Type": "application/json",
+    "anthropic-beta": "thinking-binding-controls-2026-08-01",
     "anthropic-dangerous-direct-browser-access": "true",
     "anthropic-version": "2023-06-01",
     "x-api-key": "test-key",

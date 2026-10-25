@@ -2842,6 +2842,20 @@
                         />
                     </div>
 
+                    <div class="form-group" id="edit-model-profile-group">
+                        <label for="edit-model-profile-alias">按哪个官方型号处理</label>
+                        <input
+                            type="text"
+                            id="edit-model-profile-alias"
+                            class="form-input"
+                            list="edit-model-profile-alias-options"
+                            autocomplete="off"
+                            placeholder="留空则按模型 ID 自动识别"
+                        />
+                        <datalist id="edit-model-profile-alias-options"></datalist>
+                        <p class="form-hint" id="edit-model-profile-status"></p>
+                    </div>
+
                     <div class="form-group">
                         <label class="form-section-label">模型能力</label>
                         <p class="form-hint">选择此模型支持的能力（会影响消息过滤）</p>

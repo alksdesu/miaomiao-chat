@@ -60,7 +60,14 @@ vi.mock('../../../js/utils/media.js', () => ({
     isVideoUrl: () => false
 }));
 
+vi.mock('../../../js/utils/platform.js', async (importOriginal) => ({
+    ...(await importOriginal()),
+    isElectron: vi.fn(() => false)
+}));
+
 import { claudeAdapter } from '../../../js/api/adapters/claude-adapter.js';
+import { resolveModelProfile } from '../../../js/api/model-profiles.js';
+import { isElectron } from '../../../js/utils/platform.js';
 import { PartType, MediaKind, Role } from '../../../js/messages/schema.js';
 import { state } from '../../../js/core/state.js';
 import { getCurrentProvider } from '../../../js/providers/manager.js';
@@ -89,6 +96,7 @@ const TOOL_RESULTS = [{ id: 'tc_1', name: 'search', result: { data: 'ok' }, isEr
 beforeEach(() => {
     state.xmlToolCallingEnabled = false;
     getCurrentProvider.mockReturnValue({ apiFormat: 'claude' });
+    isElectron.mockReturnValue(false);
 });
 
 // ========== toClaudeMessages ==========
@@ -705,34 +713,160 @@ describe('to* 在 part.mode === xml 时跳过 native 工具调用块', () => {
 // ========== buildHeaders ==========
 
 describe('buildHeaders', () => {
+    const profile = (model) => resolveModelProfile('claude', model);
+
     it('基础认证与版本头', () => {
-        expect(claudeAdapter.buildHeaders('sk-ant', { state: {} })).toEqual({
+        expect(claudeAdapter.buildHeaders('sk-ant', { tools: [] })).toEqual({
             'x-api-key': 'sk-ant',
             'anthropic-version': '2023-06-01',
             'anthropic-dangerous-direct-browser-access': 'true'
         });
     });
 
-    it('code execution 开启时合并 beta 头', () => {
+    it('请求带 code_execution 工具时合并 beta 头', () => {
         const headers = claudeAdapter.buildHeaders('sk-ant', {
-            state: { codeExecutionEnabled: true }
+            tools: [{ type: 'code_execution_20250825', name: 'code_execution' }],
+            requestProfile: { isXmlMode: false, profile: profile('claude-sonnet-4-5') }
         });
         expect(headers['anthropic-beta']).toBe(
             'code-execution-2025-08-25,advanced-tool-use-2025-11-20,files-api-2025-04-14'
         );
     });
 
-    it('只读请求快照，不读全局 state', () => {
+    it('XML 模式下工具写进提示词，不带工具 beta', () => {
+        const headers = claudeAdapter.buildHeaders('sk-ant', {
+            tools: [{ type: 'code_execution_20250825', name: 'code_execution' }],
+            requestProfile: { isXmlMode: true, profile: profile('claude-sonnet-4-5') }
+        });
+        expect(headers['anthropic-beta']).toBeUndefined();
+    });
+
+    it('computer 工具的 beta 跟随能力表里的工具版本', () => {
+        const headers = claudeAdapter.buildHeaders('sk-ant', {
+            tools: [{ type: 'computer_20250124', name: 'computer' }],
+            requestProfile: { isXmlMode: false, profile: profile('claude-haiku-4-5') }
+        });
+        expect(headers['anthropic-beta']).toBe('computer-use-2025-01-24');
+    });
+
+    it('思考配置带 block_binding 时附带对应 beta', () => {
+        const headers = claudeAdapter.buildHeaders('sk-ant', {
+            tools: [],
+            requestProfile: {
+                profile: profile('claude-opus-5-5'),
+                thinkingCfg: {
+                    thinking: {
+                        type: 'adaptive',
+                        block_binding: { prefix_mismatch_behavior: 'drop_block' }
+                    }
+                }
+            }
+        });
+        expect(headers['anthropic-beta']).toBe('thinking-binding-controls-2026-08-01');
+    });
+
+    it('只看请求内容，不读全局开关', () => {
         state.codeExecutionEnabled = true;
         try {
             expect(
-                claudeAdapter.buildHeaders('sk-ant', { state: { codeExecutionEnabled: false } })[
-                    'anthropic-beta'
-                ]
+                claudeAdapter.buildHeaders('sk-ant', { tools: [] })['anthropic-beta']
             ).toBeUndefined();
         } finally {
             delete state.codeExecutionEnabled;
         }
+    });
+});
+
+// ========== 按型号约束请求 ==========
+
+describe('collectBuiltinTools 按型号选择 computer 工具版本', () => {
+    const computerState = {
+        computerUseEnabled: true,
+        xmlToolCallingEnabled: false,
+        computerUsePermissions: { bash: true, textEditor: true }
+    };
+
+    beforeEach(() => {
+        isElectron.mockReturnValue(true);
+    });
+
+    it('旧型号使用 computer_20250124', () => {
+        const tools = claudeAdapter.collectBuiltinTools(computerState, {
+            profile: resolveModelProfile('claude', 'claude-sonnet-4-5')
+        });
+        expect(tools.map((tool) => tool.type)).toEqual([
+            'computer_20250124',
+            'bash_20250124',
+            'text_editor_20250728'
+        ]);
+    });
+
+    it('只接受 computer 工具集的型号不附带旧版 computer 工具', () => {
+        const tools = claudeAdapter.collectBuiltinTools(computerState, {
+            profile: resolveModelProfile('claude', 'claude-opus-5-5')
+        });
+        expect(tools.map((tool) => tool.type)).toEqual(['bash_20250124', 'text_editor_20250728']);
+    });
+
+    it('非 Electron 环境不附带 computer use 工具', () => {
+        isElectron.mockReturnValue(false);
+        expect(
+            claudeAdapter.collectBuiltinTools(computerState, {
+                profile: resolveModelProfile('claude', 'claude-sonnet-4-5')
+            })
+        ).toEqual([]);
+    });
+});
+
+describe('buildRequestBody 按型号约束', () => {
+    const baseCtx = (model, overrides = {}) => ({
+        messages: [{ role: 'user', content: 'hi' }],
+        model,
+        modelParams: { max_tokens: 1024 },
+        thinkingCfg: null,
+        systemCtx: {},
+        prefill: null,
+        tools: [],
+        isXmlMode: false,
+        profile: resolveModelProfile('claude', model),
+        notices: [],
+        state: { streamEnabled: true },
+        ...overrides
+    });
+
+    it('不支持末尾 assistant 预填充的型号跳过收尾的 assistant 预填充并提示', () => {
+        const ctx = baseCtx('claude-sonnet-5-5', {
+            prefill: {
+                opening: [],
+                trailing: [
+                    { role: 'user', content: '补充要求' },
+                    { role: 'assistant', content: 'Sure' }
+                ]
+            }
+        });
+        const body = claudeAdapter.buildRequestBody(ctx);
+        expect(body.messages.at(-1)).toEqual({ role: 'user', content: '补充要求' });
+        expect(ctx.notices).toEqual([expect.objectContaining({ key: 'claude.assistant-prefill' })]);
+    });
+
+    it('支持预填充的型号保留原样', () => {
+        const ctx = baseCtx('claude-haiku-4-5', {
+            prefill: { opening: [], trailing: [{ role: 'assistant', content: 'Sure' }] }
+        });
+        expect(claudeAdapter.buildRequestBody(ctx).messages.at(-1)).toEqual({
+            role: 'assistant',
+            content: 'Sure'
+        });
+        expect(ctx.notices).toEqual([]);
+    });
+
+    it('只接受 computer 工具集的型号开启 Computer Use 时提示', () => {
+        isElectron.mockReturnValue(true);
+        const ctx = baseCtx('claude-opus-5-5', {
+            state: { streamEnabled: true, computerUseEnabled: true }
+        });
+        claudeAdapter.buildRequestBody(ctx);
+        expect(ctx.notices).toEqual([expect.objectContaining({ key: 'claude.computer-toolset' })]);
     });
 });
 

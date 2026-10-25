@@ -495,9 +495,9 @@ const CODE_EXECUTION_BETAS = Object.freeze([
     'files-api-2025-04-14'
 ]);
 
-const COMPUTER_TOOL = Object.freeze({ type: 'computer_20251124', beta: 'computer-use-2025-11-24' });
+const COMPUTER_TOOLSET_TYPE = 'computer_toolset_20260801';
 
-function buildComputerTool() {
+function buildComputerTool(type) {
     let displayWidth = 1920;
     let displayHeight = 1080;
     if (typeof window !== 'undefined' && window.screen) {
@@ -505,7 +505,7 @@ function buildComputerTool() {
         displayHeight = window.screen.height;
     }
     return {
-        type: COMPUTER_TOOL.type,
+        type,
         name: 'computer',
         display_width_px: displayWidth,
         display_height_px: displayHeight,
@@ -515,8 +515,9 @@ function buildComputerTool() {
 
 /**
  * Claude 内置工具：code_execution / web_search / Computer Use（仅 Electron 且非 XML 模式）
+ * computer 工具版本由能力表按型号给出
  */
-function collectBuiltinTools(stateRef) {
+function collectBuiltinTools(stateRef, { profile } = {}) {
     const tools = [];
 
     if (stateRef.codeExecutionEnabled) {
@@ -525,7 +526,10 @@ function collectBuiltinTools(stateRef) {
 
     // XML 模式下使用统一的自定义 computer 工具（来自 builtin/computer-use.js）
     if (stateRef.computerUseEnabled && isElectron() && !stateRef.xmlToolCallingEnabled) {
-        tools.push(buildComputerTool());
+        const computerType = profile?.computerUse?.type;
+        if (computerType && computerType !== COMPUTER_TOOLSET_TYPE) {
+            tools.push(buildComputerTool(computerType));
+        }
         if (stateRef.computerUsePermissions?.bash !== false) {
             tools.push({ ...CLAUDE_BUILTIN_TOOLS.bash });
         }
@@ -548,24 +552,44 @@ function formatSystemTools(systemTools) {
 
 // ========== 生成参数 ==========
 
-/**
- * @param {import('../reasoning.js').ReasoningIntent} reasoning
- * @returns {Object|null}
- */
-function buildThinkingConfig(reasoning) {
-    if (!reasoning.enabled) return null;
+const THINKING_BINDING_BETA = 'thinking-binding-controls-2026-08-01';
+const SAMPLING_KEYS = Object.freeze(['temperature', 'top_p', 'top_k']);
+// 开启思考时 top_p 只接受 [0.95, 1]
+const THINKING_MIN_TOP_P = 0.95;
 
-    if (reasoning.adaptive) {
-        const effort = CLAUDE_EFFORTS.includes(reasoning.adaptiveEffort)
-            ? reasoning.adaptiveEffort
-            : 'high';
-        const thinking = { type: 'adaptive' };
-        if (reasoning.showSummary) {
-            thinking.display = 'summarized';
-        }
-        return { thinking, output_config: { effort } };
+function clampEffort(effort, supported) {
+    if (!supported || supported.includes(effort)) return effort;
+    for (let rank = CLAUDE_EFFORTS.indexOf(effort) - 1; rank >= 0; rank--) {
+        if (supported.includes(CLAUDE_EFFORTS[rank])) return CLAUDE_EFFORTS[rank];
     }
+    return supported[0];
+}
 
+// 只支持 adaptive 的型号收到预算设置时，按与预算档位最接近的 effort 换算
+function effortFromBudgetIntent(reasoning) {
+    if (reasoning.strength === 'custom') {
+        const budget = Number(reasoning.budget) || 0;
+        const { low, medium, high } = CLAUDE_THINKING_BUDGETS;
+        if (budget < (low + medium) / 2) return 'low';
+        if (budget < (medium + high) / 2) return 'medium';
+        return 'high';
+    }
+    if (reasoning.strength === 'minimal') return 'low';
+    return CLAUDE_EFFORTS.includes(reasoning.strength) ? reasoning.strength : 'high';
+}
+
+function adaptiveThinking(effort, reasoning, rules) {
+    const thinking = { type: 'adaptive' };
+    if (reasoning.showSummary && rules.display) thinking.display = 'summarized';
+    // 新账号默认校验思考块的会话前缀；system 里的 {{time}}、未写回历史的末尾预填充都会改动前缀，
+    // 对不上的块直接丢弃重算，避免整条请求 400
+    if (rules.blockBinding) {
+        thinking.block_binding = { prefix_mismatch_behavior: 'drop_block' };
+    }
+    return { thinking, output_config: { effort: clampEffort(effort, rules.efforts) } };
+}
+
+function budgetThinking(reasoning) {
     return {
         thinking: {
             type: 'enabled',
@@ -575,11 +599,88 @@ function buildThinkingConfig(reasoning) {
 }
 
 /**
+ * @param {import('../reasoning.js').ReasoningIntent} reasoning
+ * @param {Object} rules profile.reasoning
+ * @param {import('../request-notices.js').RequestNotice[]} notices
+ * @returns {Object|null}
+ */
+function buildThinkingConfig(reasoning, rules, notices) {
+    const supportsAdaptive = rules.modes.includes('adaptive');
+    const supportsBudget = rules.modes.includes('budget');
+
+    if (!reasoning.enabled) {
+        // 默认开启思考的型号省略 thinking 等于按默认档位思考，关掉开关时改用最低 effort
+        return rules.alwaysOn ? adaptiveThinking('low', reasoning, rules) : null;
+    }
+
+    if (reasoning.adaptive) {
+        const effort = CLAUDE_EFFORTS.includes(reasoning.adaptiveEffort)
+            ? reasoning.adaptiveEffort
+            : 'high';
+        if (supportsAdaptive) return adaptiveThinking(effort, reasoning, rules);
+        notices.push({
+            key: 'claude.adaptive-unsupported',
+            message: '当前 Claude 模型不支持 adaptive thinking，已按同档位的思考预算发送'
+        });
+        return budgetThinking({ strength: effort });
+    }
+
+    if (supportsBudget) return budgetThinking(reasoning);
+    notices.push({
+        key: 'claude.budget-unsupported',
+        message: '当前 Claude 模型只支持 adaptive thinking，思考强度已换算为 effort 档位'
+    });
+    return adaptiveThinking(effortFromBudgetIntent(reasoning), reasoning, rules);
+}
+
+/**
+ * 型号拒绝采样参数时整体丢弃；开启思考时 temperature 固定为 1、top_p 不低于 0.95、不能带 top_k
+ */
+function buildSamplingParams(userParams, { thinking, profile, notices }) {
+    const requested = SAMPLING_KEYS.filter((key) => userParams[key] !== null);
+    if (requested.length === 0) return {};
+
+    if (profile.sampling === false) {
+        notices.push({
+            key: 'claude.sampling',
+            message: `当前 Claude 模型不接受自定义 ${requested.join(' / ')}，已忽略`
+        });
+        return {};
+    }
+
+    const params = {};
+    let adjusted = false;
+    if (userParams.temperature !== null) {
+        params.temperature = thinking ? 1 : userParams.temperature;
+        adjusted ||= params.temperature !== userParams.temperature;
+    }
+    if (userParams.top_p !== null) {
+        params.top_p = thinking ? Math.max(userParams.top_p, THINKING_MIN_TOP_P) : userParams.top_p;
+        adjusted ||= params.top_p !== userParams.top_p;
+    }
+    if (userParams.top_k !== null) {
+        if (thinking) adjusted = true;
+        else params.top_k = userParams.top_k;
+    }
+    if (adjusted) {
+        notices.push({
+            key: 'claude.thinking-sampling',
+            message:
+                '开启思考时 Claude 要求 temperature 为 1、top_p 不低于 0.95 且不能设置 top_k，已自动调整'
+        });
+    }
+    return params;
+}
+
+/**
  * @param {import('../params.js').GenerationSettings} settings
+ * @param {{ profile: Object }} ctx
  * @returns {import('./format-adapter-types.js').GenerationParams}
  */
-function buildGenerationParams(settings) {
+function buildGenerationParams(settings, { profile }) {
     const { userParams, reasoning } = settings;
+    const notices = [];
+    const thinkingCfg = buildThinkingConfig(reasoning, profile.reasoning, notices);
     // Messages API 要求 max_tokens 必填，缺失直接 400；它是 thinking 与正文共享的总输出上限
     const modelParams = {
         max_tokens:
@@ -587,29 +688,30 @@ function buildGenerationParams(settings) {
                 ? userParams.max_tokens
                 : settings.streamEnabled
                   ? CLAUDE_DEFAULT_MAX_TOKENS_STREAM
-                  : CLAUDE_DEFAULT_MAX_TOKENS_NON_STREAM
+                  : CLAUDE_DEFAULT_MAX_TOKENS_NON_STREAM,
+        ...buildSamplingParams(userParams, { thinking: !!thinkingCfg, profile, notices })
     };
-    if (userParams.temperature !== null) modelParams.temperature = userParams.temperature;
-    if (userParams.top_p !== null) modelParams.top_p = userParams.top_p;
-    // Extended Thinking 要求 temperature 必须为 1
-    if (
-        reasoning.enabled &&
-        modelParams.temperature !== undefined &&
-        modelParams.temperature !== 1
-    ) {
-        logger.debug('[claude] thinking 模式强制 temperature=1');
-        modelParams.temperature = 1;
-    }
-    if (userParams.top_k !== null) modelParams.top_k = userParams.top_k;
 
-    return {
-        modelParams,
-        thinkingCfg: buildThinkingConfig(reasoning),
-        verbosityCfg: null
-    };
+    return { modelParams, thinkingCfg, verbosityCfg: null, notices };
 }
 
 // ========== buildRequestBody ==========
+
+/**
+ * 型号拒绝以 assistant 结尾的请求时，去掉末尾预填充里收尾的 assistant 消息
+ */
+function resolveTrailingPrefill(trailing, profile, notices) {
+    if (profile.assistantPrefill !== false) return trailing;
+    let end = trailing.length;
+    while (end > 0 && trailing[end - 1]?.role === 'assistant') end--;
+    if (end === trailing.length) return trailing;
+    notices.push({
+        key: 'claude.assistant-prefill',
+        message:
+            '当前 Claude 模型不支持以 assistant 消息结尾的预填充，已跳过末尾的 assistant 预填充'
+    });
+    return trailing.slice(0, end);
+}
 
 function buildRequestBody(ctx) {
     const {
@@ -621,6 +723,8 @@ function buildRequestBody(ctx) {
         prefill,
         tools,
         isXmlMode,
+        profile,
+        notices,
         state: stateRef
     } = ctx;
 
@@ -630,7 +734,10 @@ function buildRequestBody(ctx) {
         claudeMessages = [...prefill.opening, ...claudeMessages];
     }
     if (prefill && prefill.trailing.length > 0) {
-        claudeMessages = [...claudeMessages, ...prefill.trailing];
+        claudeMessages = [
+            ...claudeMessages,
+            ...resolveTrailingPrefill(prefill.trailing, profile, notices)
+        ];
     }
 
     const requestBody = {
@@ -653,6 +760,19 @@ function buildRequestBody(ctx) {
     // 添加思维链配置 (Claude Extended Thinking)
     if (thinkingCfg) Object.assign(requestBody, thinkingCfg);
 
+    if (
+        stateRef.computerUseEnabled &&
+        !isXmlMode &&
+        isElectron() &&
+        profile?.computerUse?.type === COMPUTER_TOOLSET_TYPE
+    ) {
+        notices.push({
+            key: 'claude.computer-toolset',
+            message:
+                '当前 Claude 模型的 Computer Use 只接受新版 computer 工具集，本次请求未附带 computer 工具'
+        });
+    }
+
     if (tools.length > 0) {
         if (isXmlMode) {
             injectToolsToClaude(requestBody, tools);
@@ -674,23 +794,38 @@ function resolveEndpoint(baseEndpoint, _model, _isStreaming) {
 }
 
 /**
- * Claude headers：x-api-key + anthropic-version + 智能合并 beta features
+ * beta 头只按请求里实际出现的原生工具与思考配置收集，XML 模式下工具写进提示词不需要 beta
  */
-function buildHeaders(apiKey, { state: stateRef }) {
+function collectBetas(tools, requestProfile) {
+    const betas = new Set();
+    if (!requestProfile?.isXmlMode) {
+        const computerUse = requestProfile?.profile?.computerUse;
+        for (const tool of tools || []) {
+            if (tool?.type === CLAUDE_BUILTIN_TOOLS.codeExecution.type) {
+                CODE_EXECUTION_BETAS.forEach((beta) => betas.add(beta));
+            }
+            if (computerUse?.beta && tool?.type === computerUse.type) {
+                betas.add(computerUse.beta);
+            }
+        }
+    }
+    if (requestProfile?.thinkingCfg?.thinking?.block_binding) {
+        betas.add(THINKING_BINDING_BETA);
+    }
+    return betas;
+}
+
+/**
+ * Claude headers：x-api-key + anthropic-version + 按请求内容合并 beta features
+ */
+function buildHeaders(apiKey, { tools, requestProfile } = {}) {
     const headers = {
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
         'anthropic-dangerous-direct-browser-access': 'true'
     };
 
-    const betas = new Set();
-    if (stateRef.codeExecutionEnabled) {
-        CODE_EXECUTION_BETAS.forEach((beta) => betas.add(beta));
-    }
-    if (stateRef.computerUseEnabled && isElectron()) {
-        betas.add(COMPUTER_TOOL.beta);
-    }
-
+    const betas = collectBetas(tools, requestProfile);
     if (betas.size > 0) {
         headers['anthropic-beta'] = [...betas].join(',');
         logger.debug('[claude] Beta headers:', headers['anthropic-beta']);

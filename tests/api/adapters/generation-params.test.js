@@ -483,4 +483,147 @@ describe('Claude', () => {
                 .verbosityCfg
         ).toBeNull();
     });
+
+    it('未识别的型号不产生提示', () => {
+        expect(generate('claude', { params: { temperature: 0.5 } }).notices).toEqual([]);
+    });
+
+    describe('按型号约束', () => {
+        const binding = { prefix_mismatch_behavior: 'drop_block' };
+
+        it('默认开启思考的型号关闭开关时发 adaptive + 最低 effort', () => {
+            expect(generate('claude', { model: 'claude-opus-5-5' }).thinkingCfg).toEqual({
+                thinking: { type: 'adaptive', block_binding: binding },
+                output_config: { effort: 'low' }
+            });
+        });
+
+        it('默认不思考的型号关闭开关时不发 thinking', () => {
+            expect(generate('claude', { model: 'claude-opus-4-7' }).thinkingCfg).toBeNull();
+        });
+
+        it('只有校验会话前缀的型号带 block_binding', () => {
+            const settings = { thinkingEnabled: true, claudeAdaptiveThinking: true };
+            expect(
+                generate('claude', { model: 'claude-sonnet-5-5', settings }).thinkingCfg.thinking
+                    .block_binding
+            ).toEqual(binding);
+            expect(
+                generate('claude', { model: 'claude-opus-5', settings }).thinkingCfg.thinking
+            ).not.toHaveProperty('block_binding');
+        });
+
+        it('预算制设置在只支持 adaptive 的型号上换算为 effort 并提示', () => {
+            const result = generate('claude', {
+                model: 'claude-sonnet-5',
+                settings: { thinkingEnabled: true, thinkingStrength: 'medium' }
+            });
+            expect(result.thinkingCfg).toEqual({
+                thinking: { type: 'adaptive' },
+                output_config: { effort: 'medium' }
+            });
+            expect(result.notices).toEqual([
+                expect.objectContaining({ key: 'claude.budget-unsupported' })
+            ]);
+        });
+
+        it.each([
+            [2048, 'low'],
+            [5119, 'low'],
+            [5120, 'medium'],
+            [12287, 'medium'],
+            [12288, 'high'],
+            [65536, 'high']
+        ])('自定义预算 %i 换算为 %s', (budget, effort) => {
+            expect(
+                generate('claude', {
+                    model: 'claude-opus-4-8',
+                    settings: {
+                        thinkingEnabled: true,
+                        thinkingStrength: 'custom',
+                        thinkingBudget: budget
+                    }
+                }).thinkingCfg.output_config.effort
+            ).toBe(effort);
+        });
+
+        it('adaptive 设置在预算制型号上换算为思考预算并提示', () => {
+            const result = generate('claude', {
+                model: 'claude-haiku-4-5',
+                settings: {
+                    thinkingEnabled: true,
+                    claudeAdaptiveThinking: true,
+                    claudeEffortLevel: 'medium'
+                }
+            });
+            expect(result.thinkingCfg).toEqual({
+                thinking: { type: 'enabled', budget_tokens: 8192 }
+            });
+            expect(result.notices).toEqual([
+                expect.objectContaining({ key: 'claude.adaptive-unsupported' })
+            ]);
+        });
+
+        it('effort 收敛到型号支持的档位', () => {
+            expect(
+                generate('claude', {
+                    model: 'claude-sonnet-4-6',
+                    settings: {
+                        thinkingEnabled: true,
+                        claudeAdaptiveThinking: true,
+                        claudeEffortLevel: 'xhigh'
+                    }
+                }).thinkingCfg.output_config.effort
+            ).toBe('high');
+        });
+
+        it('拒绝采样参数的型号整体丢弃并提示', () => {
+            const result = generate('claude', {
+                model: 'claude-opus-5-5',
+                params: { temperature: 0.7, top_p: 0.9, top_k: 40 }
+            });
+            expect(result.modelParams).toEqual({ max_tokens: 64000 });
+            expect(result.notices).toEqual([
+                expect.objectContaining({
+                    key: 'claude.sampling',
+                    message: expect.stringContaining('temperature / top_p / top_k')
+                })
+            ]);
+        });
+
+        it('开启思考时 temperature 固定为 1、top_p 抬到 0.95、去掉 top_k 并提示', () => {
+            const result = generate('claude', {
+                model: 'claude-sonnet-4-6',
+                settings: { thinkingEnabled: true },
+                params: { temperature: 0.7, top_p: 0.8, top_k: 40 }
+            });
+            expect(result.modelParams).toEqual({ max_tokens: 64000, temperature: 1, top_p: 0.95 });
+            expect(result.notices).toEqual([
+                expect.objectContaining({ key: 'claude.thinking-sampling' })
+            ]);
+        });
+
+        it('未开启思考时采样参数原样发送且不提示', () => {
+            const result = generate('claude', {
+                model: 'claude-sonnet-4-6',
+                params: { temperature: 0.7, top_p: 0.8, top_k: 40 }
+            });
+            expect(result.modelParams).toEqual({
+                max_tokens: 64000,
+                temperature: 0.7,
+                top_p: 0.8,
+                top_k: 40
+            });
+            expect(result.notices).toEqual([]);
+        });
+
+        it('显示思考摘要时请求 summarized', () => {
+            expect(
+                generate('claude', {
+                    model: 'claude-opus-5-5',
+                    settings: { claudeShowThinking: true }
+                }).thinkingCfg.thinking.display
+            ).toBe('summarized');
+        });
+    });
 });

@@ -61,8 +61,12 @@ import { state } from '../../js/core/state.js';
 import {
     closeModelsManageModal,
     closeEditModelModal,
-    renderModelsList
+    renderModelsList,
+    openEditModelModal,
+    saveEditedModel,
+    initModelSelectorEvents
 } from '../../js/providers/model-selector.js';
+import { updateProvider } from '../../js/providers/manager.js';
 
 beforeEach(() => {
     vi.clearAllMocks();
@@ -143,5 +147,120 @@ describe('renderModelsList', () => {
             models: ['my-model-id']
         });
         expect(html).toContain('data-model="my-model-id"');
+    });
+});
+
+// ========== 模型编辑弹窗：官方型号别名 ==========
+
+const EDIT_MODAL_HTML = `
+    <div id="edit-model-modal" class="modal">
+        <input id="edit-model-id" />
+        <input id="edit-model-name" />
+        <div id="edit-model-profile-group">
+            <input id="edit-model-profile-alias" />
+            <datalist id="edit-model-profile-alias-options"></datalist>
+            <p id="edit-model-profile-status"></p>
+        </div>
+        <input type="checkbox" id="edit-model-image-input" />
+        <input type="checkbox" id="edit-model-image-output" />
+    </div>
+`;
+
+describe('模型编辑弹窗的官方型号别名', () => {
+    beforeEach(() => {
+        document.body.innerHTML = EDIT_MODAL_HTML;
+        initModelSelectorEvents();
+    });
+
+    it('打开时列出该格式可选的官方型号并回填别名', () => {
+        state.providers = [
+            {
+                id: 'p1',
+                apiFormat: 'claude',
+                models: [{ id: 'proxy-x', name: 'X', profileAlias: 'claude-opus-5-5' }]
+            }
+        ];
+
+        openEditModelModal('p1', 'proxy-x');
+
+        const options = [...document.querySelectorAll('#edit-model-profile-alias-options option')];
+        expect(options.map((option) => option.value)).toContain('claude-sonnet-5-5');
+        expect(document.getElementById('edit-model-profile-alias').value).toBe('claude-opus-5-5');
+        expect(document.getElementById('edit-model-profile-status').textContent).toContain(
+            'claude-opus-5-5'
+        );
+    });
+
+    it('输入别名时实时显示识别结果', () => {
+        state.providers = [{ id: 'p1', apiFormat: 'claude', models: ['proxy-x'] }];
+        openEditModelModal('p1', 'proxy-x');
+        const input = document.getElementById('edit-model-profile-alias');
+        const status = document.getElementById('edit-model-profile-status');
+
+        expect(status.textContent).toContain('未识别');
+        input.value = 'claude-sonnet-5-5';
+        input.dispatchEvent(new Event('input'));
+        expect(status.textContent).toContain('claude-sonnet-5-5');
+        input.value = 'not-a-model';
+        input.dispatchEvent(new Event('input'));
+        expect(status.textContent).toContain('未找到');
+    });
+
+    it('没有能力表的格式隐藏别名输入', () => {
+        state.providers = [{ id: 'p1', apiFormat: 'openclaw', models: ['agent'] }];
+        openEditModelModal('p1', 'agent');
+        expect(document.getElementById('edit-model-profile-group').hidden).toBe(true);
+    });
+
+    it('保存时写入别名并保留弹窗不编辑的字段', async () => {
+        state.providers = [
+            {
+                id: 'p1',
+                apiFormat: 'claude',
+                models: [
+                    {
+                        id: 'proxy-x',
+                        name: 'X',
+                        capabilities: { imageInput: true, imageOutput: false, audioInput: true },
+                        contextWindow: 200000
+                    }
+                ]
+            }
+        ];
+        openEditModelModal('p1', 'proxy-x');
+        document.getElementById('edit-model-profile-alias').value = ' claude-sonnet-5-5 ';
+
+        await saveEditedModel();
+
+        expect(state.providers[0].models[0]).toEqual({
+            id: 'proxy-x',
+            name: 'X',
+            capabilities: { imageInput: true, imageOutput: false, audioInput: true },
+            contextWindow: 200000,
+            profileAlias: 'claude-sonnet-5-5'
+        });
+        expect(updateProvider).toHaveBeenCalledWith('p1', { models: state.providers[0].models });
+    });
+
+    it('清空别名时移除字段，字符串格式的模型升级为对象', async () => {
+        state.providers = [
+            {
+                id: 'p1',
+                apiFormat: 'claude',
+                models: [{ id: 'proxy-x', name: 'X', profileAlias: 'claude-opus-5-5' }, 'plain']
+            }
+        ];
+        openEditModelModal('p1', 'proxy-x');
+        document.getElementById('edit-model-profile-alias').value = '';
+        await saveEditedModel();
+        expect(state.providers[0].models[0]).not.toHaveProperty('profileAlias');
+
+        openEditModelModal('p1', 'plain');
+        await saveEditedModel();
+        expect(state.providers[0].models[1]).toEqual({
+            id: 'plain',
+            name: 'plain',
+            capabilities: { imageInput: false, imageOutput: false }
+        });
     });
 });

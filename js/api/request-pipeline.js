@@ -16,6 +16,7 @@ import { getCurrentModelCapabilities, getCurrentProvider, getModelDisplayName } 
 import { getPrefillMessages, getOpeningMessages } from '../utils/prefill.js';
 import { captureGenerationSettings, getCustomHeadersObject } from './params.js';
 import { resolveModelProfile } from './model-profiles.js';
+import { emitRequestNotices } from './request-notices.js';
 import { buildDevToolsContext } from '../devtools/context-builder.js';
 import { getToolsForAPI } from '../tools/manager.js';
 import { materializeSessionMessages } from '../state/session-message-repository.js';
@@ -30,6 +31,17 @@ function cloneValue(value) {
     } catch {
         return value;
     }
+}
+
+/**
+ * 模型编辑里指定的"按哪个官方型号处理"，供代理改名的模型匹配能力表
+ */
+function findProfileAlias(provider, model) {
+    const entry = provider?.models?.find(
+        (item) => item && typeof item === 'object' && item.id === model
+    );
+    const alias = typeof entry?.profileAlias === 'string' ? entry.profileAlias.trim() : '';
+    return alias || null;
 }
 
 export function captureRequestProfile(adapter, model) {
@@ -54,15 +66,20 @@ export function captureRequestProfile(adapter, model) {
         streamIdleTimeout: state.streamIdleTimeout,
         requestTimeout: state.requestTimeout
     };
+    const profile = resolveModelProfile(adapter.apiFormat, model, {
+        alias: findProfileAlias(provider, model)
+    });
     const systemCtx = buildSystemContext();
     const prefill =
         adapter.requestFeatures?.prefill === false ? null : collectPrefill(adapter.apiFormat);
     const tools =
-        adapter.requestFeatures?.tools === false ? [] : collectTools(adapter, stateSnapshot);
-    const profile = resolveModelProfile(adapter.apiFormat, model);
+        adapter.requestFeatures?.tools === false
+            ? []
+            : collectTools(adapter, stateSnapshot, profile);
     const generation = adapter.buildGenerationParams(captureGenerationSettings(adapter.apiFormat), {
         model: model || '',
-        profile
+        profile,
+        nativeTools: tools.length > 0 && !stateSnapshot.xmlToolCallingEnabled
     });
 
     return {
@@ -75,6 +92,7 @@ export function captureRequestProfile(adapter, model) {
         modelParams: cloneValue(generation.modelParams),
         thinkingCfg: cloneValue(generation.thinkingCfg),
         verbosityCfg: cloneValue(generation.verbosityCfg),
+        notices: cloneValue(generation.notices || []),
         customHeaders: cloneValue(getCustomHeadersObject()),
         systemCtx: cloneValue(systemCtx),
         prefill: cloneValue(prefill),
@@ -128,8 +146,8 @@ function collectPrefill(apiFormat) {
 /**
  * 收集工具列表：adapter.collectBuiltinTools + getToolsForAPI + adapter.formatSystemTools
  */
-function collectTools(adapter, stateRef = state) {
-    const tools = [...adapter.collectBuiltinTools(stateRef)];
+function collectTools(adapter, stateRef, profile) {
+    const tools = [...adapter.collectBuiltinTools(stateRef, { profile })];
     try {
         const systemTools = getToolsForAPI(adapter.apiFormat);
         tools.push(...adapter.formatSystemTools(systemTools));
@@ -204,6 +222,7 @@ export async function executeRequest(
     const systemCtx = features.system === false ? {} : requestProfile.systemCtx;
     const prefill = features.prefill === false ? null : requestProfile.prefill;
     const tools = features.tools === false ? [] : requestProfile.tools;
+    const notices = [...(requestProfile.notices || [])];
 
     const requestBody = await adapter.buildRequestBody({
         messages,
@@ -218,8 +237,10 @@ export async function executeRequest(
         profile: requestProfile.profile,
         formatSettings: requestProfile.formatSettings,
         state: requestProfile.state,
-        endpoint // Gemini Vertex vs AI Studio safetySettings 需要看 endpoint
+        endpoint, // Gemini Vertex vs AI Studio safetySettings 需要看 endpoint
+        notices
     });
+    emitRequestNotices(sessionId, notices);
 
     const finalEndpoint = adapter.resolveEndpoint(
         endpoint,

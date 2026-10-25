@@ -21,6 +21,7 @@ import { showNotification } from '../ui/notifications.js';
 import { getIcon } from '../utils/icons.js';
 import { bindTopmostEscape } from '../utils/modal-stack.js';
 import { getSelectedProviderId } from './shared-state.js';
+import { listProfileIds, resolveModelProfile } from '../api/model-profiles.js';
 
 // 延迟导入，避免循环依赖
 let _showProviderForm;
@@ -371,6 +372,49 @@ export async function showAddCustomModelDialog(providerId) {
 // ========== 模型编辑弹窗 ==========
 
 /**
+ * 能力表按官方型号决定思维链、采样参数等请求格式；代理改名的模型在这里指定对应的官方型号
+ */
+function fillProfileAliasField(apiFormat, model) {
+    const group = document.getElementById('edit-model-profile-group');
+    const input = document.getElementById('edit-model-profile-alias');
+    const options = document.getElementById('edit-model-profile-alias-options');
+    if (!group || !input || !options) return;
+
+    const profileIds = listProfileIds(apiFormat);
+    group.hidden = profileIds.length === 0;
+    options.replaceChildren(
+        ...profileIds.map((id) => {
+            const option = document.createElement('option');
+            option.value = id;
+            return option;
+        })
+    );
+    input.value = typeof model.profileAlias === 'string' ? model.profileAlias : '';
+    input.dataset.apiFormat = apiFormat || '';
+    input.dataset.modelId = model.id;
+    updateProfileAliasStatus();
+}
+
+function updateProfileAliasStatus() {
+    const input = document.getElementById('edit-model-profile-alias');
+    const status = document.getElementById('edit-model-profile-status');
+    if (!input || !status) return;
+
+    const alias = input.value.trim();
+    const { apiFormat, modelId } = input.dataset;
+    const profile = resolveModelProfile(apiFormat, modelId, { alias });
+    if (alias) {
+        status.textContent = profile.known
+            ? `按 ${profile.id} 的请求规则处理`
+            : `未找到官方型号「${alias}」，按通用规则处理`;
+    } else {
+        status.textContent = profile.known
+            ? `已按模型 ID 识别为 ${profile.id}`
+            : '未识别此模型 ID，按通用规则处理；代理改过名时可填写对应的官方型号';
+    }
+}
+
+/**
  * 打开模型编辑弹窗
  */
 export function openEditModelModal(providerId, modelId) {
@@ -398,6 +442,7 @@ export function openEditModelModal(providerId, modelId) {
         model.capabilities?.imageInput || false;
     document.getElementById('edit-model-image-output').checked =
         model.capabilities?.imageOutput || false;
+    fillProfileAliasField(provider.apiFormat, model);
 
     const modal = document.getElementById('edit-model-modal');
     if (!modal) return;
@@ -426,6 +471,7 @@ export async function saveEditedModel() {
     const newName = document.getElementById('edit-model-name').value.trim();
     const imageInput = document.getElementById('edit-model-image-input').checked;
     const imageOutput = document.getElementById('edit-model-image-output').checked;
+    const profileAlias = document.getElementById('edit-model-profile-alias')?.value.trim() || '';
 
     if (!newName) {
         showNotification('请输入模型名称', 'error');
@@ -438,13 +484,20 @@ export async function saveEditedModel() {
 
     if (modelIndex === -1) return;
 
+    // 保留弹窗不编辑的字段，旧字符串格式的模型升级为对象
+    const existing = provider.models[modelIndex];
+    const { profileAlias: _previousAlias, ...preserved } =
+        typeof existing === 'object' && existing ? existing : {};
     provider.models[modelIndex] = {
+        ...preserved,
         id: modelId,
         name: newName,
         capabilities: {
+            ...(preserved.capabilities || {}),
             imageInput,
             imageOutput
-        }
+        },
+        ...(profileAlias ? { profileAlias } : {})
     };
 
     updateProvider(providerId, { models: provider.models });
@@ -507,6 +560,9 @@ export function initModelSelectorEvents() {
     document.getElementById('close-edit-model')?.addEventListener('click', closeEditModelModal);
     document.getElementById('cancel-edit-model')?.addEventListener('click', closeEditModelModal);
     document.getElementById('save-edit-model')?.addEventListener('click', saveEditedModel);
+    document
+        .getElementById('edit-model-profile-alias')
+        ?.addEventListener('input', updateProfileAliasStatus);
     document
         .getElementById('edit-model-modal')
         ?.querySelector('.modal-overlay')

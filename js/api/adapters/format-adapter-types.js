@@ -32,6 +32,8 @@
  * @property {Object}      modelParams   采样与长度参数（wire 字段名）
  * @property {Object|null} thinkingCfg   推理配置，由 buildRequestBody 合并进请求体
  * @property {Object|null} verbosityCfg  输出详细度配置
+ * @property {import('../request-notices.js').RequestNotice[]} [notices]
+ *     按能力表丢弃或改写了用户设置时的提示，pipeline 按会话去重后弹出
  */
 
 /**
@@ -49,6 +51,8 @@
  * @property {Object|null} formatSettings adapter.captureFormatSettings 输出
  * @property {Object}   state          requestProfile.state 通用开关快照
  * @property {string}   endpoint       用户配置的原始端点
+ * @property {import('../request-notices.js').RequestNotice[]} notices
+ *     组装请求体时按能力表丢弃或改写内容（工具、末尾预填充等）就追加一条提示
  */
 
 /**
@@ -94,12 +98,13 @@
  *     非流式响应解析；isXmlMode 取自 requestProfile，缺省按原生工具协议解析
  *
  * 请求构造层
- * @property {(state: Object) => Array} collectBuiltinTools
- *     code_execution / web_search / computer_use 三家 schema 不同的内置工具
+ * @property {(state: Object, ctx: {profile: Object}) => Array} collectBuiltinTools
+ *     code_execution / web_search / computer_use 三家 schema 不同的内置工具，工具版本按能力表选择
  * @property {(systemTools: Array) => Array} formatSystemTools
  *     getToolsForAPI 返回的系统工具列表的最终包装（Gemini 独有 functionDeclarations）
- * @property {(settings: import('../params.js').GenerationSettings, ctx: {model: string, profile: Object}) => GenerationParams} buildGenerationParams
- *     设置面板的采样 / 推理 / 详细度快照 → 自家 wire 字段
+ * @property {(settings: import('../params.js').GenerationSettings, ctx: {model: string, profile: Object, nativeTools: boolean}) => GenerationParams} buildGenerationParams
+ *     设置面板的采样 / 推理 / 详细度快照 → 自家 wire 字段，按能力表约束到该型号接受的取值；
+ *     nativeTools 表示请求会带原生工具（XML 模式下工具写进提示词，不算）
  * @property {(state: Object) => Object} [captureFormatSettings]
  *     格式专属设置快照（Gemini 的 API Key 传递方式、出图尺寸、多段 system parts）
  * @property {(ctx: RequestBodyContext) => Object} buildRequestBody
