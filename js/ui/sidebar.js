@@ -652,6 +652,8 @@ async function switchToSessionAndScrollToMessage(sessionId, messageRef = {}) {
     }
 
     await switchToSession(sessionId);
+    // 切换失败时已提示原因，不能在原会话里继续定位
+    if (state.currentSessionId !== sessionId) return;
 
     const located = await locateMessageByReference(
         {

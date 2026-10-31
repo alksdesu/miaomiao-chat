@@ -872,6 +872,11 @@ function anchorTaskToCommittedMessage(task, messagesArea) {
     return true;
 }
 
+function notifyMissingSession(sessionId) {
+    logger.warn(`[Session] 会话 ${sessionId} 不存在`);
+    eventBus.emit('ui:notification', { message: '会话不存在或已被删除', type: 'warning' });
+}
+
 /**
  * 切换到指定会话
  * @param {string} sessionId - 会话 ID
@@ -881,6 +886,12 @@ function anchorTaskToCommittedMessage(task, messagesArea) {
 export async function switchToSession(sessionId, saveOld = true, elements = null) {
     // 防止重复切换（同一会话）
     if (state.currentSessionId === sessionId && !state.isSwitchingSession) return;
+
+    // 侧栏可能还列着其他标签页刚删除的会话；先于一切副作用判定，不打断进行中的切换
+    if (!state.sessions.some((s) => s.id === sessionId)) {
+        notifyMissingSession(sessionId);
+        return;
+    }
 
     // 清除防抖保存定时器，防止跨会话保存
     if (saveSessionTimer) {
@@ -901,9 +912,6 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
     // 设置切换标志
     state.isSwitchingSession = true;
     const oldSessionId = state.currentSessionId;
-
-    // 触发会话切换前事件（用于清理）
-    eventBus.emit('session:before-switch');
 
     // 之前 switchToSession 主动 clear 会让后台流（生成含视频的回复）丢失映射，
     // 后续 enrichToolResultWithFiles 重复 IPC store-video 落盘相同视频。
@@ -952,7 +960,7 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
 
         const session = state.sessions.find((s) => s.id === sessionId);
         if (!session) {
-            logger.error(`会话 ${sessionId} 不存在`);
+            notifyMissingSession(sessionId);
             return;
         }
 
@@ -976,7 +984,15 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
                 { sessionId }
             );
         } catch (e) {
-            logger.error('[Session] 从 IndexedDB 加载消息失败:', e);
+            // 不能按空会话继续提交：下次保存会把库里的历史整段覆盖
+            if (!signal.aborted) {
+                logger.error('[Session] 从 IndexedDB 加载消息失败，保留当前会话:', e);
+                eventBus.emit('ui:notification', {
+                    message: '会话消息读取失败，请重试',
+                    type: 'error'
+                });
+            }
+            return;
         }
 
         // 关键检查：await 后立即查 abort，否则 replaceAllMessages 会覆盖 C 的 state.messages
@@ -1015,6 +1031,9 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
             logger.info(`[Session] 老化 ${aged} 个中断的 pending tool_call → ERROR`);
             state.sessionDirty = true;
         }
+
+        // 清理旧会话界面放在提交前一刻：此前失败或被新切换取代都会留在旧会话，提前清理就无法恢复
+        eventBus.emit('session:before-switch');
 
         // 与 replaceAllMessages 紧邻同步执行，保证 currentSessionId 与 state.messages 原子切换
         state.currentSessionId = sessionId;
@@ -1289,6 +1308,8 @@ export async function deleteSession(sessionId) {
         if (state.sessions.length > 0) {
             const nextSession = state.sessions[sessionIndex] || state.sessions[sessionIndex - 1];
             await switchToSession(nextSession.id, false);
+            // 下一个会话读取失败时切换会中止，不能停在已删除的会话上；已被新的切换取代则交给那次切换
+            if (!state.currentSessionId && !state.isSwitchingSession) await createNewSession(true);
         } else {
             await createNewSession(true);
         }

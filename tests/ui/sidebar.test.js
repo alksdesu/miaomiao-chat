@@ -96,6 +96,8 @@ import {
     updateSessionList,
     cleanupSidebar
 } from '../../js/ui/sidebar.js';
+import { switchToSession } from '../../js/state/sessions.js';
+import { locateMessageByReference } from '../../js/ui/message-location.js';
 
 beforeEach(() => {
     vi.clearAllMocks();
@@ -245,6 +247,50 @@ describe('updateSessionList', () => {
         expect(generating.textContent).toBe('生成中...');
         expect(generating.classList.contains('session-task-failed')).toBe(false);
         requestTaskRegistry.clearForTests();
+    });
+});
+
+describe('搜索命中项跳转', () => {
+    async function clickMatchedMessage(targetSessionId) {
+        state.sessions = [
+            { id: 'session-1', name: '当前会话' },
+            { id: targetSessionId, name: '目标会话' }
+        ];
+        state.currentSessionId = 'session-1';
+        updateSessionList();
+        const targetEl = elements.sessionList.querySelector(
+            `.session-item[data-session-id="${targetSessionId}"]`
+        );
+        const hit = document.createElement('div');
+        hit.className = 'matched-message-item';
+        hit.dataset.messageId = 'm1';
+        targetEl.appendChild(hit);
+
+        hit.click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    it('切换成功后定位到命中的消息', async () => {
+        switchToSession.mockImplementationOnce(async (sessionId) => {
+            state.currentSessionId = sessionId;
+        });
+        locateMessageByReference.mockResolvedValueOnce(true);
+
+        await clickMatchedMessage('session-2');
+
+        expect(locateMessageByReference).toHaveBeenCalledWith(
+            { messageId: 'm1', fallbackIndex: -1 },
+            { behavior: 'smooth' }
+        );
+    });
+
+    it('切换失败时不在原会话里继续定位', async () => {
+        switchToSession.mockResolvedValueOnce(undefined);
+
+        await clickMatchedMessage('session-2');
+
+        expect(switchToSession).toHaveBeenCalledWith('session-2');
+        expect(locateMessageByReference).not.toHaveBeenCalled();
     });
 });
 

@@ -18,7 +18,7 @@ const getAndroidInstaller = () => window.Capacitor?.Plugins?.AndroidInstaller;
 const UPDATE_CHECK_URL = 'https://api.github.com/repos/alksdesu/miaomiao-chat/releases/latest';
 
 // 当前应用版本（运行时从 Capacitor 获取）
-const CURRENT_VERSION = '1.2.11'; // 默认值
+const CURRENT_VERSION = '1.2.12'; // 默认值
 
 /**
  * 获取当前应用版本号

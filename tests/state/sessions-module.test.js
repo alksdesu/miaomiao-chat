@@ -644,6 +644,119 @@ describe('sessions module', () => {
             expect(state.currentSessionId).toBe('session-a');
         });
 
+        describe('失败时保留旧会话界面', () => {
+            function wasCleanupEmitted() {
+                return eventBus.emit.mock.calls.some(([name]) => name === 'session:before-switch');
+            }
+
+            function deferNextMessageLoad() {
+                const deferred = {};
+                sessionRepositoryMocks.loadSessionMessageWindow.mockImplementationOnce(
+                    () =>
+                        new Promise((resolve) => {
+                            deferred.resolve = resolve;
+                        })
+                );
+                return deferred;
+            }
+
+            beforeEach(() => {
+                state.sessions = [
+                    { id: 'session-a', name: 'A' },
+                    { id: 'session-b', name: 'B' },
+                    { id: 'session-c', name: 'C' }
+                ];
+                state.currentSessionId = 'session-a';
+            });
+
+            it('目标不存在时提示已删除，不清理旧会话界面', async () => {
+                await switchToSession('missing-session');
+
+                expect(wasCleanupEmitted()).toBe(false);
+                expect(eventBus.emit).toHaveBeenCalledWith(
+                    'ui:notification',
+                    expect.objectContaining({ message: '会话不存在或已被删除', type: 'warning' })
+                );
+                expect(state.isSwitchingSession).toBe(false);
+            });
+
+            it('目标不存在时不打断进行中的切换', async () => {
+                const load = deferNextMessageLoad();
+                const pending = switchToSession('session-b', false);
+                await vi.waitFor(() => expect(load.resolve).toBeTypeOf('function'));
+
+                await switchToSession('missing-session');
+                load.resolve({ messages: [] });
+                await pending;
+
+                expect(state.currentSessionId).toBe('session-b');
+            });
+
+            it('读取消息失败时停留在原会话：不提交、不清理、挂回后台任务并提示', async () => {
+                const task = requestTaskRegistry.create({
+                    sessionId: 'session-a',
+                    abortController: new AbortController()
+                });
+                sessionRepositoryMocks.loadSessionMessageWindow.mockRejectedValueOnce(
+                    new Error('database connection is closing')
+                );
+
+                await switchToSession('session-b', false);
+
+                expect(state.currentSessionId).toBe('session-a');
+                expect(replaceAllMessages).not.toHaveBeenCalled();
+                expect(renderSessionMessages).not.toHaveBeenCalled();
+                expect(wasCleanupEmitted()).toBe(false);
+                expect(task.isDetached).toBe(false);
+                expect(state.isSwitchingSession).toBe(false);
+                expect(eventBus.emit).toHaveBeenCalledWith(
+                    'ui:notification',
+                    expect.objectContaining({ message: '会话消息读取失败，请重试', type: 'error' })
+                );
+            });
+
+            it('被新切换取代的切换不发清理事件，也不提示读取失败', async () => {
+                const load = deferNextMessageLoad();
+                const superseded = switchToSession('session-b', false);
+                await vi.waitFor(() => expect(load.resolve).toBeTypeOf('function'));
+
+                await switchToSession('session-c', false);
+                load.resolve({ messages: [] });
+                await superseded;
+
+                const cleanups = eventBus.emit.mock.calls.filter(
+                    ([name]) => name === 'session:before-switch'
+                );
+                expect(cleanups).toHaveLength(1);
+                expect(state.currentSessionId).toBe('session-c');
+            });
+
+            it('成功切换时在读取完成后、提交前一刻清理，此时旧会话仍是当前会话', async () => {
+                let currentAtCleanup = null;
+                let cleanupOrder = null;
+                eventBus.emit.mockImplementation((name) => {
+                    if (name === 'session:before-switch') currentAtCleanup = state.currentSessionId;
+                });
+
+                try {
+                    await switchToSession('session-b', false);
+                    const cleanupIndex = eventBus.emit.mock.calls.findIndex(
+                        ([name]) => name === 'session:before-switch'
+                    );
+                    cleanupOrder = eventBus.emit.mock.invocationCallOrder[cleanupIndex];
+                } finally {
+                    eventBus.emit.mockReset();
+                }
+
+                expect(currentAtCleanup).toBe('session-a');
+                expect(
+                    sessionRepositoryMocks.loadSessionMessageWindow.mock.invocationCallOrder[0]
+                ).toBeLessThan(cleanupOrder);
+                expect(cleanupOrder).toBeLessThan(replaceAllMessages.mock.invocationCallOrder[0]);
+                expect(state.currentSessionId).toBe('session-b');
+            });
+        });
+
         describe('切回仍有任务在运行的会话', () => {
             const RENDERED_HTML =
                 '<div class="message assistant" data-message-id="a1">' +
@@ -784,6 +897,24 @@ describe('sessions module', () => {
 
             expect(state.sessions.find((s) => s.id === 'sess1')).toBeUndefined();
             expect(state.currentSessionId).not.toBe('sess1');
+        });
+
+        it('删除当前会话后下一个会话读取失败时新建空会话，不停在已删除的会话上', async () => {
+            state.sessions = [
+                { id: 'sess1', name: 'first' },
+                { id: 'sess2', name: 'second' }
+            ];
+            state.currentSessionId = 'sess1';
+            sessionRepositoryMocks.loadSessionMessageWindow.mockRejectedValueOnce(
+                new Error('read failed')
+            );
+            const { generateSessionId } = await import('../../js/utils/helpers.js');
+            generateSessionId.mockReturnValueOnce('session_fallback');
+
+            await deleteSession('sess1');
+
+            expect(state.currentSessionId).toBe('session_fallback');
+            expect(state.sessions.map((s) => s.id)).toEqual(['session_fallback', 'sess2']);
         });
 
         it('停止被删会话的后台任务', async () => {
