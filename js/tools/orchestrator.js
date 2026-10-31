@@ -17,6 +17,7 @@ import {
     COMPUTER_IMAGE_ACTIONS,
     executeComputerAction,
     isComputerToolsetCall,
+    isLeftButtonHeld,
     releaseHeldMouseButton
 } from './computer-actions.js';
 import { snapshotBeforeToolCall } from './undo.js';
@@ -394,6 +395,21 @@ async function appendClosingScreenshot(result, signal) {
         logger.warn('[Orchestrator] 批量动作结束后补截图失败:', error);
         return result;
     }
+}
+
+// 已登记任务结束时松开左键的任务，同一任务多轮按住只登记一次
+const tasksReleasingMouseOnEnd = new WeakSet();
+
+/**
+ * 本轮结束时左键仍按着（模型打算下一轮再松开）：任务结束时还没松开就补发松开，
+ * 用户停止或模型直接结束回合都不会让左键一直按着
+ */
+function releaseHeldMouseButtonWhenTaskEnds(task) {
+    if (!task?.completionPromise || !isLeftButtonHeld() || tasksReleasingMouseOnEnd.has(task)) {
+        return;
+    }
+    tasksReleasingMouseOnEnd.add(task);
+    task.completionPromise.then(() => releaseHeldMouseButton());
 }
 
 /**
@@ -840,6 +856,7 @@ export async function handleToolCallStream(toolCalls, context = {}) {
             captureUndo: !!resolveTargetContainer()
         });
         if (task && requestTaskRegistry.owns(task)) task.pendingToolResults = toolResults;
+        releaseHeldMouseButtonWhenTaskEnds(task);
 
         // 执行完成后检查是否被取消
         if (ctrl.signal.aborted) {

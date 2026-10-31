@@ -352,7 +352,15 @@ async function withHeldKeys(api, keys, run) {
 }
 
 /**
- * left_mouse_down 之后批量动作失败、被停止或被中止时松开左键；左键没按着时什么也不做
+ * left_mouse_down 按下的左键是否还按着（模型可以留到下一轮再松开）
+ * @returns {boolean}
+ */
+export function isLeftButtonHeld() {
+    return leftButtonHeld;
+}
+
+/**
+ * left_mouse_down 之后批量动作失败、被停止、被中止或请求任务结束时松开左键；左键没按着时什么也不做
  * @returns {Promise<boolean>} 是否成功松开
  */
 export async function releaseHeldMouseButton() {

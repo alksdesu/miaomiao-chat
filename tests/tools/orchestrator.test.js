@@ -60,7 +60,8 @@ vi.mock('../../js/tools/computer-actions.js', async (importOriginal) => ({
         content: '',
         media: [{ type: 'image', url: 'data:image/png;base64,SHOT', mimeType: 'image/png' }]
     })),
-    releaseHeldMouseButton: vi.fn(async () => false)
+    releaseHeldMouseButton: vi.fn(async () => false),
+    isLeftButtonHeld: vi.fn(() => false)
 }));
 
 vi.mock('../../js/ui/tool-display.js', () => ({
@@ -101,6 +102,7 @@ import {
     COMPUTER_ABORT_MESSAGE,
     COMPUTER_HALT_MESSAGE,
     executeComputerAction,
+    isLeftButtonHeld,
     releaseHeldMouseButton
 } from '../../js/tools/computer-actions.js';
 import { createToolCallUI, updateToolCallStatus } from '../../js/ui/tool-display.js';
@@ -768,6 +770,46 @@ describe('handleToolCallStream 停止后释放任务', () => {
     afterEach(() => {
         executeTool.mockReset();
         executeTool.mockImplementation(async () => ({ text: 'result' }));
+    });
+
+    it('本轮结束时左键仍按着：任务结束后才补发松开，同一任务只登记一次', async () => {
+        const task = requestTaskRegistry.create({
+            sessionId: 'session-a',
+            abortController: new AbortController()
+        });
+        isLeftButtonHeld.mockReturnValue(true);
+        executeTool.mockResolvedValue({ content: 'OK' });
+        state.messages = [
+            {
+                role: 'assistant',
+                parts: ['d1', 'd2'].map((id) => ({
+                    type: 'tool_call',
+                    id,
+                    name: 'left_mouse_down',
+                    toolsetName: 'computer',
+                    args: {},
+                    state: 'pending'
+                }))
+            }
+        ];
+        const downCall = (id) => ({
+            id,
+            name: 'left_mouse_down',
+            arguments: {},
+            toolsetName: 'computer',
+            mode: 'native'
+        });
+
+        await handleToolCallStream([downCall('d1')], { sourceSessionId: 'session-a', task });
+        await handleToolCallStream([downCall('d2')], { sourceSessionId: 'session-a', task });
+        expect(requestTaskRegistry.owns(task)).toBe(true);
+        expect(releaseHeldMouseButton).not.toHaveBeenCalled();
+
+        requestTaskRegistry.finish(task, 'completed');
+        await task.completionPromise;
+        await Promise.resolve();
+        expect(releaseHeldMouseButton).toHaveBeenCalledTimes(1);
+        isLeftButtonHeld.mockReturnValue(false);
     });
 
     it('不指定任务的取消不会中止属于某个请求任务的工具执行', async () => {
