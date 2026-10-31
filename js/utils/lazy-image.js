@@ -186,14 +186,18 @@ export class LazyImageManager {
     }
 
     /**
-     * 卸载所有图片（释放内存）
+     * 卸载所有已加载的图片（释放内存）
+     * @param {{force?: boolean, reobserve?: boolean}} [options] - 透传给 unloadImage
+     * @returns {number} 实际卸载的张数
      */
-    unloadAll() {
+    unloadAll(options) {
+        let unloaded = 0;
         document.querySelectorAll('img.lazy-image.loaded').forEach((img) => {
-            this.unloadImage(img);
+            if (this.unloadImage(img, options)) unloaded += 1;
         });
 
-        logger.debug('[LazyImage] 卸载所有图片以释放内存');
+        logger.debug(`[LazyImage] 卸载 ${unloaded} 张图片以释放内存`);
+        return unloaded;
     }
 
     cancelPendingLoad(img) {

@@ -13,9 +13,9 @@ vi.mock('../../js/core/events.js', () => ({
 
 vi.mock('../../js/utils/lazy-image.js', () => ({
     lazyImageManager: {
-        observe: vi.fn(),
-        cleanup: vi.fn(),
-        loadedImages: new WeakSet()
+        unloadImage: vi.fn(() => true),
+        unloadAll: vi.fn(() => 0),
+        cleanup: vi.fn()
     }
 }));
 
@@ -42,6 +42,8 @@ vi.stubGlobal('window', {
 });
 
 import { initMemoryManager, checkMemoryUsage } from '../../js/utils/memory-manager.js';
+import { lazyImageManager } from '../../js/utils/lazy-image.js';
+import { eventBus } from '../../js/core/events.js';
 
 beforeEach(() => {
     vi.clearAllMocks();
@@ -138,36 +140,40 @@ describe('MemoryManager 内部方法', () => {
         performance.memory = origMemory;
     });
 
-    it('unloadImage 跳过未加载图片', () => {
-        const img = {
-            classList: {
-                contains: vi.fn(() => false),
-                remove: vi.fn(),
-                add: vi.fn()
-            },
-            dataset: {}
-        };
-        manager.unloadImage(img);
-        expect(img.classList.remove).not.toHaveBeenCalled();
+    it('内存清理把视口外的图片交给懒加载器卸载，按实际卸载数提示', async () => {
+        const inView = { getBoundingClientRect: () => ({ top: 100 }) };
+        const below = { getBoundingClientRect: () => ({ top: 5000 }) };
+        const protectedAbove = { getBoundingClientRect: () => ({ top: -2000 }) };
+        mockImages.push(inView, below, protectedAbove);
+        lazyImageManager.unloadImage.mockImplementation((img) => img === below);
+
+        await manager.performMemoryCleanup();
+
+        expect(lazyImageManager.unloadImage).toHaveBeenCalledTimes(2);
+        expect(lazyImageManager.unloadImage).toHaveBeenCalledWith(below);
+        expect(lazyImageManager.unloadImage).toHaveBeenCalledWith(protectedAbove);
+        expect(eventBus.emit).toHaveBeenCalledWith(
+            'ui:notification',
+            expect.objectContaining({ message: '已释放 1 张图片内存' })
+        );
     });
 
-    it('unloadImage 处理已加载图片', () => {
-        const img = {
-            src: 'https://example.com/img.jpg',
-            classList: {
-                contains: vi.fn(() => true),
-                remove: vi.fn(),
-                add: vi.fn()
-            },
-            dataset: {}
-        };
-        manager.unloadImage(img);
-        expect(img.dataset.src).toBe('https://example.com/img.jpg');
-        expect(img.classList.remove).toHaveBeenCalledWith('loaded', 'observed');
-        expect(img.classList.add).toHaveBeenCalledWith('unloaded');
+    it('视口外的图片都受保护时不提示', async () => {
+        mockImages.push({ getBoundingClientRect: () => ({ top: 5000 }) });
+        lazyImageManager.unloadImage.mockImplementation(() => false);
+
+        await manager.performMemoryCleanup();
+
+        expect(lazyImageManager.unloadImage).toHaveBeenCalledTimes(1);
+        expect(eventBus.emit).not.toHaveBeenCalledWith('ui:notification', expect.anything());
     });
 
-    it('cleanupOrphanedReferences 不抛出', () => {
-        expect(() => manager.cleanupOrphanedReferences()).not.toThrow();
+    it('切换会话前强制卸载全部图片且不再观察，之后清理懒加载器', () => {
+        manager.cleanupBeforeSwitch();
+
+        expect(lazyImageManager.unloadAll).toHaveBeenCalledWith({ force: true, reobserve: false });
+        expect(lazyImageManager.unloadAll.mock.invocationCallOrder[0]).toBeLessThan(
+            lazyImageManager.cleanup.mock.invocationCallOrder[0]
+        );
     });
 });

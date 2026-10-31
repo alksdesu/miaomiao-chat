@@ -148,12 +148,11 @@ class MemoryManager {
             }
         });
 
+        // 受保护的图片（编辑中、获得焦点、查看器内）会被跳过，按实际卸载数计
+        let unloadedCount = 0;
         toUnload.forEach((img) => {
-            this.unloadImage(img);
+            if (lazyImageManager.unloadImage(img)) unloadedCount += 1;
         });
-        const unloadedCount = toUnload.length;
-
-        this.cleanupOrphanedReferences();
 
         logger.debug(`[MemoryManager] 清理完成，卸载了 ${unloadedCount} 张图片`);
 
@@ -167,40 +166,13 @@ class MemoryManager {
     }
 
     /**
-     * 卸载单个图片
-     */
-    unloadImage(img) {
-        if (!img.classList.contains('loaded')) return;
-
-        img.dataset.src = img.src;
-        img.src =
-            'data:image/svg+xml,%3Csvg width="400" height="300" xmlns="http://www.w3.org/2000/svg"%3E%3Crect width="100%25" height="100%25" fill="%23f5f5f5"/%3E%3C/svg%3E';
-        img.classList.remove('loaded', 'observed');
-        img.classList.add('unloaded');
-
-        lazyImageManager.observe(img);
-    }
-
-    /**
-     * 清理孤立引用
-     */
-    cleanupOrphanedReferences() {
-        if (lazyImageManager.loadedImages) {
-            // WeakSet 会自动清理，这里只保留显式语义。
-        }
-    }
-
-    /**
      * 会话切换前的清理
      */
     cleanupBeforeSwitch() {
         logger.debug('[MemoryManager] 会话切换，执行清理...');
 
-        const images = document.querySelectorAll('img.lazy-image.loaded');
-        images.forEach((img) => {
-            this.unloadImage(img);
-        });
-
+        // 旧会话的节点随即被替换，保护与重新观察都已无意义
+        lazyImageManager.unloadAll({ force: true, reobserve: false });
         lazyImageManager.cleanup();
     }
 
