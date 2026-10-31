@@ -33,6 +33,7 @@ import { requestTaskRegistry } from '../core/request-task-registry.js';
 import { withSessionWriteLock, waitForSessionWriteQueue } from './session-write-queue.js';
 import { broadcastEvent } from './tab-sync.js';
 import { recoverStreamSnapshots } from './stream-snapshot.js';
+import { restoreSessionFailureMarks } from './session-failure-marks.js';
 import { buildSessionSearchIndexAsync } from './session-search-index.js';
 import { createThinkingDots, createContinuationLoading } from '../api/handler-loading-dots.js';
 import { markContinuationElement } from '../api/placeholder-resolver.js';
@@ -348,6 +349,13 @@ export async function loadSessions() {
 
     // 必须在 switchToSession 之前：中断消息先写入 IDB，切换加载时才能一并渲染
     await recoverStreamSnapshots();
+
+    // 同样先于 switchToSession：启动时打开的会话随后照常清除标记并持久化
+    try {
+        await restoreSessionFailureMarks(state.sessions.map((s) => s.id));
+    } catch (e) {
+        logger.warn('[Session] 侧栏失败标记恢复出错:', e);
+    }
 
     // 加载当前会话ID
     let currentId = null;
@@ -1270,6 +1278,7 @@ export async function deleteSession(sessionId) {
 
     // 停止该会话的后台任务
     stopSessionTask(sessionId);
+    requestTaskRegistry.clearFailure(sessionId);
 
     // 从状态中删除
     state.sessions.splice(sessionIndex, 1);

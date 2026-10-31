@@ -5,6 +5,7 @@
 
 import { state } from '../core/state.js';
 import { eventBus } from '../core/events.js';
+import { requestTaskRegistry } from '../core/request-task-registry.js';
 import { logger } from '../utils/logger.js';
 
 const CHANNEL_NAME = 'webchat-sync';
@@ -136,6 +137,7 @@ async function handleMessage({ data: msg }) {
                 } = await getSessionsModule();
                 addDeletedSessionId(sid);
                 stopSessionTask(sid, 'remote-session-deleted');
+                requestTaskRegistry.syncFailure(sid, false);
                 if (sid === state.currentSessionId) cancelPendingSave();
 
                 if (removeSessionMeta(sid)) {
@@ -198,7 +200,23 @@ async function handleMessage({ data: msg }) {
             eventBus.emit('sessions:updated', { sessions: state.sessions });
             break;
         }
+
+        case 'session-failure-changed': {
+            const sessionId = msg.data?.sessionId;
+            const failed = msg.data?.failed;
+            if (typeof sessionId !== 'string' || !sessionId || typeof failed !== 'boolean') break;
+            requestTaskRegistry.syncFailure(sessionId, failed);
+            // 可见标签页正开着这个会话，视同用户已看到失败，清除并同步给其他标签页
+            if (failed && sessionId === state.currentSessionId && isPageVisible()) {
+                requestTaskRegistry.clearFailure(sessionId);
+            }
+            break;
+        }
     }
+}
+
+function isPageVisible() {
+    return typeof document !== 'undefined' && document.visibilityState === 'visible';
 }
 
 /**

@@ -95,6 +95,7 @@ export const EVENTS = Object.freeze({
 
     // 会话生命周期
     SESSION_BEFORE_SWITCH: 'session:before-switch',
+    SESSION_FAILURE_CHANGED: 'session:failure-changed',
     SESSION_MONITOR_READY: 'session:monitor-ready',
     SESSION_REMOTE_TASK_ENDED: 'session:remote-task-ended',
     SESSION_SWITCH_REQUESTED: 'session:switch-requested',

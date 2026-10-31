@@ -14,6 +14,11 @@ function emitTaskListChanged() {
     eventBus.emit(EVENTS.SESSIONS_UPDATED, { sessions: state.sessions });
 }
 
+// 监听方负责持久化并广播给其他标签页；core 层不直接依赖存储
+function emitFailureChanged(sessionId, failed) {
+    eventBus.emit(EVENTS.SESSION_FAILURE_CHANGED, { sessionId, failed });
+}
+
 export class RequestTaskRegistry {
     constructor() {
         this.tasksBySession = new Map();
@@ -165,8 +170,10 @@ export class RequestTaskRegistry {
         task.lastActivityAt = Date.now();
         if (state.backgroundTasks.get(task.sessionId) === task) {
             state.backgroundTasks.delete(task.sessionId);
-            if (phase === 'error') this.failedSessions.add(task.sessionId);
+            const markedFailed = phase === 'error' && !this.failedSessions.has(task.sessionId);
+            if (markedFailed) this.failedSessions.add(task.sessionId);
             emitTaskListChanged();
+            if (markedFailed) emitFailureChanged(task.sessionId, true);
         }
         this.tasksBySession.delete(task.sessionId);
         this.tasksById.delete(task.id);
@@ -184,6 +191,40 @@ export class RequestTaskRegistry {
      */
     clearFailure(sessionId) {
         if (!this.failedSessions.delete(sessionId)) return false;
+        emitTaskListChanged();
+        emitFailureChanged(sessionId, false);
+        return true;
+    }
+
+    /**
+     * 启动时恢复已持久化的失败标记；恢复不是新的变化，不再回写和广播
+     * @param {string[]} sessionIds
+     * @returns {boolean} 是否有新恢复的标记
+     */
+    restoreFailures(sessionIds) {
+        let changed = false;
+        for (const sessionId of sessionIds || []) {
+            if (!sessionId || this.failedSessions.has(sessionId)) continue;
+            this.failedSessions.add(sessionId);
+            changed = true;
+        }
+        if (changed) emitTaskListChanged();
+        return changed;
+    }
+
+    /**
+     * 应用其他标签页的失败标记变化；只更新本页，再回写或广播会在标签页之间来回同步
+     * @param {string} sessionId
+     * @param {boolean} failed
+     * @returns {boolean} 本页标记是否变化
+     */
+    syncFailure(sessionId, failed) {
+        if (!sessionId || this.failedSessions.has(sessionId) === failed) return false;
+        if (failed) {
+            this.failedSessions.add(sessionId);
+        } else {
+            this.failedSessions.delete(sessionId);
+        }
         emitTaskListChanged();
         return true;
     }

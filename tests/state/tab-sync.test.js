@@ -296,4 +296,110 @@ describe('session-deleted', () => {
             'remote-session-deleted'
         );
     });
+
+    it('同步移除被删会话的失败标记', async () => {
+        const { requestTaskRegistry } = await import('../../js/core/request-task-registry.js');
+        requestTaskRegistry.syncFailure('session-2', true);
+        tabSyncModule.initTabSync();
+
+        await deliver({
+            type: 'session-deleted',
+            data: { sessionId: 'session-2' },
+            tabId: 'remote-tab'
+        });
+
+        expect(requestTaskRegistry.hasFailure('session-2')).toBe(false);
+    });
+});
+
+describe('session-failure-changed', () => {
+    let requestTaskRegistry;
+
+    function setVisibility(value) {
+        Object.defineProperty(document, 'visibilityState', {
+            configurable: true,
+            get: () => value
+        });
+    }
+
+    function failureChangeEvents() {
+        return mockedEventBus.emit.mock.calls.filter(
+            ([name]) => name === 'session:failure-changed'
+        );
+    }
+
+    beforeEach(async () => {
+        ({ requestTaskRegistry } = await import('../../js/core/request-task-registry.js'));
+        tabSyncModule.initTabSync();
+    });
+
+    afterEach(() => {
+        delete document.visibilityState;
+    });
+
+    it('应用其他标签页的标记并刷新侧栏，不再回发', async () => {
+        await deliver({
+            type: 'session-failure-changed',
+            data: { sessionId: 'session-2', failed: true },
+            tabId: 'remote-tab'
+        });
+
+        expect(requestTaskRegistry.hasFailure('session-2')).toBe(true);
+        expect(mockedEventBus.emit).toHaveBeenCalledWith('sessions:updated', expect.any(Object));
+        expect(failureChangeEvents()).toEqual([]);
+
+        await deliver({
+            type: 'session-failure-changed',
+            data: { sessionId: 'session-2', failed: false },
+            tabId: 'remote-tab'
+        });
+
+        expect(requestTaskRegistry.hasFailure('session-2')).toBe(false);
+        expect(failureChangeEvents()).toEqual([]);
+    });
+
+    it('可见标签页正开着该会话时视为已读，清除并通知其他标签页', async () => {
+        setVisibility('visible');
+
+        await deliver({
+            type: 'session-failure-changed',
+            data: { sessionId: 'session-1', failed: true },
+            tabId: 'remote-tab'
+        });
+
+        expect(requestTaskRegistry.hasFailure('session-1')).toBe(false);
+        expect(failureChangeEvents()).toEqual([
+            ['session:failure-changed', { sessionId: 'session-1', failed: false }]
+        ]);
+    });
+
+    it('标签页在后台时只标记不清除', async () => {
+        setVisibility('hidden');
+
+        await deliver({
+            type: 'session-failure-changed',
+            data: { sessionId: 'session-1', failed: true },
+            tabId: 'remote-tab'
+        });
+
+        expect(requestTaskRegistry.hasFailure('session-1')).toBe(true);
+        expect(failureChangeEvents()).toEqual([]);
+    });
+
+    it('格式不对的消息直接忽略', async () => {
+        await deliver({
+            type: 'session-failure-changed',
+            data: { sessionId: 123, failed: true },
+            tabId: 'remote-tab'
+        });
+        await deliver({
+            type: 'session-failure-changed',
+            data: { sessionId: 'session-2', failed: 'yes' },
+            tabId: 'remote-tab'
+        });
+        await deliver({ type: 'session-failure-changed', tabId: 'remote-tab' });
+
+        expect(requestTaskRegistry.hasFailure('session-2')).toBe(false);
+        expect(mockedEventBus.emit).not.toHaveBeenCalled();
+    });
 });
