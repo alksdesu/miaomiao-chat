@@ -288,5 +288,29 @@ describe('tool-display', () => {
                 '同一批中前面的桌面动作失败，此动作未执行'
             );
         });
+
+        it('其他标签页执行中的调用在汇总里注明，本页执行中的保持原文案', async () => {
+            const remote = document.createElement('div');
+            remote.className = 'message-content';
+            const local = document.createElement('div');
+            local.className = 'message-content';
+            document.body.append(remote, local);
+
+            await restoreToolCallsGroup(
+                [
+                    { id: 'done', name: 'calc', status: 'completed', result: 'ok' },
+                    { id: 'remote', name: 'bash', status: 'executing', executingElsewhere: true }
+                ],
+                remote
+            );
+            await restoreToolCallsGroup([{ id: 'live', name: 'bash', status: 'executing' }], local);
+
+            const remoteBtn = remote.querySelector('.tool-calls-summary-btn');
+            expect(remoteBtn.dataset.status).toBe('executing');
+            expect(remoteBtn.querySelector('.summary-status').textContent).toBe(
+                '其他标签页执行中 1/2'
+            );
+            expect(local.querySelector('.summary-status').textContent).toBe('执行中 0/1');
+        });
     });
 });

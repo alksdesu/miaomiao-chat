@@ -37,6 +37,7 @@ import { applyToolResultsToMessages } from '../messages/tool-results.js';
  * @property {HTMLElement|null} assistantMessageEl - resolvePlaceholder 填入
  * @property {boolean} isContinuationMode     - resolvePlaceholder 填入：工具调用 continuation 复用（影响 streamStats）
  * @property {boolean} isImageRetryMode       - resolvePlaceholder 填入：图片压缩重试复用（仅复用 DOM，不影响 streamStats）
+ * @property {string|null} snapshotRequestId  - sendToAPI 填入：本轮请求的流式快照 ID（任务 ID + 轮次）
  * @property {Error|null} setupError          - 请求快照构造失败的原因；非空时请求不会发出，sendToAPI 按请求错误处理
  */
 
@@ -53,6 +54,7 @@ export function createHandlerContext(task = null) {
         assistantMessageEl: null,
         isContinuationMode: false,
         isImageRetryMode: false,
+        snapshotRequestId: null,
         task,
         setupError: null
     };

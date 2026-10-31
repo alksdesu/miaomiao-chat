@@ -4,6 +4,19 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const presenceMocks = vi.hoisted(() => ({
+    isSessionTaskActiveElsewhere: vi.fn(() => false)
+}));
+
+vi.mock('../../js/state/session-task-presence.js', () => ({
+    isSessionTaskActiveElsewhere: presenceMocks.isSessionTaskActiveElsewhere,
+    holdSessionTaskLock: vi.fn(() => false),
+    isHoldingSessionTaskLock: vi.fn(() => false),
+    refreshSessionTaskActivity: vi.fn(async () => false),
+    queryActiveLockNames: vi.fn(async () => null),
+    getSessionTaskLockName: vi.fn((sessionId) => `webchat-session-task:${sessionId}:tab`)
+}));
+
 vi.mock('../../js/utils/markdown.js', () => ({
     safeMarkedParse: (text) => `<p>${text}</p>`
 }));
@@ -62,6 +75,7 @@ let unsubscribe;
 
 beforeEach(() => {
     requestTaskRegistry.clearForTests();
+    presenceMocks.isSessionTaskActiveElsewhere.mockReturnValue(false);
     state.currentSessionId = 'session-a';
     restored = [];
     unsubscribe = eventBus.on('restore:tool-calls', (payload) => restored.push(payload));
@@ -93,6 +107,25 @@ describe('buildRestoredToolCalls', () => {
         expect(tc.status).toBe('executing');
         expect(tc.result).toBeNull();
         expect(tc.error).toBeUndefined();
+        expect(tc.executingElsewhere).toBeUndefined();
+    });
+
+    it('这一轮在其他标签页执行时显示为执行中并带上标记', () => {
+        const toolCalls = buildRestoredToolCalls(
+            [
+                toolCall('call_remote', ToolState.PENDING),
+                toolCall('call_done', ToolState.DONE, { result: { value: 2 } })
+            ],
+            { inActiveRound: true, executingElsewhere: true }
+        );
+
+        expect(toolCalls[0]).toMatchObject({
+            status: 'executing',
+            result: null,
+            executingElsewhere: true
+        });
+        expect(toolCalls[1]).toMatchObject({ status: 'completed', result: { value: 2 } });
+        expect(toolCalls[1].executingElsewhere).toBeUndefined();
     });
 
     it('已结束的调用保持原有的状态映射与结果兜底', () => {
@@ -175,6 +208,35 @@ describe('restoreToolCallsFromMessage 判断是否为正在执行的这一轮', 
         requestTaskRegistry.create({ sessionId: 'session-a', abortController: aborted });
         aborted.abort();
         expect(restoredStatus(currentRound)).toBe('failed');
+    });
+
+    it('当前会话在其他标签页执行时，最后一条消息的调用显示为其他标签页执行中', () => {
+        presenceMocks.isSessionTaskActiveElsewhere.mockImplementation(
+            (sessionId) => sessionId === 'session-a'
+        );
+
+        const { content } = createAssistantElement();
+        restoreToolCallsFromMessage(currentRound, content);
+
+        expect(restored.at(-1).toolCalls[0]).toMatchObject({
+            status: 'executing',
+            executingElsewhere: true
+        });
+        expect(restoredStatus(olderMessage)).toBe('failed');
+    });
+
+    it('本页自己的任务优先，不标记为其他标签页执行', () => {
+        presenceMocks.isSessionTaskActiveElsewhere.mockReturnValue(true);
+        requestTaskRegistry.create({
+            sessionId: 'session-a',
+            abortController: new AbortController()
+        });
+
+        const { content } = createAssistantElement();
+        restoreToolCallsFromMessage(currentRound, content);
+
+        expect(restored.at(-1).toolCalls[0].status).toBe('executing');
+        expect(restored.at(-1).toolCalls[0].executingElsewhere).toBeUndefined();
     });
 });
 

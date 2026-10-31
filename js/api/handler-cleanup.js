@@ -59,7 +59,7 @@ export function cleanupAfterSend(ctx, requestSucceeded) {
     resetAllImageRetryState(sessionId, task);
 
     // sink.commit 未执行的异常路径（parse 冒泡到 handler）会残留流式快照，此处兜底清理
-    clearStreamSnapshot(sessionId, task?.id || null);
+    clearStreamSnapshot(sessionId, ctx.snapshotRequestId || task?.id || null);
 
     if (wasForeground && !task?.isToolCallPending) {
         state.currentAssistantMessage = null;

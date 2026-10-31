@@ -22,6 +22,7 @@ import {
     markUnexecutedReplyToolCalls
 } from './schema.js';
 import { requestTaskRegistry } from '../core/request-task-registry.js';
+import { isSessionTaskActiveElsewhere } from '../state/session-task-presence.js';
 import { renderMediaCard as renderMediaBlock } from '../ui/media-cards.js';
 
 // 从子模块导入并 re-export，保持外部 import 兼容
@@ -520,13 +521,20 @@ export function rerenderMessageContent(messageEl, index, role, messageOverride =
  * @param {Array} parts - 消息 parts
  * @param {Object} [options]
  * @param {boolean} [options.inActiveRound=false] - 消息是否为当前会话任务正在执行的这一轮
+ * @param {boolean} [options.executingElsewhere=false] - 这一轮正在其他标签页执行
  * @returns {Array} restore:tool-calls 事件使用的工具调用列表
  */
-export function buildRestoredToolCalls(parts, { inActiveRound = false } = {}) {
+export function buildRestoredToolCalls(
+    parts,
+    { inActiveRound = false, executingElsewhere = false } = {}
+) {
     const mapped = partsToToolCallRestoreFormat(parts);
     if (mapped.length === 0) return mapped;
     return mapped.map((tc) => {
         if (tc.status === ToolState.PENDING || tc.status === ToolState.RUNNING) {
+            if (executingElsewhere) {
+                return { ...tc, status: 'executing', result: null, executingElsewhere: true };
+            }
             return inActiveRound
                 ? { ...tc, status: 'executing', result: null }
                 : { ...tc, status: 'failed', error: '工具执行已中断', result: null };
@@ -550,22 +558,26 @@ export function buildRestoredToolCalls(parts, { inActiveRound = false } = {}) {
  */
 export function restoreToolCallsFromMessage(message, contentDiv) {
     if (!message || !contentDiv) return;
+    const owner = getActiveRoundOwner(message);
     const toolCalls = buildRestoredToolCalls(message.parts, {
-        inActiveRound: isActiveRoundMessage(message)
+        inActiveRound: owner !== null,
+        executingElsewhere: owner === 'elsewhere'
     });
     if (toolCalls.length === 0) return;
     eventBus.emit('restore:tool-calls', { toolCalls, contentDiv });
 }
 
 /**
- * 任务运行期间无法追加消息，正在执行的这一轮落库后必是最后一条；更早消息里没有结果的调用是中断残留
+ * 消息所在的这一轮由谁在执行：任务运行期间无法追加消息，正在执行的这一轮落库后必是最后一条；
+ * 更早消息里没有结果的调用是中断残留
+ * @returns {'local'|'elsewhere'|null}
  */
-function isActiveRoundMessage(message) {
-    if (!message?.id) return false;
-    if (!requestTaskRegistry.isActive(requestTaskRegistry.getBySession(state.currentSessionId))) {
-        return false;
-    }
-    return state.messages[state.messages.length - 1]?.id === message.id;
+function getActiveRoundOwner(message) {
+    if (!message?.id) return null;
+    if (state.messages[state.messages.length - 1]?.id !== message.id) return null;
+    const sessionId = state.currentSessionId;
+    if (requestTaskRegistry.isActive(requestTaskRegistry.getBySession(sessionId))) return 'local';
+    return isSessionTaskActiveElsewhere(sessionId) ? 'elsewhere' : null;
 }
 
 // 事件监听

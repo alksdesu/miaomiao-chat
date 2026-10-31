@@ -8,6 +8,7 @@ export const EVENTS = Object.freeze({
     API_SEND_REQUESTED: 'api:send-requested',
     API_RESEND_REQUESTED: 'api:resend-requested',
     API_CANCEL_REQUESTED: 'api:cancel-requested',
+    REQUEST_TASK_CREATED: 'request-task:created',
 
     // Config 持久化与同步
     CONFIG_FORMAT_CHANGE_REQUESTED: 'config:format-change-requested',
@@ -95,6 +96,7 @@ export const EVENTS = Object.freeze({
     // 会话生命周期
     SESSION_BEFORE_SWITCH: 'session:before-switch',
     SESSION_MONITOR_READY: 'session:monitor-ready',
+    SESSION_REMOTE_TASK_ENDED: 'session:remote-task-ended',
     SESSION_SWITCH_REQUESTED: 'session:switch-requested',
     SESSION_SWITCHED: 'session:switched',
     SESSIONS_LOADED: 'sessions:loaded',

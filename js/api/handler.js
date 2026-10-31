@@ -114,6 +114,8 @@ export async function sendToAPI(options = {}) {
         return false;
     }
     ctx.task = task;
+    task.round = (task.round || 0) + 1;
+    ctx.snapshotRequestId = `${task.id}:${task.round}`;
     task.requestContext = ctx;
     task.requestProfile = ctx.requestProfile;
     task.requestOrigin ||= {

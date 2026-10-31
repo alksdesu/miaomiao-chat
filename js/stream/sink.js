@@ -53,9 +53,15 @@ import { requestTaskRegistry } from '../core/request-task-registry.js';
  * isBackground 由 sessionId 与 state.currentSessionId 比较决定（与原代码语义等价）。
  */
 export class DefaultSink {
-    constructor(sessionId = null, task = null) {
+    /**
+     * @param {string|null} [sessionId]
+     * @param {Object|null} [task]
+     * @param {string|null} [snapshotRequestId] - 本轮请求的快照 ID；缺省按任务 ID
+     */
+    constructor(sessionId = null, task = null, snapshotRequestId = null) {
         this.sessionId = sessionId;
         this.task = task;
+        this.snapshotRequestId = snapshotRequestId || task?.id || null;
         this._snapshotSessionId = null;
         this.pendingCommits = [];
     }
@@ -83,7 +89,7 @@ export class DefaultSink {
             this._snapshotSessionId,
             text,
             thinking,
-            this.task?.id || null,
+            this.snapshotRequestId,
             this.task?.requestProfile || null
         );
         if (this.task) {
@@ -217,7 +223,7 @@ export class DefaultSink {
     }
 
     _clearSnapshot() {
-        clearStreamSnapshot(this._snapshotSessionId, this.task?.id || null);
+        clearStreamSnapshot(this._snapshotSessionId, this.snapshotRequestId);
     }
 
     /**

@@ -51,6 +51,8 @@ export class RequestTaskRegistry {
             isToolCallPending: false,
             isSavingContinuation: false,
             isImageRetry: false,
+            // 每次发出请求（首轮、工具续作、压缩重试）递增，区分同一任务各轮的流式快照
+            round: 0,
             createdAt: now,
             lastActivityAt: now,
             completionPromise,
@@ -59,6 +61,7 @@ export class RequestTaskRegistry {
 
         this.tasksBySession.set(sessionId, task);
         this.tasksById.set(id, task);
+        eventBus.emit(EVENTS.REQUEST_TASK_CREATED, { task });
         return task;
     }
 

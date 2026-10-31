@@ -800,6 +800,10 @@ export async function restoreToolCallsGroup(toolCalls, contentDiv) {
         skippedCount: 0,
         totalCount: toolCalls.length
     };
+    // 其他标签页执行中的工具不会在本页收尾，等对方结束后整条消息重新渲染
+    const executingElsewhere = toolCalls.some(
+        (tc) => tc.status === 'executing' && tc.executingElsewhere === true
+    );
 
     const restoredAt = Date.now();
     for (const tc of toolCalls) {
@@ -855,7 +859,7 @@ export async function restoreToolCallsGroup(toolCalls, contentDiv) {
     let statusText = '全部完成';
     let statusAttr = 'completed';
     if (!allDone) {
-        statusText = `执行中 ${done}/${data.totalCount}`;
+        statusText = `${executingElsewhere ? '其他标签页执行中' : '执行中'} ${done}/${data.totalCount}`;
         statusAttr = 'executing';
     } else if (data.failedCount > 0) {
         statusText = `${data.failedCount} 个失败`;

@@ -7,6 +7,7 @@
 import { state } from '../core/state.js';
 import { isElementsInitialized } from '../core/elements.js';
 import { eventBus } from '../core/events.js';
+import { EVENTS } from '../core/events-registry.js';
 import {
     saveSessionToDB,
     loadAllSessionsFromDB,
@@ -29,7 +30,7 @@ import { renderSessionMessages } from '../messages/restore.js';
 import { replaceAllMessages } from '../core/state-mutations.js';
 import { requestStateMachine } from '../core/request-state-machine.js';
 import { requestTaskRegistry } from '../core/request-task-registry.js';
-import { withSessionWriteLock } from './session-write-queue.js';
+import { withSessionWriteLock, waitForSessionWriteQueue } from './session-write-queue.js';
 import { broadcastEvent } from './tab-sync.js';
 import { recoverStreamSnapshots } from './stream-snapshot.js';
 import { buildSessionSearchIndexAsync } from './session-search-index.js';
@@ -52,6 +53,7 @@ import {
     materializeSessionMessages
 } from './session-message-repository.js';
 import { externalizeMessagesMedia } from './media-blob-store.js';
+import { holdSessionTaskLock, refreshSessionTaskActivity } from './session-task-presence.js';
 
 // 防抖保存定时器
 let saveSessionTimer = null;
@@ -617,6 +619,26 @@ export function cancelPendingSave() {
 }
 
 /**
+ * 等会话已产生的改动落库：当前会话的防抖保存立即执行，再等进行中的保存与写入队列。
+ * 会话任务锁在此之后才释放，其他标签页收到释放时读到的已是任务的最终内容
+ * @param {string} sessionId
+ */
+async function waitForSessionWritesSettled(sessionId) {
+    try {
+        if (sessionId === state.currentSessionId) {
+            if (saveSessionTimer) {
+                cancelPendingSave();
+                await saveCurrentSessionMessages();
+            }
+            if (_savingPromise) await _savingPromise;
+        }
+        await waitForSessionWriteQueue(sessionId);
+    } catch (e) {
+        logger.debug(`[Session] 等待会话 ${sessionId} 的写入完成失败:`, e);
+    }
+}
+
+/**
  * 从 IDB 重新加载 currentSession 的消息（用于多 tab 冲突/远端更新恢复路径）
  *
  * 流程：重 load messages + 按库内记录更新乐观锁基线 + 触发 UI 重渲染。
@@ -646,6 +668,10 @@ export async function reloadCurrentSessionMessages({ discardLocalChanges = false
         logger.error('[Session] 重新加载消息失败:', e);
         return false;
     }
+    // 其他标签页仍在执行时，没有结果的调用不是中断残留，老化落库会覆盖对方即将写回的结果
+    const activeElsewhere = requestTaskRegistry.getBySession(sid)
+        ? false
+        : await refreshSessionTaskActivity(sid);
     if (state.currentSessionId !== sid || state.isSwitchingSession) {
         logger.debug(`[Session] 重新加载完成时会话已变化，丢弃 ${sid} 的结果`);
         return false;
@@ -655,9 +681,10 @@ export async function reloadCurrentSessionMessages({ discardLocalChanges = false
         return false;
     }
     const activeTask = requestTaskRegistry.getBySession(sid);
-    const aged = activeTask
-        ? 0
-        : agePendingToolCallsInPlace(msgData?.messages, { nowMs: Date.now() });
+    const aged =
+        activeTask || activeElsewhere
+            ? 0
+            : agePendingToolCallsInPlace(msgData?.messages, { nowMs: Date.now() });
     replaceAllMessages(msgData?.messages || []);
 
     const session = state.sessions.find((s) => s.id === sid);
@@ -963,10 +990,19 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
 
         const registeredTask = requestTaskRegistry.getBySession(sessionId);
         const backgroundTask = requestTaskRegistry.isActive(registeredTask) ? registeredTask : null;
+        // 其他标签页仍在执行时，没有结果的调用不是中断残留，老化落库会覆盖对方即将写回的结果
+        const activeElsewhere = backgroundTask
+            ? false
+            : await refreshSessionTaskActivity(sessionId);
+        if (signal.aborted) {
+            logger.debug('[Session] 会话切换在查询其他标签页任务后被取消');
+            return;
+        }
         // 启动/切回时把上次中断的 pending tool_call 老化为 ERROR，防 UI 永久转圈 + 重发 400
-        const aged = backgroundTask
-            ? 0
-            : agePendingToolCallsInPlace(msgData.messages, { nowMs: Date.now() });
+        const aged =
+            backgroundTask || activeElsewhere
+                ? 0
+                : agePendingToolCallsInPlace(msgData.messages, { nowMs: Date.now() });
         if (aged > 0) {
             logger.info(`[Session] 老化 ${aged} 个中断的 pending tool_call → ERROR`);
             state.sessionDirty = true;
@@ -1362,4 +1398,42 @@ eventBus.on('session:switch-requested', ({ sessionId }) => {
             logger.error('[Sessions] 跨标签页切换失败:', e)
         );
     }
+});
+
+// 任务执行期间持有会话任务锁，其他标签页据此把工具调用显示为执行中且不做老化
+eventBus.on(EVENTS.REQUEST_TASK_CREATED, ({ task } = {}) => {
+    if (!task?.sessionId || !task.completionPromise) return;
+    const { sessionId } = task;
+    holdSessionTaskLock(
+        sessionId,
+        task.completionPromise.then(() => waitForSessionWritesSettled(sessionId))
+    );
+});
+
+/**
+ * 按本页内存中的消息重绘最后一条助手消息（工具卡片的执行中状态随之更新）
+ */
+function rerenderLastAssistantMessage() {
+    if (!isElementsInitialized()) return;
+    const index = state.messages.length - 1;
+    const message = state.messages[index];
+    if (message?.role !== 'assistant' || !message.id) return;
+    const messagesArea = document.getElementById('messages');
+    const messageEl = Array.from(messagesArea?.querySelectorAll('.message.assistant') || []).find(
+        (element) => element.dataset.messageId === message.id
+    );
+    if (!messageEl) return;
+    eventBus.emit('message:content-updated', { messageEl, index, role: 'assistant' });
+}
+
+// 其他标签页的任务结束（含页面关闭或崩溃）：同步对方落库的最终内容；本页有未保存改动时只重绘工具卡片
+eventBus.on(EVENTS.SESSION_REMOTE_TASK_ENDED, ({ sessionId } = {}) => {
+    if (!sessionId || sessionId !== state.currentSessionId || state.isSwitchingSession) return;
+    if (hasActiveSessionTask(sessionId)) return;
+    reloadCurrentSessionMessages()
+        .then((synced) => {
+            if (synced || sessionId !== state.currentSessionId || state.isSwitchingSession) return;
+            if (!hasActiveSessionTask(sessionId)) rerenderLastAssistantMessage();
+        })
+        .catch((e) => logger.warn('[Session] 其他标签页任务结束后同步会话失败:', e));
 });

@@ -15,6 +15,11 @@ import {
 } from './indexeddb.js';
 import { getCurrentProvider, getModelDisplayName } from '../api/current.js';
 import { getTabId, probeTabs } from './tab-sync.js';
+import {
+    getSessionTaskLockName,
+    isHoldingSessionTaskLock,
+    queryActiveLockNames
+} from './session-task-presence.js';
 
 const SNAPSHOT_INTERVAL_MS = 4000;
 const HEARTBEAT_INTERVAL_MS = 20000;
@@ -92,6 +97,8 @@ function stopHeartbeatTimerIfIdle() {
  * @param {string} sessionId - 流绑定的会话 ID
  * @param {string} textContent - 已累积正文
  * @param {string} thinkingContent - 已累积思维链
+ * @param {string|null} [requestId] - 请求轮次 ID（任务 ID + 轮次）：工具续作、压缩重试各轮各写一份快照
+ * @param {Object|null} [requestProfile] - 请求发起时锁定的型号与提供商展示名
  */
 export function saveStreamSnapshotThrottled(
     sessionId,
@@ -125,6 +132,9 @@ export function saveStreamSnapshotThrottled(
             ownerTabId: getTabId(),
             heartbeatAt: now
         };
+        if (isHoldingSessionTaskLock(sessionId)) {
+            payload.taskLockName = getSessionTaskLockName(sessionId);
+        }
         _openPayloads.set(snapshotKey, payload);
         ensureHeartbeatTimer();
         writeSnapshot(snapshotKey, payload);
@@ -137,6 +147,7 @@ export function saveStreamSnapshotThrottled(
  * 删除会话的流式快照（正常落库 / 错误落库 / 请求生命周期结束时调用）。
  * 仅当本 tab 写过该会话快照才发 IDB delete；启动残留由 recoverStreamSnapshots 负责。
  * @param {string|null} sessionId
+ * @param {string|null} [requestId] - 与写入时相同的请求轮次 ID
  */
 export function clearStreamSnapshot(sessionId, requestId = null) {
     if (!sessionId) return;
@@ -159,14 +170,26 @@ function isHeartbeatFresh(snap, now) {
 }
 
 /**
- * 对心跳仍在窗口内的其他标签页发一次存活探测
+ * 写入者持有的会话任务锁能否直接给出结论：锁仍被持有即存活（页面被冻结也不会释放），否则已关闭或崩溃
+ */
+function canDecideByTaskLock(snap, activeLocks) {
+    return !!snap?.taskLockName && !!activeLocks;
+}
+
+/**
+ * 对需要按心跳判断、且心跳仍在窗口内的其他标签页发一次存活探测
  * @returns {Promise<Set<string>|null>} 存活的写入者；null 表示无法探测，只能按心跳判断
  */
-async function probeSnapshotWriters(records, now) {
+async function probeSnapshotWriters(records, activeLocks, now) {
     const candidates = new Set();
     for (const record of records) {
         const snap = record?.value;
-        if (snap?.ownerTabId && snap.ownerTabId !== getTabId() && isHeartbeatFresh(snap, now)) {
+        if (
+            snap?.ownerTabId &&
+            snap.ownerTabId !== getTabId() &&
+            !canDecideByTaskLock(snap, activeLocks) &&
+            isHeartbeatFresh(snap, now)
+        ) {
             candidates.add(snap.ownerTabId);
         }
     }
@@ -180,13 +203,15 @@ async function probeSnapshotWriters(records, now) {
 }
 
 /**
- * 快照写入者是否仍在生成；没有写入者信息的旧快照按遗留快照处理
+ * 快照写入者是否仍在生成
  */
-function isWriterAlive(record, aliveTabs, now) {
+function isWriterAlive(record, aliveTabs, activeLocks, now) {
     const snap = record?.value;
     const ownerTabId = snap?.ownerTabId;
-    if (!ownerTabId) return false;
+    // 旧版本写入的快照没有写入者信息，只能按最后写入时间判断那个标签页是否可能仍在生成
+    if (!ownerTabId) return now - (snap?.ts || 0) < HEARTBEAT_STALE_MS;
     if (ownerTabId === getTabId()) return _openPayloads.has(record.key);
+    if (canDecideByTaskLock(snap, activeLocks)) return activeLocks.has(snap.taskLockName);
     if (!isHeartbeatFresh(snap, now)) return false;
     return aliveTabs ? aliveTabs.has(ownerTabId) : true;
 }
@@ -194,8 +219,8 @@ function isWriterAlive(record, aliveTabs, now) {
 /**
  * 启动时恢复遗留快照：转为带「已中断（应用关闭）」错误标记的 assistant 消息
  * 追加到对应会话（IDB 路径，先于 switchToSession 执行），随后删除快照；
- * 写入者仍存活的快照原样保留，会话已不存在时直接丢弃。所有失败路径只 warn，不阻断会话加载。
- * 恢复写入走后台会话保存，保存后会广播 session-updated 让其他标签页刷新。
+ * 写入者仍存活（或旧版本快照最近仍有写入）的快照原样保留，会话已不存在时直接丢弃。
+ * 所有失败路径只 warn，不阻断会话加载；恢复写入走后台会话保存，保存后会广播 session-updated。
  */
 export async function recoverStreamSnapshots() {
     try {
@@ -218,8 +243,11 @@ async function recoverOrphanedSnapshots() {
     if (!records || records.length === 0) return;
 
     const now = Date.now();
-    const aliveTabs = await probeSnapshotWriters(records, now);
-    const orphaned = records.filter((record) => !isWriterAlive(record, aliveTabs, now));
+    const activeLocks = await queryActiveLockNames();
+    const aliveTabs = await probeSnapshotWriters(records, activeLocks, now);
+    const orphaned = records.filter(
+        (record) => !isWriterAlive(record, aliveTabs, activeLocks, now)
+    );
     if (orphaned.length < records.length) {
         logger.info(`[StreamSnapshot] 跳过 ${records.length - orphaned.length} 个仍在生成的快照`);
     }

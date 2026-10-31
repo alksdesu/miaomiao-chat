@@ -77,6 +77,15 @@ function installLocalStoragePolyfill() {
     });
 }
 
+// Node 25 起自带 navigator.locks，锁在同一进程的测试文件间共享，未释放的锁会串到别的文件；
+// 默认屏蔽，需要锁的用例自行注入。用访问器而非数据属性，vi.spyOn(navigator, 'locks', 'get') 仍可用
+function hideNativeWebLocks() {
+    if (typeof navigator === 'undefined') return;
+    Object.defineProperty(navigator, 'locks', { get: () => undefined, configurable: true });
+}
+
+hideNativeWebLocks();
+
 beforeEach(() => {
     if (
         typeof globalThis.localStorage === 'undefined' ||

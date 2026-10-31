@@ -364,3 +364,17 @@ describe('initAPIHandler 兜底', () => {
         );
     });
 });
+
+describe('sendToAPI 按请求轮次生成流式快照 ID', () => {
+    it('首轮与续作轮各自递增轮次，快照 ID 随之区分', async () => {
+        await sendToAPI({ task: mocks.task });
+        expect(mocks.handleStreamResponse.mock.calls[0][1].snapshotRequestId).toBe('request-a:1');
+
+        mocks.context = createContext(mocks.task);
+        await sendToAPI({ task: mocks.task });
+
+        expect(mocks.handleStreamResponse.mock.calls[1][1].snapshotRequestId).toBe('request-a:2');
+        expect(mocks.task.round).toBe(2);
+        expect(mocks.cleanupAfterSend.mock.calls[1][0].snapshotRequestId).toBe('request-a:2');
+    });
+});

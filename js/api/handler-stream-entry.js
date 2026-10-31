@@ -24,7 +24,7 @@ export async function handleStreamResponse(response, ctx) {
 
     // adapter.streamParser 统一签名 (reader, sessionId, sink?, signal?)
     // signal 透传到 BaseStreamParser.parse 监听 abort
-    const sink = new DefaultSink(sessionId, ctx.task || null);
+    const sink = new DefaultSink(sessionId, ctx.task || null, ctx.snapshotRequestId);
     await adapter.streamParser(reader, sessionId, sink, abortController?.signal || null);
     await sink.waitForCommits();
 }
