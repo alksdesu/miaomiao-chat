@@ -5,7 +5,7 @@
  *   A. continuation 模式：工具执行完毕后续轮——复用原 assistant 元素，
  *      保留 tool_call UI，追加 continuation-loading dots，标记 dataset.isContinuation
  *   B. image-retry 模式：图片压缩失败后无感重试——复用原 assistant 元素，
- *      清空内容只留 thinking-dots
+ *      续作轮只换掉本轮残留并按续作追加，其余清空只留 thinking-dots
  *   C. new 模式：常规新请求——createAssistantMessagePlaceholder 新挂
  *
  * 跨会话守卫：continuation 元素若来自其他会话（用户工具执行期间切走），
@@ -21,6 +21,7 @@ import { createAssistantMessagePlaceholder } from '../messages/placeholder.js';
 import { createContinuationLoading, createThinkingDots } from './handler-loading-dots.js';
 import { requestTaskRegistry } from '../core/request-task-registry.js';
 import { logger } from '../utils/logger.js';
+import { LOADING_INDICATOR_SELECTOR } from '../utils/constants.js';
 
 /**
  * 把欢迎消息从 messages 区移除（三分支共用前置）
@@ -28,6 +29,16 @@ import { logger } from '../utils/logger.js';
 function removeWelcomeMessageIfAny() {
     const welcome = elements.messagesArea?.querySelector('.welcome-message');
     if (welcome) welcome.remove();
+}
+
+/**
+ * 移除续作复用元素里本轮留下的流式内容与加载指示，之前几轮的正文与工具卡片保持不动
+ * @param {HTMLElement|null} messageContent - .message-content
+ */
+export function removeRoundResidue(messageContent) {
+    messageContent
+        ?.querySelectorAll(`.continuation-content, ${LOADING_INDICATOR_SELECTOR}`)
+        .forEach((el) => el.remove());
 }
 
 /**
@@ -53,7 +64,7 @@ function resolveContinuation() {
     // 的写入锚点；颠倒顺序会让残留 dots 清不掉
     state.currentAssistantMessage = messageContent;
     if (messageContent) {
-        messageContent.querySelectorAll('.thinking-dots').forEach((el) => el.remove());
+        messageContent.querySelectorAll(LOADING_INDICATOR_SELECTOR).forEach((el) => el.remove());
         messageContent.appendChild(createContinuationLoading());
     }
 
@@ -67,17 +78,24 @@ function resolveContinuation() {
 
 /**
  * 分支 B：图片压缩重试复用
- * @returns {HTMLElement} 复用的 assistantMessageEl
+ * 续作轮的复用元素里是之前几轮的正文与工具卡片，整块替换会让页面暂时丢掉这些内容
+ * @param {Object|null} task - 发起重试的请求任务
+ * @returns {{assistantMessageEl: HTMLElement, continuingRound: boolean}}
  */
-function resolveImageRetry() {
+function resolveImageRetry(task) {
     const assistantMessageEl = state.imageRetryMessageElement;
     const messageContent = assistantMessageEl.querySelector('.message-content');
+    const continuingRound = task?.isSavingContinuation === true;
     state.currentAssistantMessage = messageContent;
-    if (messageContent) {
+    if (continuingRound) {
+        removeRoundResidue(messageContent);
+        messageContent?.appendChild(createContinuationLoading());
+        markContinuationElement(assistantMessageEl);
+    } else if (messageContent) {
         messageContent.replaceChildren(createThinkingDots());
     }
     clearImageRetry();
-    return assistantMessageEl;
+    return { assistantMessageEl, continuingRound };
 }
 
 /**
@@ -102,9 +120,7 @@ export function splitContinuationErrorPlaceholder(assistantMessageEl) {
     if (!messageEl?.isConnected || messageEl.dataset.isContinuation !== 'true') return null;
 
     const messageContent = messageEl.querySelector('.message-content');
-    messageContent
-        ?.querySelectorAll('.continuation-content, .continuation-loading, .thinking-dots')
-        .forEach((el) => el.remove());
+    removeRoundResidue(messageContent);
     delete messageEl.dataset.isContinuation;
     if (messageContent) delete messageContent.dataset.isContinuation;
 
@@ -196,8 +212,11 @@ export function resolvePlaceholder(ctx) {
         state.isImageCompressionRetry &&
         state.imageRetryMessageElement
     ) {
-        ctx.assistantMessageEl = resolveImageRetry();
+        const { assistantMessageEl, continuingRound } = resolveImageRetry(ctx.task);
+        ctx.assistantMessageEl = assistantMessageEl;
         ctx.isImageRetryMode = true;
+        // 续作轮的重试沿用续作语义：统计累计，出错单独成条，取消只追加提示
+        ctx.isContinuationMode = continuingRound;
         return;
     }
 

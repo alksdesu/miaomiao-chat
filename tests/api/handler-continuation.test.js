@@ -99,6 +99,32 @@ describe('resendWithToolResults', () => {
         expect(mocks.sendToAPI).toHaveBeenCalledWith({ task });
     });
 
+    it('续作结束后清掉加载指示与压缩重试提示，正文保留', async () => {
+        const task = createTask();
+        const message = document.createElement('div');
+        const content = document.createElement('div');
+        content.className = 'message-content';
+        const body = Object.assign(document.createElement('p'), { textContent: '正文' });
+        content.append(
+            body,
+            Object.assign(document.createElement('div'), {
+                className: 'thinking-dots retry-loading'
+            }),
+            Object.assign(document.createElement('div'), { className: 'image-retry-hint' }),
+            Object.assign(document.createElement('div'), {
+                className: 'thinking-dots continuation-loading'
+            })
+        );
+        message.appendChild(content);
+        document.body.appendChild(message);
+
+        await resendWithToolResults(message, task);
+
+        expect(content.children).toHaveLength(1);
+        expect(content.firstElementChild).toBe(body);
+        message.remove();
+    });
+
     it('detach 窗口不清理当前会话的工具状态投影', async () => {
         const task = createTask();
         task.isDetached = true;

@@ -12,10 +12,11 @@ import { state } from '../core/state.js';
 import { requestStateMachine, RequestState } from '../core/request-state-machine.js';
 import { setToolCallContinuation } from '../core/state-mutations.js';
 import { logger } from '../utils/logger.js';
+import { LOADING_INDICATOR_SELECTOR } from '../utils/constants.js';
 import { requestTaskRegistry } from '../core/request-task-registry.js';
 
 /**
- * 清理 loading 指示元素（thinking-dots / continuation-loading / retry-loading）
+ * 清理 loading 指示元素（含压缩重试提示）
  * 优先在指定消息元素内查找；否则在最后一条助手消息中查找
  */
 function removeLoadingIndicators(messageEl) {
@@ -23,9 +24,7 @@ function removeLoadingIndicators(messageEl) {
         ? messageEl.querySelector('.message-content')
         : document.querySelector('.message.assistant:last-child .message-content');
     if (!root) return;
-    root.querySelectorAll('.thinking-dots, .continuation-loading, .retry-loading').forEach((el) =>
-        el.remove()
-    );
+    root.querySelectorAll(LOADING_INDICATOR_SELECTOR).forEach((el) => el.remove());
 }
 
 /**

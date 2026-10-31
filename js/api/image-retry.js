@@ -8,6 +8,7 @@ import { state } from '../core/state.js';
 import { isImageSizeError, compressImagesInMessages } from '../utils/images.js';
 import { replaceAllMessages, setImageRetry, clearImageRetry } from '../core/state-mutations.js';
 import { renderImageRetryLoading } from './handler-loading-dots.js';
+import { removeRoundResidue } from './placeholder-resolver.js';
 import { materializeSessionMessages } from '../state/session-message-repository.js';
 import { resolveMessagesMediaForApi } from '../state/media-blob-store.js';
 import { loadSessionMessages } from '../state/storage.js';
@@ -107,18 +108,27 @@ export async function attemptImageCompressionRetry(
 
     logger.debug('[ImageRetry] 图片压缩完成，准备重新发送请求...');
 
+    // 压缩期间切走再切回时，任务已改锚到重新渲染出的元素，开始时传入的元素已脱离页面
+    const anchorElement = task?.messageElement?.isConnected
+        ? task.messageElement
+        : assistantMessageEl;
+
     // 设置重试标志并绑定要复用的消息元素 + 发起会话 ID（resolver 跨会话守卫读取）
     if (task) task.isImageRetry = true;
-    if (isForeground()) setImageRetry(assistantMessageEl, sessionId);
+    if (isForeground()) setImageRetry(anchorElement, sessionId);
 
     // 显示加载提示（DOM 工厂构造，零裸 innerHTML）
-    const contentElement = assistantMessageEl?.classList?.contains('message-content')
-        ? assistantMessageEl
-        : assistantMessageEl?.querySelector?.('.message-content') || state.currentAssistantMessage;
+    const contentElement = anchorElement?.classList?.contains('message-content')
+        ? anchorElement
+        : anchorElement?.querySelector?.('.message-content') || state.currentAssistantMessage;
     if (isForeground() && contentElement) {
-        contentElement.replaceChildren();
-        const fragment = renderImageRetryLoading();
-        contentElement.appendChild(fragment);
+        // 续作轮的复用元素里是之前几轮的正文与工具卡片，只换掉本轮残留
+        if (task?.isSavingContinuation === true) {
+            removeRoundResidue(contentElement);
+        } else {
+            contentElement.replaceChildren();
+        }
+        contentElement.appendChild(renderImageRetryLoading());
     }
 
     return true;

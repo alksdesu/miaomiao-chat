@@ -329,6 +329,49 @@ describe('forceReset', () => {
     });
 });
 
+describe('加载指示清理', () => {
+    function createMessageElement() {
+        const indicators = [
+            { className: 'thinking-dots retry-loading', remove: vi.fn() },
+            { className: 'image-retry-hint', remove: vi.fn() }
+        ];
+        const content = { querySelectorAll: vi.fn(() => indicators) };
+        return { element: { querySelector: vi.fn(() => content) }, content, indicators };
+    }
+
+    function startStreaming(element) {
+        sm.transition(RequestState.SENDING, {
+            abortController: new AbortController(),
+            sessionId: 's1'
+        });
+        sm.transition(RequestState.STREAMING, { assistantMessageEl: element });
+    }
+
+    it('取消时连同压缩重试提示一起移除', () => {
+        const { element, content, indicators } = createMessageElement();
+        startStreaming(element);
+
+        sm.cancel();
+
+        expect(content.querySelectorAll).toHaveBeenCalledWith(
+            expect.stringContaining('.image-retry-hint')
+        );
+        indicators.forEach((indicator) => expect(indicator.remove).toHaveBeenCalled());
+    });
+
+    it('强制重置时连同压缩重试提示一起移除', () => {
+        const { element, content, indicators } = createMessageElement();
+        startStreaming(element);
+
+        sm.forceReset({ silent: true });
+
+        expect(content.querySelectorAll).toHaveBeenCalledWith(
+            expect.stringContaining('.image-retry-hint')
+        );
+        indicators.forEach((indicator) => expect(indicator.remove).toHaveBeenCalled());
+    });
+});
+
 // ========== clearSendLockTimeout ==========
 
 describe('clearSendLockTimeout', () => {

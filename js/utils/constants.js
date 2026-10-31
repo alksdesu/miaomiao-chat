@@ -104,6 +104,10 @@ export const STREAMING_FRAME_BUDGET_MS = 12;
 /** hljs 单块高亮长度上限，超限降级为纯转义展示（防主线程冻结） */
 export const HLJS_MAX_CODE_LENGTH = 50000;
 
+/** 请求进行中临时插入的加载指示（含压缩重试提示），请求结束、取消或出错时整体移除 */
+export const LOADING_INDICATOR_SELECTOR =
+    '.thinking-dots, .continuation-loading, .retry-loading, .image-retry-hint';
+
 // ========== 工具调用配对/老化 ==========
 
 /** 工具被中断时的统一错误消息（老化超时 / 用户取消 / 流断开） */

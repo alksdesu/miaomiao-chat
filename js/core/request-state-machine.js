@@ -8,6 +8,7 @@ import { EVENTS } from './events-registry.js';
 import { elements } from './elements.js';
 import { state } from './state.js';
 import { logger } from '../utils/logger.js';
+import { LOADING_INDICATOR_SELECTOR } from '../utils/constants.js';
 
 /**
  * 请求状态枚举
@@ -361,9 +362,7 @@ export class RequestStateMachine {
             this.assistantMessageEl?.querySelector('.message-content') ||
             document.querySelector('.message.assistant:last-child .message-content');
         if (!root) return;
-        const allLoadingElements = root.querySelectorAll(
-            '.thinking-dots, .continuation-loading, .retry-loading'
-        );
+        const allLoadingElements = root.querySelectorAll(LOADING_INDICATOR_SELECTOR);
         if (allLoadingElements.length > 0) {
             allLoadingElements.forEach((el) => {
                 logger.debug('[StateMachine] 移除 loading 元素:', el.className);
@@ -418,9 +417,7 @@ export class RequestStateMachine {
             this.assistantMessageEl?.querySelector('.message-content') ||
             document.querySelector('.message.assistant:last-child .message-content');
         if (cleanupRoot) {
-            const allLoadingElements = cleanupRoot.querySelectorAll(
-                '.thinking-dots, .continuation-loading, .retry-loading'
-            );
+            const allLoadingElements = cleanupRoot.querySelectorAll(LOADING_INDICATOR_SELECTOR);
             if (allLoadingElements.length > 0) {
                 allLoadingElements.forEach((el) => el.remove());
             }

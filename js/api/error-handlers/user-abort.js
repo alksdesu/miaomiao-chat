@@ -20,6 +20,7 @@ import { requestStateMachine } from '../../core/request-state-machine.js';
 import { clearToolCallContinuation } from '../../core/state-mutations.js';
 import { safeSetHTML } from '../../utils/helpers.js';
 import { logger } from '../../utils/logger.js';
+import { LOADING_INDICATOR_SELECTOR } from '../../utils/constants.js';
 import { requestTaskRegistry } from '../../core/request-task-registry.js';
 
 /**
@@ -27,9 +28,7 @@ import { requestTaskRegistry } from '../../core/request-task-registry.js';
  * @param {HTMLElement} contentEl - .message-content
  */
 function appendCancelNotice(contentEl) {
-    contentEl
-        .querySelectorAll('.continuation-loading, .thinking-dots')
-        .forEach((el) => el.remove());
+    contentEl.querySelectorAll(LOADING_INDICATOR_SELECTOR).forEach((el) => el.remove());
     const notice = document.createElement('div');
     notice.className = 'error-message';
     notice.textContent = '[!] 请求已取消';

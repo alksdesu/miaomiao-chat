@@ -174,6 +174,110 @@ describe('attemptImageCompressionRetry', () => {
     });
 });
 
+describe('attemptImageCompressionRetry 续作轮', () => {
+    function createReusedMessage() {
+        const message = document.createElement('div');
+        message.className = 'message assistant';
+        message.innerHTML = `
+            <div class="message-content-wrapper">
+                <div class="message-content">
+                    <p>上一轮的正文</p>
+                    <div class="tool-calls-group">工具调用</div>
+                    <div class="continuation-content">本轮流式内容</div>
+                    <div class="thinking-dots continuation-loading"></div>
+                </div>
+            </div>`;
+        document.body.replaceChildren(message);
+        return message;
+    }
+
+    function createTask({ isSavingContinuation }) {
+        const task = requestTaskRegistry.create({
+            sessionId: 'test-session',
+            abortController: new AbortController()
+        });
+        task.isSavingContinuation = isSavingContinuation;
+        task.requestProfile = {
+            providerApiFormat: 'openai',
+            state: { fastImageCompression: false }
+        };
+        task.requestContext = { sourceMessages: [{ role: 'user', content: 'image' }] };
+        return task;
+    }
+
+    beforeEach(() => {
+        isImageSizeError.mockReturnValue(true);
+        compressImagesInMessages.mockResolvedValue([{ role: 'user', content: 'compressed' }]);
+    });
+
+    it('前台续作轮只换掉本轮残留并追加重试提示，之前几轮的内容保留', async () => {
+        const message = createReusedMessage();
+
+        const result = await attemptImageCompressionRetry(
+            { code: 413 },
+            message,
+            'test-session',
+            createTask({ isSavingContinuation: true })
+        );
+
+        expect(result).toBe(true);
+        const content = message.querySelector('.message-content');
+        expect(content.querySelector('p').textContent).toBe('上一轮的正文');
+        expect(content.querySelector('.tool-calls-group')).not.toBeNull();
+        expect(content.querySelector('.continuation-content')).toBeNull();
+        expect(content.querySelector('.continuation-loading')).toBeNull();
+        expect(content.querySelector('.thinking-dots.retry-loading')).not.toBeNull();
+        expect(content.querySelector('.image-retry-hint').textContent).toContain('图片过大');
+        expect(setImageRetry).toHaveBeenCalledWith(message, 'test-session');
+    });
+
+    it('压缩期间切走再切回时沿用任务重新锚定的元素，不写进已脱离页面的旧元素', async () => {
+        const staleMessage = createReusedMessage();
+        const task = createTask({ isSavingContinuation: true });
+        const reanchored = document.createElement('div');
+        reanchored.className = 'message assistant';
+        reanchored.innerHTML = `
+            <div class="message-content-wrapper">
+                <div class="message-content">
+                    <p>重新渲染的上一轮正文</p>
+                    <div class="thinking-dots continuation-loading"></div>
+                </div>
+            </div>`;
+        compressImagesInMessages.mockImplementation(async (messages) => {
+            document.body.replaceChildren(reanchored);
+            requestTaskRegistry.setAssistantElement(task, reanchored);
+            return messages;
+        });
+
+        await attemptImageCompressionRetry({ code: 413 }, staleMessage, 'test-session', task);
+
+        expect(setImageRetry).toHaveBeenCalledWith(reanchored, 'test-session');
+        const content = reanchored.querySelector('.message-content');
+        expect(content.querySelector('p').textContent).toBe('重新渲染的上一轮正文');
+        expect(content.querySelector('.continuation-loading')).toBeNull();
+        expect(content.querySelector('.image-retry-hint')).not.toBeNull();
+        expect(staleMessage.querySelector('.image-retry-hint')).toBeNull();
+    });
+
+    it('首轮请求照旧整块替换为重试提示', async () => {
+        const message = createReusedMessage();
+
+        await attemptImageCompressionRetry(
+            { code: 413 },
+            message,
+            'test-session',
+            createTask({ isSavingContinuation: false })
+        );
+
+        const content = message.querySelector('.message-content');
+        expect(content.children).toHaveLength(2);
+        expect(content.querySelector('.tool-calls-group')).toBeNull();
+        expect(content.textContent).not.toContain('上一轮的正文');
+        expect(content.querySelector('.thinking-dots.retry-loading')).not.toBeNull();
+        expect(content.querySelector('.image-retry-hint')).not.toBeNull();
+    });
+});
+
 describe('resetAllImageRetryState', () => {
     it('显式 sessionId 清指定会话的锁', () => {
         state._imageCompressionRetriedSessions.add('session-a');

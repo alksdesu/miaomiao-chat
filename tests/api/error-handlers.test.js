@@ -139,6 +139,27 @@ describe('handleUserAbort 续作轮', () => {
         expect(content.lastElementChild.textContent).toContain('请求已取消');
     });
 
+    it('压缩重试期间取消时重试提示一并清掉，只留取消提示', async () => {
+        const ctx = createContext();
+        const content = ctx.assistantMessageEl.querySelector('.message-content');
+        content.append(
+            Object.assign(document.createElement('div'), {
+                className: 'thinking-dots retry-loading'
+            }),
+            Object.assign(document.createElement('div'), {
+                className: 'image-retry-hint',
+                textContent: '图片过大，已自动压缩后重试...'
+            })
+        );
+
+        await handleUserAbort({ isCrossSession: false, displayError: { name: 'AbortError' } }, ctx);
+
+        expect(content.querySelector('.retry-loading')).toBeNull();
+        expect(content.querySelector('.image-retry-hint')).toBeNull();
+        expect(content.querySelector('.tool-calls-group')).not.toBeNull();
+        expect(content.lastElementChild.textContent).toContain('请求已取消');
+    });
+
     it('首轮请求没收到内容时整体显示取消提示', async () => {
         const ctx = createContext({ isContinuationMode: false });
         const content = ctx.assistantMessageEl.querySelector('.message-content');
