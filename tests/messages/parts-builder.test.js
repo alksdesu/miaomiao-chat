@@ -9,6 +9,7 @@ vi.mock('../../js/api/current.js', () => ({
 }));
 
 import {
+    buildPartsFromStreamingState,
     buildMetaFromStreamingState,
     buildMetaFromReply,
     buildCanonicalReply,
@@ -74,5 +75,80 @@ describe('pickInitialReplyIndex', () => {
     it('全部失败且没有内容时返回 -1', () => {
         expect(pickInitialReplyIndex([{ isError: true, content: '' }])).toBe(-1);
         expect(pickInitialReplyIndex([])).toBe(-1);
+    });
+});
+
+describe('思考块落库', () => {
+    it('文本为空但带签名的思考块保留（Claude 不返回思考摘要时），redacted 一并保留', () => {
+        const parts = buildPartsFromStreamingState({
+            thinkingItems: [
+                { type: 'thinking', text: '', signature: 'sig-omitted' },
+                { type: 'redacted_thinking', data: 'ENC' },
+                { type: 'thinking', text: '', signature: '' }
+            ],
+            toolCalls: [{ id: 'toolu_1', name: 'search', arguments: {} }],
+            signatureFormat: 'claude'
+        });
+        expect(parts.filter((p) => p.type === 'thinking')).toEqual([
+            { type: 'thinking', text: '', signature: 'sig-omitted', signatureFormat: 'claude' },
+            { type: 'thinking', text: '', redacted: true, data: 'ENC' }
+        ]);
+    });
+
+    it('非流式 Claude 回复以 contentParts 为准：带签名的思考与 redacted 按原顺序落库，不与 thinkingItems 重复', () => {
+        const parts = buildPartsFromStreamingState({
+            contentParts: [
+                { type: 'thinking', text: 'plan', signature: 'sig-1' },
+                { type: 'redacted_thinking', data: 'ENC' },
+                { type: 'text', text: 'answer' }
+            ],
+            thinkingItems: [
+                { type: 'thinking', text: 'plan', signature: 'sig-1' },
+                { type: 'redacted_thinking', data: 'ENC' }
+            ],
+            signatureFormat: 'claude'
+        });
+        expect(parts).toEqual([
+            { type: 'thinking', text: 'plan', signature: 'sig-1', signatureFormat: 'claude' },
+            { type: 'thinking', text: '', redacted: true, data: 'ENC' },
+            { type: 'text', text: 'answer' }
+        ]);
+    });
+
+    it('Gemini 的消息级签名挂到 contentParts 里最后一段思考上', () => {
+        const parts = buildPartsFromStreamingState({
+            contentParts: [
+                { type: 'thinking', text: 'a' },
+                { type: 'text', text: 'mid' },
+                { type: 'thinking', text: 'b' },
+                { type: 'text', text: 'end' }
+            ],
+            thinkingContent: 'ab',
+            thoughtSignature: 'gem-sig',
+            signatureFormat: 'gemini'
+        });
+        const thinking = parts.filter((p) => p.type === 'thinking');
+        expect(thinking[0].signature).toBeUndefined();
+        expect(thinking[1]).toEqual({
+            type: 'thinking',
+            text: 'b',
+            signature: 'gem-sig',
+            signatureFormat: 'gemini'
+        });
+    });
+
+    it('备选回复同样保留空文本签名与 redacted', () => {
+        const reply = buildCanonicalReply({
+            content: 'x',
+            thinkingItems: [
+                { type: 'thinking', text: '', signature: 'sig-r' },
+                { type: 'redacted_thinking', data: 'ENC' }
+            ],
+            signatureFormat: 'claude'
+        });
+        expect(reply.parts.slice(0, 2)).toEqual([
+            { type: 'thinking', text: '', signature: 'sig-r', signatureFormat: 'claude' },
+            { type: 'thinking', text: '', redacted: true, data: 'ENC' }
+        ]);
     });
 });

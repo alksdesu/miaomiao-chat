@@ -365,7 +365,18 @@ const GEMINI_BASE = Object.freeze({
     // output 为 null 表示未识别：沿用设置面板的出图配置
     image: { output: null, sizes: null, aspectRatios: null },
     minTimeoutMs: null,
-    longDecode: false
+    longDecode: false,
+    // 当前轮每一步的首个函数调用都必须带签名，缺签名直接 400；未识别的型号按新型号处理
+    strictCallSignatures: true,
+    // 函数结果能否以 functionResponse.parts 携带图片；不能时图片作为同一条消息里的独立 part
+    functionResponseParts: false
+});
+
+// Gemini 3 起严格校验函数调用签名，并支持在函数结果里带图片
+const GEMINI_3_TOOLING = Object.freeze({ strictCallSignatures: true, functionResponseParts: true });
+const GEMINI_2_TOOLING = Object.freeze({
+    strictCallSignatures: false,
+    functionResponseParts: false
 });
 
 function geminiText(levels, overrides = {}) {
@@ -375,6 +386,7 @@ function geminiText(levels, overrides = {}) {
         image: { output: false, sizes: null, aspectRatios: null },
         minTimeoutMs: null,
         longDecode: false,
+        ...GEMINI_3_TOOLING,
         ...overrides
     };
 }
@@ -385,7 +397,8 @@ function geminiBudget(budgetRange, offBudget) {
         sampling: 'allowed',
         image: { output: false, sizes: null, aspectRatios: null },
         minTimeoutMs: null,
-        longDecode: false
+        longDecode: false,
+        ...GEMINI_2_TOOLING
     };
 }
 
@@ -395,7 +408,8 @@ function geminiImage(thinking, sizes, aspectRatios) {
         sampling: 'allowed',
         image: { output: true, sizes, aspectRatios },
         minTimeoutMs: null,
-        longDecode: false
+        longDecode: false,
+        ...(thinking.mode === 'level' ? GEMINI_3_TOOLING : GEMINI_2_TOOLING)
     };
 }
 

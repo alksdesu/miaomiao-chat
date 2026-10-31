@@ -13,10 +13,12 @@ vi.mock('../../js/core/state.js', () => ({
 }));
 
 vi.mock('../../js/utils/variables.js', () => ({
-    processVariables: vi.fn((text) => text)
+    processVariables: vi.fn((text) => text),
+    templateNamesOf: (source) => ({ charName: source?.charName, userName: source?.userName })
 }));
 
 import { state } from '../../js/core/state.js';
+import { processVariables } from '../../js/utils/variables.js';
 import { getOpeningMessages, getPrefillMessages } from '../../js/utils/prefill.js';
 
 beforeEach(() => {
@@ -131,5 +133,24 @@ describe('getPrefillMessages', () => {
         const msgs = getPrefillMessages('gemini');
         expect(msgs[0].role).toBe('model');
         expect(msgs[0].parts[0].text).toBe('pre');
+    });
+});
+
+describe('变量替换使用设置里的角色名与用户名', () => {
+    it('开场对话与末尾预填充都传入 charName / userName', () => {
+        state.charName = 'Alice';
+        state.userName = 'Bob';
+        state.systemPrefillMessages = [{ role: 'user', content: 'Hi {{char}}' }];
+        state.prefillMessages = [{ role: 'assistant', content: 'I am {{char}}' }];
+        getOpeningMessages();
+        getPrefillMessages();
+        expect(processVariables).toHaveBeenCalledWith('Hi {{char}}', {
+            charName: 'Alice',
+            userName: 'Bob'
+        });
+        expect(processVariables).toHaveBeenCalledWith('I am {{char}}', {
+            charName: 'Alice',
+            userName: 'Bob'
+        });
     });
 });

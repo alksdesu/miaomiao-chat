@@ -800,107 +800,84 @@ eventBus.on('message:copy-requested', async ({ messageEl }) => {
     }
 });
 
+function joinPartText(parts) {
+    return parts.map((p) => p.text || '').join('');
+}
+
+function turnOf(part) {
+    return part?._turn !== undefined ? { _turn: part._turn } : {};
+}
+
+function isEditableImage(part) {
+    // 编辑器只管理图片，video/audio 等其他媒体子类型原样保留
+    return part.type === PartType.MEDIA && (!part.media || part.media === MediaKind.IMAGE);
+}
+
 /**
- * 按 thinking/text/media/tool_call/file 原相对位置重建 parts，保留 tool_call/file 原顺序
- * 不再把保留 part 一律塞末尾（避免破坏 Claude/OpenAI Responses 重发顺序）
+ * 编辑保存时重建 parts：没改动的思考块与文本原样保留（签名与 _turn 不丢），改动过的合并成一段：
+ * 思考放回第一段思考的位置，文本放回最后一段文本的位置（工具循环合并的消息里，最后一段是最终回答）；
+ * tool_call / file 等其余 part 保持原顺序
  *
  * @param {Array} oldParts - 原 parts 数组
  * @param {Object} replacement - { newThinking?, newText, newImages? }
+ *   newThinking 为 undefined 表示没有编辑思考，空值表示删除思考；newImages 为空表示删除全部图片
  * @returns {Array} 重建后的 parts 数组
  * @internal 仅供测试 import；运行时使用方仍在本模块内
  */
 export function preserveStructuralParts(oldParts, replacement) {
     const { newThinking, newText, newImages } = replacement;
-    const out = [];
-    let thinkingInserted = false;
-    let textInserted = false;
-    let imagesInserted = false;
-    const appendImages = (target) => {
-        for (const image of newImages || []) {
-            target.push(
-                mediaPart(MediaKind.IMAGE, image.mediaId ? null : image.dataUrl, image.mimeType, {
-                    mediaId: image.mediaId
-                })
-            );
-        }
-    };
+    const thinkingParts = oldParts.filter((p) => p.type === PartType.THINKING);
+    const textParts = oldParts.filter((p) => p.type === PartType.TEXT);
+    const imageParts = oldParts.filter(isEditableImage);
+    const lastTextPart = textParts[textParts.length - 1];
+    const maxTurn = oldParts.reduce((max, p) => Math.max(max, p._turn || 0), 0);
 
+    const thinkingChanged =
+        newThinking !== undefined && (newThinking || '') !== joinPartText(thinkingParts).trim();
+    const textChanged = (newText || '') !== joinPartText(textParts).trim();
+
+    const editedThinking =
+        thinkingChanged && newThinking
+            ? {
+                  type: PartType.THINKING,
+                  text: newThinking,
+                  _edited: true,
+                  ...turnOf(thinkingParts[0])
+              }
+            : null;
+    const finalTurn = lastTextPart ? turnOf(lastTextPart) : maxTurn > 0 ? { _turn: maxTurn } : {};
+    const editedText = textChanged && newText ? textPart(newText, finalTurn) : null;
+    const editedImages = (newImages || []).map((image) =>
+        mediaPart(MediaKind.IMAGE, image.mediaId ? null : image.dataUrl, image.mimeType, {
+            mediaId: image.mediaId,
+            ...turnOf(imageParts[0])
+        })
+    );
+
+    const out = [];
     for (const p of oldParts) {
         if (p.type === PartType.THINKING) {
-            if (!thinkingInserted && newThinking) {
-                out.push({ type: PartType.THINKING, text: newThinking, _edited: true });
-                thinkingInserted = true;
-            }
+            if (!thinkingChanged) out.push(p);
+            else if (p === thinkingParts[0] && editedThinking) out.push(editedThinking);
             continue;
         }
         if (p.type === PartType.TEXT) {
-            if (!textInserted) {
-                out.push({ type: PartType.TEXT, text: newText });
-                textInserted = true;
-            }
+            if (!textChanged) out.push(p);
+            else if (p === lastTextPart && editedText) out.push(editedText);
             continue;
         }
-        if (p.type === PartType.MEDIA) {
-            // 编辑器只管理图片，video/audio 等其他媒体子类型原样保留
-            if (p.media && p.media !== MediaKind.IMAGE) {
-                out.push(p);
-                continue;
-            }
-            if (!imagesInserted && newImages && newImages.length > 0) {
-                appendImages(out);
-                imagesInserted = true;
-            }
+        if (isEditableImage(p)) {
+            if (p === imageParts[0]) out.push(...editedImages);
             continue;
         }
         out.push(p);
     }
 
     const prefix = [];
-    if (!thinkingInserted && newThinking) {
-        prefix.push({ type: PartType.THINKING, text: newThinking, _edited: true });
-    }
-    if (!textInserted) {
-        prefix.push({ type: PartType.TEXT, text: newText });
-    }
-    if (!imagesInserted && newImages && newImages.length > 0) {
-        appendImages(prefix);
-    }
+    if (thinkingParts.length === 0 && editedThinking) prefix.push(editedThinking);
+    if (textParts.length === 0 && editedText) prefix.push(editedText);
+    if (imageParts.length === 0) prefix.push(...editedImages);
     return prefix.length > 0 ? [...prefix, ...out] : out;
-}
-
-/**
- * 跨 family 编辑守卫：Claude/openclaw 清 _turn 防 'thinking blocks must match' 400
- * OpenAI Responses 不清（reasoningItems 与 _turn 一一对应）但发出 warning 提示风险
- * @returns {{ok:boolean, warning?:string}}
- * @internal 仅供测试 import；运行时使用方仍在本模块内
- */
-export function ensureTurnConsistency(msg, currentFormat) {
-    const parts = msg.parts || [];
-    const hasMultiTurn = parts.some((p) => p._turn !== undefined && p._turn > 0);
-    if (!hasMultiTurn) return { ok: true };
-
-    const isClaudeFamily = currentFormat === 'claude' || currentFormat === 'openclaw';
-    const isResponses = currentFormat === 'openai-responses';
-
-    if (isClaudeFamily) {
-        for (const p of parts) {
-            if (p._turn !== undefined) delete p._turn;
-        }
-        if (msg.meta?.raw?.openai?.reasoningItems) {
-            for (const item of msg.meta.raw.openai.reasoningItems) {
-                if (item && typeof item === 'object' && item._turn !== undefined) {
-                    delete item._turn;
-                }
-            }
-        }
-        return { ok: true };
-    }
-
-    if (isResponses) {
-        return { ok: true, warning: 'reasoning_chain_at_risk' };
-    }
-
-    return { ok: true };
 }
 
 /**
@@ -1104,16 +1081,6 @@ export function updateMessageWithThinking(index, newText, newThinking, images, _
     // 构建新格式 parts
     const updates = {};
 
-    // 跨 family 编辑守卫：Claude/openclaw 走严格 'thinking blocks must match' 校验需清 _turn；
-    // OpenAI Responses 依赖 _turn 配对 reasoningItems，清掉会触发 reasoning_id_not_found，仅警告
-    const turnCheck = ensureTurnConsistency(msg, state.apiFormat || '');
-    if (turnCheck.warning === 'reasoning_chain_at_risk') {
-        eventBus.emit('ui:notification', {
-            message: '当前消息含多轮 reasoning 链，编辑后下次重发可能触发 reasoning_id_not_found',
-            type: 'warning',
-            duration: 5000
-        });
-    }
     updates.parts = preserveStructuralParts(msg.parts, {
         newThinking,
         newText,

@@ -5,15 +5,24 @@
  */
 
 import { logger } from '../../utils/logger.js';
-import { PartType, MediaKind, Role, ToolMode, ToolState } from '../../messages/schema.js';
+import {
+    PartType,
+    MediaKind,
+    Role,
+    ToolMode,
+    ToolState,
+    SignatureFormat
+} from '../../messages/schema.js';
 import { parseDataURL } from '../../utils/file-helpers.js';
-import { extractXMLToolCalls, appendXmlToolResultsForMessage } from '../../tools/xml-formatter.js';
+import { applyXMLToolCalls, appendXmlToolResultsForMessage } from '../../tools/xml-formatter.js';
 import { parseThinkTags } from '../../stream/think-tag-parser.js';
 import { getMappedId, generateIdSet, ensureIdMap } from '../format-converter.js';
 import { isElectron } from '../../utils/platform.js';
 import { injectToolsToClaude, getXMLInjectionStats } from '../../tools/tool-injection.js';
 import { ClaudeStreamParser, parseClaudeStream } from '../../stream/parser-claude.js';
-import { isTextFile, stringifyToolResult } from './openai-shared.js';
+import { isTextFile } from './openai-shared.js';
+import { describeServerToolCall } from './history-replay.js';
+import { splitToolResultContent } from '../../messages/tool-results.js';
 import {
     TOOL_INTERRUPTED_MESSAGE,
     CLAUDE_DEFAULT_MAX_TOKENS_STREAM,
@@ -26,10 +35,14 @@ import {
 } from '../reasoning.js';
 import { CLAUDE_EFFORTS } from '../model-profiles.js';
 import { pushXmlBuiltinToolsNotice } from '../request-notices.js';
-import { COMPUTER_MEMBER_PERMISSIONS } from '../../tools/computer-actions.js';
+import {
+    COMPUTER_MEMBER_PERMISSIONS,
+    COMPUTER_TOOLSET_NAME
+} from '../../tools/computer-actions.js';
 import { normalizeClaudeStop } from '../../messages/stop-reason.js';
 
 const CLAUDE_THINKING_BUDGETS = Object.freeze({ low: 2048, medium: 8192, high: 16384 });
+const COMPUTER_TOOLSET_TYPE = 'computer_toolset_20260801';
 
 // ========== Turn 分组与内容转换 ==========
 
@@ -71,15 +84,139 @@ function groupPartsByTurn(parts) {
     return groups;
 }
 
+// ========== 工具调用回放 ==========
+
+const LEGACY_COMPUTER_TOOL_NAME = 'computer';
+// 服务端工具调用名与声明的工具类型前缀：code_execution 的调用名是 bash_code_execution 等
+const SERVER_TOOL_FAMILIES = Object.freeze([
+    Object.freeze({ name: 'web_search', typePrefix: 'web_search_' }),
+    Object.freeze({ name: 'web_fetch', typePrefix: 'web_fetch_' }),
+    Object.freeze({ name: 'code_execution', typePrefix: 'code_execution_' })
+]);
+
 /**
- * 把一组 parts 转换为 Claude content array + 收集需要配对 tool_result 的 tool_call parts
+ * 按本次请求实际声明的工具决定历史调用如何回放
  *
- * Stage 3 之后 state.messages 是唯一消息真相源：tool_call.result 已写回 part，
- * 不再有临时消息双轨。XML 模式的 tool_call 直接跳过（其结果由 appendXmlToolResults 追加）。
+ * 请求没有任何原生工具时历史里不能出现 tool_use（Anthropic 直接 400），只能转成 XML 文本；
+ * computer 工具集与旧版 computer 工具不能出现在同一次请求里，历史调用按本次声明的那一种改写
+ * @param {Array|undefined} declaredTools 本次请求 tools 字段的内容；undefined 表示不按声明调整
+ * @returns {Object|null}
  */
-function partsToClaudeContent(parts) {
+function createToolReplayPolicy(declaredTools) {
+    if (!Array.isArray(declaredTools)) return null;
+    const declaresType = (prefix) =>
+        declaredTools.some(
+            (tool) => typeof tool?.type === 'string' && tool.type.startsWith(prefix)
+        );
+    return {
+        hasTools: declaredTools.length > 0,
+        toolset: declaredTools.some((tool) => tool?.type === COMPUTER_TOOLSET_TYPE),
+        legacyComputer: declaredTools.some(
+            (tool) =>
+                tool?.name === LEGACY_COMPUTER_TOOL_NAME && tool.type !== COMPUTER_TOOLSET_TYPE
+        ),
+        declaresServerTool(name) {
+            const family = SERVER_TOOL_FAMILIES.find((item) => name?.includes(item.name));
+            return !family || declaresType(family.typePrefix);
+        }
+    };
+}
+
+function parseToolInput(args) {
+    if (typeof args !== 'string') return args || {};
+    try {
+        return JSON.parse(args);
+    } catch {
+        return args;
+    }
+}
+
+function isPlainObject(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * 历史原生调用在本次请求里的形态：工具集成员与旧版 computer 的 action 按本次声明互相改写
+ * @returns {{ name: string, input: *, toolsetName: string|null }|null} null 表示只能转成 XML 文本
+ */
+function resolveToolUse(part, policy) {
+    const input = parseToolInput(part.args);
+    const toolsetName = part.toolsetName || null;
+    if (!policy) return { name: part.name, input, toolsetName };
+    if (!policy.hasTools) return null;
+
+    if (toolsetName === COMPUTER_TOOLSET_NAME) {
+        if (policy.toolset) return { name: part.name, input, toolsetName };
+        if (policy.legacyComputer && isPlainObject(input)) {
+            return {
+                name: LEGACY_COMPUTER_TOOL_NAME,
+                input: { action: part.name, ...input },
+                toolsetName: null
+            };
+        }
+        return null;
+    }
+    if (
+        part.name === LEGACY_COMPUTER_TOOL_NAME &&
+        policy.toolset &&
+        !policy.legacyComputer &&
+        isPlainObject(input) &&
+        typeof input.action === 'string'
+    ) {
+        const { action, ...memberInput } = input;
+        return { name: action, input: memberInput, toolsetName: COMPUTER_TOOLSET_NAME };
+    }
+    return { name: part.name, input, toolsetName };
+}
+
+// 导出文件剥离了 web_search 结果的 encrypted_content，缺了它 Anthropic 拒绝整条请求
+function hasReplayableServerResult(part) {
+    const content = part.result?.content;
+    if (!Array.isArray(content)) return true;
+    return content.every(
+        (item) => item?.type !== 'web_search_result' || typeof item.encrypted_content === 'string'
+    );
+}
+
+function keepsServerToolUse(part, policy) {
+    return hasReplayableServerResult(part) && (!policy || policy.declaresServerTool(part.name));
+}
+
+function toClaudeImageBlock(image) {
+    const parsed = parseDataURL(image.url);
+    if (parsed) {
+        return {
+            type: 'image',
+            source: { type: 'base64', media_type: parsed.mimeType, data: parsed.base64 }
+        };
+    }
+    if (/^https?:\/\//i.test(image.url)) {
+        return { type: 'image', source: { type: 'url', url: image.url } };
+    }
+    return null;
+}
+
+function buildClaudeUserMessage(text, images) {
+    const imageBlocks = images.map(toClaudeImageBlock).filter(Boolean);
+    return {
+        role: 'user',
+        content: imageBlocks.length > 0 ? [{ type: 'text', text }, ...imageBlocks] : text
+    };
+}
+
+/**
+ * 把一组 parts 转换为 Claude content array + 收集需要配对 tool_result 的原生调用
+ *
+ * state.messages 是唯一消息真相源：tool_call.result 已写回 part。XML 模式的调用、
+ * 以及本次请求无法以原生形式回放的调用不进 content，由 appendXmlToolResultsForMessage 转成 XML 文本
+ *
+ * @param {Array} parts
+ * @param {Object|null} policy createToolReplayPolicy 的结果
+ */
+function partsToClaudeContent(parts, policy) {
     const content = [];
-    const toolCallParts = [];
+    const toolUses = [];
+    const degradedCalls = new Set();
     // part → claudeId 映射：同 part 双次调 getMappedId 在缺 idMap 槽时会各走 fallback
     // 返回不同的临时 id，导致 tool_use.id 与下方 tool_result.tool_use_id 不配对触发
     // Anthropic 400。此 Map 在 push tool_use 那一刻固化 id，配对消费方按引用复用同一值。
@@ -110,7 +247,8 @@ function partsToClaudeContent(parts) {
                 }
                 break;
             case PartType.TEXT:
-                content.push({ type: 'text', text: p.text });
+                // 空白文本块会被拒绝（text content blocks must contain non-whitespace text）
+                if (p.text?.trim()) content.push({ type: 'text', text: p.text });
                 break;
             case PartType.MEDIA:
                 if (p.media === MediaKind.IMAGE) {
@@ -164,7 +302,10 @@ function partsToClaudeContent(parts) {
             }
             case PartType.TOOL_CALL: {
                 if (p.server) {
-                    // 服务端工具调用（web_search/code_execution）不走 native/XML 双协议，原样输出
+                    if (!keepsServerToolUse(p, policy)) {
+                        content.push({ type: 'text', text: describeServerToolCall(p) });
+                        break;
+                    }
                     content.push({
                         type: 'server_tool_use',
                         id: p.id,
@@ -178,58 +319,54 @@ function partsToClaudeContent(parts) {
                             content: p.result.content
                         });
                     }
-                } else {
-                    // XML 模式产生的工具调用以 <tool_use> 字符串形式存活于 TEXT part，
-                    // 不输出 native tool_use；对应结果由 appendXmlToolResults 追加
-                    if (p.mode === ToolMode.XML) break;
-                    // 多回复 BufferedSink 拦截的工具调用不下发 tool_use，下方 toolCallParts
-                    // 也不收集 → buildClaudeToolResultMessage 不会输出 tool_result
-                    if (p.state === ToolState.SKIPPED) break;
-                    const claudeId = getMappedId(p, 'claude');
-                    let input = p.args || {};
-                    if (typeof input === 'string') {
-                        try {
-                            input = JSON.parse(input);
-                        } catch {
-                            /* keep string */
-                        }
-                    }
-                    content.push({
-                        type: 'tool_use',
-                        id: claudeId,
-                        name: p.name,
-                        input,
-                        ...(p.toolsetName ? { toolset_name: p.toolsetName } : {})
-                    });
-                    toolCallIdMap.set(p, claudeId);
-                    toolCallParts.push(p);
+                    break;
                 }
+                // XML 模式产生的工具调用以 <tool_use> 字符串形式存活于 TEXT part，
+                // 不输出 native tool_use；对应结果由 appendXmlToolResultsForMessage 追加
+                if (p.mode === ToolMode.XML) break;
+                // 多回复 BufferedSink 拦截的工具调用不下发 tool_use，也不配对 tool_result
+                if (p.state === ToolState.SKIPPED) break;
+                const toolUse = resolveToolUse(p, policy);
+                if (!toolUse) {
+                    degradedCalls.add(p);
+                    break;
+                }
+                const claudeId = getMappedId(p, 'claude');
+                content.push({
+                    type: 'tool_use',
+                    id: claudeId,
+                    name: toolUse.name,
+                    input: toolUse.input,
+                    ...(toolUse.toolsetName ? { toolset_name: toolUse.toolsetName } : {})
+                });
+                toolCallIdMap.set(p, claudeId);
+                toolUses.push({ part: p, toolsetName: toolUse.toolsetName });
                 break;
             }
         }
     }
 
-    return { content, toolCallParts, toolCallIdMap };
+    return { content, toolUses, toolCallIdMap, degradedCalls };
 }
 
 /**
- * 把 tool_call parts 转为 Claude 的 user role tool_result 消息
+ * 把原生调用的结果转为 Claude 的 user role tool_result 消息
  *
  * idMap 必须由 partsToClaudeContent 在生成 tool_use 时同步 set 进来。直接二次调
  * getMappedId 在 part.idMap 缺槽时会再走一次 generateFormatId fallback 返回与
  * 上方 tool_use.id 完全不同的随机 id，触发 Anthropic 'tool_use_id … not found' 400。
  *
- * @param {Array} toolCallParts
+ * @param {Array<{ part: Object, toolsetName: string|null }>} toolUses
  * @param {Map<Object, string>} idMap part → 上方 tool_use.id 的精确映射
  */
-function buildClaudeToolResultMessage(toolCallParts, idMap) {
-    if (toolCallParts.length === 0) return null;
-    const toolResults = toolCallParts.map((p) => {
+function buildClaudeToolResultMessage(toolUses, idMap) {
+    if (toolUses.length === 0) return null;
+    const toolResults = toolUses.map(({ part: p, toolsetName }) => {
         const block = {
             type: 'tool_result',
             tool_use_id: idMap.get(p),
-            // 工具集成员的结果必须带回同一个 toolset_name，否则整条请求被拒
-            ...(p.toolsetName ? { toolset_name: p.toolsetName } : {}),
+            // 工具集成员的结果必须带回与调用一致的 toolset_name，否则整条请求被拒
+            ...(toolsetName ? { toolset_name: toolsetName } : {}),
             content: p.result ? buildClaudeToolResultContent(p.result) : TOOL_INTERRUPTED_MESSAGE
         };
         // 老化/中断/失败的 tool 结果透传 is_error，Anthropic 据此让模型走错误恢复路径
@@ -243,37 +380,13 @@ function buildClaudeToolResultMessage(toolCallParts, idMap) {
 }
 
 /**
- * 构建 Claude tool_result 的 content
- *
- * 失败结果 schema {error, is_error, ...} 与任意非 .content 结构（bash {stdout,stderr}、
- * 自定义 MCP）若仅取 .content 会丢成空串让模型看不到错误原因。统一通过 stringifyToolResult
- * 兜底序列化保留信息。
+ * 构建 Claude tool_result 的 content：有图片时为 text + image 数组，否则为文本
  */
 function buildClaudeToolResultContent(result) {
-    if (!result) return '';
-
-    // 有媒体时返回 content+image 数组
-    if (result.media && result.media.length > 0) {
-        const parts = [];
-        const textBody = stringifyToolResult(result, '');
-        if (textBody) {
-            parts.push({ type: 'text', text: textBody });
-        }
-        for (const m of result.media) {
-            if (m.type === MediaKind.IMAGE) {
-                const parsed = parseDataURL(m.url);
-                if (parsed) {
-                    parts.push({
-                        type: 'image',
-                        source: { type: 'base64', media_type: parsed.mimeType, data: parsed.base64 }
-                    });
-                }
-            }
-        }
-        return parts.length > 0 ? parts : textBody;
-    }
-
-    return stringifyToolResult(result, '');
+    const { text, images } = splitToolResultContent(result, '');
+    const imageBlocks = images.map(toClaudeImageBlock).filter(Boolean);
+    if (imageBlocks.length === 0) return text;
+    return [...(text ? [{ type: 'text', text }] : []), ...imageBlocks];
 }
 
 // ========== partsToAPIMessages ==========
@@ -284,9 +397,14 @@ function buildClaudeToolResultContent(result) {
  * 关键约束：Claude 要求 latest assistant message 的 thinking blocks 与原响应一致。
  * 工具调用 continuation 在 UI 层合并为一条消息（mergeContinuation 给新轮 parts 打 _turn），
  * 转 API 时按 _turn 拆回独立 assistant + tool_result 序列，避免触发"thinking modified"校验。
+ * 内容全被跳过的消息不输出（空消息会被拒绝），相邻同角色消息由 Anthropic 合并为一轮
+ *
+ * @param {Array} msgs
+ * @param {{ declaredTools?: Array }} [opts] declaredTools 为本次请求实际声明的原生工具
  */
-function partsToAPIMessages(msgs, _opts = {}) {
+function partsToAPIMessages(msgs, opts = {}) {
     const out = [];
+    const policy = createToolReplayPolicy(opts.declaredTools);
 
     for (const msg of msgs) {
         if (msg.error) continue;
@@ -300,31 +418,32 @@ function partsToAPIMessages(msgs, _opts = {}) {
 
         const role = msg.role;
         const turnGroups = groupPartsByTurn(msg.parts || []);
-        // 空 parts 也要产生一条空消息占位（兼容历史行为）
-        if (turnGroups.size === 0) turnGroups.set(0, []);
         const sortedTurns = [...turnGroups.keys()].sort((a, b) => a - b);
 
         for (const turn of sortedTurns) {
             const turnParts = turnGroups.get(turn);
-            const { content, toolCallParts, toolCallIdMap } = partsToClaudeContent(turnParts);
-            // 该 turn 内所有 part 都被跳过（XML 模式或被过滤的 thinking）
-            if (content.length === 0 && toolCallParts.length === 0 && turnParts.length > 0) {
-                continue;
+            const { content, toolUses, toolCallIdMap, degradedCalls } = partsToClaudeContent(
+                turnParts,
+                policy
+            );
+            if (content.length > 0) {
+                const outContent =
+                    content.length === 1 && content[0].type === 'text' ? content[0].text : content;
+                out.push({ role, content: outContent });
             }
-            if (content.length === 0) {
-                content.push({ type: 'text', text: '' });
-            }
-            const outContent =
-                content.length === 1 && content[0].type === 'text' ? content[0].text : content;
-            out.push({ role, content: outContent });
 
-            const toolResultMsg = buildClaudeToolResultMessage(toolCallParts, toolCallIdMap);
+            const toolResultMsg = buildClaudeToolResultMessage(toolUses, toolCallIdMap);
             if (toolResultMsg) out.push(toolResultMsg);
-        }
 
-        // XML 模式 tool_call 配对追加紧跟在本条 assistant 之后（per-turn 内嵌）
-        if (msg.role === Role.ASSISTANT) {
-            appendXmlToolResultsForMessage(out, msg);
+            // XML 模式与无法原生回放的调用，配对紧跟在本轮输出之后
+            if (role === Role.ASSISTANT) {
+                appendXmlToolResultsForMessage(
+                    out,
+                    { parts: turnParts },
+                    buildClaudeUserMessage,
+                    (p) => p.mode === ToolMode.XML || degradedCalls.has(p)
+                );
+            }
         }
     }
 
@@ -342,7 +461,7 @@ function parseResponse(data, options = {}) {
     }
     const xmlMode = options.isXmlMode === true;
 
-    // 1. 优先检测原生工具调用 — 不早 return，下方统一抽取 thinking blocks/signatures/items
+    // 优先检测原生工具调用 — 不早 return，下方统一抽取 thinking blocks/signatures/items
     // 让 saveAssistantMessage 落库的 part 含完整 thinking，下轮 resendWithToolResults 重发时
     // Claude 校验 latest assistant 的 thinking blocks 与原响应一致才不会 400 'thinking modified'
     const toolCalls = [];
@@ -356,28 +475,6 @@ function parseResponse(data, options = {}) {
                 mode: ToolMode.NATIVE,
                 idMap: generateIdSet(block.id || '', 'claude')
             });
-        }
-    }
-
-    // 2. XML 兜底：仅在原生 tool_use 不存在时检测（XML/native 互斥）
-    if (xmlMode && toolCalls.length === 0) {
-        let allText = '';
-        for (const block of data.content) {
-            if (block.type === 'text') {
-                allText += block.text;
-            }
-        }
-
-        if (allText) {
-            const xmlToolCalls = extractXMLToolCalls(allText);
-            if (xmlToolCalls.length > 0) {
-                logger.debug('[claude] 检测到 XML 工具调用:', xmlToolCalls.length);
-                return {
-                    toolCalls: xmlToolCalls.map((tc) => ({ ...tc, mode: ToolMode.XML })),
-                    content: allText,
-                    hasToolCalls: true
-                };
-            }
         }
     }
 
@@ -404,18 +501,17 @@ function parseResponse(data, options = {}) {
                 contentParts.push({ type: 'text', text: thinkParsedText });
             }
         } else if (block.type === 'thinking') {
-            thinkingContent += (thinkingContent ? '\n\n---\n\n' : '') + block.thinking;
-            thinkingBlocks.push(block.thinking);
+            // display 为 omitted 时 thinking 为空串，签名仍是续发工具结果必须原样带回的部分
+            const text = block.thinking || '';
+            if (text) thinkingContent += (thinkingContent ? '\n\n---\n\n' : '') + text;
+            thinkingBlocks.push(text);
             thinkingSigs.push(block.signature || null);
-            thinkingItems.push({
-                type: 'thinking',
-                text: block.thinking,
-                signature: block.signature || null
-            });
-            contentParts.push({ type: 'thinking', text: block.thinking });
+            thinkingItems.push({ type: 'thinking', text, signature: block.signature || null });
+            contentParts.push({ type: 'thinking', text, signature: block.signature || null });
         } else if (block.type === 'redacted_thinking') {
             // 安全过滤产生的加密 thinking 块，必须原样回传给 API
             thinkingItems.push({ type: 'redacted_thinking', data: block.data });
+            contentParts.push({ type: 'redacted_thinking', data: block.data });
         } else if (block.type === 'image') {
             const source = block.source;
             if (source.type === 'base64') {
@@ -475,7 +571,7 @@ function parseResponse(data, options = {}) {
     // 走 handleToolCallStream 分支；继续保留 pauseTurn 字段供服务端工具 continuation 使用
     const hasNativeToolCalls = toolCalls.length > 0 && data.stop_reason === 'tool_use';
 
-    return {
+    const reply = {
         content: textContent,
         claudeContent: data.content,
         thinkingContent: thinkingContent || null,
@@ -486,8 +582,20 @@ function parseResponse(data, options = {}) {
         toolCalls: hasNativeToolCalls ? toolCalls : undefined,
         hasToolCalls: hasNativeToolCalls,
         pauseTurn: data.stop_reason === 'pause_turn',
+        // 多回复的备选回复经 buildPartsFromReply 落库，签名来源随回复一起带上
+        signatureFormat: SignatureFormat.CLAUDE,
         stop
     };
+
+    // XML 兜底：仅在原生 tool_use 不存在时检测（XML/native 互斥），思考块照常落库
+    if (xmlMode && toolCalls.length === 0) {
+        const xmlReply = applyXMLToolCalls(reply, textContent);
+        if (xmlReply) {
+            logger.debug('[claude] 检测到 XML 工具调用:', xmlReply.toolCalls.length);
+            return xmlReply;
+        }
+    }
+    return reply;
 }
 
 // ========== 工具构造 ==========
@@ -510,7 +618,6 @@ const CODE_EXECUTION_BETAS = Object.freeze([
     'files-api-2025-04-14'
 ]);
 
-const COMPUTER_TOOLSET_TYPE = 'computer_toolset_20260801';
 const COMPUTER_GUI_PERMISSIONS = Object.freeze(['mouse', 'keyboard', 'screenshot']);
 
 function isComputerPermissionAllowed(permissions, permission) {

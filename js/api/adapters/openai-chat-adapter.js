@@ -5,10 +5,10 @@
  */
 
 import { logger } from '../../utils/logger.js';
-import { PartType, MediaKind, Role, ToolMode, ToolState } from '../../messages/schema.js';
+import { PartType, MediaKind, Role, ToolMode } from '../../messages/schema.js';
 import { parseDataURL } from '../../utils/file-helpers.js';
 import { parseMarkdownImages } from '../../utils/markdown-image-parser.js';
-import { extractXMLToolCalls, appendXmlToolResultsForMessage } from '../../tools/xml-formatter.js';
+import { applyXMLToolCalls, appendXmlToolResultsForMessage } from '../../tools/xml-formatter.js';
 import { parseThinkTags } from '../../stream/think-tag-parser.js';
 import { isVideoUrl } from '../../utils/media.js';
 import { OpenAIStreamParser, parseOpenAIStream } from '../../stream/parser-openai.js';
@@ -16,7 +16,6 @@ import { normalizeOpenAIChatStop } from '../../messages/stop-reason.js';
 
 import {
     isTextFile,
-    stringifyToolResult,
     buildOpenAIAuthHeaders,
     assembleOpenAIConversation,
     applyOpenAITools,
@@ -26,15 +25,139 @@ import {
     resolveOpenAIVerbosity
 } from './openai-shared.js';
 import { getMappedId, ensureIdMap } from '../format-converter.js';
+import {
+    splitPartsByTurn,
+    isNativeToolCall,
+    isServerToolCall,
+    describeServerToolCall
+} from './history-replay.js';
+import { splitToolResultContent } from '../../messages/tool-results.js';
 
 // ========== partsToAPIMessages ==========
+
+/**
+ * 文本、媒体与文件 part → Chat Completions 的 content 项；空文本不输出
+ * assistant 消息只能回放文本与图片，视频与音频换成说明文字
+ * @returns {Object|null}
+ */
+function toChatContentItem(p, role) {
+    switch (p.type) {
+        case PartType.TEXT:
+            return p.text ? { type: 'text', text: p.text } : null;
+        case PartType.MEDIA:
+            if (p.media === MediaKind.IMAGE) {
+                return { type: 'image_url', image_url: { url: p.url } };
+            }
+            if (role === Role.ASSISTANT) {
+                return {
+                    type: 'text',
+                    text: `[${p.media === MediaKind.VIDEO ? '视频' : '音频'}附件已省略]`
+                };
+            }
+            if (p.media === MediaKind.VIDEO) {
+                return { type: 'video_url', video_url: { url: p.url, mime_type: p.mime } };
+            }
+            if (p.media === MediaKind.AUDIO) {
+                // OpenAI input_audio 需要纯 base64 和简短格式名
+                const audioParsed = parseDataURL(p.url);
+                if (!audioParsed) return null;
+                const fmt = (audioParsed.mimeType || '').split('/').pop() || 'wav';
+                return {
+                    type: 'input_audio',
+                    input_audio: { data: audioParsed.base64, format: fmt }
+                };
+            }
+            return null;
+        case PartType.FILE:
+            if (isTextFile(p)) {
+                return { type: 'text', text: `<document name="${p.name}">\n${p.url}\n</document>` };
+            }
+            return { type: 'file', file: { filename: p.name, file_data: p.url } };
+        default:
+            return null;
+    }
+}
+
+function toChatContent(contentItems) {
+    if (contentItems.length === 0) return '';
+    if (contentItems.length === 1 && contentItems[0].type === 'text') return contentItems[0].text;
+    return contentItems;
+}
+
+function buildChatUserMessage(text, images) {
+    if (images.length === 0) return { role: 'user', content: text };
+    return {
+        role: 'user',
+        content: [
+            { type: 'text', text },
+            ...images.map((image) => ({ type: 'image_url', image_url: { url: image.url } }))
+        ]
+    };
+}
+
+/**
+ * 一轮 assistant 输出：assistant（文本 + tool_calls）→ 每个调用一条 tool 消息；
+ * tool 消息只能是文本，结果里的图片放进紧随其后的一条 user 消息
+ */
+function pushAssistantTurn(out, turnParts) {
+    const contentItems = [];
+    const toolCalls = [];
+    const callParts = [];
+    // 同一 part 两次取 id 必须一致，否则 tool_calls 与 tool 消息配对 400
+    const toolCallIdMap = new Map();
+
+    for (const p of turnParts) {
+        if (p.type === PartType.THINKING) continue;
+        if (p.type !== PartType.TOOL_CALL) {
+            const item = toChatContentItem(p, Role.ASSISTANT);
+            if (item) contentItems.push(item);
+            continue;
+        }
+        if (isServerToolCall(p)) {
+            contentItems.push({ type: 'text', text: describeServerToolCall(p) });
+            continue;
+        }
+        // XML 模式的调用经 appendXmlToolResultsForMessage 回放；多回复拦截的调用不回放
+        if (!isNativeToolCall(p)) continue;
+        const openaiId = getMappedId(p, 'openai');
+        toolCallIdMap.set(p, openaiId);
+        toolCalls.push({
+            id: openaiId,
+            type: 'function',
+            function: {
+                name: p.name,
+                arguments: typeof p.args === 'string' ? p.args : JSON.stringify(p.args || {})
+            }
+        });
+        callParts.push(p);
+    }
+
+    // 全部被跳过的 assistant 不输出，空 assistant 会被拒绝
+    if (contentItems.length === 0 && toolCalls.length === 0) return;
+    const assistantMessage = { role: 'assistant', content: toChatContent(contentItems) };
+    if (toolCalls.length > 0) assistantMessage.tool_calls = toolCalls;
+    out.push(assistantMessage);
+
+    const imageItems = [];
+    for (const p of callParts) {
+        const { text, images } = splitToolResultContent(p.result);
+        out.push({ role: 'tool', tool_call_id: toolCallIdMap.get(p), content: text });
+        if (images.length > 0) {
+            imageItems.push(
+                { type: 'text', text: `[${p.name} 返回的图片]` },
+                ...images.map((image) => ({ type: 'image_url', image_url: { url: image.url } }))
+            );
+        }
+    }
+    if (imageItems.length > 0) out.push({ role: 'user', content: imageItems });
+}
 
 /**
  * 新格式 → OpenAI Chat Completions 消息数组
  *
  * thinking parts 被忽略（reasoning 由 API 参数控制）。
- * tool_call 拆分为 assistant.tool_calls + 独立 role:"tool" 消息。
- * 旧格式消息（无 parts[]）直接透传。
+ * 工具循环续作合并成的 assistant 消息按 _turn 拆回每一步：assistant.tool_calls → tool 结果，
+ * 否则最终回答会排到调用之前、多步调用被当成同一步的并行调用
  */
 function partsToAPIMessages(msgs, _opts = {}) {
     const out = [];
@@ -42,133 +165,24 @@ function partsToAPIMessages(msgs, _opts = {}) {
     for (const msg of msgs) {
         if (msg.error) continue;
 
-        const role = msg.role;
-        const contentItems = [];
-        const toolCalls = [];
-        let hasToolCalls = false;
-        const sourcePartCount = (msg.parts || []).length;
-
-        // 旧数据未补齐 idMap 时 getMappedId 每次返回新临时 id，会导致同一 part 在
-        // tool_use 分支(L95)和 tool_result 分支(L134)拿到不同 id，OpenAI API 配对 400。
-        // 入口主动 ensureIdMap 持久化三槽 + 局部 Map 兜底，保证同 part 两次取值一致
+        // 旧数据未补齐 idMap 时 getMappedId 每次返回新临时 id，tool_calls 与 tool 消息会配对错位
         for (const p of msg.parts || []) {
             if (p.type === PartType.TOOL_CALL) ensureIdMap(p);
         }
-        const toolCallIdMap = new Map();
 
-        for (const p of msg.parts || []) {
-            switch (p.type) {
-                case PartType.TEXT:
-                    contentItems.push({ type: 'text', text: p.text });
-                    break;
-                case PartType.MEDIA:
-                    if (p.media === MediaKind.IMAGE) {
-                        contentItems.push({ type: 'image_url', image_url: { url: p.url } });
-                    } else if (p.media === MediaKind.VIDEO) {
-                        contentItems.push({
-                            type: 'video_url',
-                            video_url: { url: p.url, mime_type: p.mime }
-                        });
-                    } else if (p.media === MediaKind.AUDIO) {
-                        // OpenAI input_audio 需要纯 base64 和简短格式名
-                        const audioParsed = parseDataURL(p.url);
-                        if (audioParsed) {
-                            const fmt = (audioParsed.mimeType || '').split('/').pop() || 'wav';
-                            contentItems.push({
-                                type: 'input_audio',
-                                input_audio: { data: audioParsed.base64, format: fmt }
-                            });
-                        }
-                    }
-                    break;
-                case PartType.FILE: {
-                    if (isTextFile(p)) {
-                        contentItems.push({
-                            type: 'text',
-                            text: `<document name="${p.name}">\n${p.url}\n</document>`
-                        });
-                    } else {
-                        contentItems.push({
-                            type: 'file',
-                            file: { filename: p.name, file_data: p.url }
-                        });
-                    }
-                    break;
-                }
-                case PartType.TOOL_CALL:
-                    // XML 模式产生的工具调用以 <tool_use> 字符串形式存活于 TEXT part，
-                    // 不输出 native block；对应工具结果由末尾追加的 XML 字符串临时消息承载
-                    if (p.mode === ToolMode.XML) break;
-                    // 多回复模式 BufferedSink 拦截的 tool_call —— 既不输出 tool_use 也不输出
-                    // tool_result（schema.ToolState.SKIPPED 注释说明），避免孤儿 tool_use 触发 400
-                    if (p.state === ToolState.SKIPPED) break;
-                    hasToolCalls = true;
-                    {
-                        const openaiId = getMappedId(p, 'openai');
-                        toolCallIdMap.set(p, openaiId);
-                        toolCalls.push({
-                            id: openaiId,
-                            type: 'function',
-                            function: {
-                                name: p.name,
-                                arguments:
-                                    typeof p.args === 'string'
-                                        ? p.args
-                                        : JSON.stringify(p.args || {})
-                            }
-                        });
-                    }
-                    break;
-                // THINKING: 忽略
-            }
+        if (msg.role !== Role.ASSISTANT) {
+            // user 消息保留空 content 占位（音频 parseDataURL 失败等场景）
+            const items = (msg.parts || [])
+                .map((p) => toChatContentItem(p, msg.role))
+                .filter(Boolean);
+            out.push({ role: msg.role, content: toChatContent(items) });
+            continue;
         }
 
-        let content;
-        if (contentItems.length === 0) {
-            content = '';
-        } else if (contentItems.length === 1 && contentItems[0].type === 'text') {
-            content = contentItems[0].text;
-        } else {
-            content = contentItems;
-        }
-
-        const outMsg = { role, content };
-        if (hasToolCalls) outMsg.tool_calls = toolCalls;
-
-        // ASSISTANT 全 part 被跳过（XML mode tool_call / SKIPPED / thinking 忽略）→ 整条不 push，
-        // 避免 OpenAI API 收到空 assistant 触发 400（对齐 Gemini adapter:160）。
-        // USER 消息保留空 content 占位（音频 parseDataURL 失败等场景需要保留空消息）
-        const assistantAllSkipped =
-            role === Role.ASSISTANT &&
-            sourcePartCount > 0 &&
-            contentItems.length === 0 &&
-            toolCalls.length === 0;
-        if (assistantAllSkipped) continue;
-
-        out.push(outMsg);
-
-        // 拆出 tool 结果为独立消息（native 模式）
-        if (toolCalls.length > 0) {
-            for (const p of msg.parts) {
-                if (p.type !== PartType.TOOL_CALL) continue;
-                if (p.mode === ToolMode.XML) continue;
-                // SKIPPED 的 tool_call 上方未输出 tool_use，此处也必须跳过 tool_result 配对
-                if (p.state === ToolState.SKIPPED) continue;
-                const resultContent = stringifyToolResult(p.result);
-                // 用 toolCallIdMap 复用上方 push tool_use 时的 id，保证同 part 配对一致；
-                // ensureIdMap 已 pass 过理论上 fallback 不会触发，留作极端防御（手动构造 part 等）
-                out.push({
-                    role: 'tool',
-                    tool_call_id: toolCallIdMap.get(p) || getMappedId(p, 'openai'),
-                    content: resultContent,
-                    _toolName: p.name
-                });
-            }
-        }
-
-        // XML 模式 tool_call 配对追加紧跟在本条 assistant 之后（per-turn 内嵌）
-        if (msg.role === Role.ASSISTANT) {
-            appendXmlToolResultsForMessage(out, msg);
+        for (const { parts: turnParts } of splitPartsByTurn(msg.parts)) {
+            pushAssistantTurn(out, turnParts);
+            // XML 模式 tool_call 配对追加紧跟在本轮输出之后
+            appendXmlToolResultsForMessage(out, { parts: turnParts }, buildChatUserMessage);
         }
     }
 
@@ -212,22 +226,10 @@ function parseResponse(data, options = {}) {
         return {
             toolCalls: toolCalls,
             content: message.content || '',
+            // 调用工具的那一轮同样显示思维链
+            thinkingContent: message.reasoning_content || message.reasoning || null,
             hasToolCalls: true
         };
-    }
-
-    // 兜底：检测 XML <tool_use>
-    if (xmlMode && message.content && typeof message.content === 'string') {
-        const xmlToolCalls = extractXMLToolCalls(message.content);
-
-        if (xmlToolCalls.length > 0) {
-            logger.debug('[openai-chat] 检测到 XML 工具调用:', xmlToolCalls.length);
-            return {
-                toolCalls: xmlToolCalls.map((tc) => ({ ...tc, mode: ToolMode.XML })),
-                content: message.content,
-                hasToolCalls: true
-            };
-        }
     }
 
     // 处理不同的 content 格式
@@ -326,7 +328,7 @@ function parseResponse(data, options = {}) {
         contentParts.unshift({ type: 'thinking', text: nativeReasoning });
     }
 
-    return {
+    const reply = {
         content: Array.isArray(content)
             ? textContent
             : extractedThinkingContent
@@ -336,6 +338,16 @@ function parseResponse(data, options = {}) {
         contentParts: contentParts.length > 0 ? contentParts : null,
         stop
     };
+
+    // 兜底：检测 XML <tool_use>，原生思维链照常落库
+    if (xmlMode) {
+        const xmlReply = applyXMLToolCalls(reply, reply.content);
+        if (xmlReply) {
+            logger.debug('[openai-chat] 检测到 XML 工具调用:', xmlReply.toolCalls.length);
+            return xmlReply;
+        }
+    }
+    return reply;
 }
 
 // ========== 工具构造 ==========

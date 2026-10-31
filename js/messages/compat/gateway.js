@@ -2,6 +2,7 @@ import {
     SCHEMA_VERSION,
     Role,
     PartType,
+    SignatureFormat,
     createMessage,
     textPart,
     isSchemaFormatParts,
@@ -49,15 +50,47 @@ function normalizeError(value) {
     };
 }
 
-function normalizeParts(parts) {
-    let changed = false;
-    const normalized = parts.map((part) => {
-        if (part?.type !== PartType.TOOL_CALL) return part;
+/**
+ * 旧数据的思考签名没有来源格式，按同一条消息里只属于某一家的痕迹推断；推断不出时保持原样
+ * @param {Object} part 带签名的 thinking part
+ * @param {{ meta?: Object, parts: Array }} context 所在消息或回复
+ * @returns {string|null}
+ */
+function inferSignatureFormat(part, { meta, parts }) {
+    const raw = meta?.raw || {};
+    if (raw.claude?.thinkingSignature === part.signature) return SignatureFormat.CLAUDE;
+    if (raw.gemini?.thoughtSignature === part.signature) return SignatureFormat.GEMINI;
+    const toolCalls = parts.filter((p) => p?.type === PartType.TOOL_CALL);
+    if (toolCalls.some((p) => p.thoughtSignature)) return SignatureFormat.GEMINI;
+    const claudeOnly =
+        parts.some((p) => p?.type === PartType.THINKING && p.redacted) ||
+        toolCalls.some(
+            (p) =>
+                p.server || p.toolsetName || (typeof p.id === 'string' && p.id.startsWith('toolu_'))
+        );
+    return claudeOnly ? SignatureFormat.CLAUDE : null;
+}
+
+function normalizePart(part, context) {
+    if (part?.type === PartType.TOOL_CALL) {
         if (part.idMap?.openai && part.idMap?.claude && part.idMap?.gemini) return part;
         const copy = { ...part, ...(part.idMap ? { idMap: { ...part.idMap } } : {}) };
         ensureIdMap(copy);
-        changed = true;
         return copy;
+    }
+    if (part?.type === PartType.THINKING && part.signature && !part.signatureFormat) {
+        const signatureFormat = inferSignatureFormat(part, context);
+        return signatureFormat ? { ...part, signatureFormat } : part;
+    }
+    return part;
+}
+
+function normalizeParts(parts, meta) {
+    let changed = false;
+    const normalized = parts.map((part) => {
+        const next = normalizePart(part, { meta, parts });
+        changed ||= next !== part;
+        return next;
     });
     return { parts: changed ? normalized : parts, changed };
 }
@@ -69,7 +102,7 @@ function normalizeReply(reply) {
         (current.parts.length === 0 || isSchemaFormatParts(current.parts));
     if (!canonicalParts) return { reply: migrateReply(current), changed: true };
 
-    const normalizedParts = normalizeParts(current.parts);
+    const normalizedParts = normalizeParts(current.parts, current.meta);
     const hasLegacy = hasLegacyMessageFields(current);
     const meta = current.meta && typeof current.meta === 'object' ? current.meta : {};
     const ts =
@@ -114,7 +147,10 @@ function normalizeCanonicalMessages(messages, sessionId) {
         const ts =
             typeof current.ts === 'number' && current.ts > 0 ? current.ts : Date.now() + index;
         const meta = current.meta && typeof current.meta === 'object' ? current.meta : {};
-        const normalizedParts = normalizeParts(Array.isArray(current.parts) ? current.parts : []);
+        const normalizedParts = normalizeParts(
+            Array.isArray(current.parts) ? current.parts : [],
+            current.meta
+        );
         let replies = current.replies ?? null;
         if (replies?.all && Array.isArray(replies.all)) {
             let repliesChanged = false;

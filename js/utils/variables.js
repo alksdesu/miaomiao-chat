@@ -30,6 +30,15 @@ export function processVariables(template, options = {}) {
 }
 
 /**
+ * 从 state（或其快照）取 {{char}} / {{user}} 的替换值（预填充设置里的角色名与用户名）
+ * @param {{charName?: string, userName?: string}|null} source
+ * @returns {{charName?: string, userName?: string}}
+ */
+export function templateNamesOf(source) {
+    return { charName: source?.charName, userName: source?.userName };
+}
+
+/**
  * 获取预填充消息（根据 API 格式返回对应格式）
  * 注意：此函数依赖 state，将在实际使用时从 state 获取数据
  * @param {Array} prefillMessages - 预填充消息数组

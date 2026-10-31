@@ -114,22 +114,50 @@ function deduplicateMediaParts(parts) {
 }
 
 /**
+ * 中间格式的思考块是否需要落库：有文本，或文本为空但带签名（Claude display 为 omitted 时的思考块），
+ * 或 redacted_thinking；后两种虽不显示，续发时必须原样带回
+ */
+function isPersistedThinking(item) {
+    if (item?.type === 'redacted_thinking') return !!item.data;
+    return item?.type === 'thinking' && !!(item.text || item.signature);
+}
+
+function toThinkingPart(item, signatureFormat) {
+    if (item.type === 'redacted_thinking') {
+        return thinkingPart('', null, { redacted: true, data: item.data });
+    }
+    return thinkingPart(item.text || '', item.signature || null, {
+        signatureFormat: item.signature ? signatureFormat : null
+    });
+}
+
+/**
+ * Gemini 的思考文本按片段写进 contentParts，签名只记在消息级 thoughtSignature 上；
+ * contentParts 里的思考都没带签名时，把它挂到最后一段思考上，回放时才能放回原位。
+ * Claude 的签名绑定各自思考块的原文，不能这样挪用
+ */
+function attachMessageSignature(parts, signature, signatureFormat) {
+    if (!signature) return;
+    const thinkingParts = parts.filter((p) => p.type === PartType.THINKING && !p.redacted);
+    if (thinkingParts.length === 0 || thinkingParts.some((p) => p.signature)) return;
+    const last = thinkingParts[thinkingParts.length - 1];
+    last.signature = signature;
+    if (signatureFormat) last.signatureFormat = signatureFormat;
+}
+
+/**
  * 流式中间格式 contentParts → schema parts
- *   contentParts 元素 shape：{ type: 'text'|'thinking'|'image_url'|'video_url'|'audio_url'|'server_tool_use',
- *                              text?, url?, complete?, mimeType?, mime_type?, signature?,
- *                              id?, name?, input?, result? }
+ *   contentParts 元素 shape：{ type: 'text'|'thinking'|'redacted_thinking'|'image_url'|'video_url'|
+ *                              'audio_url'|'server_tool_use', text?, url?, complete?, mimeType?,
+ *                              mime_type?, signature?, data?, id?, name?, input?, result? }
  */
 function streamingContentPartsToSchema(contentParts, signatureFormat = null) {
     const parts = [];
     if (!Array.isArray(contentParts)) return parts;
 
     for (const p of contentParts) {
-        if (p.type === 'thinking' && p.text) {
-            parts.push(
-                thinkingPart(p.text, p.signature || null, {
-                    signatureFormat: p.signature ? signatureFormat : null
-                })
-            );
+        if (isPersistedThinking(p)) {
+            parts.push(toThinkingPart(p, signatureFormat));
         } else if (p.type === 'text' && p.text && p.text !== '(调用工具)') {
             parts.push(textPart(p.text));
         } else if (p.type === 'image_url' && p.complete && p.url) {
@@ -194,32 +222,22 @@ export function buildPartsFromStreamingState(streamingState = {}) {
 
     // contentParts 中是否已含 thinking？避免独立 thinking 参数重复输出
     const contentPartsHasThinking =
-        Array.isArray(contentParts) && contentParts.some((p) => p.type === 'thinking' && p.text);
+        Array.isArray(contentParts) && contentParts.some(isPersistedThinking);
 
     // 1. 思维链（优先 thinkingItems 顺序数组，含 redacted；其次 thinkingBlocks；最次 thinkingContent）
     if (!contentPartsHasThinking) {
         if (thinkingItems && thinkingItems.length > 0) {
             for (const item of thinkingItems) {
-                if (item.type === 'redacted_thinking' && item.data) {
-                    parts.push(thinkingPart('', null, { redacted: true, data: item.data }));
-                } else if (item.text) {
-                    parts.push(
-                        thinkingPart(item.text, item.signature || null, {
-                            signatureFormat: item.signature ? signatureFormat : null
-                        })
-                    );
-                }
+                if (isPersistedThinking(item)) parts.push(toThinkingPart(item, signatureFormat));
             }
         } else if (thinkingBlocks && thinkingBlocks.length > 0) {
             for (let i = 0; i < thinkingBlocks.length; i++) {
-                if (thinkingBlocks[i]) {
-                    const sig = thinkingSignatures?.[i] || null;
-                    parts.push(
-                        thinkingPart(thinkingBlocks[i], sig, {
-                            signatureFormat: sig ? signatureFormat : null
-                        })
-                    );
-                }
+                const item = {
+                    type: 'thinking',
+                    text: thinkingBlocks[i],
+                    signature: thinkingSignatures?.[i] || null
+                };
+                if (isPersistedThinking(item)) parts.push(toThinkingPart(item, signatureFormat));
             }
         } else if (thinkingContent) {
             const sig = thinkingSignature || thoughtSignature || null;
@@ -233,7 +251,9 @@ export function buildPartsFromStreamingState(streamingState = {}) {
 
     // 2. 内容部分：contentParts 优先，否则裸 textContent
     if (contentParts && contentParts.length > 0) {
-        parts = parts.concat(streamingContentPartsToSchema(contentParts, signatureFormat));
+        const contentSchemaParts = streamingContentPartsToSchema(contentParts, signatureFormat);
+        attachMessageSignature(contentSchemaParts, thoughtSignature, signatureFormat);
+        parts = parts.concat(contentSchemaParts);
     } else if (textContent && textContent !== '(调用工具)') {
         parts.push(textPart(textContent));
     }
@@ -338,23 +358,14 @@ export function buildPartsFromReply(reply) {
     // contentParts 中是否已含 thinking？与 buildPartsFromStreamingState 对齐，避免 thinking 重复输出
     // （OpenAI Responses parser 同时把 thinking 写入 thinkingContent 和 contentParts 数组）
     const contentPartsHasThinking =
-        Array.isArray(reply.contentParts) &&
-        reply.contentParts.some((p) => p.type === 'thinking' && p.text);
+        Array.isArray(reply.contentParts) && reply.contentParts.some(isPersistedThinking);
 
     // thinking：contentParts 含 thinking 时由 streamingContentPartsToSchema 渲染；
     // 否则优先 thinkingItems，再次 thinkingContent
     if (!contentPartsHasThinking) {
         if (Array.isArray(reply.thinkingItems) && reply.thinkingItems.length > 0) {
             for (const item of reply.thinkingItems) {
-                if (item.type === 'redacted_thinking' && item.data) {
-                    parts.push(thinkingPart('', null, { redacted: true, data: item.data }));
-                } else if (item.text) {
-                    parts.push(
-                        thinkingPart(item.text, item.signature || null, {
-                            signatureFormat: item.signature ? signatureFormat : null
-                        })
-                    );
-                }
+                if (isPersistedThinking(item)) parts.push(toThinkingPart(item, signatureFormat));
             }
         } else if (reply.thinkingContent) {
             const sig = reply.thinkingSignature || reply.thoughtSignature || null;
@@ -367,7 +378,12 @@ export function buildPartsFromReply(reply) {
     }
     // 内容：contentParts 优先，否则 reply.content 字符串
     if (reply.contentParts && reply.contentParts.length > 0) {
-        parts.push(...streamingContentPartsToSchema(reply.contentParts, signatureFormat));
+        const contentSchemaParts = streamingContentPartsToSchema(
+            reply.contentParts,
+            signatureFormat
+        );
+        attachMessageSignature(contentSchemaParts, reply.thoughtSignature, signatureFormat);
+        parts.push(...contentSchemaParts);
     } else if (reply.content) {
         parts.push(textPart(typeof reply.content === 'string' ? reply.content : ''));
     }

@@ -8,11 +8,13 @@
 import { logger } from '../../utils/logger.js';
 import { parseDataURL } from '../../utils/file-helpers.js';
 import { getMappedId } from '../format-converter.js';
-import { TOOL_INTERRUPTED_MESSAGE } from '../../utils/constants.js';
 import { injectToolsToOpenAI, getXMLInjectionStats } from '../../tools/tool-injection.js';
 import { clampToSupportedLevel } from '../reasoning.js';
+import { stringifyToolResult, splitToolResultContent } from '../../messages/tool-results.js';
 
-// ========== 通用判定与字符串化 ==========
+export { stringifyToolResult };
+
+// ========== 通用判定 ==========
 
 /**
  * 判断 FILE part 是否为纯文本内容（非 base64 数据）
@@ -22,41 +24,6 @@ export function isTextFile(p) {
     if (p.encoding === 'text') return true;
     if (p.encoding === 'base64') return false;
     return !parseDataURL(p.url);
-}
-
-// 工具结果可能含 DOM Node / 自循环对象（MCP 服务端不规范输出），
-// 裸 JSON.stringify 抛 'Converting circular structure to JSON' 会让整轮 partsToAPIMessages
-// 中断 → continuation 失败。replacer 在第二次遇到同对象时返回占位字符串
-function safeStringify(value) {
-    try {
-        return JSON.stringify(value);
-    } catch (_e) {
-        const seen = new WeakSet();
-        try {
-            return JSON.stringify(value, (_k, v) => {
-                if (v && typeof v === 'object') {
-                    if (seen.has(v)) return '[Circular]';
-                    seen.add(v);
-                }
-                return v;
-            });
-        } catch {
-            return '[unserializable tool result]';
-        }
-    }
-}
-
-export function stringifyToolResult(result, fallback = TOOL_INTERRUPTED_MESSAGE) {
-    if (result == null) return fallback;
-    if (typeof result === 'string') return result;
-    // executeToolCalls 失败 schema {error, is_error: true, ...} — 含 "Do NOT retry" 指令优先透传
-    if (result.is_error === true && typeof result.error === 'string') return result.error;
-    if (typeof result.content === 'string') return result.content;
-    // 历史兼容：仅含 error 字符串（无 is_error 标记）也透传
-    if (typeof result.error === 'string') return result.error;
-    if (result.content !== undefined) return safeStringify(result.content);
-    if (result.error !== undefined) return safeStringify({ error: result.error });
-    return safeStringify(result);
 }
 
 // ========== Responses API reasoning items 处理 ==========
@@ -139,12 +106,6 @@ export function getResponsesItemId(obj) {
     return obj.responseItemId || obj.itemId || obj.fcId || null;
 }
 
-// ========== Part 排序辅助 ==========
-
-export function getPartTurn(part) {
-    return part?._turn ?? 0;
-}
-
 /**
  * @param {Array} out
  * @param {Object} p tool_call part
@@ -167,8 +128,20 @@ export function pushResponsesFunctionCallPair(out, p, { includeItemId = true } =
     out.push({
         type: 'function_call_output',
         call_id: callId,
-        output: stringifyToolResult(p.result)
+        output: buildResponsesFunctionOutput(p.result)
     });
+}
+
+/**
+ * 带图片的结果用内容数组回传（截图等），纯文本结果仍是字符串
+ */
+function buildResponsesFunctionOutput(result) {
+    const { text, images } = splitToolResultContent(result);
+    if (images.length === 0) return text;
+    return [
+        ...(text ? [{ type: 'input_text', text }] : []),
+        ...images.map((image) => ({ type: 'input_image', image_url: image.url }))
+    ];
 }
 
 // ========== 会话装配 ==========

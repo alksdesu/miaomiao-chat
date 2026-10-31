@@ -9,6 +9,8 @@ import {
     XML_MAX_TOOL_CONTENT_LENGTH
 } from '../utils/constants.js';
 import { logger } from '../utils/logger.js';
+import { PartType, ToolMode } from '../messages/schema.js';
+import { splitToolResultContent } from '../messages/tool-results.js';
 
 // 工具 ID 生成计数器（避免短时间内重复）
 let toolIdCounter = 0;
@@ -50,37 +52,96 @@ export function buildXmlToolMessages(toolCalls, toolResults) {
     ];
 }
 
+function isXmlToolCall(part) {
+    return part.mode === ToolMode.XML;
+}
+
 /**
- * 把单条 assistant 消息中的 XML 模式 tool_call 配对追加 <tool_use> + <tool_use_result>
+ * 把一轮 assistant 输出中的 XML 模式 tool_call 配对追加 <tool_use> + <tool_use_result>
  * 作为一条 user 消息 push 到 adapter 输出末尾（在对应 assistant 紧后位置）
  *
  * base-parser.processXmlDetection 把原始 <tool_use> 块从 textContent 剥离，重发时
  * 前序 assistant TEXT part 已不含 tool_use；只追加 result 一侧会破坏 XML 协议对称性
  * 让 LLM 看到孤立的 tool_use_result。这里从 part.name/args/result 重建配对块。
  *
- * 5 个 adapter 的 partsToAPIMessages 在每条 assistant msg 输出之后调用一次（per-turn 内嵌），
- * 而非全量遍历后末尾合并——保证多轮工具调用与对应 assistant 的相邻关系。
+ * adapter 按 _turn 逐轮调用，保证多轮工具调用与对应那一轮 assistant 输出相邻。
+ * 结果里的图片不写进 XML 文本，交给各家按原生图片格式放进同一条 user 消息。
  *
  * @param {Array}  out adapter 输出的 API 消息数组（原地修改）
- * @param {Object} msg 单条 assistant 消息
+ * @param {{ parts: Array }} msg 一条 assistant 消息或其中一轮的 parts
+ * @param {(text: string, images: Array<{ url: string, mimeType: string }>) => Object} buildUserMessage
+ *     各家把 XML 文本与图片组装成 user 消息
+ * @param {(part: Object) => boolean} [shouldReplay] 默认只回放 XML 模式的调用；
+ *     本次请求无法以原生形式回放的调用也可经此转成 XML 文本
  */
-export function appendXmlToolResultsForMessage(out, msg) {
+export function appendXmlToolResultsForMessage(
+    out,
+    msg,
+    buildUserMessage,
+    shouldReplay = isXmlToolCall
+) {
     if (!Array.isArray(out) || !msg || !Array.isArray(msg.parts)) return;
 
     let xml = '';
+    const images = [];
     for (const p of msg.parts) {
-        if (p.type !== 'tool_call') continue;
-        if (p.mode !== 'xml') continue;
-        if (p.result == null) continue;
+        if (p.type !== PartType.TOOL_CALL || !shouldReplay(p)) continue;
+        // XML 模式未拿到结果的调用整对不回放；原生调用转写时按中断处理
+        if (p.result == null && p.mode === ToolMode.XML) continue;
         const argsText = typeof p.args === 'string' ? p.args : JSON.stringify(p.args ?? {});
-        const resultText = typeof p.result === 'string' ? p.result : JSON.stringify(p.result);
+        const result = splitToolResultContent(p.result);
+        images.push(...result.images);
         xml += `<tool_use>\n  <name>${escapeXML(p.name)}</name>\n  <arguments>${escapeXML(argsText)}</arguments>\n</tool_use>\n`;
-        xml += `<tool_use_result>\n  <name>${escapeXML(p.name)}</name>\n  <result>${escapeXML(resultText)}</result>\n</tool_use_result>\n`;
+        xml += `<tool_use_result>\n  <name>${escapeXML(p.name)}</name>\n  <result>${escapeXML(result.text)}</result>\n</tool_use_result>\n`;
     }
 
     if (xml.trim()) {
-        out.push({ role: 'user', content: xml.trim() });
+        out.push(buildUserMessage(xml.trim(), images));
     }
+}
+
+/**
+ * 非流式回复的整段正文：拆出 XML 工具调用，正文去掉调用块（与流式解析的展示文本一致，
+ * 否则调用块既留在正文里、又由 appendXmlToolResultsForMessage 再回放一遍）
+ * @param {string} text
+ * @returns {{ toolCalls: Array, displayText: string }}
+ */
+export function splitXMLToolCalls(text) {
+    const accumulator = new XMLStreamAccumulator();
+    accumulator.processDelta(text || '');
+    const displayText = accumulator.flush();
+    return { toolCalls: accumulator.getCompletedCalls(), displayText };
+}
+
+/**
+ * 非流式回复检测到 XML 工具调用时，正文与 contentParts 里的文本换成去掉调用块的正文，思考与媒体保留
+ * @param {Object} reply adapter.parseResponse 的解析结果
+ * @param {string} text 回复正文
+ * @returns {Object|null} 没有 XML 工具调用时返回 null
+ */
+export function applyXMLToolCalls(reply, text) {
+    const { toolCalls, displayText } = splitXMLToolCalls(text);
+    if (toolCalls.length === 0) return null;
+
+    const contentParts = [];
+    let textPlaced = false;
+    for (const part of reply.contentParts || []) {
+        if (part.type !== 'text') {
+            contentParts.push(part);
+            continue;
+        }
+        if (!textPlaced && displayText) contentParts.push({ type: 'text', text: displayText });
+        textPlaced = true;
+    }
+    if (!textPlaced && displayText) contentParts.push({ type: 'text', text: displayText });
+
+    return {
+        ...reply,
+        content: displayText,
+        contentParts: contentParts.length > 0 ? contentParts : null,
+        toolCalls: toolCalls.map((tc) => ({ ...tc, mode: ToolMode.XML })),
+        hasToolCalls: true
+    };
 }
 
 /**

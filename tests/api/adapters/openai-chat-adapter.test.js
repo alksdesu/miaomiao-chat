@@ -238,7 +238,86 @@ describe('toOpenAIMessages', () => {
         expect(out[1].role).toBe('tool');
         expect(out[1].tool_call_id).toBe('openai_tc_1');
         expect(out[1].content).toBe('找到了');
-        expect(out[1]._toolName).toBe('search');
+        // 私有字段不能发到线上，严格校验的兼容服务会拒绝整条请求
+        expect(Object.keys(out[1]).sort()).toEqual(['content', 'role', 'tool_call_id']);
+    });
+
+    it('工具结果里的图片放进 tool 消息之后的一条 user 消息', () => {
+        const msgs = [
+            newMsg('assistant', [
+                {
+                    type: PartType.TOOL_CALL,
+                    id: 'tc_1',
+                    name: 'screenshot',
+                    args: {},
+                    result: {
+                        content: 'captured',
+                        media: [{ type: MediaKind.IMAGE, url: 'data:image/png;base64,shot' }]
+                    }
+                }
+            ])
+        ];
+        const out = openaiChatAdapter.partsToAPIMessages(msgs);
+        expect(out[1]).toEqual({ role: 'tool', tool_call_id: 'openai_tc_1', content: 'captured' });
+        expect(out[2]).toEqual({
+            role: 'user',
+            content: [
+                { type: 'text', text: '[screenshot 返回的图片]' },
+                { type: 'image_url', image_url: { url: 'data:image/png;base64,shot' } }
+            ]
+        });
+    });
+
+    it('_turn 合并的工具循环按轮拆回，最终回答排在工具结果之后', () => {
+        const msgs = [
+            newMsg('user', [{ type: PartType.TEXT, text: 'q' }]),
+            newMsg('assistant', [
+                { type: PartType.TEXT, text: '先查一下' },
+                { type: PartType.TEXT, text: '答案是 42', _turn: 2 },
+                {
+                    type: PartType.TOOL_CALL,
+                    id: 'tc_a',
+                    name: 'search',
+                    args: {},
+                    result: { content: 'r1' }
+                },
+                {
+                    type: PartType.TOOL_CALL,
+                    id: 'tc_b',
+                    name: 'fetch',
+                    args: {},
+                    result: { content: 'r2' },
+                    _turn: 1
+                }
+            ])
+        ];
+        const out = openaiChatAdapter.partsToAPIMessages(msgs);
+        expect(out.map((m) => m.role)).toEqual([
+            'user',
+            'assistant',
+            'tool',
+            'assistant',
+            'tool',
+            'assistant'
+        ]);
+        expect(out[1].content).toBe('先查一下');
+        expect(out[1].tool_calls.map((c) => c.function.name)).toEqual(['search']);
+        expect(out[3].tool_calls.map((c) => c.function.name)).toEqual(['fetch']);
+        expect(out[5]).toEqual({ role: 'assistant', content: '答案是 42' });
+    });
+
+    it('assistant 的视频与音频换成说明文字', () => {
+        const msgs = [
+            newMsg('assistant', [
+                { type: PartType.TEXT, text: '生成好了' },
+                { type: PartType.MEDIA, media: MediaKind.VIDEO, url: 'data:video/mp4;base64,v' }
+            ])
+        ];
+        const out = openaiChatAdapter.partsToAPIMessages(msgs);
+        expect(out[0].content).toEqual([
+            { type: 'text', text: '生成好了' },
+            { type: 'text', text: '[视频附件已省略]' }
+        ]);
     });
 
     it('tool_call args 为字符串时直接使用', () => {
@@ -281,10 +360,10 @@ describe('toOpenAIMessages', () => {
         expect(out[1].content).toBe('{"data":123}');
     });
 
-    it('空 parts 产生空 content', () => {
-        const msgs = [newMsg('assistant', [])];
+    it('没有内容的 assistant 不输出，user 保留空 content 占位', () => {
+        const msgs = [newMsg('user', [{ type: PartType.TEXT, text: '' }]), newMsg('assistant', [])];
         const out = openaiChatAdapter.partsToAPIMessages(msgs);
-        expect(out[0].content).toBe('');
+        expect(out).toEqual([{ role: 'user', content: '' }]);
     });
 });
 

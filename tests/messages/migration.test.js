@@ -57,6 +57,23 @@ describe('migrateSession', () => {
         expect(thinkingParts).toHaveLength(1);
         expect(thinkingParts[0].text).toBe('让我想想');
         expect(thinkingParts[0].signature).toBe('sig_1');
+        expect(thinkingParts[0].signatureFormat).toBe('claude');
+    });
+
+    it('Gemini 旧消息的 thoughtSignature 迁移后标记为 gemini 签名', () => {
+        const result = migrateSession([
+            {
+                id: 'g1',
+                role: 'assistant',
+                content: '回答',
+                thinkingContent: '想法',
+                thoughtSignature: 'gem_sig',
+                timestamp: 1000
+            }
+        ]);
+        const thinking = result.messages[0].parts.find((p) => p.type === PartType.THINKING);
+        expect(thinking.signature).toBe('gem_sig');
+        expect(thinking.signatureFormat).toBe('gemini');
     });
 
     it('tool 消息合并到 assistant 的 tool_call', () => {

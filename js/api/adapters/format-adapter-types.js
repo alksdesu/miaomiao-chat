@@ -94,9 +94,10 @@
  *     多流路径由 multi-stream.js 注入 BufferedSink 静音 commit + UI。
  *
  * 消息层
- * @property {(msgs: Array, opts?: {injectReasoning?: boolean, isXmlMode?: boolean, profile?: Object}) => Array} partsToAPIMessages
+ * @property {(msgs: Array, opts?: {injectReasoning?: boolean, isXmlMode?: boolean, profile?: Object, declaredTools?: Array}) => Array} partsToAPIMessages
  *     新格式消息数组 → API 原生消息数组（含 XML 模式 tool_result 追加 user 消息）；
- *     收到的消息已由 pipeline 按模型能力处理过历史图片，profile 为当前型号的能力表
+ *     收到的消息已由 pipeline 按模型能力处理过历史图片，profile 为当前型号的能力表，
+ *     declaredTools 为本次请求实际下发的原生工具（XML 模式为空），历史调用据此决定能否原样回放
  * @property {(data: Object, options?: {isXmlMode?: boolean}) => ParsedReply|null} parseResponse
  *     非流式响应解析；isXmlMode 取自 requestProfile，缺省按原生工具协议解析
  *

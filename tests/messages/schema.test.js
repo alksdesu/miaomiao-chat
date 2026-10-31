@@ -255,6 +255,13 @@ describe('validateMessage', () => {
         expect(validateMessage(msg).some((e) => e.includes('thinking.text 为空'))).toBe(true);
     });
 
+    it('文本为空但带签名的 thinking part 合法（Claude 不返回思考摘要时）', () => {
+        const msg = createMessage(Role.ASSISTANT, [
+            thinkingPart('', 'sig', { signatureFormat: 'claude' })
+        ]);
+        expect(validateMessage(msg)).toEqual([]);
+    });
+
     it('tool_call 缺少 name 报错', () => {
         const msg = createMessage(Role.USER, [
             { type: 'tool_call', id: '1', name: '', args: {}, state: 'pending', result: null }

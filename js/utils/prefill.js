@@ -4,7 +4,7 @@
  */
 
 import { state } from '../core/state.js';
-import { processVariables } from './variables.js';
+import { processVariables, templateNamesOf } from './variables.js';
 
 /**
  * 获取开场对话消息（在 System Prompt 之后、对话历史之前插入）
@@ -22,7 +22,7 @@ export function getOpeningMessages(format = state.apiFormat) {
     return state.systemPrefillMessages
         .filter((m) => m.role !== 'system' && m.content && m.content.trim()) // 过滤 system 和空内容
         .map((m) => {
-            const content = processVariables(m.content);
+            const content = processVariables(m.content, templateNamesOf(state));
 
             if (format === 'gemini') {
                 // Gemini 只支持 user 和 model 角色
@@ -50,7 +50,7 @@ export function getPrefillMessages(format = state.apiFormat) {
     return state.prefillMessages
         .filter((m) => m.role !== 'system' && m.content && m.content.trim()) // 过滤 system 和空内容
         .map((m) => {
-            const content = processVariables(m.content);
+            const content = processVariables(m.content, templateNamesOf(state));
 
             if (format === 'gemini') {
                 // Gemini 只支持 user 和 model 角色

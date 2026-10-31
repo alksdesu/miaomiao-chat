@@ -10,7 +10,9 @@ import {
     extractThoughtSignature,
     clearThoughtSignatures,
     hasThoughtSignatures,
-    sanitizeMessageForExport
+    sanitizeMessageForExport,
+    clearForeignSignatures,
+    clearProviderSpecificRawMeta
 } from '../../js/api/format-converter.js';
 
 // ========== generateIdSet ==========
@@ -352,5 +354,58 @@ describe('sanitizeMessageForExport', () => {
             claude: 'toolu_y',
             gemini: 'gemini_z'
         });
+    });
+});
+
+describe('切换渠道时清理历史上下文', () => {
+    const thinking = (signature, signatureFormat) => ({
+        type: 'thinking',
+        text: 't',
+        signature,
+        signatureFormat
+    });
+
+    it('clearForeignSignatures 同时清理备选回复里的跨家签名', () => {
+        const messages = [
+            {
+                role: 'assistant',
+                parts: [thinking('g', 'gemini')],
+                replies: {
+                    all: [
+                        { parts: [thinking('g', 'gemini')] },
+                        { parts: [thinking('c', 'claude')] }
+                    ],
+                    selected: 0
+                }
+            }
+        ];
+        expect(clearForeignSignatures(messages, 'claude')).toBe(2);
+        expect(messages[0].parts[0].signature).toBeUndefined();
+        expect(messages[0].replies.all[0].parts[0].signature).toBeUndefined();
+        expect(messages[0].replies.all[1].parts[0].signature).toBe('c');
+    });
+
+    it('clearProviderSpecificRawMeta 同时清理备选回复的加密推理项', () => {
+        const openaiRaw = () => ({
+            openai: { reasoningItems: [{ id: 'rs', encrypted_content: 'ENC' }] }
+        });
+        const messages = [
+            {
+                role: 'assistant',
+                parts: [],
+                meta: { raw: openaiRaw() },
+                replies: { all: [{ parts: [], meta: { raw: openaiRaw() } }], selected: 0 }
+            },
+            {
+                role: 'assistant',
+                parts: [],
+                meta: { raw: {} },
+                replies: { all: [{ parts: [], meta: { raw: openaiRaw() } }], selected: 0 }
+            }
+        ];
+        expect(clearProviderSpecificRawMeta(messages)).toBe(2);
+        expect(messages[0].meta.raw.openai.reasoningItems).toBeUndefined();
+        expect(messages[0].replies.all[0].meta.raw.openai.reasoningItems).toBeUndefined();
+        expect(messages[1].replies.all[0].meta.raw.openai.reasoningItems).toBeUndefined();
     });
 });

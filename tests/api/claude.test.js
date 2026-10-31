@@ -33,7 +33,8 @@ vi.mock('../../js/utils/prefill.js', () => ({
 }));
 
 vi.mock('../../js/utils/variables.js', () => ({
-    processVariables: vi.fn((s) => s)
+    processVariables: vi.fn((s) => s),
+    templateNamesOf: (source) => ({ charName: source?.charName, userName: source?.userName })
 }));
 
 vi.mock('../../js/utils/message-filter.js', () => ({
@@ -65,7 +66,7 @@ describe('claude API', () => {
 
     beforeEach(() => {
         vi.clearAllMocks();
-        state.messages = [{ role: 'user', content: 'Hello' }];
+        state.messages = [{ role: 'user', parts: [{ type: 'text', text: 'Hello' }] }];
         state.systemPrompt = '';
         state.prefillEnabled = false;
         state.streamEnabled = true;

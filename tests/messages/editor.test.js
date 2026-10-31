@@ -1,7 +1,7 @@
 /**
  * editor.js 内部 helper 测试
- * - preserveStructuralParts：按 thinking/text/media 原相对位置插入新内容，保留 tool_call/file 原顺序
- * - ensureTurnConsistency：跨 family 编辑守卫（claude/openclaw 清 _turn；openai-responses 仅 warn）
+ * - preserveStructuralParts：按 thinking/text/media 原相对位置插入新内容，保留 tool_call/file 原顺序，
+ *   没改动的思考与文本原样保留
  *
  * 两个 helper 在 editor.js 中以 // @internal 标记 export，仅供测试 import
  */
@@ -67,11 +67,7 @@ vi.mock('../../js/utils/logger.js', () => ({
 }));
 
 import { PartType, MediaKind } from '../../js/messages/schema.js';
-import {
-    buildAttachmentParts,
-    preserveStructuralParts,
-    ensureTurnConsistency
-} from '../../js/messages/editor.js';
+import { buildAttachmentParts, preserveStructuralParts } from '../../js/messages/editor.js';
 
 // ============================================================
 // preserveStructuralParts
@@ -251,6 +247,93 @@ describe('preserveStructuralParts', () => {
         expect(out[1].result).toBe('r');
         expect(out[2]).toMatchObject({ type: PartType.TEXT, text: 'NEW-ANSWER' });
     });
+
+    it('思考没改动时原样保留全部思考块（签名、_turn 不丢）', () => {
+        const oldParts = [
+            { type: PartType.THINKING, text: 'plan', signature: 'sig-A' },
+            { type: PartType.THINKING, text: '', signature: 'sig-B', _turn: 1 },
+            { type: PartType.TEXT, text: 'answer', _turn: 1 }
+        ];
+        const out = preserveStructuralParts(oldParts, {
+            newThinking: 'plan',
+            newText: 'edited answer'
+        });
+
+        expect(out[0]).toBe(oldParts[0]);
+        expect(out[1]).toBe(oldParts[1]);
+        expect(out[2]).toEqual({ type: PartType.TEXT, text: 'edited answer', _turn: 1 });
+    });
+
+    it('多轮消息的文本改动后放回最后一轮，原样未改的文本不动', () => {
+        const oldParts = [
+            { type: PartType.TEXT, text: 'checking' },
+            { type: PartType.TEXT, text: 'final', _turn: 2 },
+            { type: PartType.TOOL_CALL, id: 'tc_1', name: 'search', args: {}, state: 'done' },
+            {
+                type: PartType.TOOL_CALL,
+                id: 'tc_2',
+                name: 'fetch',
+                args: {},
+                state: 'done',
+                _turn: 1
+            }
+        ];
+        const unchanged = preserveStructuralParts(oldParts, { newText: 'checkingfinal' });
+        expect(unchanged).toEqual(oldParts);
+
+        const edited = preserveStructuralParts(oldParts, { newText: 'rewritten' });
+        expect(edited.filter((p) => p.type === PartType.TEXT)).toEqual([
+            { type: PartType.TEXT, text: 'rewritten', _turn: 2 }
+        ]);
+        expect(edited.filter((p) => p.type === PartType.TOOL_CALL)).toEqual(oldParts.slice(2));
+    });
+
+    it('没有文本的消息新增文本时落在最后一轮', () => {
+        const oldParts = [
+            { type: PartType.TOOL_CALL, id: 'tc_1', name: 'search', args: {}, state: 'done' },
+            {
+                type: PartType.TOOL_CALL,
+                id: 'tc_2',
+                name: 'fetch',
+                args: {},
+                state: 'done',
+                _turn: 1
+            }
+        ];
+        const out = preserveStructuralParts(oldParts, { newText: 'added' });
+        expect(out[0]).toEqual({ type: PartType.TEXT, text: 'added', _turn: 1 });
+    });
+
+    it('文本清空时不留下空文本 part', () => {
+        const oldParts = [
+            { type: PartType.TEXT, text: 'old' },
+            {
+                type: PartType.MEDIA,
+                media: MediaKind.IMAGE,
+                url: 'data:image/png;base64,A',
+                mime: 'image/png'
+            }
+        ];
+        const out = preserveStructuralParts(oldParts, {
+            newText: '',
+            newImages: [{ dataUrl: 'data:image/png;base64,A', mimeType: 'image/png' }]
+        });
+        expect(out.some((p) => p.type === PartType.TEXT)).toBe(false);
+        expect(out).toHaveLength(1);
+    });
+
+    it('没有传入思考时思考块保持不变，留空则删除', () => {
+        const oldParts = [
+            { type: PartType.THINKING, text: 'keep', signature: 'sig' },
+            { type: PartType.TEXT, text: 't' }
+        ];
+        expect(preserveStructuralParts(oldParts, { newText: 't' })[0]).toBe(oldParts[0]);
+        expect(
+            preserveStructuralParts(oldParts, { newThinking: null, newText: 't' }).some(
+                (p) => p.type === PartType.THINKING
+            )
+        ).toBe(false);
+    });
 });
 
 describe('buildAttachmentParts', () => {
@@ -274,110 +357,6 @@ describe('buildAttachmentParts', () => {
                 mediaId: 'media-file'
             }
         ]);
-    });
-});
-
-// ============================================================
-// ensureTurnConsistency
-// ============================================================
-
-describe('ensureTurnConsistency', () => {
-    beforeEach(() => {
-        vi.clearAllMocks();
-    });
-
-    it('returns ok=true and clears _turn when format=claude + hasMultiTurn', () => {
-        const msg = {
-            role: 'assistant',
-            parts: [
-                { type: PartType.THINKING, text: 't1', _turn: 1 },
-                { type: PartType.TEXT, text: 'a1', _turn: 1 },
-                { type: PartType.THINKING, text: 't2', _turn: 2 },
-                { type: PartType.TEXT, text: 'a2', _turn: 2 }
-            ]
-        };
-        const result = ensureTurnConsistency(msg, 'claude');
-
-        expect(result).toEqual({ ok: true });
-        // _turn 全部被 delete
-        for (const p of msg.parts) {
-            expect(p._turn).toBeUndefined();
-        }
-    });
-
-    it('returns ok=true and clears _turn when format=openclaw', () => {
-        const msg = {
-            role: 'assistant',
-            parts: [
-                { type: PartType.TEXT, text: 'a', _turn: 1 },
-                { type: PartType.TEXT, text: 'b', _turn: 2 }
-            ]
-        };
-        const result = ensureTurnConsistency(msg, 'openclaw');
-
-        expect(result).toEqual({ ok: true });
-        expect(msg.parts.every((p) => p._turn === undefined)).toBe(true);
-    });
-
-    it('returns warning=reasoning_chain_at_risk when format=openai-responses + hasMultiTurn', () => {
-        const msg = {
-            role: 'assistant',
-            parts: [
-                { type: PartType.TEXT, text: 'a', _turn: 1 },
-                { type: PartType.TEXT, text: 'b', _turn: 2 }
-            ]
-        };
-        const result = ensureTurnConsistency(msg, 'openai-responses');
-
-        expect(result.ok).toBe(true);
-        expect(result.warning).toBe('reasoning_chain_at_risk');
-        // _turn 应保留（reasoningItems 一一对应）
-        expect(msg.parts[0]._turn).toBe(1);
-        expect(msg.parts[1]._turn).toBe(2);
-    });
-
-    it('returns ok=true unchanged when no _turn in parts', () => {
-        const msg = {
-            role: 'assistant',
-            parts: [
-                { type: PartType.THINKING, text: 't' },
-                { type: PartType.TEXT, text: 'a' }
-            ]
-        };
-        const result = ensureTurnConsistency(msg, 'claude');
-
-        expect(result).toEqual({ ok: true });
-        // 无任何修改
-        expect(msg.parts[0]._turn).toBeUndefined();
-        expect(msg.parts[1]._turn).toBeUndefined();
-    });
-
-    it('clears _turn from meta.raw.openai.reasoningItems too when claude family', () => {
-        const msg = {
-            role: 'assistant',
-            parts: [{ type: PartType.TEXT, text: 'a', _turn: 1 }],
-            meta: {
-                raw: {
-                    openai: {
-                        reasoningItems: [
-                            { id: 'r1', type: 'reasoning', _turn: 1 },
-                            { id: 'r2', type: 'reasoning', _turn: 2 },
-                            null, // 防御性：null 不应报错
-                            'string-item' // 非对象不应报错
-                        ]
-                    }
-                }
-            }
-        };
-        const result = ensureTurnConsistency(msg, 'claude');
-
-        expect(result).toEqual({ ok: true });
-        const items = msg.meta.raw.openai.reasoningItems;
-        expect(items[0]._turn).toBeUndefined();
-        expect(items[1]._turn).toBeUndefined();
-        // null / string 元素未被破坏
-        expect(items[2]).toBeNull();
-        expect(items[3]).toBe('string-item');
     });
 });
 

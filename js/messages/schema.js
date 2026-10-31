@@ -99,7 +99,7 @@ export function textPart(text, opts = {}) {
 }
 
 /**
- * @param {string} text - 思维链文本（redacted 时为空字符串）
+ * @param {string} text - 思维链文本（redacted 或 Claude 不返回思考摘要时为空字符串）
  * @param {string|null} signature - thinking 签名
  * @param {Object} [opts] - { redacted?, data?, signatureFormat?, _turn?, _edited? }
  *   redacted/data：Claude redacted_thinking block（text 为空，data 不可省）
@@ -339,9 +339,10 @@ export function validateMessage(msg) {
                 if (typeof p.text !== 'string') errors.push(`parts[${i}] text 不是字符串`);
                 break;
             case PartType.THINKING:
+                // Claude display 为 omitted 时思考块文本为空，只有签名
                 if (typeof p.text !== 'string') errors.push(`parts[${i}] thinking.text 不是字符串`);
-                else if (!p.text && !(p.redacted && p.data))
-                    errors.push(`parts[${i}] thinking.text 为空且无 redacted data`);
+                else if (!p.text && !p.signature && !(p.redacted && p.data))
+                    errors.push(`parts[${i}] thinking.text 为空且无签名或 redacted data`);
                 if (
                     p.signatureFormat !== undefined &&
                     p.signatureFormat !== null &&

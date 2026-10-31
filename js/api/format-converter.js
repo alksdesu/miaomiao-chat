@@ -219,27 +219,26 @@ export function hasThoughtSignatures(messages, fromIndex = 0) {
  */
 export function clearProviderSpecificRawMeta(messages, fromIndex = 0) {
     let count = 0;
+    // reasoningItems 数组 / encryptedContent / reasoningItemId 都是 provider 私有
+    const clearRaw = (raw) => {
+        const openai = raw && typeof raw === 'object' ? raw.openai : null;
+        if (!openai || typeof openai !== 'object') return false;
+        let touched = false;
+        for (const key of ['reasoningItems', 'encryptedContent', 'reasoningItemId']) {
+            if (openai[key]) {
+                delete openai[key];
+                touched = true;
+            }
+        }
+        return touched;
+    };
     for (let i = fromIndex; i < messages.length; i++) {
         const msg = messages[i];
         if (msg.role !== 'assistant') continue;
-        const raw = msg.meta?.raw;
-        if (!raw || typeof raw !== 'object') continue;
-
-        let touched = false;
-        if (raw.openai && typeof raw.openai === 'object') {
-            // reasoningItems 数组 / encryptedContent / reasoningItemId 都是 provider 私有
-            if (raw.openai.reasoningItems) {
-                delete raw.openai.reasoningItems;
-                touched = true;
-            }
-            if (raw.openai.encryptedContent) {
-                delete raw.openai.encryptedContent;
-                touched = true;
-            }
-            if (raw.openai.reasoningItemId) {
-                delete raw.openai.reasoningItemId;
-                touched = true;
-            }
+        let touched = clearRaw(msg.meta?.raw);
+        // 切换到备选回复时 meta 由 replies.all 覆盖回来
+        for (const reply of Array.isArray(msg.replies?.all) ? msg.replies.all : []) {
+            touched = clearRaw(reply?.meta?.raw) || touched;
         }
         if (touched) count++;
     }
@@ -260,20 +259,25 @@ export function clearProviderSpecificRawMeta(messages, fromIndex = 0) {
  */
 export function clearForeignSignatures(messages, currentFormat, fromIndex = 0) {
     let count = 0;
+    const clearParts = (parts) => {
+        if (!Array.isArray(parts)) return;
+        for (const p of parts) {
+            if (p.type !== PartType.THINKING) continue;
+            if (!p.signature) continue;
+            // signatureFormat 缺失视为同格式产物（旧消息宽容），不清
+            if (!p.signatureFormat || p.signatureFormat === currentFormat) continue;
+            delete p.signature;
+            delete p.signatureFormat;
+            count++;
+        }
+    };
     for (let i = fromIndex; i < messages.length; i++) {
         const msg = messages[i];
         if (msg.role !== 'assistant') continue;
-
-        if (Array.isArray(msg.parts)) {
-            for (const p of msg.parts) {
-                if (p.type !== PartType.THINKING) continue;
-                if (!p.signature) continue;
-                // signatureFormat 缺失视为同格式产物（旧消息宽容），不清
-                if (!p.signatureFormat || p.signatureFormat === currentFormat) continue;
-                delete p.signature;
-                delete p.signatureFormat;
-                count++;
-            }
+        clearParts(msg.parts);
+        // 切换到备选回复时 parts 由 replies.all 覆盖回来，备选回复里的跨家签名也要一起清
+        for (const reply of Array.isArray(msg.replies?.all) ? msg.replies.all : []) {
+            clearParts(reply?.parts);
         }
     }
     return count;

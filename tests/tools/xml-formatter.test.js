@@ -8,6 +8,7 @@ import {
     convertToolsToXML,
     extractXMLToolCalls,
     appendXmlToolResultsForMessage,
+    applyXMLToolCalls,
     XMLStreamAccumulator
 } from '../../js/tools/xml-formatter.js';
 
@@ -318,6 +319,8 @@ describe('XMLStreamAccumulator', () => {
 // ========== appendXmlToolResultsForMessage ==========
 
 describe('appendXmlToolResultsForMessage', () => {
+    const buildUserMessage = (text, images) => ({ role: 'user', content: text, images });
+
     it('XML mode tool_call 配对追加 <tool_use> + <tool_use_result>', () => {
         const out = [{ role: 'assistant', content: '<tool_use>...' }];
         const msg = {
@@ -335,7 +338,7 @@ describe('appendXmlToolResultsForMessage', () => {
             ]
         };
 
-        appendXmlToolResultsForMessage(out, msg);
+        appendXmlToolResultsForMessage(out, msg, buildUserMessage);
 
         expect(out).toHaveLength(2);
         expect(out[1].role).toBe('user');
@@ -343,7 +346,7 @@ describe('appendXmlToolResultsForMessage', () => {
         expect(out[1].content).toContain('<tool_use>');
         expect(out[1].content).toContain('<arguments>');
         expect(out[1].content).toContain('<tool_use_result>');
-        expect(out[1].content).toContain('search');
+        expect(out[1].content).toContain('<result>found</result>');
         // tool_use 应在 tool_use_result 之前（顺序对称）
         expect(out[1].content.indexOf('<tool_use>')).toBeLessThan(
             out[1].content.indexOf('<tool_use_result>')
@@ -366,13 +369,40 @@ describe('appendXmlToolResultsForMessage', () => {
             ]
         };
 
-        appendXmlToolResultsForMessage(out, msg);
+        appendXmlToolResultsForMessage(out, msg, buildUserMessage);
 
         expect(out).toHaveLength(1);
         expect(out[0].content).toContain('{&quot;raw&quot;:&quot;json&quot;}');
     });
 
-    it('native mode tool_call 不命中', () => {
+    it('结果里的图片交给各家组装，不写进 XML 文本', () => {
+        const out = [];
+        const msg = {
+            parts: [
+                {
+                    type: 'tool_call',
+                    id: 'tc_1',
+                    name: 'computer',
+                    args: { action: 'screenshot' },
+                    mode: 'xml',
+                    result: {
+                        content: 'captured',
+                        media: [{ type: 'image', url: 'data:image/png;base64,shot' }]
+                    }
+                }
+            ]
+        };
+
+        appendXmlToolResultsForMessage(out, msg, buildUserMessage);
+
+        expect(out[0].content).toContain('<result>captured</result>');
+        expect(out[0].content).not.toContain('base64');
+        expect(out[0].images).toEqual([
+            { url: 'data:image/png;base64,shot', mimeType: 'image/png' }
+        ]);
+    });
+
+    it('native mode tool_call 默认不命中', () => {
         const out = [{ role: 'assistant', content: 'ok' }];
         const msg = {
             role: 'assistant',
@@ -387,9 +417,32 @@ describe('appendXmlToolResultsForMessage', () => {
             ]
         };
 
-        appendXmlToolResultsForMessage(out, msg);
+        appendXmlToolResultsForMessage(out, msg, buildUserMessage);
 
         expect(out).toHaveLength(1); // 不追加
+    });
+
+    it('指定的原生调用转成 XML 文本，没有结果时按中断处理', () => {
+        const out = [];
+        const nativeCall = {
+            type: 'tool_call',
+            id: 'tc_1',
+            name: 'left_click',
+            args: { coordinate: [1, 2] },
+            mode: 'native',
+            result: null
+        };
+
+        appendXmlToolResultsForMessage(
+            out,
+            { parts: [nativeCall] },
+            buildUserMessage,
+            (p) => p === nativeCall
+        );
+
+        expect(out).toHaveLength(1);
+        expect(out[0].content).toContain('<name>left_click</name>');
+        expect(out[0].content).toContain('<result>Tool execution was interrupted</result>');
     });
 
     it('result == null 不命中', () => {
@@ -407,8 +460,42 @@ describe('appendXmlToolResultsForMessage', () => {
             ]
         };
 
-        appendXmlToolResultsForMessage(out, msg);
+        appendXmlToolResultsForMessage(out, msg, buildUserMessage);
 
         expect(out).toHaveLength(0);
+    });
+});
+
+describe('applyXMLToolCalls', () => {
+    const xml =
+        'Let me check.\n<tool_use>\n  <name>search</name>\n  <arguments>{"q":"x"}</arguments>\n</tool_use>';
+
+    it('正文去掉调用块，思考与媒体保留，调用标为 XML 模式', () => {
+        const reply = {
+            content: xml,
+            thinkingContent: 'plan',
+            contentParts: [
+                { type: 'thinking', text: 'plan', signature: 'sig' },
+                { type: 'text', text: xml },
+                { type: 'image_url', url: 'data:image/png;base64,A', complete: true }
+            ],
+            stop: null
+        };
+        const result = applyXMLToolCalls(reply, xml);
+        expect(result.content).toBe('Let me check.\n');
+        expect(result.contentParts).toEqual([
+            { type: 'thinking', text: 'plan', signature: 'sig' },
+            { type: 'text', text: 'Let me check.\n' },
+            { type: 'image_url', url: 'data:image/png;base64,A', complete: true }
+        ]);
+        expect(result.toolCalls).toEqual([
+            expect.objectContaining({ name: 'search', arguments: { q: 'x' }, mode: 'xml' })
+        ]);
+        expect(result.hasToolCalls).toBe(true);
+        expect(result.thinkingContent).toBe('plan');
+    });
+
+    it('没有 XML 调用时返回 null', () => {
+        expect(applyXMLToolCalls({ content: 'plain' }, 'plain')).toBeNull();
     });
 });

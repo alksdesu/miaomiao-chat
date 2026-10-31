@@ -237,10 +237,18 @@ describe('toGeminiContents', () => {
         expect(out[0].parts[0].functionCall.args).toEqual({});
     });
 
-    it('空 parts 添加空文本', () => {
-        const msgs = [newMsg('assistant', [])];
+    it('没有可发送内容的消息与空文本 part 不输出（Gemini 拒绝空 text）', () => {
+        const msgs = [
+            newMsg('user', [
+                { type: PartType.TEXT, text: '' },
+                { type: PartType.MEDIA, media: MediaKind.IMAGE, url: 'data:image/png;base64,img' }
+            ]),
+            newMsg('assistant', [])
+        ];
         const out = geminiAdapter.partsToAPIMessages(msgs);
-        expect(out[0].parts).toEqual([{ text: '' }]);
+        expect(out).toEqual([
+            { role: 'user', parts: [{ inlineData: { mimeType: 'image/png', data: 'img' } }] }
+        ]);
     });
 
     it('thoughtSignature 附加到 functionCall', () => {
@@ -271,10 +279,75 @@ describe('toGeminiContents', () => {
             ])
         ];
         const out = geminiAdapter.partsToAPIMessages(msgs);
-        const response = out[1].parts[0].functionResponse.response;
-        expect(response.parts).toBeDefined();
-        expect(response.parts[0].text).toBe('生成完成');
-        expect(response.parts[1].inlineData.data).toBe('imgdata');
+        // 图片不能塞进 response 结构化字段，否则 base64 会被当成文本计入上下文
+        expect(out[1].parts[0].functionResponse.response).toEqual({ result: '生成完成' });
+        expect(out[1].parts[1]).toEqual({
+            inlineData: { mimeType: 'image/png', data: 'imgdata' }
+        });
+    });
+
+    it('支持的型号把工具结果里的图片放进 functionResponse.parts', () => {
+        const msgs = [
+            newMsg('assistant', [
+                {
+                    type: PartType.TOOL_CALL,
+                    id: 'tc_1',
+                    name: 'screenshot',
+                    args: {},
+                    toolsetName: 'computer',
+                    result: {
+                        content: '',
+                        media: [{ type: MediaKind.IMAGE, url: 'data:image/png;base64,shot' }]
+                    }
+                }
+            ])
+        ];
+        const out = geminiAdapter.partsToAPIMessages(msgs, {
+            profile: resolveModelProfile('gemini', 'gemini-3.1-pro')
+        });
+        expect(out[1].parts).toEqual([
+            {
+                functionResponse: {
+                    name: 'screenshot',
+                    response: { result: '' },
+                    parts: [
+                        {
+                            inlineData: {
+                                mimeType: 'image/png',
+                                data: 'shot',
+                                displayName: 'screenshot-1.png'
+                            }
+                        }
+                    ]
+                }
+            }
+        ]);
+    });
+
+    it('MCP 结果的图片以 inlineData 回传，文本只保留文字内容', () => {
+        const msgs = [
+            newMsg('assistant', [
+                {
+                    type: PartType.TOOL_CALL,
+                    id: 'tc_1',
+                    name: 'mcp_shot',
+                    args: {},
+                    result: {
+                        content: [
+                            { type: 'text', text: 'captured' },
+                            { type: 'image', data: 'mcpimg', mimeType: 'image/jpeg' }
+                        ],
+                        text: 'captured',
+                        image: 'data:image/jpeg;base64,mcpimg'
+                    }
+                }
+            ])
+        ];
+        const out = geminiAdapter.partsToAPIMessages(msgs);
+        expect(out[1].parts[0].functionResponse.response).toEqual({ result: 'captured' });
+        expect(out[1].parts[1]).toEqual({
+            inlineData: { mimeType: 'image/jpeg', data: 'mcpimg' }
+        });
     });
 
     it('tool_result 纯文本 JSON 解析', () => {
@@ -472,7 +545,37 @@ describe('to* 在 part.mode === xml 时跳过 native 工具调用块', () => {
         expect(out[0].role).toBe('model');
         expect(out[0].parts.every((p) => !p.functionCall)).toBe(true);
         expect(out[1].role).toBe('user');
-        expect(out[1].content).toContain('<tool_use_result>');
+        // Gemini 的消息内容只认 parts，content 字段会被拒绝
+        expect(out[1].content).toBeUndefined();
+        expect(out[1].parts).toHaveLength(1);
+        expect(out[1].parts[0].text).toContain('<tool_use_result>');
+        expect(out[1].parts[0].text).toContain('<result>ok</result>');
+    });
+
+    it('XML 结果里的截图以 inlineData 跟在 XML 文本后面', () => {
+        const msgs = [
+            newMsg('assistant', [
+                {
+                    type: PartType.TOOL_CALL,
+                    id: 'tc_1',
+                    name: 'computer',
+                    args: { action: 'screenshot' },
+                    state: 'done',
+                    result: {
+                        content: 'captured',
+                        media: [{ type: MediaKind.IMAGE, url: 'data:image/png;base64,SHOTDATA' }]
+                    },
+                    mode: 'xml'
+                }
+            ])
+        ];
+        const out = geminiAdapter.partsToAPIMessages(msgs);
+        expect(out).toHaveLength(1);
+        expect(out[0].parts[0].text).toContain('<result>captured</result>');
+        expect(out[0].parts[0].text).not.toContain('SHOTDATA');
+        expect(out[0].parts[1]).toEqual({
+            inlineData: { mimeType: 'image/png', data: 'SHOTDATA' }
+        });
     });
 });
 
@@ -843,5 +946,107 @@ describe('buildRequestBody 按型号组装', () => {
                 { text: 'a2', thoughtSignature: 'sig_1' }
             ]
         });
+    });
+});
+
+describe('partsToAPIMessages 多步工具调用与签名', () => {
+    const call = (id, name, turn, extra = {}) => ({
+        type: PartType.TOOL_CALL,
+        id,
+        name,
+        args: {},
+        state: 'done',
+        result: { content: `${name} ok` },
+        ...(turn ? { _turn: turn } : {}),
+        ...extra
+    });
+    const gemini3 = { profile: resolveModelProfile('gemini', 'gemini-3.1-pro') };
+
+    it('_turn 合并的工具循环按步拆回 model → functionResponse，最终回答排在最后', () => {
+        const msgs = [
+            newMsg('user', [{ type: PartType.TEXT, text: 'q' }]),
+            newMsg('assistant', [
+                {
+                    type: PartType.THINKING,
+                    text: 'plan',
+                    signature: 'sig0',
+                    signatureFormat: 'gemini'
+                },
+                { type: PartType.TEXT, text: 'final', _turn: 2 },
+                call('a', 'search', 0, { thoughtSignature: 'sig-a' }),
+                call('b', 'fetch', 1, { thoughtSignature: 'sig-b' })
+            ])
+        ];
+        const out = geminiAdapter.partsToAPIMessages(msgs, gemini3);
+        expect(out.map((c) => c.role)).toEqual(['user', 'model', 'user', 'model', 'user', 'model']);
+        expect(out[1].parts.map((p) => p.functionCall?.name ?? p.text)).toEqual(['plan', 'search']);
+        expect(out[3].parts[0].functionCall.name).toBe('fetch');
+        expect(out[3].parts[0].thoughtSignature).toBe('sig-b');
+        expect(out[5].parts).toEqual([{ text: 'final' }]);
+    });
+
+    it('当前轮里来自其他格式的调用没有签名时，每一步首个调用用占位签名', () => {
+        const msgs = [
+            newMsg('user', [{ type: PartType.TEXT, text: 'q' }]),
+            newMsg('assistant', [
+                {
+                    type: PartType.THINKING,
+                    text: '',
+                    signature: 'claude-sig',
+                    signatureFormat: 'claude'
+                },
+                call('a', 'left_click', 0),
+                call('b', 'screenshot', 0),
+                call('c', 'type', 1)
+            ])
+        ];
+        const out = geminiAdapter.partsToAPIMessages(msgs, gemini3);
+        expect(out[1].parts.map((p) => p.thoughtSignature)).toEqual([
+            'skip_thought_signature_validator',
+            undefined
+        ]);
+        expect(out[3].parts[0].thoughtSignature).toBe('skip_thought_signature_validator');
+    });
+
+    it('当前轮之前的调用、不严格校验签名的型号都不加占位签名', () => {
+        const msgs = [
+            newMsg('user', [{ type: PartType.TEXT, text: 'q1' }]),
+            newMsg('assistant', [call('a', 'search', 0)]),
+            newMsg('user', [{ type: PartType.TEXT, text: 'q2' }]),
+            newMsg('assistant', [call('b', 'fetch', 0)])
+        ];
+        const strict = geminiAdapter.partsToAPIMessages(msgs, gemini3);
+        expect(strict[1].parts[0].thoughtSignature).toBeUndefined();
+        expect(strict[4].parts[0].thoughtSignature).toBe('skip_thought_signature_validator');
+
+        const lenient = geminiAdapter.partsToAPIMessages(msgs, {
+            profile: resolveModelProfile('gemini', 'gemini-2.5-pro')
+        });
+        expect(lenient[4].parts[0].thoughtSignature).toBeUndefined();
+    });
+
+    it('redacted 与不返回摘要的空思考块不发送，Claude 服务端工具转成文本', () => {
+        const msgs = [
+            newMsg('assistant', [
+                { type: PartType.THINKING, text: '', redacted: true, data: 'ENC' },
+                {
+                    type: PartType.TOOL_CALL,
+                    id: 'srv',
+                    name: 'web_search',
+                    args: { query: 'q' },
+                    state: 'done',
+                    server: true,
+                    result: { type: 'web_search_tool_result', content: [] }
+                },
+                { type: PartType.TEXT, text: 'answer' }
+            ])
+        ];
+        const out = geminiAdapter.partsToAPIMessages(msgs);
+        expect(out).toEqual([
+            {
+                role: 'model',
+                parts: [{ text: '[web_search] {"query":"q"}' }, { text: 'answer' }]
+            }
+        ]);
     });
 });

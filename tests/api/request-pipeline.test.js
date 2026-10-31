@@ -25,7 +25,8 @@ vi.mock('../../js/utils/logger.js', () => ({
 }));
 
 vi.mock('../../js/utils/variables.js', () => ({
-    processVariables: vi.fn((s) => `processed:${s}`)
+    processVariables: vi.fn((s) => `processed:${s}`),
+    templateNamesOf: (source) => ({ charName: source?.charName, userName: source?.userName })
 }));
 
 vi.mock('../../js/utils/message-filter.js', () => ({
@@ -369,7 +370,8 @@ describe('能力过滤时机', () => {
         expect(responsesAdapter.partsToAPIMessages.mock.calls[0][1]).toEqual({
             injectReasoning: true,
             isXmlMode: false,
-            profile: expect.objectContaining({ family: 'openai' })
+            profile: expect.objectContaining({ family: 'openai' }),
+            declaredTools: expect.any(Array)
         });
 
         const otherAdapter = createStubAdapter({ apiFormat: 'openai' });
@@ -381,8 +383,31 @@ describe('能力过滤时机', () => {
         expect(otherAdapter.partsToAPIMessages.mock.calls[0][1]).toEqual({
             injectReasoning: false,
             isXmlMode: false,
-            profile: expect.objectContaining({ family: 'openai' })
+            profile: expect.objectContaining({ family: 'openai' }),
+            declaredTools: expect.any(Array)
         });
+    });
+
+    it('declaredTools 为本次实际下发的原生工具，XML 模式下为空', async () => {
+        const nativeTool = { name: 'search', input_schema: { type: 'object' } };
+        const adapter = createStubAdapter({ collectBuiltinTools: vi.fn(() => [nativeTool]) });
+        await executeRequest(adapter, {
+            endpoint: 'https://api.example.com',
+            apiKey: 'k',
+            model: 'm'
+        });
+        const declared = adapter.partsToAPIMessages.mock.calls[0][1].declaredTools;
+        expect(declared[0]).toEqual(nativeTool);
+        expect(declared).toEqual(adapter.buildRequestBody.mock.calls[0][0].tools);
+
+        state.xmlToolCallingEnabled = true;
+        const xmlAdapter = createStubAdapter({ collectBuiltinTools: vi.fn(() => [nativeTool]) });
+        await executeRequest(xmlAdapter, {
+            endpoint: 'https://api.example.com',
+            apiKey: 'k',
+            model: 'm'
+        });
+        expect(xmlAdapter.partsToAPIMessages.mock.calls[0][1].declaredTools).toEqual([]);
     });
 
     it('过滤掉标准 error 消息', async () => {

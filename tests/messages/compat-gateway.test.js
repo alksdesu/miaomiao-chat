@@ -4,7 +4,14 @@ import {
     assertCanonicalMessages
 } from '../../js/messages/compat/gateway.js';
 import { detectSessionSchema } from '../../js/messages/compat/detector.js';
-import { SCHEMA_VERSION, createMessage, textPart, toolCallPart } from '../../js/messages/schema.js';
+import {
+    SCHEMA_VERSION,
+    createMessage,
+    createMeta,
+    textPart,
+    thinkingPart,
+    toolCallPart
+} from '../../js/messages/schema.js';
 
 describe('legacy compatibility gateway', () => {
     it('当前格式走快速路径并保持对象引用', () => {
@@ -254,5 +261,43 @@ describe('legacy compatibility gateway', () => {
 
         expect(result.messages[0].role).toBe('user');
         expect(result.messages[0].meta.raw).toBe(raw);
+    });
+
+    it('旧数据缺少签名来源时按消息里的痕迹补上，推断不出时保持原样', () => {
+        const claudeMessage = createMessage(
+            'assistant',
+            [
+                thinkingPart('plan', 'claude-sig'),
+                toolCallPart(
+                    'toolu_1',
+                    'search',
+                    {},
+                    {
+                        idMap: { openai: 'call_1', claude: 'toolu_1', gemini: 'g_1' }
+                    }
+                )
+            ],
+            { id: 'c', ts: 1 }
+        );
+        const geminiMessage = createMessage('assistant', [thinkingPart('idea', 'gem-sig')], {
+            id: 'g',
+            ts: 2,
+            meta: createMeta({ raw: { gemini: { thoughtSignature: 'gem-sig' } } })
+        });
+        const unknown = createMessage('assistant', [thinkingPart('?', 'unknown-sig')], {
+            id: 'u',
+            ts: 3
+        });
+
+        const result = normalizeSessionRecord({
+            messages: [claudeMessage, geminiMessage, unknown],
+            messageSchemaVersion: SCHEMA_VERSION
+        });
+
+        expect(result.changed).toBe(true);
+        expect(result.messages[0].parts[0].signatureFormat).toBe('claude');
+        expect(result.messages[1].parts[0].signatureFormat).toBe('gemini');
+        expect(result.messages[2]).toBe(unknown);
+        expect(claudeMessage.parts[0].signatureFormat).toBeUndefined();
     });
 });

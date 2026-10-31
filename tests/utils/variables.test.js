@@ -3,7 +3,7 @@
  */
 import { describe, it, expect } from 'vitest';
 
-import { processVariables, getPrefillMessages } from '../../js/utils/variables.js';
+import { processVariables, getPrefillMessages, templateNamesOf } from '../../js/utils/variables.js';
 
 // ========== processVariables ==========
 
@@ -152,5 +152,17 @@ describe('getPrefillMessages', () => {
                 parts: [{ text: '我是 Bot' }]
             });
         });
+    });
+});
+
+describe('templateNamesOf', () => {
+    it('取出角色名与用户名，替换时生效', () => {
+        const names = templateNamesOf({ charName: 'Alice', userName: 'Bob', other: 1 });
+        expect(names).toEqual({ charName: 'Alice', userName: 'Bob' });
+        expect(processVariables('{{user}} → {{char}}', names)).toBe('Bob → Alice');
+    });
+
+    it('缺失时回落到默认名', () => {
+        expect(processVariables('{{char}}', templateNamesOf(null))).toBe('Assistant');
     });
 });

@@ -336,10 +336,14 @@ describe('toClaudeMessages', () => {
         expect(toolUse.input).toBe('invalid json');
     });
 
-    it('空 parts 添加空文本', () => {
-        const msgs = [newMsg('assistant', [])];
+    it('没有可发送内容的消息不输出（空消息与空白文本会被拒绝）', () => {
+        const msgs = [
+            newMsg('user', [{ type: PartType.TEXT, text: 'q' }]),
+            newMsg('assistant', []),
+            newMsg('assistant', [{ type: PartType.TEXT, text: '  ' }])
+        ];
         const out = claudeAdapter.partsToAPIMessages(msgs);
-        expect(out[0].content).toBe('');
+        expect(out).toEqual([{ role: 'user', content: 'q' }]);
     });
 
     it('_turn 标记的 continuation 消息按轮拆成独立 assistant + user(tool_result) 序列', () => {
@@ -1126,5 +1130,252 @@ describe('parseResponse XML 模式来源', () => {
         });
         expect(result.hasToolCalls).toBe(true);
         expect(result.toolCalls[0].mode).toBe('native');
+    });
+});
+
+describe('parseResponse 思考块完整落库', () => {
+    it('非流式回复的 contentParts 带签名，redacted_thinking 按原顺序保留，并标记签名来源', () => {
+        const result = claudeAdapter.parseResponse({
+            content: [
+                { type: 'thinking', thinking: '', signature: 'sig-omitted' },
+                { type: 'redacted_thinking', data: 'ENC' },
+                { type: 'tool_use', id: 'toolu_1', name: 'search', input: { q: 'x' } }
+            ],
+            stop_reason: 'tool_use'
+        });
+        expect(result.contentParts).toEqual([
+            { type: 'thinking', text: '', signature: 'sig-omitted' },
+            { type: 'redacted_thinking', data: 'ENC' }
+        ]);
+        expect(result.thinkingContent).toBeNull();
+        expect(result.signatureFormat).toBe('claude');
+        expect(result.hasToolCalls).toBe(true);
+    });
+});
+
+describe('partsToAPIMessages 按本次声明的工具回放历史调用', () => {
+    const toolsetCall = (id, name, args, result) => ({
+        type: PartType.TOOL_CALL,
+        id,
+        name,
+        args,
+        state: 'done',
+        result,
+        toolsetName: 'computer'
+    });
+    const history = () => [
+        newMsg('user', [{ type: PartType.TEXT, text: 'open settings' }]),
+        newMsg('assistant', [
+            { type: PartType.THINKING, text: '', signature: 'sig', signatureFormat: 'claude' },
+            toolsetCall('a', 'left_click', { coordinate: [1, 2] }, { content: 'OK' }),
+            toolsetCall(
+                'b',
+                'screenshot',
+                {},
+                {
+                    content: '',
+                    media: [{ type: MediaKind.IMAGE, url: 'data:image/png;base64,SHOT' }]
+                }
+            )
+        ])
+    ];
+
+    it('本次声明了工具集：调用与结果都带 toolset_name，签名为空的思考块原样带回', () => {
+        const out = claudeAdapter.partsToAPIMessages(history(), {
+            declaredTools: [{ type: 'computer_toolset_20260801' }]
+        });
+        expect(out[1].content[0]).toEqual({ type: 'thinking', thinking: '', signature: 'sig' });
+        expect(out[1].content[1]).toMatchObject({
+            type: 'tool_use',
+            name: 'left_click',
+            toolset_name: 'computer'
+        });
+        expect(out[2].content.every((block) => block.toolset_name === 'computer')).toBe(true);
+        expect(out[2].content[1].content).toEqual([
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'SHOT' } }
+        ]);
+    });
+
+    it('本次只声明旧版 computer：改写为 computer + action，结果不带 toolset_name', () => {
+        const out = claudeAdapter.partsToAPIMessages(history(), {
+            declaredTools: [{ type: 'computer_20251124', name: 'computer' }]
+        });
+        expect(out[1].content[1]).toEqual({
+            type: 'tool_use',
+            id: 'claude_a',
+            name: 'computer',
+            input: { action: 'left_click', coordinate: [1, 2] }
+        });
+        expect(out[2].content.some((block) => 'toolset_name' in block)).toBe(false);
+    });
+
+    it('历史里的旧版 computer 调用在声明工具集的请求里改写为工具集成员', () => {
+        const msgs = [
+            newMsg('assistant', [
+                {
+                    type: PartType.TOOL_CALL,
+                    id: 'c',
+                    name: 'computer',
+                    args: { action: 'type', text: 'hi' },
+                    state: 'done',
+                    result: { content: 'OK' }
+                }
+            ])
+        ];
+        const out = claudeAdapter.partsToAPIMessages(msgs, {
+            declaredTools: [{ type: 'computer_toolset_20260801' }]
+        });
+        expect(out[0].content[0]).toEqual({
+            type: 'tool_use',
+            id: 'claude_c',
+            name: 'type',
+            input: { text: 'hi' },
+            toolset_name: 'computer'
+        });
+        expect(out[1].content[0].toolset_name).toBe('computer');
+    });
+
+    it('本次没有声明 computer：工具集调用转成 XML 文本，截图跟在文本后面', () => {
+        const out = claudeAdapter.partsToAPIMessages(history(), {
+            declaredTools: [{ name: 'search', input_schema: { type: 'object' } }]
+        });
+        expect(out).toHaveLength(3);
+        expect(out[1]).toEqual({
+            role: 'assistant',
+            content: [{ type: 'thinking', thinking: '', signature: 'sig' }]
+        });
+        expect(out[2].role).toBe('user');
+        expect(out[2].content[0].text).toContain('<name>left_click</name>');
+        expect(out[2].content[0].text).not.toContain('SHOT');
+        expect(out[2].content[1]).toEqual({
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: 'SHOT' }
+        });
+    });
+
+    it('本次没有任何原生工具（关闭工具或 XML 模式）：所有原生调用都转成 XML 文本', () => {
+        const msgs = [
+            newMsg('assistant', [
+                {
+                    type: PartType.TOOL_CALL,
+                    id: 'x',
+                    name: 'search',
+                    args: { q: 'a' },
+                    state: 'done',
+                    result: { content: 'r' }
+                },
+                { type: PartType.TEXT, text: 'done', _turn: 1 }
+            ])
+        ];
+        const out = claudeAdapter.partsToAPIMessages(msgs, { declaredTools: [] });
+        expect(out.map((m) => m.role)).toEqual(['user', 'assistant']);
+        expect(out[0].content).toContain('<tool_use_result>');
+        expect(out[1]).toEqual({ role: 'assistant', content: 'done' });
+        expect(JSON.stringify(out)).not.toContain('tool_use"');
+    });
+
+    it('没有传入声明时保持原有回放形态', () => {
+        const out = claudeAdapter.partsToAPIMessages(history());
+        expect(out[1].content[1]).toMatchObject({ name: 'left_click', toolset_name: 'computer' });
+    });
+});
+
+describe('partsToAPIMessages 服务端工具', () => {
+    const serverCall = (encrypted) => ({
+        type: PartType.TOOL_CALL,
+        id: 'srvtoolu_1',
+        name: 'web_search',
+        args: { query: 'paris' },
+        state: 'done',
+        server: true,
+        result: {
+            type: 'web_search_tool_result',
+            content: [
+                {
+                    type: 'web_search_result',
+                    title: 'Paris',
+                    url: 'https://example.com',
+                    ...(encrypted ? { encrypted_content: encrypted } : {})
+                }
+            ]
+        }
+    });
+
+    it('声明了 web_search 且结果完整时原样回放', () => {
+        const out = claudeAdapter.partsToAPIMessages([newMsg('assistant', [serverCall('ENC')])], {
+            declaredTools: [{ type: 'web_search_20250305', name: 'web_search' }]
+        });
+        expect(out[0].content.map((block) => block.type)).toEqual([
+            'server_tool_use',
+            'web_search_tool_result'
+        ]);
+    });
+
+    it('导入后缺少 encrypted_content 时转成文本', () => {
+        const out = claudeAdapter.partsToAPIMessages([newMsg('assistant', [serverCall(null)])], {
+            declaredTools: [{ type: 'web_search_20250305', name: 'web_search' }]
+        });
+        expect(out[0].content).toBe(
+            '[web_search] {"query":"paris"}\n- Paris (https://example.com)'
+        );
+    });
+
+    it('本次没有声明对应的服务端工具时转成文本', () => {
+        const out = claudeAdapter.partsToAPIMessages([newMsg('assistant', [serverCall('ENC')])], {
+            declaredTools: [{ name: 'search', input_schema: {} }]
+        });
+        expect(typeof out[0].content).toBe('string');
+        expect(out[0].content).not.toContain('ENC');
+    });
+});
+
+describe('partsToAPIMessages XML 模式按轮回放', () => {
+    it('XML 调用的结果紧跟在对应那一轮之后，而不是整条消息末尾', () => {
+        const msgs = [
+            newMsg('assistant', [
+                { type: PartType.TEXT, text: 'checking' },
+                { type: PartType.TEXT, text: 'answer', _turn: 1 },
+                {
+                    type: PartType.TOOL_CALL,
+                    id: 'x1',
+                    name: 'search',
+                    args: {},
+                    mode: 'xml',
+                    state: 'done',
+                    result: { content: 'found' }
+                }
+            ])
+        ];
+        const out = claudeAdapter.partsToAPIMessages(msgs, { declaredTools: [] });
+        expect(out.map((m) => m.role)).toEqual(['assistant', 'user', 'assistant']);
+        expect(out[0].content).toBe('checking');
+        expect(out[1].content).toContain('<result>found</result>');
+        expect(out[2].content).toBe('answer');
+    });
+});
+
+describe('parseResponse 非流式 XML 模式', () => {
+    it('XML 调用从正文里拆出，思考块与签名照常落库', () => {
+        const result = claudeAdapter.parseResponse(
+            {
+                content: [
+                    { type: 'thinking', thinking: 'plan', signature: 'sig' },
+                    {
+                        type: 'text',
+                        text: 'Checking.\n<tool_use>\n  <name>search</name>\n  <arguments>{}</arguments>\n</tool_use>'
+                    }
+                ],
+                stop_reason: 'end_turn'
+            },
+            { isXmlMode: true }
+        );
+        expect(result.hasToolCalls).toBe(true);
+        expect(result.toolCalls[0]).toMatchObject({ name: 'search', mode: 'xml' });
+        expect(result.content).toBe('Checking.\n');
+        expect(result.contentParts).toEqual([
+            { type: 'thinking', text: 'plan', signature: 'sig' },
+            { type: 'text', text: 'Checking.\n' }
+        ]);
+        expect(result.thinkingSignatures).toEqual(['sig']);
     });
 });

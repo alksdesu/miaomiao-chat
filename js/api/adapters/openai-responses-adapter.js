@@ -5,9 +5,9 @@
  */
 
 import { logger } from '../../utils/logger.js';
-import { PartType, MediaKind, Role, ToolMode, ToolState } from '../../messages/schema.js';
+import { PartType, MediaKind, Role, ToolMode } from '../../messages/schema.js';
 import { parseDataURL } from '../../utils/file-helpers.js';
-import { extractXMLToolCalls, appendXmlToolResultsForMessage } from '../../tools/xml-formatter.js';
+import { applyXMLToolCalls, appendXmlToolResultsForMessage } from '../../tools/xml-formatter.js';
 import { isVideoUrl } from '../../utils/media.js';
 import { OpenAIStreamParser, parseOpenAIStream } from '../../stream/parser-openai.js';
 import { normalizeResponsesStop } from '../../messages/stop-reason.js';
@@ -17,7 +17,6 @@ import {
     buildResponsesReasoningItems,
     getReasoningItemTurn,
     stripInternalReasoningFields,
-    getPartTurn,
     pushResponsesFunctionCallPair,
     buildOpenAIAuthHeaders,
     assembleOpenAIConversation,
@@ -29,18 +28,25 @@ import {
 } from './openai-shared.js';
 import { pushXmlBuiltinToolsNotice } from '../request-notices.js';
 import { ensureIdMap } from '../format-converter.js';
+import {
+    getPartTurn,
+    isNativeToolCall,
+    isServerToolCall,
+    describeServerToolCall
+} from './history-replay.js';
 
 // ========== partsToAPIMessages ==========
 
 /**
  * user / system 消息内容：input_text / input_image / input_file；视频与音频没有对应类型，按中转约定透传
+ * 空文本不输出，内容为空时回落为空字符串
  */
 function buildInputContent(parts) {
     const content = [];
     for (const p of parts || []) {
         switch (p.type) {
             case PartType.TEXT:
-                content.push({ type: 'input_text', text: p.text });
+                if (p.text) content.push({ type: 'input_text', text: p.text });
                 break;
             case PartType.MEDIA:
                 if (p.media === MediaKind.IMAGE) {
@@ -73,22 +79,34 @@ function buildInputContent(parts) {
                 break;
         }
     }
+    if (content.length === 0) return '';
     if (content.length === 1 && content[0].type === 'input_text') return content[0].text;
     return content;
 }
 
-// assistant 消息只能回放文本；生成的图片没有可回放的输入形式
+/**
+ * assistant 消息只能回放文本；生成的图片没有可回放的输入形式。
+ * 服务端工具（Claude 的 web_search 等）的调用与结果以文本保留
+ */
 function joinAssistantText(parts) {
     return parts
-        .filter((p) => p.type === PartType.TEXT && p.text)
-        .map((p) => p.text)
+        .map((p) => {
+            if (p.type === PartType.TEXT) return p.text;
+            return isServerToolCall(p) ? describeServerToolCall(p) : '';
+        })
+        .filter(Boolean)
         .join('\n\n');
 }
 
-function isReplayableToolCall(p) {
-    return (
-        p.type === PartType.TOOL_CALL && p.mode !== ToolMode.XML && p.state !== ToolState.SKIPPED
-    );
+function buildResponsesUserMessage(text, images) {
+    if (images.length === 0) return { role: 'user', content: text };
+    return {
+        role: 'user',
+        content: [
+            { type: 'input_text', text },
+            ...images.map((image) => ({ type: 'input_image', image_url: image.url }))
+        ]
+    };
 }
 
 /**
@@ -102,7 +120,9 @@ function isReplayableToolCall(p) {
  */
 function partsToAPIMessages(msgs, opts = {}) {
     const out = [];
-    const injectReasoning = opts.injectReasoning !== false; // 默认开启
+    // 不支持推理的型号收到加密推理项会拒绝整条请求（同一渠道从推理型号换到 gpt-4.1 / 4o 时）
+    const injectReasoning =
+        opts.injectReasoning !== false && opts.profile?.reasoning?.supported !== false;
     const withPhase = opts.profile?.assistantPhase === true;
 
     const pushAssistantText = (text, phase) => {
@@ -129,7 +149,7 @@ function partsToAPIMessages(msgs, opts = {}) {
         const reasoningItems = injectReasoning
             ? buildResponsesReasoningItems(msg).filter((item) => item.encrypted_content)
             : [];
-        const toolCallTurns = new Set(parts.filter(isReplayableToolCall).map(getPartTurn));
+        const toolCallTurns = new Set(parts.filter(isNativeToolCall).map(getPartTurn));
         const turns = [
             ...new Set([...parts.map(getPartTurn), ...reasoningItems.map(getReasoningItemTurn)])
         ].sort((a, b) => a - b);
@@ -145,15 +165,14 @@ function partsToAPIMessages(msgs, opts = {}) {
                 toolCallTurns.has(turn) ? 'commentary' : 'final_answer'
             );
             for (const p of turnParts) {
-                if (!isReplayableToolCall(p)) continue;
+                if (!isNativeToolCall(p)) continue;
                 pushResponsesFunctionCallPair(out, p, {
                     includeItemId: turnReasoning.length > 0
                 });
             }
+            // XML 模式 tool_call 配对追加紧跟在本轮输出之后
+            appendXmlToolResultsForMessage(out, { parts: turnParts }, buildResponsesUserMessage);
         }
-
-        // XML 模式 tool_call 配对追加紧跟在本条 assistant 之后
-        appendXmlToolResultsForMessage(out, msg);
     }
 
     return out;
@@ -237,19 +256,6 @@ function parseResponse(data, options = {}) {
                 encryptedContent,
                 reasoningItemId,
                 reasoningItems
-            };
-        }
-    }
-
-    // 2. 检测 XML 工具调用
-    if (xmlMode && data.output_text) {
-        const xmlToolCalls = extractXMLToolCalls(data.output_text);
-        if (xmlToolCalls.length > 0) {
-            logger.debug('[openai-responses] 检测到 XML 工具调用:', xmlToolCalls.length);
-            return {
-                toolCalls: xmlToolCalls.map((tc) => ({ ...tc, mode: ToolMode.XML })),
-                content: data.output_text,
-                hasToolCalls: true
             };
         }
     }
@@ -351,7 +357,7 @@ function parseResponse(data, options = {}) {
         return { content: '', stop };
     }
 
-    return {
+    const reply = {
         content: textContent,
         thinkingContent: thinkingContent || null,
         contentParts: contentParts.length > 0 ? contentParts : null,
@@ -360,6 +366,16 @@ function parseResponse(data, options = {}) {
         reasoningItems: reasoningItems,
         stop
     };
+
+    // 检测 XML 工具调用，推理项照常落库供续作回放
+    if (xmlMode) {
+        const xmlReply = applyXMLToolCalls(reply, textContent);
+        if (xmlReply) {
+            logger.debug('[openai-responses] 检测到 XML 工具调用:', xmlReply.toolCalls.length);
+            return xmlReply;
+        }
+    }
+    return reply;
 }
 
 // ========== 工具构造 ==========
@@ -464,6 +480,7 @@ function buildRequestBody(ctx) {
         prefill,
         tools,
         isXmlMode,
+        profile,
         state: stateRef
     } = ctx;
 
@@ -474,10 +491,12 @@ function buildRequestBody(ctx) {
         stream: stateRef.streamEnabled,
         input: conversation,
         // 每轮都回放完整历史，不需要服务端保存对话
-        store: false,
-        // 不保存时推理项只能靠加密内容在多轮对话里回放
-        include: ['reasoning.encrypted_content']
+        store: false
     };
+    // 不保存时推理项只能靠加密内容在多轮对话里回放；不支持推理的型号收到这个参数直接 400
+    if (profile?.reasoning?.supported !== false) {
+        requestBody.include = ['reasoning.encrypted_content'];
+    }
 
     Object.assign(requestBody, modelParams);
     if (thinkingCfg) Object.assign(requestBody, thinkingCfg);

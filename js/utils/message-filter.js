@@ -4,10 +4,15 @@
  */
 
 import { logger } from './logger.js';
-import { PartType, MediaKind, textPart, mediaPart } from '../messages/schema.js';
+import { PartType, MediaKind, Role, textPart } from '../messages/schema.js';
+import { omitToolResultImages } from '../messages/tool-results.js';
 
 /**
  * 根据模型能力过滤和转换消息
+ *
+ * 只替换模型收不了的图片，文件、思考块（签名）与工具调用原样保留；
+ * 返回的是本次请求用的副本，不改动会话里的消息
+ *
  * @param {Array} messages - 新格式消息数组（parts[]），必须在转成各家 API 格式之前调用
  * @param {Object} modelCapabilities - 当前模型的能力配置 {imageInput, imageOutput}
  * @returns {Array} 转换后的消息数组
@@ -20,190 +25,146 @@ export function filterMessagesByCapabilities(messages, modelCapabilities) {
 
     logger.debug('[消息过滤] 开始过滤，能力配置:', modelCapabilities);
 
-    const filteredMessages = messages.map((msg, index) => {
-        // 只处理 assistant 和 user 消息，system 消息保持不变
-        if (msg.role === 'system') return msg;
-
-        const hasImages = hasImageInParts(msg.parts);
-        if (!hasImages) return msg;
-
-        // 根据角色和能力决定转换策略
-        if (msg.role === 'assistant') {
-            return handleAssistantImageMessage(msg, modelCapabilities, index);
-        } else if (msg.role === 'user') {
-            return handleUserImageMessage(msg, modelCapabilities);
+    const filteredMessages = [];
+    messages.forEach((msg, index) => {
+        if (msg.role === Role.SYSTEM) {
+            filteredMessages.push(msg);
+            return;
         }
-
-        return msg;
+        const withToolImages = modelCapabilities.imageInput
+            ? msg
+            : removeToolResultImages(msg, index);
+        if (!hasImageInParts(withToolImages.parts)) {
+            filteredMessages.push(withToolImages);
+            return;
+        }
+        if (msg.role === Role.ASSISTANT) {
+            filteredMessages.push(
+                ...handleAssistantImageMessage(withToolImages, modelCapabilities, index)
+            );
+        } else if (msg.role === Role.USER && !modelCapabilities.imageInput) {
+            logger.debug('[消息过滤] 删除 user 图片（模型不支持 Vision）');
+            filteredMessages.push(
+                replaceImages(
+                    withToolImages,
+                    (count) => `[你上传了 ${count} 张图片，但当前模型不支持图片理解]`
+                )
+            );
+        } else {
+            filteredMessages.push(withToolImages);
+        }
     });
 
-    logger.debug(`[消息过滤] 完成：${messages.length} → ${filteredMessages.length} 条消息`);
-    return filteredMessages;
+    const merged = mergeIntoNextUserMessage(filteredMessages);
+    logger.debug(`[消息过滤] 完成：${messages.length} → ${merged.length} 条消息`);
+    return merged;
+}
+
+/**
+ * 挪出来的图片消息后面紧跟用户消息时并进去，避免连续两条 user 消息
+ */
+function mergeIntoNextUserMessage(messages) {
+    const out = [];
+    for (let i = 0; i < messages.length; i++) {
+        const current = messages[i];
+        const next = messages[i + 1];
+        if (current._converted && next?.role === Role.USER && !next.error) {
+            messages[i + 1] = { ...next, parts: [...current.parts, ...(next.parts || [])] };
+            continue;
+        }
+        out.push(current);
+    }
+    return out;
 }
 
 /**
  * 处理 assistant 的图片消息
- * @param {Object} msg - 消息对象
- * @param {Object} capabilities - 模型能力 {imageInput, imageOutput}
- * @param {number} index - 消息索引
- * @returns {Object} 处理后的消息
+ * @returns {Array} 处理后的消息（可能拆成两条）
  */
 function handleAssistantImageMessage(msg, capabilities, index) {
     const { imageInput, imageOutput } = capabilities;
 
-    // 策略 1: 模型支持图片输入但不支持输出 → 转为 user 消息
+    // 模型支持图片输入但不支持输出：assistant 里不能带图片，挪到紧随其后的一条 user 消息
     if (imageInput && !imageOutput) {
-        logger.debug(`[消息过滤] 转换 assistant 图片为 user（消息 #${index + 1}）`);
-        return convertAssistantImageToUser(msg, index);
+        logger.debug(`[消息过滤] assistant 图片转为 user 消息（消息 #${index + 1}）`);
+        return moveImagesToUserMessage(msg, index);
     }
 
-    // 策略 2: 模型两者都不支持 → 删除图片，保留文本
     if (!imageInput && !imageOutput) {
         logger.debug(`[消息过滤] 删除 assistant 图片（模型不支持多模态，消息 #${index + 1}）`);
-        return removeImagesFromMessage(msg, 'assistant');
+        return [replaceImages(msg, (count) => `[AI 生成了 ${count} 张图片，但当前模型不支持显示]`)];
     }
 
-    // 策略 3: 模型支持图片输出 → 保留原样
-    logger.debug(`[消息过滤] 保留 assistant 图片（模型支持输出，消息 #${index + 1}）`);
-    return msg;
+    return [msg];
+}
+
+function isImagePart(part) {
+    return part?.type === PartType.MEDIA && part.media === MediaKind.IMAGE;
 }
 
 /**
- * 处理 user 的图片消息
- * @param {Object} msg - 消息对象
- * @param {Object} capabilities - 模型能力
- * @returns {Object} 处理后的消息
+ * 图片换成一段说明文字，放在第一张图片原来的位置；其余 part 保持原样与原顺序
  */
-function handleUserImageMessage(msg, capabilities) {
-    // 如果模型不支持图片输入，删除用户的图片
-    if (!capabilities.imageInput) {
-        logger.debug('[消息过滤] 删除 user 图片（模型不支持 Vision）');
-        return removeImagesFromMessage(msg, 'user');
-    }
-
-    logger.debug('[消息过滤] 保留 user 图片（模型支持 Vision）');
-    return msg;
+function replaceImages(msg, describe) {
+    const images = msg.parts.filter(isImagePart);
+    const firstIndex = msg.parts.findIndex(isImagePart);
+    const placeholder = textPart(describe(images.length), {
+        ...(msg.parts[firstIndex]._turn !== undefined ? { _turn: msg.parts[firstIndex]._turn } : {})
+    });
+    const parts = msg.parts
+        .map((part, index) => (index === firstIndex ? placeholder : part))
+        .filter((part) => !isImagePart(part));
+    return { ...msg, parts };
 }
 
-/**
- * 将 assistant 的图片消息转换为 user 消息
- * @param {Object} msg - 原始 assistant 消息
- * @param {number} messageIndex - 消息索引
- * @returns {Object} 转换后的 user 消息
- */
-function convertAssistantImageToUser(msg, messageIndex) {
-    const textParts = [];
-    const imageParts = [];
-    const thinkingParts = [];
-
-    if (Array.isArray(msg.parts)) {
-        for (const p of msg.parts) {
-            if (p.type === PartType.TEXT) textParts.push(p.text);
-            else if (p.type === PartType.THINKING) thinkingParts.push(p.text);
-            else if (p.type === PartType.MEDIA && p.media === MediaKind.IMAGE) {
-                imageParts.push(p);
-            }
-        }
-    }
-
-    // 添加占位符说明
-    let placeholder = `[*] 第 ${messageIndex + 1} 条消息中 AI 的回复已转为你的消息（当前模型不支持图片输出）\n\n`;
-
-    // 添加思维链内容（如果有）
-    if (thinkingParts.length > 0) {
-        placeholder += `AI 的思考过程：\n${thinkingParts.join('\n\n')}\n\n`;
-    }
-
-    // 添加文本内容
-    if (textParts.length > 0) {
-        placeholder += `AI 说：${textParts.join('\n\n')}`;
-    }
-
-    // 如果有图片，添加图片说明
-    if (imageParts.length > 0) {
-        placeholder += `\n\nAI 生成的图片（${imageParts.length} 张）：`;
-    }
-
-    const newParts = [textPart(placeholder)];
-    for (const image of imageParts) {
-        if (image.url) {
-            newParts.push(
-                mediaPart(MediaKind.IMAGE, image.url, image.mime || '', {
-                    name: image.name,
-                    mediaId: image.mediaId
-                })
-            );
-        }
-    }
-
-    // 返回转换后的 user 消息（保留原消息的 id 等字段）
-    return {
-        ...msg,
-        role: 'user',
-        parts: newParts,
+function moveImagesToUserMessage(msg, messageIndex) {
+    const images = msg.parts.filter(isImagePart);
+    const assistant = replaceImages(
+        msg,
+        (count) => `[AI 生成了 ${count} 张图片，已作为下一条消息发送]`
+    );
+    const userMessage = {
+        id: `${msg.id}-images`,
+        role: Role.USER,
+        parts: [
+            textPart(
+                `[*] 第 ${messageIndex + 1} 条消息中 AI 生成的图片（${images.length} 张，当前模型不支持图片输出，以你的消息发送）：`
+            ),
+            ...images.map(({ _turn, ...image }) => image)
+        ],
+        meta: msg.meta,
+        error: null,
         _converted: true,
-        _originalRole: 'assistant',
+        _originalRole: Role.ASSISTANT,
         _originalIndex: messageIndex
     };
+    return [assistant, userMessage];
 }
 
 /**
- * 从消息中删除图片，保留文本
- * @param {Object} msg - 原始消息
- * @param {string} role - 消息角色 (user/assistant)
- * @returns {Object} 处理后的消息
+ * 模型不支持图片输入时，工具结果里的截图等图片也发不出去，换成说明文字
  */
-function removeImagesFromMessage(msg, role) {
-    const textParts = [];
-    const thinkingParts = [];
-    let imageCount = 0;
-
-    if (Array.isArray(msg.parts)) {
-        for (const p of msg.parts) {
-            if (p.type === PartType.TEXT) textParts.push(p.text);
-            else if (p.type === PartType.THINKING) thinkingParts.push(p.text);
-            else if (p.type === PartType.MEDIA && p.media === MediaKind.IMAGE) imageCount++;
-        }
-    }
-
-    // 如果没有图片，返回原消息
-    if (imageCount === 0) {
-        return msg;
-    }
-
-    // 构建新的文本内容
-    let newText = '';
-
-    // 添加思维链内容（如果有）
-    if (thinkingParts.length > 0) {
-        newText += thinkingParts.join('\n\n') + '\n\n';
-    }
-
-    // 添加文本内容
-    if (textParts.length > 0) {
-        newText += textParts.join('\n\n');
-    }
-
-    // 添加占位符说明
-    const placeholder =
-        role === 'assistant'
-            ? `\n\n[AI 生成了 ${imageCount} 张图片，但当前模型不支持显示]`
-            : `\n\n[你上传了 ${imageCount} 张图片，但当前模型不支持图片理解]`;
-
-    newText = (newText + placeholder).trim();
-
-    return {
-        ...msg,
-        parts: [textPart(newText)]
-    };
+function removeToolResultImages(msg, index) {
+    if (!Array.isArray(msg.parts)) return msg;
+    let changed = false;
+    const parts = msg.parts.map((part) => {
+        if (part?.type !== PartType.TOOL_CALL || part.result == null) return part;
+        const result = omitToolResultImages(
+            part.result,
+            (count) => `[工具返回了 ${count} 张图片，当前模型不支持图片输入，已省略]`
+        );
+        if (result === part.result) return part;
+        changed = true;
+        return { ...part, result };
+    });
+    if (!changed) return msg;
+    logger.debug(`[消息过滤] 删除工具结果中的图片（模型不支持 Vision，消息 #${index + 1}）`);
+    return { ...msg, parts };
 }
 
 /**
  * 检查新格式 parts 中是否包含图片
  */
 function hasImageInParts(parts) {
-    if (Array.isArray(parts)) {
-        return parts.some((p) => p.type === PartType.MEDIA && p.media === MediaKind.IMAGE);
-    }
-    return false;
+    return Array.isArray(parts) && parts.some(isImagePart);
 }

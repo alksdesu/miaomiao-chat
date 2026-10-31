@@ -24,7 +24,8 @@ import {
     toolCallPart,
     filePart,
     isNewFormat,
-    isSchemaFormatParts
+    isSchemaFormatParts,
+    SignatureFormat
 } from './schema.js';
 import { logger } from '../utils/logger.js';
 import { generateIdSet } from '../api/format-converter.js';
@@ -159,14 +160,18 @@ function migrateOneMessage(msg, gemini, claude) {
     // 1. 思维链（迁移必须保留：读取旧字段以转换为新格式）
     const thinkingText = msg.thinkingContent || '';
     if (thinkingText) {
-        // 签名来源：Claude 用 thinkingSignature，Gemini 用 thoughtSignature
-        const sig =
-            msg.thinkingSignature ||
-            msg.thoughtSignature ||
-            claude?.thinkingSignature ||
-            gemini?.thoughtSignature ||
-            null;
-        parts.push(thinkingPart(thinkingText, sig));
+        // 签名来源：Claude 用 thinkingSignature，Gemini 用 thoughtSignature；记下来源，换家时才不会被当成本家签名下发
+        const claudeSig = msg.thinkingSignature || claude?.thinkingSignature || null;
+        const geminiSig = msg.thoughtSignature || gemini?.thoughtSignature || null;
+        parts.push(
+            thinkingPart(thinkingText, claudeSig || geminiSig, {
+                signatureFormat: claudeSig
+                    ? SignatureFormat.CLAUDE
+                    : geminiSig
+                      ? SignatureFormat.GEMINI
+                      : null
+            })
+        );
     }
 
     // 2. 文本内容 + 多模态（迁移必须保留：读取旧 contentParts 以转换为新格式）

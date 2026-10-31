@@ -425,3 +425,133 @@ describe('parseApiResponse - Responses API 格式', () => {
         expect(result.content).toBe('from content array');
     });
 });
+
+describe('Responses 不支持推理的型号', () => {
+    const history = () => [
+        newMsg('user', [{ type: PartType.TEXT, text: 'q' }]),
+        newMsg('assistant', [{ type: PartType.TEXT, text: 'a' }], {
+            meta: {
+                raw: {
+                    openai: {
+                        reasoningItems: [{ id: 'rs_1', summary: [], encrypted_content: 'ENC' }]
+                    }
+                }
+            }
+        })
+    ];
+
+    it('换到不支持推理的型号时不回放加密推理项', () => {
+        const out = openaiResponsesAdapter.partsToAPIMessages(history(), {
+            profile: resolveModelProfile('openai-responses', 'gpt-4.1')
+        });
+        expect(out.some((item) => item.type === 'reasoning')).toBe(false);
+
+        const reasoning = openaiResponsesAdapter.partsToAPIMessages(history(), {
+            profile: resolveModelProfile('openai-responses', 'gpt-5.5')
+        });
+        expect(reasoning.some((item) => item.type === 'reasoning')).toBe(true);
+    });
+
+    it('不支持推理的型号不请求加密推理内容（否则直接 400）', () => {
+        const body = openaiResponsesAdapter.buildRequestBody({
+            messages: [{ role: 'user', content: 'hi' }],
+            model: 'gpt-4o',
+            modelParams: {},
+            thinkingCfg: null,
+            verbosityCfg: null,
+            systemCtx: {},
+            prefill: null,
+            tools: [],
+            isXmlMode: false,
+            profile: resolveModelProfile('openai-responses', 'gpt-4o'),
+            notices: [],
+            state: { streamEnabled: true }
+        });
+        expect(body.include).toBeUndefined();
+    });
+});
+
+describe('Responses 工具结果与历史回放', () => {
+    it('带截图的工具结果以 input_image 数组回传', () => {
+        const out = openaiResponsesAdapter.partsToAPIMessages([
+            newMsg('assistant', [
+                {
+                    type: PartType.TOOL_CALL,
+                    id: 'tc_1',
+                    name: 'screenshot',
+                    args: {},
+                    state: 'done',
+                    result: {
+                        content: 'captured',
+                        media: [{ type: MediaKind.IMAGE, url: 'data:image/png;base64,SHOT' }]
+                    }
+                }
+            ])
+        ]);
+        expect(out.find((item) => item.type === 'function_call_output').output).toEqual([
+            { type: 'input_text', text: 'captured' },
+            { type: 'input_image', image_url: 'data:image/png;base64,SHOT' }
+        ]);
+    });
+
+    it('Claude 服务端工具转成 assistant 文本，不作为函数调用回放', () => {
+        const out = openaiResponsesAdapter.partsToAPIMessages([
+            newMsg('assistant', [
+                {
+                    type: PartType.TOOL_CALL,
+                    id: 'srv',
+                    name: 'web_search',
+                    args: { query: 'q' },
+                    state: 'done',
+                    server: true,
+                    result: {
+                        type: 'web_search_tool_result',
+                        content: [{ type: 'web_search_result', title: 'T', url: 'https://t' }]
+                    }
+                },
+                { type: PartType.TEXT, text: 'answer' }
+            ])
+        ]);
+        expect(out).toEqual([
+            {
+                role: 'assistant',
+                content: '[web_search] {"query":"q"}\n- T (https://t)\n\nanswer'
+            }
+        ]);
+    });
+
+    it('空文本不产生 input_text，user 内容为空时回落为空字符串', () => {
+        const out = openaiResponsesAdapter.partsToAPIMessages([
+            newMsg('user', [
+                { type: PartType.TEXT, text: '' },
+                { type: PartType.MEDIA, media: MediaKind.IMAGE, url: 'data:image/png;base64,A' }
+            ]),
+            newMsg('user', [{ type: PartType.TEXT, text: '' }])
+        ]);
+        expect(out[0].content).toEqual([
+            { type: 'input_image', image_url: 'data:image/png;base64,A' }
+        ]);
+        expect(out[1].content).toBe('');
+    });
+
+    it('XML 模式的结果紧跟在对应那一轮之后', () => {
+        const out = openaiResponsesAdapter.partsToAPIMessages([
+            newMsg('assistant', [
+                { type: PartType.TEXT, text: 'checking' },
+                { type: PartType.TEXT, text: 'answer', _turn: 1 },
+                {
+                    type: PartType.TOOL_CALL,
+                    id: 'x1',
+                    name: 'search',
+                    args: {},
+                    mode: 'xml',
+                    state: 'done',
+                    result: { content: 'found' }
+                }
+            ])
+        ]);
+        expect(out.map((item) => item.role)).toEqual(['assistant', 'user', 'assistant']);
+        expect(out[1].content).toContain('<result>found</result>');
+        expect(out[2].content).toBe('answer');
+    });
+});

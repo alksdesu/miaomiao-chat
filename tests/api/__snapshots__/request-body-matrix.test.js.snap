@@ -24,6 +24,76 @@ exports[`OpenClaw 请求参数快照 > openclaw params and budget thinking 1`] =
 }
 `;
 
+exports[`请求体矩阵快照 > chat computer toolset history 1`] = `
+{
+  "body": {
+    "messages": [
+      {
+        "content": "Open the settings",
+        "role": "user",
+      },
+      {
+        "content": "",
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": {
+              "arguments": "{"coordinate":[100,200]}",
+              "name": "left_click",
+            },
+            "id": "call_cu1",
+            "type": "function",
+          },
+          {
+            "function": {
+              "arguments": "{}",
+              "name": "screenshot",
+            },
+            "id": "call_cu2",
+            "type": "function",
+          },
+        ],
+      },
+      {
+        "content": "OK",
+        "role": "tool",
+        "tool_call_id": "call_cu1",
+      },
+      {
+        "content": "",
+        "role": "tool",
+        "tool_call_id": "call_cu2",
+      },
+      {
+        "content": [
+          {
+            "text": "[screenshot 返回的图片]",
+            "type": "text",
+          },
+          {
+            "image_url": {
+              "url": "data:image/png;base64,QkJCQg==",
+            },
+            "type": "image_url",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "model": "gpt-5.5",
+    "stream": true,
+    "stream_options": {
+      "include_usage": true,
+    },
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/chat/completions",
+}
+`;
+
 exports[`请求体矩阵快照 > chat defaults 1`] = `
 {
   "body": {
@@ -66,11 +136,20 @@ exports[`请求体矩阵快照 > chat image history with capabilities 1`] = `
       {
         "content": [
           {
-            "text": "[*] 第 2 条消息中 AI 的回复已转为你的消息（当前模型不支持图片输出）
-
-AI 说：Here it is
-
-AI 生成的图片（1 张）：",
+            "text": "Here it is",
+            "type": "text",
+          },
+          {
+            "text": "[AI 生成了 1 张图片，已作为下一条消息发送]",
+            "type": "text",
+          },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": [
+          {
+            "text": "[*] 第 2 条消息中 AI 生成的图片（1 张，当前模型不支持图片输出，以你的消息发送）：",
             "type": "text",
           },
           {
@@ -79,11 +158,6 @@ AI 生成的图片（1 张）：",
             },
             "type": "image_url",
           },
-        ],
-        "role": "user",
-      },
-      {
-        "content": [
           {
             "text": "Make it blue",
             "type": "text",
@@ -306,7 +380,7 @@ exports[`请求体矩阵快照 > chat rich history 1`] = `
         "role": "user",
       },
       {
-        "content": "It is sunny in Paris.",
+        "content": "",
         "role": "assistant",
         "tool_calls": [
           {
@@ -320,10 +394,13 @@ exports[`请求体矩阵快照 > chat rich history 1`] = `
         ],
       },
       {
-        "_toolName": "get_weather",
         "content": "Sunny, 22C",
         "role": "tool",
         "tool_call_id": "call_w1",
+      },
+      {
+        "content": "It is sunny in Paris.",
+        "role": "assistant",
       },
       {
         "content": "And tomorrow?",
@@ -1233,6 +1310,296 @@ exports[`请求体矩阵快照 > claude budget thinking medium haiku-4-5 1`] = `
 }
 `;
 
+exports[`请求体矩阵快照 > claude computer toolset history opus-5-5 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": "Open the settings",
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "signature": "sig-cu-claude",
+            "thinking": "",
+            "type": "thinking",
+          },
+          {
+            "id": "toolu_cu1",
+            "input": {
+              "coordinate": [
+                100,
+                200,
+              ],
+            },
+            "name": "left_click",
+            "toolset_name": "computer",
+            "type": "tool_use",
+          },
+          {
+            "id": "toolu_cu2",
+            "input": {},
+            "name": "screenshot",
+            "toolset_name": "computer",
+            "type": "tool_use",
+          },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": [
+          {
+            "content": "OK",
+            "tool_use_id": "toolu_cu1",
+            "toolset_name": "computer",
+            "type": "tool_result",
+          },
+          {
+            "content": [
+              {
+                "source": {
+                  "data": "QkJCQg==",
+                  "media_type": "image/png",
+                  "type": "base64",
+                },
+                "type": "image",
+              },
+            ],
+            "tool_use_id": "toolu_cu2",
+            "toolset_name": "computer",
+            "type": "tool_result",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "model": "claude-opus-5-5",
+    "output_config": {
+      "effort": "low",
+    },
+    "stream": true,
+    "thinking": {
+      "block_binding": {
+        "prefix_mismatch_behavior": "drop_block",
+      },
+      "display": "summarized",
+      "type": "adaptive",
+    },
+    "tools": [
+      {
+        "type": "computer_toolset_20260801",
+      },
+      {
+        "name": "bash",
+        "type": "bash_20250124",
+      },
+      {
+        "name": "str_replace_based_edit_tool",
+        "type": "text_editor_20250728",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-beta": "thinking-binding-controls-2026-08-01",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude computer toolset history replayed on opus-4-6 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": "Open the settings",
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "signature": "sig-cu-claude",
+            "thinking": "",
+            "type": "thinking",
+          },
+          {
+            "id": "toolu_cu1",
+            "input": {
+              "action": "left_click",
+              "coordinate": [
+                100,
+                200,
+              ],
+            },
+            "name": "computer",
+            "type": "tool_use",
+          },
+          {
+            "id": "toolu_cu2",
+            "input": {
+              "action": "screenshot",
+            },
+            "name": "computer",
+            "type": "tool_use",
+          },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": [
+          {
+            "content": "OK",
+            "tool_use_id": "toolu_cu1",
+            "type": "tool_result",
+          },
+          {
+            "content": [
+              {
+                "source": {
+                  "data": "QkJCQg==",
+                  "media_type": "image/png",
+                  "type": "base64",
+                },
+                "type": "image",
+              },
+            ],
+            "tool_use_id": "toolu_cu2",
+            "type": "tool_result",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "model": "claude-opus-4-6",
+    "stream": true,
+    "tools": [
+      {
+        "display_height_px": 804,
+        "display_number": 1,
+        "display_width_px": 1429,
+        "name": "computer",
+        "type": "computer_20251124",
+      },
+      {
+        "name": "bash",
+        "type": "bash_20250124",
+      },
+      {
+        "name": "str_replace_based_edit_tool",
+        "type": "text_editor_20250728",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-beta": "computer-use-2025-11-24",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude computer toolset history without computer use 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": "Open the settings",
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "signature": "sig-cu-claude",
+            "thinking": "",
+            "type": "thinking",
+          },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": [
+          {
+            "text": "<tool_use>
+  <name>left_click</name>
+  <arguments>{&quot;coordinate&quot;:[100,200]}</arguments>
+</tool_use>
+<tool_use_result>
+  <name>left_click</name>
+  <result>OK</result>
+</tool_use_result>
+<tool_use>
+  <name>screenshot</name>
+  <arguments>{}</arguments>
+</tool_use>
+<tool_use_result>
+  <name>screenshot</name>
+  <result></result>
+</tool_use_result>",
+            "type": "text",
+          },
+          {
+            "source": {
+              "data": "QkJCQg==",
+              "media_type": "image/png",
+              "type": "base64",
+            },
+            "type": "image",
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "model": "claude-opus-5-5",
+    "output_config": {
+      "effort": "low",
+    },
+    "stream": true,
+    "thinking": {
+      "block_binding": {
+        "prefix_mismatch_behavior": "drop_block",
+      },
+      "display": "summarized",
+      "type": "adaptive",
+    },
+    "tools": [
+      {
+        "description": "Get the weather for a city",
+        "input_schema": {
+          "properties": {
+            "city": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "city",
+          ],
+          "type": "object",
+        },
+        "name": "get_weather",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-beta": "thinking-binding-controls-2026-08-01",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
 exports[`请求体矩阵快照 > claude computer use opus-4-6 1`] = `
 {
   "body": {
@@ -1482,11 +1849,20 @@ exports[`请求体矩阵快照 > claude image history with capabilities 1`] = `
       {
         "content": [
           {
-            "text": "[*] 第 2 条消息中 AI 的回复已转为你的消息（当前模型不支持图片输出）
-
-AI 说：Here it is
-
-AI 生成的图片（1 张）：",
+            "text": "Here it is",
+            "type": "text",
+          },
+          {
+            "text": "[AI 生成了 1 张图片，已作为下一条消息发送]",
+            "type": "text",
+          },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": [
+          {
+            "text": "[*] 第 2 条消息中 AI 生成的图片（1 张，当前模型不支持图片输出，以你的消息发送）：",
             "type": "text",
           },
           {
@@ -1497,11 +1873,6 @@ AI 生成的图片（1 张）：",
             },
             "type": "image",
           },
-        ],
-        "role": "user",
-      },
-      {
-        "content": [
           {
             "text": "Make it blue",
             "type": "text",
@@ -1742,6 +2113,100 @@ exports[`请求体矩阵快照 > claude rich history adaptive opus-5-5 1`] = `
             "thinking": "Need the weather tool",
             "type": "thinking",
           },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": "<tool_use>
+  <name>get_weather</name>
+  <arguments>{&quot;city&quot;:&quot;Paris&quot;}</arguments>
+</tool_use>
+<tool_use_result>
+  <name>get_weather</name>
+  <result>Sunny, 22C</result>
+</tool_use_result>",
+        "role": "user",
+      },
+      {
+        "content": "It is sunny in Paris.",
+        "role": "assistant",
+      },
+      {
+        "content": "And tomorrow?",
+        "role": "user",
+      },
+    ],
+    "model": "claude-opus-5-5",
+    "output_config": {
+      "effort": "high",
+    },
+    "stream": true,
+    "thinking": {
+      "block_binding": {
+        "prefix_mismatch_behavior": "drop_block",
+      },
+      "display": "summarized",
+      "type": "adaptive",
+    },
+  },
+  "headers": {
+    "Content-Type": "application/json",
+    "anthropic-beta": "thinking-binding-controls-2026-08-01",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "test-key",
+  },
+  "url": "https://api.anthropic.com/v1/messages",
+}
+`;
+
+exports[`请求体矩阵快照 > claude rich history with tools opus-5-5 1`] = `
+{
+  "body": {
+    "max_tokens": 64000,
+    "messages": [
+      {
+        "content": [
+          {
+            "text": "Describe this image",
+            "type": "text",
+          },
+          {
+            "source": {
+              "data": "QUFBQQ==",
+              "media_type": "image/png",
+              "type": "base64",
+            },
+            "type": "image",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "signature": "sig-a-claude",
+            "thinking": "Looking at the image",
+            "type": "thinking",
+          },
+          {
+            "text": "It is a cat.",
+            "type": "text",
+          },
+        ],
+        "role": "assistant",
+      },
+      {
+        "content": "What is the weather in Paris?",
+        "role": "user",
+      },
+      {
+        "content": [
+          {
+            "signature": "sig-b-claude",
+            "thinking": "Need the weather tool",
+            "type": "thinking",
+          },
           {
             "id": "toolu_w1",
             "input": {
@@ -1774,7 +2239,7 @@ exports[`请求体矩阵快照 > claude rich history adaptive opus-5-5 1`] = `
     ],
     "model": "claude-opus-5-5",
     "output_config": {
-      "effort": "high",
+      "effort": "low",
     },
     "stream": true,
     "thinking": {
@@ -1784,6 +2249,23 @@ exports[`请求体矩阵快照 > claude rich history adaptive opus-5-5 1`] = `
       "display": "summarized",
       "type": "adaptive",
     },
+    "tools": [
+      {
+        "description": "Get the weather for a city",
+        "input_schema": {
+          "properties": {
+            "city": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "city",
+          ],
+          "type": "object",
+        },
+        "name": "get_weather",
+      },
+    ],
   },
   "headers": {
     "Content-Type": "application/json",
@@ -2212,6 +2694,196 @@ exports[`请求体矩阵快照 > gemini api key in header 1`] = `
 }
 `;
 
+exports[`请求体矩阵快照 > gemini computer toolset history 1`] = `
+{
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Open the settings",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "coordinate": [
+                  100,
+                  200,
+                ],
+              },
+              "name": "left_click",
+            },
+            "thoughtSignature": "skip_thought_signature_validator",
+          },
+          {
+            "functionCall": {
+              "args": {},
+              "name": "screenshot",
+            },
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "functionResponse": {
+              "name": "left_click",
+              "response": {
+                "result": "OK",
+              },
+            },
+          },
+          {
+            "functionResponse": {
+              "name": "screenshot",
+              "parts": [
+                {
+                  "inlineData": {
+                    "data": "QkJCQg==",
+                    "displayName": "screenshot-1.png",
+                    "mimeType": "image/png",
+                  },
+                },
+              ],
+              "response": {
+                "result": "",
+              },
+            },
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "generationConfig": {
+      "thinkingConfig": {
+        "thinkingLevel": "LOW",
+      },
+    },
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "OFF",
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "OFF",
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "OFF",
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "OFF",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+  },
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:streamGenerateContent?key=test-key&alt=sse",
+}
+`;
+
+exports[`请求体矩阵快照 > gemini computer toolset history 2.5 1`] = `
+{
+  "body": {
+    "contents": [
+      {
+        "parts": [
+          {
+            "text": "Open the settings",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "functionCall": {
+              "args": {
+                "coordinate": [
+                  100,
+                  200,
+                ],
+              },
+              "name": "left_click",
+            },
+          },
+          {
+            "functionCall": {
+              "args": {},
+              "name": "screenshot",
+            },
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "functionResponse": {
+              "name": "left_click",
+              "response": {
+                "result": "OK",
+              },
+            },
+          },
+          {
+            "functionResponse": {
+              "name": "screenshot",
+              "response": {
+                "result": "",
+              },
+            },
+          },
+          {
+            "inlineData": {
+              "data": "QkJCQg==",
+              "mimeType": "image/png",
+            },
+          },
+        ],
+        "role": "user",
+      },
+    ],
+    "generationConfig": {
+      "thinkingConfig": {
+        "thinkingBudget": 128,
+      },
+    },
+    "safetySettings": [
+      {
+        "category": "HARM_CATEGORY_HATE_SPEECH",
+        "threshold": "OFF",
+      },
+      {
+        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "OFF",
+      },
+      {
+        "category": "HARM_CATEGORY_HARASSMENT",
+        "threshold": "OFF",
+      },
+      {
+        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "threshold": "OFF",
+      },
+    ],
+  },
+  "headers": {
+    "Content-Type": "application/json",
+  },
+  "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:streamGenerateContent?key=test-key&alt=sse",
+}
+`;
+
 exports[`请求体矩阵快照 > gemini defaults 3.8-flash with 2K select 1`] = `
 {
   "body": {
@@ -2347,11 +3019,18 @@ exports[`请求体矩阵快照 > gemini image history with capabilities 1`] = `
       {
         "parts": [
           {
-            "text": "[*] 第 2 条消息中 AI 的回复已转为你的消息（当前模型不支持图片输出）
-
-AI 说：Here it is
-
-AI 生成的图片（1 张）：",
+            "text": "Here it is",
+          },
+          {
+            "text": "[AI 生成了 1 张图片，已作为下一条消息发送]",
+          },
+        ],
+        "role": "model",
+      },
+      {
+        "parts": [
+          {
+            "text": "[*] 第 2 条消息中 AI 生成的图片（1 张，当前模型不支持图片输出，以你的消息发送）：",
           },
           {
             "inlineData": {
@@ -2359,11 +3038,6 @@ AI 生成的图片（1 张）：",
               "mimeType": "image/png",
             },
           },
-        ],
-        "role": "user",
-      },
-      {
-        "parts": [
           {
             "text": "Make it blue",
           },
@@ -2612,9 +3286,6 @@ exports[`请求体矩阵快照 > gemini rich history 1`] = `
             },
             "thoughtSignature": "sig-fc-w1",
           },
-          {
-            "text": "It is sunny in Paris.",
-          },
         ],
         "role": "model",
       },
@@ -2631,6 +3302,14 @@ exports[`请求体矩阵快照 > gemini rich history 1`] = `
           },
         ],
         "role": "user",
+      },
+      {
+        "parts": [
+          {
+            "text": "It is sunny in Paris.",
+          },
+        ],
+        "role": "model",
       },
       {
         "parts": [
@@ -3867,6 +4546,57 @@ exports[`请求体矩阵快照 > image edit gpt-image-2 with input fidelity 1`] 
 }
 `;
 
+exports[`请求体矩阵快照 > responses computer toolset history 1`] = `
+{
+  "body": {
+    "include": [
+      "reasoning.encrypted_content",
+    ],
+    "input": [
+      {
+        "content": "Open the settings",
+        "role": "user",
+      },
+      {
+        "arguments": "{"coordinate":[100,200]}",
+        "call_id": "call_cu1",
+        "name": "left_click",
+        "type": "function_call",
+      },
+      {
+        "call_id": "call_cu1",
+        "output": "OK",
+        "type": "function_call_output",
+      },
+      {
+        "arguments": "{}",
+        "call_id": "call_cu2",
+        "name": "screenshot",
+        "type": "function_call",
+      },
+      {
+        "call_id": "call_cu2",
+        "output": [
+          {
+            "image_url": "data:image/png;base64,QkJCQg==",
+            "type": "input_image",
+          },
+        ],
+        "type": "function_call_output",
+      },
+    ],
+    "model": "gpt-5.5",
+    "store": false,
+    "stream": true,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/responses",
+}
+`;
+
 exports[`请求体矩阵快照 > responses defaults 1`] = `
 {
   "body": {
@@ -3912,24 +4642,22 @@ exports[`请求体矩阵快照 > responses image history with capabilities 1`] =
         "role": "user",
       },
       {
+        "content": "Here it is
+
+[AI 生成了 1 张图片，已作为下一条消息发送]",
+        "phase": "final_answer",
+        "role": "assistant",
+      },
+      {
         "content": [
           {
-            "text": "[*] 第 2 条消息中 AI 的回复已转为你的消息（当前模型不支持图片输出）
-
-AI 说：Here it is
-
-AI 生成的图片（1 张）：",
+            "text": "[*] 第 2 条消息中 AI 生成的图片（1 张，当前模型不支持图片输出，以你的消息发送）：",
             "type": "input_text",
           },
           {
             "image_url": "data:image/png;base64,QUFBQQ==",
             "type": "input_image",
           },
-        ],
-        "role": "user",
-      },
-      {
-        "content": [
           {
             "text": "Make it blue",
             "type": "input_text",
@@ -4112,6 +4840,63 @@ exports[`请求体矩阵快照 > responses rich history 1`] = `
       },
     ],
     "model": "gpt-5.5",
+    "store": false,
+    "stream": true,
+  },
+  "headers": {
+    "Authorization": "Bearer test-key",
+    "Content-Type": "application/json",
+  },
+  "url": "https://api.openai.com/v1/responses",
+}
+`;
+
+exports[`请求体矩阵快照 > responses rich history non-reasoning gpt-4.1 1`] = `
+{
+  "body": {
+    "input": [
+      {
+        "content": [
+          {
+            "text": "Describe this image",
+            "type": "input_text",
+          },
+          {
+            "image_url": "data:image/png;base64,QUFBQQ==",
+            "type": "input_image",
+          },
+        ],
+        "role": "user",
+      },
+      {
+        "content": "It is a cat.",
+        "role": "assistant",
+      },
+      {
+        "content": "What is the weather in Paris?",
+        "role": "user",
+      },
+      {
+        "arguments": "{"city":"Paris"}",
+        "call_id": "call_w1",
+        "name": "get_weather",
+        "type": "function_call",
+      },
+      {
+        "call_id": "call_w1",
+        "output": "Sunny, 22C",
+        "type": "function_call_output",
+      },
+      {
+        "content": "It is sunny in Paris.",
+        "role": "assistant",
+      },
+      {
+        "content": "And tomorrow?",
+        "role": "user",
+      },
+    ],
+    "model": "gpt-4.1",
     "store": false,
     "stream": true,
   },

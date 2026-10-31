@@ -10,7 +10,7 @@
 
 import { logger } from '../utils/logger.js';
 import { state } from '../core/state.js';
-import { processVariables } from '../utils/variables.js';
+import { processVariables, templateNamesOf } from '../utils/variables.js';
 import { filterMessagesByCapabilities } from '../utils/message-filter.js';
 import { getCurrentModelCapabilities, getCurrentProvider, getModelDisplayName } from './current.js';
 import { getPrefillMessages, getOpeningMessages } from '../utils/prefill.js';
@@ -125,7 +125,7 @@ function buildSystemContext() {
     };
 
     if (state.systemPrompt) {
-        ctx.systemPrompt = processVariables(state.systemPrompt);
+        ctx.systemPrompt = processVariables(state.systemPrompt, templateNamesOf(state));
     }
 
     if (state.monitorEnabled) {
@@ -209,11 +209,17 @@ async function filterAndConvertMessages(adapter, requestProfile, sessionId, sour
     const filtered = capabilities
         ? filterMessagesByCapabilities(withoutErrors, capabilities)
         : withoutErrors;
+    // XML 模式下工具写进提示词，请求里没有原生工具；历史调用按此决定能否原样回放
+    const declaredTools =
+        adapter.requestFeatures?.tools === false || requestProfile.isXmlMode
+            ? []
+            : requestProfile.tools;
 
     return adapter.partsToAPIMessages(filtered, {
         injectReasoning: adapter.apiFormat === 'openai-responses',
         isXmlMode: requestProfile.isXmlMode,
-        profile: requestProfile.profile
+        profile: requestProfile.profile,
+        declaredTools
     });
 }
 

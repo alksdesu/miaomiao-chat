@@ -91,7 +91,10 @@ vi.mock('../../js/utils/logger.js', () => ({
     logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
 }));
 
-vi.mock('../../js/utils/variables.js', () => ({ processVariables: (text) => text }));
+vi.mock('../../js/utils/variables.js', () => ({
+    processVariables: (text) => text,
+    templateNamesOf: () => ({})
+}));
 
 vi.mock('../../js/providers/manager.js', () => ({
     getCurrentProvider: () => h.provider,
@@ -287,6 +290,39 @@ const HISTORIES = {
         msg('user', [textPart('Thanks')])
     ],
 
+    // Claude 5.5 工具集产生的批量 computer 调用，停在当前轮（还没有新的 user 消息）
+    'computer-toolset': () => [
+        msg('user', [textPart('Open the settings')]),
+        msg('assistant', [
+            thinkingPart('', 'sig-cu-claude', { signatureFormat: 'claude' }),
+            toolCallPart(
+                'toolu_cu1',
+                'left_click',
+                { coordinate: [100, 200] },
+                {
+                    state: ToolState.DONE,
+                    result: { content: 'OK' },
+                    toolsetName: 'computer',
+                    idMap: { openai: 'call_cu1', claude: 'toolu_cu1', gemini: 'gemini_cu1' }
+                }
+            ),
+            toolCallPart(
+                'toolu_cu2',
+                'screenshot',
+                {},
+                {
+                    state: ToolState.DONE,
+                    result: {
+                        content: '',
+                        media: [{ type: MediaKind.IMAGE, url: IMG_B, mimeType: 'image/png' }]
+                    },
+                    toolsetName: 'computer',
+                    idMap: { openai: 'call_cu2', claude: 'toolu_cu2', gemini: 'gemini_cu2' }
+                }
+            )
+        ])
+    ],
+
     'image-history': () => [
         msg('user', [textPart('Draw a cat')]),
         msg('assistant', [textPart('Here it is'), mediaPart(MediaKind.IMAGE, IMG_A, 'image/png')]),
@@ -466,6 +502,12 @@ const CASES = [
     },
     { name: 'chat rich history', format: 'openai', model: 'gpt-5.5', history: 'rich' },
     {
+        name: 'chat computer toolset history',
+        format: 'openai',
+        model: 'gpt-5.5',
+        history: 'computer-toolset'
+    },
+    {
         name: 'chat image history with capabilities',
         format: 'openai',
         model: 'gpt-5.5',
@@ -546,6 +588,18 @@ const CASES = [
         name: 'responses rich history',
         format: 'openai-responses',
         model: 'gpt-5.5',
+        history: 'rich'
+    },
+    {
+        name: 'responses computer toolset history',
+        format: 'openai-responses',
+        model: 'gpt-5.5',
+        history: 'computer-toolset'
+    },
+    {
+        name: 'responses rich history non-reasoning gpt-4.1',
+        format: 'openai-responses',
+        model: 'gpt-4.1',
         history: 'rich'
     },
     {
@@ -689,6 +743,36 @@ const CASES = [
             claudeAdaptiveThinking: true,
             claudeEffortLevel: 'high'
         }
+    },
+    {
+        name: 'claude rich history with tools opus-5-5',
+        format: 'claude',
+        model: 'claude-opus-5-5',
+        history: 'rich',
+        systemTools: true
+    },
+    {
+        name: 'claude computer toolset history opus-5-5',
+        format: 'claude',
+        model: 'claude-opus-5-5',
+        history: 'computer-toolset',
+        electron: true,
+        settings: { computerUseEnabled: true }
+    },
+    {
+        name: 'claude computer toolset history replayed on opus-4-6',
+        format: 'claude',
+        model: 'claude-opus-4-6',
+        history: 'computer-toolset',
+        electron: true,
+        settings: { computerUseEnabled: true }
+    },
+    {
+        name: 'claude computer toolset history without computer use',
+        format: 'claude',
+        model: 'claude-opus-5-5',
+        history: 'computer-toolset',
+        systemTools: true
     },
     {
         name: 'claude native tools with builtins sonnet-5-5',
@@ -870,6 +954,20 @@ const CASES = [
         model: 'gemini-3.8-flash',
         imageSize: '',
         history: 'rich'
+    },
+    {
+        name: 'gemini computer toolset history',
+        format: 'gemini',
+        model: 'gemini-3.8-flash',
+        imageSize: '',
+        history: 'computer-toolset'
+    },
+    {
+        name: 'gemini computer toolset history 2.5',
+        format: 'gemini',
+        model: 'gemini-2.5-pro',
+        imageSize: '',
+        history: 'computer-toolset'
     },
     {
         name: 'gemini signature placement',
