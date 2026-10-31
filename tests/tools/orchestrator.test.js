@@ -209,6 +209,83 @@ describe('handleToolCallStream 跨会话归属', () => {
     });
 });
 
+describe('handleToolCallStream 消息锚点', () => {
+    const pendingMessages = (id) => [
+        {
+            role: 'assistant',
+            parts: [{ type: 'tool_call', id, name: 'search', args: {}, state: 'pending' }]
+        }
+    ];
+
+    function fakeMessageElement(name) {
+        return {
+            name,
+            isConnected: true,
+            classList: { contains: (className) => className === 'message' },
+            querySelector: () => null
+        };
+    }
+
+    afterEach(() => {
+        state.currentAssistantMessage = null;
+        state.messages = [];
+    });
+
+    it('后台任务没有锚点时不借用前台会话的元素，切回后的续作交给任务自己的锚点', async () => {
+        const task = requestTaskRegistry.create({
+            sessionId: 'session-a',
+            abortController: new AbortController()
+        });
+        requestTaskRegistry.detach(task);
+        state.currentSessionId = 'session-b';
+        const foreign = fakeMessageElement('session-b 的消息');
+        state.currentAssistantMessage = { closest: () => foreign };
+        state.messages = pendingMessages('tc_back');
+        executeTool.mockImplementationOnce(async () => {
+            state.currentSessionId = 'session-a';
+            requestTaskRegistry.attach(task);
+            return { text: 'done' };
+        });
+
+        await handleToolCallStream([{ id: 'tc_back', name: 'search', arguments: {} }], {
+            sourceSessionId: 'session-a',
+            task
+        });
+
+        expect(resendWithToolResults).toHaveBeenCalledWith(null, task);
+    });
+
+    it('调用方未传元素时任务用自己的锚点', async () => {
+        const task = requestTaskRegistry.create({
+            sessionId: 'session-a',
+            abortController: new AbortController()
+        });
+        const own = fakeMessageElement('session-a 的消息');
+        requestTaskRegistry.setAssistantElement(task, own);
+        state.currentAssistantMessage = { closest: () => fakeMessageElement('其他元素') };
+        state.messages = pendingMessages('tc_own');
+
+        await handleToolCallStream([{ id: 'tc_own', name: 'search', arguments: {} }], {
+            sourceSessionId: 'session-a',
+            task
+        });
+
+        expect(resendWithToolResults).toHaveBeenCalledWith(own, task);
+    });
+
+    it('没有任务的旧调用方仍读当前助手消息', async () => {
+        const legacy = fakeMessageElement('当前助手消息');
+        state.currentAssistantMessage = { closest: () => legacy };
+        state.messages = pendingMessages('tc_legacy');
+
+        await handleToolCallStream([{ id: 'tc_legacy', name: 'search', arguments: {} }], {
+            sourceSessionId: 'session-a'
+        });
+
+        expect(resendWithToolResults).toHaveBeenCalledWith(legacy, null);
+    });
+});
+
 // ========== executeToolCalls ==========
 
 describe('executeToolCalls', () => {

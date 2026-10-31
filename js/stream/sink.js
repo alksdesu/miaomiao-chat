@@ -146,6 +146,7 @@ export class DefaultSink {
             });
             this.pendingCommits.push(pending);
             this._clearSnapshot();
+            this._releasePartialRender(pending);
             return -1;
         }
         const idx = saveAssistantMessage(parts, resolvedMeta, {
@@ -155,6 +156,7 @@ export class DefaultSink {
         });
         setCurrentMessageIndex(idx);
         this._clearSnapshot();
+        this._releasePartialRender();
         return idx;
     }
 
@@ -173,11 +175,13 @@ export class DefaultSink {
             const pending = saveAssistantMessageAsync(parts, this._resolveMeta(meta), saveOptions);
             this.pendingCommits.push(pending);
             this._clearSnapshot();
+            this._releasePartialRender(pending);
             return -1;
         }
         const idx = saveAssistantMessage(parts, this._resolveMeta(meta), saveOptions);
         setCurrentMessageIndex(idx);
         this._clearSnapshot();
+        this._releasePartialRender();
         if (!this.isBackground()) {
             eventBus.emit('stream:error', {
                 errorCode: errorInfo.errorCode,
@@ -216,6 +220,25 @@ export class DefaultSink {
         clearStreamSnapshot(this._snapshotSessionId, this.task?.id || null);
     }
 
+    /**
+     * 本轮内容落库后切回会话时不再回放，否则落库消息和回放的占位符会重复显示同一段文本；
+     * 后台保存要等写入完成再清，切回时才不会既读不到落库消息也没有回放
+     */
+    _releasePartialRender(pending = null) {
+        const task = this.task;
+        if (!task) return;
+        const committed = task.partialRender;
+        const release = () => {
+            // 下一轮已开始流式时保留新一轮的内容
+            if (task.partialRender === committed) requestTaskRegistry.setPartialRender(task, null);
+        };
+        if (pending) {
+            Promise.resolve(pending).then(release, release);
+        } else {
+            release();
+        }
+    }
+
     triggerToolCalls(toolCalls) {
         if (this.task) {
             this.task.isToolCallPending = true;
@@ -228,8 +251,10 @@ export class DefaultSink {
             requestStateMachine.transition(RequestState.TOOL_CALLING);
         }
         if (foreground) state.isToolCallPending = true;
-        const assistantMessageEl =
-            this.task?.messageElement || state.currentAssistantMessage?.closest('.message') || null;
+        // 任务只认自己的锚点：后台任务的全局 currentAssistantMessage 属于前台会话
+        const assistantMessageEl = this.task
+            ? this.task.messageElement || null
+            : state.currentAssistantMessage?.closest('.message') || null;
         const sourceSessionId = this.sessionId || state.currentSessionId;
         this.waitForCommits()
             .then(() =>

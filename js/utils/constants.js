@@ -112,5 +112,8 @@ export const TOOL_INTERRUPTED_MESSAGE = 'Tool execution was interrupted';
 /** 工具结果未写回 state 时的占位消息 */
 export const TOOL_RESULT_NOT_SAVED_MESSAGE = '工具结果未保存';
 
+/** 多回复模式拦截客户端工具调用时写入的说明 */
+export const REPLY_TOOL_SKIPPED_MESSAGE = '多回复模式不支持工具调用，已跳过执行';
+
 /** pending/running tool_call 老化阈值（毫秒），超时视为孤儿并强制标 ERROR */
 export const TOOL_AGE_THRESHOLD_MS = 30 * 60 * 1000;

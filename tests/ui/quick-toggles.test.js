@@ -303,4 +303,19 @@ describe('initQuickToggles', () => {
         state.replyCount = 1;
         isElectron.mockReturnValue(false);
     });
+
+    it('thinking 按钮关闭思维链时一并隐藏 Claude effort', () => {
+        const effortGroup = document.createElement('div');
+        effortGroup.id = 'claude-effort-group';
+        effortGroup.style.display = 'flex';
+        document.body.appendChild(effortGroup);
+        state.thinkingEnabled = true;
+        state.claudeAdaptiveThinking = true;
+        initQuickToggles();
+
+        document.getElementById('toggle-thinking').click();
+
+        expect(state.thinkingEnabled).toBe(false);
+        expect(effortGroup.style.display).toBe('none');
+    });
 });

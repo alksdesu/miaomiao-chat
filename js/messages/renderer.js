@@ -14,7 +14,14 @@ import { renderCapabilityBadgesText } from '../utils/capability-badges.js';
 import { renderHumanizedError } from '../utils/errors.js';
 import { categorizeFile, truncateFileName } from '../utils/file-helpers.js';
 import { lazyImageManager } from '../utils/lazy-image.js';
-import { PartType, MediaKind, partsToToolCallRestoreFormat } from './schema.js';
+import {
+    PartType,
+    MediaKind,
+    ToolState,
+    partsToToolCallRestoreFormat,
+    markUnexecutedReplyToolCalls
+} from './schema.js';
+import { requestTaskRegistry } from '../core/request-task-registry.js';
 import { renderMediaCard as renderMediaBlock } from '../ui/media-cards.js';
 
 // 从子模块导入并 re-export，保持外部 import 兼容
@@ -359,10 +366,8 @@ export function renderReplyWithSelector(replies, selectedIndex, assistantMessage
     bindImageClickEvents(contentDiv);
     enhanceCodeBlocks(assistantMessageEl);
 
-    // innerHTML 覆盖会抹掉 tool-calls-group 节点，从消息 parts 重建
-    if (Number.isInteger(msgIdx)) {
-        restoreToolCallsFromMessage(state.messages[msgIdx], contentDiv);
-    }
+    // innerHTML 覆盖会抹掉 tool-calls-group 节点；工具调用属于各自的回复，按当前展示的回复重建
+    restoreToolCallsFromMessage({ parts: markUnexecutedReplyToolCalls(reply.parts) }, contentDiv);
     if (!reply.error) appendStopNotice(contentDiv, reply.meta?.stop);
 
     scrollToBottom();
@@ -510,6 +515,34 @@ export function rerenderMessageContent(messageEl, index, role, messageOverride =
 }
 
 /**
+ * tool_call parts → 工具卡片恢复数据
+ * 没有结果的调用：属于正在执行的这一轮时按执行中展示，否则视为已中断，避免卡片永久转圈
+ * @param {Array} parts - 消息 parts
+ * @param {Object} [options]
+ * @param {boolean} [options.inActiveRound=false] - 消息是否为当前会话任务正在执行的这一轮
+ * @returns {Array} restore:tool-calls 事件使用的工具调用列表
+ */
+export function buildRestoredToolCalls(parts, { inActiveRound = false } = {}) {
+    const mapped = partsToToolCallRestoreFormat(parts);
+    if (mapped.length === 0) return mapped;
+    return mapped.map((tc) => {
+        if (tc.status === ToolState.PENDING || tc.status === ToolState.RUNNING) {
+            return inActiveRound
+                ? { ...tc, status: 'executing', result: null }
+                : { ...tc, status: 'failed', error: '工具执行已中断', result: null };
+        }
+        const status = tc.status || 'completed';
+        return {
+            ...tc,
+            status,
+            result:
+                tc.result ||
+                (status !== 'failed' ? { restored: true, message: '(工具结果未保存)' } : null)
+        };
+    });
+}
+
+/**
  * 从消息 parts 中重建工具调用 UI
  * 任何重写 .message-content innerHTML 的路径（编辑保存/取消、多回复切换）
  * 都会抹掉 tool-calls-group 节点，导致 tool-display 的 WeakMap 数据失效。
@@ -517,16 +550,22 @@ export function rerenderMessageContent(messageEl, index, role, messageOverride =
  */
 export function restoreToolCallsFromMessage(message, contentDiv) {
     if (!message || !contentDiv) return;
-    const mapped = partsToToolCallRestoreFormat(message.parts);
-    if (mapped.length === 0) return;
-    const normalized = mapped.map((tc) => ({
-        ...tc,
-        status: tc.status || 'completed',
-        result:
-            tc.result ||
-            (tc.status !== 'failed' ? { restored: true, message: '(工具结果未保存)' } : null)
-    }));
-    eventBus.emit('restore:tool-calls', { toolCalls: normalized, contentDiv });
+    const toolCalls = buildRestoredToolCalls(message.parts, {
+        inActiveRound: isActiveRoundMessage(message)
+    });
+    if (toolCalls.length === 0) return;
+    eventBus.emit('restore:tool-calls', { toolCalls, contentDiv });
+}
+
+/**
+ * 任务运行期间无法追加消息，正在执行的这一轮落库后必是最后一条；更早消息里没有结果的调用是中断残留
+ */
+function isActiveRoundMessage(message) {
+    if (!message?.id) return false;
+    if (!requestTaskRegistry.isActive(requestTaskRegistry.getBySession(state.currentSessionId))) {
+        return false;
+    }
+    return state.messages[state.messages.length - 1]?.id === message.id;
 }
 
 // 事件监听

@@ -7,11 +7,21 @@ import { state, elements } from '../core/state.js';
 import { eventBus } from '../core/events.js';
 import { updateMessageAt } from '../core/state-mutations.js';
 import { debouncedSaveSession } from '../state/sessions.js';
-import { PartType } from './schema.js';
+import { PartType, markUnexecutedReplyToolCalls } from './schema.js';
 import { renderReplyWithSelector } from './renderer.js';
 import { logger } from '../utils/logger.js';
 import { updateMessageUiState } from './message-ui-state.js';
 import { hasStoredMedia, resolveMessagesMediaForApi } from '../state/media-blob-store.js';
+
+function findMessageElement(msg, messageIndex) {
+    const byId = Array.from(
+        elements.messagesArea.querySelectorAll('.message[data-message-id]')
+    ).find((element) => element.dataset.messageId === msg.id);
+    return (
+        byId ||
+        elements.messagesArea.querySelector(`.message[data-message-index="${messageIndex}"]`)
+    );
+}
 
 /**
  * 选择回复（支持两种调用方式：直接索引或带消息索引）
@@ -20,8 +30,11 @@ import { hasStoredMedia, resolveMessagesMediaForApi } from '../state/media-blob-
  * @param {string|null} messageId - 消息 ID
  */
 export async function selectReply(replyIndex, messageIndex = null, messageId = null) {
+    // 加载回复媒体的 await 期间可能切走会话或改动消息，事后按会话和消息 id 重新定位
+    const sessionId = state.currentSessionId;
     let replies;
     let messageEl;
+    let targetMessageId = null;
 
     if (messageId) {
         const resolvedIndex = state.messageStore.findIndexById(messageId);
@@ -34,12 +47,8 @@ export async function selectReply(replyIndex, messageIndex = null, messageId = n
         if (!msg) return;
         replies = msg.replies?.all;
         if (!replies) return;
-        messageEl = Array.from(
-            elements.messagesArea.querySelectorAll('.message[data-message-id]')
-        ).find((element) => element.dataset.messageId === msg.id);
-        messageEl ||= elements.messagesArea.querySelector(
-            `.message[data-message-index="${messageIndex}"]`
-        );
+        targetMessageId = msg.id || null;
+        messageEl = findMessageElement(msg, messageIndex);
 
         // Bug 2 防御性日志（而非复杂的 DOM 恢复）
         if (!messageEl) {
@@ -65,11 +74,6 @@ export async function selectReply(replyIndex, messageIndex = null, messageId = n
     if (!messageEl) return; // Bug 2 添加最终检查
     if (!replies || replyIndex < 0 || replyIndex >= replies.length) return;
 
-    const resolvedMessageId = messageId || messageEl.dataset.messageId;
-    if (resolvedMessageId) {
-        updateMessageUiState(resolvedMessageId, { selectedReply: replyIndex });
-    }
-
     const storedReply = replies[replyIndex];
     let reply = storedReply;
     if (hasStoredMedia(storedReply)) {
@@ -80,6 +84,22 @@ export async function selectReply(replyIndex, messageIndex = null, messageId = n
             eventBus.emit('ui:notification', { message: '回复媒体加载失败', type: 'error' });
             return;
         }
+
+        const target = relocateReplyTarget({ sessionId, messageIndex, targetMessageId, replies });
+        if (!target) return;
+        messageIndex = target.messageIndex;
+        if (!messageEl.isConnected) {
+            messageEl =
+                messageIndex !== null
+                    ? findMessageElement(state.messages[messageIndex], messageIndex)
+                    : state.currentAssistantMessage?.closest('.message');
+        }
+        if (!messageEl) return;
+    }
+
+    const resolvedMessageId = messageId || messageEl.dataset.messageId;
+    if (resolvedMessageId) {
+        updateMessageUiState(resolvedMessageId, { selectedReply: replyIndex });
     }
 
     // 更新消息历史中的选中索引 - 通过安全函数同步
@@ -99,6 +119,29 @@ export async function selectReply(replyIndex, messageIndex = null, messageId = n
     renderReplyWithSelector(displayReplies, replyIndex, messageEl);
 }
 
+/**
+ * 异步加载结束后重新确认切换目标：会话已切走、消息已删除或回复列表已被替换时放弃本次切换
+ * @returns {{messageIndex: number|null}|null}
+ */
+function relocateReplyTarget({ sessionId, messageIndex, targetMessageId, replies }) {
+    if (state.currentSessionId !== sessionId) {
+        logger.debug('[ReplySelector] 加载回复媒体期间会话已切换，放弃本次切换');
+        return null;
+    }
+    if (messageIndex === null) {
+        return state.currentReplies === replies ? { messageIndex: null } : null;
+    }
+    const currentIndex = targetMessageId
+        ? state.messageStore.findIndexById(targetMessageId)
+        : messageIndex;
+    // 回复列表被替换（从存储重载）后旧索引对应的可能已不是同一个回复
+    if (currentIndex < 0 || state.messages[currentIndex]?.replies?.all !== replies) {
+        logger.debug('[ReplySelector] 加载回复媒体期间目标消息已变化，放弃本次切换');
+        return null;
+    }
+    return { messageIndex: currentIndex };
+}
+
 // 已删除 bindImageClickEvents 函数（改用内联 onclick，与其他渲染函数保持一致）
 
 /**
@@ -110,11 +153,12 @@ export async function selectReply(replyIndex, messageIndex = null, messageId = n
  */
 export function applyReplyToMessage(index, reply, selectedIndex, replies = null) {
     const existingMsg = state.messages[index];
-    const parts = reply.parts
-        .filter((part) => part.type !== PartType.TOOL_CALL && part.type !== PartType.FILE)
+    // 工具调用属于各自的回复：沿用上一个回复的调用会把它挂到新回复下，并丢掉新回复自己的调用
+    const parts = markUnexecutedReplyToolCalls(reply.parts)
+        .filter((part) => part.type !== PartType.FILE)
         .map((part) => structuredClone(part));
     for (const part of existingMsg?.parts || []) {
-        if (part.type === PartType.TOOL_CALL || part.type === PartType.FILE) {
+        if (part.type === PartType.FILE) {
             parts.push(structuredClone(part));
         }
     }

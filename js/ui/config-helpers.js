@@ -12,7 +12,10 @@ import {
     applyConfigToState,
     buildConfigObject
 } from '../state/config.js';
-import { syncOpenAIImageParamControls } from '../state/config-ui-sync.js';
+import {
+    syncOpenAIImageParamControls,
+    syncReasoningControlVisibility
+} from '../state/config-ui-sync.js';
 import { populateModelSelect } from './models.js';
 import { setToolEnabled } from '../tools/manager.js';
 import { describeEnabledClientTools } from './multi-reply-tools.js';
@@ -291,39 +294,17 @@ function setupParamListeners(format, paramsMap) {
  */
 export function initThinkingControls() {
     const thinkingEnabled = document.getElementById('thinking-enabled');
-    const thinkingStrengthGroup = document.getElementById('thinking-strength-group');
-    const thinkingHint = document.getElementById('thinking-hint');
     const strengthBtns = document.querySelectorAll('.strength-btn');
-    const budgetGroup = document.getElementById('thinking-budget-group');
     const budgetInput = document.getElementById('thinking-budget');
 
-    function updateBudgetInputVisibility() {
-        if (budgetGroup) {
-            const showBudget = state.thinkingEnabled && state.thinkingStrength === 'custom';
-            budgetGroup.style.display = showBudget ? 'flex' : 'none';
-        }
-    }
+    syncReasoningControlVisibility();
 
     if (thinkingEnabled) {
         thinkingEnabled.checked = state.thinkingEnabled;
-        if (thinkingStrengthGroup) {
-            thinkingStrengthGroup.style.display = state.thinkingEnabled ? 'flex' : 'none';
-        }
-        if (thinkingHint) {
-            thinkingHint.style.display = state.thinkingEnabled ? 'block' : 'none';
-        }
-        updateBudgetInputVisibility();
 
         thinkingEnabled.addEventListener('change', (e) => {
             state.thinkingEnabled = !!e.target.checked;
-            if (thinkingStrengthGroup) {
-                thinkingStrengthGroup.style.display = e.target.checked ? 'flex' : 'none';
-            }
-            if (thinkingHint) {
-                thinkingHint.style.display = e.target.checked ? 'block' : 'none';
-            }
-            updateBudgetInputVisibility();
-            updateClaudeAdaptiveVisibility();
+            syncReasoningControlVisibility();
             syncQuickToggles();
             saveCurrentConfig();
         });
@@ -361,36 +342,21 @@ export function initThinkingControls() {
                 }
             });
             btn.classList.add('active');
-            updateBudgetInputVisibility();
+            syncReasoningControlVisibility();
             saveCurrentConfig();
         });
     });
 
     // Claude 4.6 Adaptive Thinking 控件
     const claudeAdaptiveCheckbox = document.getElementById('claude-adaptive-thinking');
-    const claudeAdaptiveRow = document.getElementById('claude-adaptive-row');
-    const claudeEffortGroup = document.getElementById('claude-effort-group');
-    const claudeAdaptiveHint = document.getElementById('claude-adaptive-hint');
     const claudeEffortBtns = document.querySelectorAll('.claude-effort-btn');
-
-    function updateClaudeAdaptiveVisibility() {
-        // 思维链关闭时隐藏整个 adaptive 区域
-        if (claudeAdaptiveRow) {
-            claudeAdaptiveRow.style.display = state.thinkingEnabled ? 'flex' : 'none';
-        }
-        // effort 按钮和提示只在 adaptive 也开启时显示
-        const showEffort = state.thinkingEnabled && state.claudeAdaptiveThinking;
-        if (claudeEffortGroup) claudeEffortGroup.style.display = showEffort ? 'flex' : 'none';
-        if (claudeAdaptiveHint) claudeAdaptiveHint.style.display = showEffort ? 'block' : 'none';
-    }
 
     if (claudeAdaptiveCheckbox) {
         claudeAdaptiveCheckbox.checked = state.claudeAdaptiveThinking;
-        updateClaudeAdaptiveVisibility();
 
         claudeAdaptiveCheckbox.addEventListener('change', (e) => {
             state.claudeAdaptiveThinking = !!e.target.checked;
-            updateClaudeAdaptiveVisibility();
+            syncReasoningControlVisibility();
             saveCurrentConfig();
         });
     }
@@ -661,18 +627,17 @@ export function initOtherConfigInputs() {
     // ⭐ 新增：输出详细度开关和选择器
     const verbosityEnabled = elements.verbosityEnabled;
     const outputVerbosity = elements.outputVerbosity;
-    const verbositySelectGroup = document.getElementById('verbosity-select-group');
 
-    if (verbosityEnabled && outputVerbosity && verbositySelectGroup) {
+    if (verbosityEnabled && outputVerbosity) {
         // 初始化状态
         verbosityEnabled.checked = state.verbosityEnabled || false;
         outputVerbosity.value = state.outputVerbosity || 'medium';
-        verbositySelectGroup.style.display = state.verbosityEnabled ? 'block' : 'none';
+        syncReasoningControlVisibility();
 
         // 开关监听
         verbosityEnabled.addEventListener('change', (e) => {
             state.verbosityEnabled = !!e.target.checked;
-            verbositySelectGroup.style.display = e.target.checked ? 'block' : 'none';
+            syncReasoningControlVisibility();
             saveCurrentConfig();
         });
 

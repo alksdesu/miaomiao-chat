@@ -7,6 +7,7 @@ import { state } from '../core/state.js';
 import { elements } from '../core/elements.js';
 import { eventBus } from '../core/events.js';
 import { saveCurrentConfig } from '../state/config.js';
+import { syncFormatConfigPanels } from '../state/config-ui-sync.js';
 import { populateModelSelect } from './models.js';
 import { logger } from '../utils/logger.js';
 
@@ -29,14 +30,7 @@ export function setApiFormat(format, shouldFetchModels = true) {
     const oldFormat = state.apiFormat;
     state.apiFormat = format;
 
-    // 更新配置面板显示：只显示当前格式对应的配置面板
-    document.querySelectorAll('.api-config').forEach((panel) => {
-        panel.style.display = 'none';
-    });
-    const configPanel = document.getElementById(`${format}-config`);
-    if (configPanel) {
-        configPanel.style.display = 'block';
-    }
+    syncFormatConfigPanels(format);
 
     // 显示/隐藏 Gemini 图片配置 (兼容旧 UI)
     if (elements.geminiImageConfig) {
@@ -55,8 +49,6 @@ export function setApiFormat(format, shouldFetchModels = true) {
     if (elements.apiEndpoint) {
         elements.apiEndpoint.placeholder = placeholders[format] || placeholders.openai;
     }
-    const replyCountGroup = document.getElementById('reply-count-settings-group');
-    if (replyCountGroup) replyCountGroup.hidden = format === 'openai-image';
 
     if (oldFormat === format) return;
 

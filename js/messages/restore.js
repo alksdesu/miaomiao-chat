@@ -18,7 +18,8 @@ import {
     restoreExpandedCodeBlockState,
     clearThinkingCache,
     renderSearchGrounding,
-    renderCanonicalParts
+    renderCanonicalParts,
+    restoreToolCallsFromMessage
 } from './renderer.js';
 import { appendStopNotice } from './render-stop-notice.js';
 import { renderStreamStatsFromData } from '../stream/stats.js';
@@ -26,7 +27,7 @@ import { rebuildMessageIdMap, ensureMessageIds } from '../core/state-mutations.j
 import { renderHumanizedError } from '../utils/errors.js';
 import { safeSetHTML } from '../utils/helpers.js';
 import { lazyImageManager } from '../utils/lazy-image.js';
-import { PartType, MediaKind, filterParts, partsToToolCallRestoreFormat } from './schema.js';
+import { PartType, MediaKind, filterParts } from './schema.js';
 import { logger } from '../utils/logger.js';
 import { createWelcomeMessage } from '../ui/welcome-message.js';
 import { longChatPerformance } from '../utils/long-chat-performance.js';
@@ -131,7 +132,10 @@ export function renderSessionMessages() {
             messageRenderController.register(
                 messageEl,
                 async () => {
-                    let renderedMessage = msg;
+                    // 渲染到 hydration 之间消息可能已被替换（工具结果写回等），按 id 取最新版本
+                    let renderedMessage = lazy
+                        ? msg
+                        : state.messageStore?.findById?.(msg.id) || msg;
                     let renderedIndex = index;
                     if (lazy) {
                         const loaded = await loadStoredMessageAt(
@@ -329,45 +333,6 @@ function appendStoredErrorBlock(messageEl, msg) {
     }
 }
 
-/**
- * 恢复工具调用UI（紧凑按钮 + 媒体提取模式）
- * @param {Array} toolCalls - 工具调用数组
- * @param {HTMLElement} messageEl - 消息元素
- */
-async function restoreToolCallsUI(toolCalls, messageEl) {
-    if (!toolCalls || toolCalls.length === 0) return;
-
-    logger.debug(`[Restore] 恢复 ${toolCalls.length} 个工具调用UI`);
-
-    const contentDiv = messageEl.querySelector('.message-content');
-    if (!contentDiv) {
-        logger.warn('[Restore] 未找到消息内容容器');
-        return;
-    }
-
-    try {
-        // 兼容旧数据：给没有 status 的工具调用补充默认状态；
-        // pending/running 是执行流被打断留下的非终态，恢复时收口为 failed，避免卡片永久转圈
-        const normalized = toolCalls.map((tc) => {
-            const interrupted = tc.status === 'pending' || tc.status === 'running';
-            const status = interrupted ? 'failed' : tc.status || 'completed';
-            return {
-                ...tc,
-                status,
-                error: interrupted ? '应用重启，工具执行已中断' : tc.error,
-                result:
-                    tc.result ||
-                    (status !== 'failed' ? { restored: true, message: '(工具结果未保存)' } : null)
-            };
-        });
-
-        eventBus.emit('restore:tool-calls', { toolCalls: normalized, contentDiv });
-        logger.debug('[Restore] 工具UI恢复完成');
-    } catch (error) {
-        logger.error('[Restore] 恢复工具UI失败:', error);
-    }
-}
-
 function hasReplySelector(msg) {
     return (msg.replies?.all?.length ?? 0) > 1;
 }
@@ -440,9 +405,9 @@ function enhanceAssistantMessage(_messageEl, msg, { isError = false } = {}) {
         }
     }
 
-    const mapped = partsToToolCallRestoreFormat(msg.parts);
-    if (mapped.length > 0) {
-        restoreToolCallsUI(mapped, _messageEl);
+    // 多回复的工具调用由 renderReplyWithSelector 按选中回复重建
+    if (!hasReplySelector(msg)) {
+        restoreToolCallsFromMessage(msg, contentDiv);
     }
 
     // 多回复的提示由 renderReplyWithSelector 按选中回复渲染

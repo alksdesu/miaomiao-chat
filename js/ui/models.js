@@ -6,6 +6,7 @@
 import { state } from '../core/state.js';
 import { elements } from '../core/elements.js';
 import { saveCurrentConfig } from '../state/config.js';
+import { syncFormatConfigPanels } from '../state/config-ui-sync.js';
 import { eventBus } from '../core/events.js';
 import { renderCapabilityBadgesText } from '../utils/capability-badges.js';
 import { updateMobileHeaderTitle } from './mobile-overflow-menu.js';
@@ -118,17 +119,7 @@ export function initModels() {
                 `🔄 模型切换: ${selectedModel} (${provider.name}) -> 自动切换到 ${provider.apiFormat} 格式`
             );
 
-            // 显示/隐藏对应的配置面板：只显示当前格式对应的配置面板
-            document.querySelectorAll('.api-config').forEach((panel) => {
-                panel.style.display = 'none';
-            });
-            const configPanel = document.getElementById(`${provider.apiFormat}-config`);
-            if (configPanel) {
-                configPanel.style.display = 'block';
-            }
-
-            const replyCountGroup = document.getElementById('reply-count-settings-group');
-            if (replyCountGroup) replyCountGroup.hidden = provider.apiFormat === 'openai-image';
+            syncFormatConfigPanels(provider.apiFormat);
 
             // 发送通知
             eventBus.emit('ui:notification', {

@@ -64,11 +64,38 @@ describe('resendWithToolResults', () => {
     it('前台 continuation 开始时清除上一轮工具 pending 投影', async () => {
         const task = createTask();
         const message = document.createElement('div');
+        document.body.appendChild(message);
 
         await resendWithToolResults(message, task);
 
         expect(mocks.state.isToolCallPending).toBe(false);
         expect(mocks.setToolCallContinuation).toHaveBeenCalledWith(message, 'session-a');
+        expect(mocks.sendToAPI).toHaveBeenCalledWith({ task });
+        message.remove();
+    });
+
+    it('切回会话后改用任务当前的锚点，不复用已脱离页面的旧元素', async () => {
+        const task = createTask();
+        const staleMessage = document.createElement('div');
+        const anchor = document.createElement('div');
+        document.body.appendChild(anchor);
+        task.messageElement = anchor;
+
+        await resendWithToolResults(staleMessage, task);
+
+        expect(mocks.setToolCallContinuation).toHaveBeenCalledWith(anchor, 'session-a');
+        expect(mocks.stateMachine.transitionFor).toHaveBeenCalledWith(task, 'continuation', {
+            assistantMessageEl: anchor
+        });
+        anchor.remove();
+    });
+
+    it('锚点都已脱离页面时不标记续作元素，交给占位符解析新建', async () => {
+        const task = createTask();
+
+        await resendWithToolResults(document.createElement('div'), task);
+
+        expect(mocks.setToolCallContinuation).not.toHaveBeenCalled();
         expect(mocks.sendToAPI).toHaveBeenCalledWith({ task });
     });
 

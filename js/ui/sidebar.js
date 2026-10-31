@@ -11,7 +11,7 @@ import {
     deleteSession,
     renameSession,
     createNewSession,
-    reloadCurrentSessionMessages
+    refreshCurrentSession
 } from '../state/sessions.js';
 import { escapeHtml } from '../utils/helpers.js';
 import { trapFocus, removeFocusTrap, acquireInert, releaseInert } from '../utils/focus-trap.js';
@@ -248,9 +248,8 @@ function buildSessionElement(session, matchedMessages, currentQuery, isActive, h
                 fallbackIndex
             });
         } else if (session.id === state.currentSessionId) {
-            // 点击当前激活的 session 走 reload 路径，覆盖多 tab 冲突 / 远端更新场景下用户的
-            // "再次点击侧栏想看最新内容" 操作（switchToSession 对同 id 早期 return 不会刷新消息）
-            reloadCurrentSessionMessages();
+            // switchToSession 对同 id 早期 return 不会刷新消息；生成中或有未保存改动时不重载
+            refreshCurrentSession();
         } else {
             switchToSession(session.id);
         }
@@ -263,7 +262,7 @@ function buildSessionElement(session, matchedMessages, currentQuery, isActive, h
         if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
             if (session.id === state.currentSessionId) {
-                reloadCurrentSessionMessages();
+                refreshCurrentSession();
             } else {
                 switchToSession(session.id);
             }

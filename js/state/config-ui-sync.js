@@ -87,6 +87,53 @@ function syncParamsToInputs(format, paramsMap) {
     });
 }
 
+// Responses 与 OpenClaw 的生成参数取自 modelParams.openai（captureGenerationSettings 回退），共用 OpenAI 参数面板
+const PARAM_PANEL_FORMAT = { 'openai-responses': 'openai', openclaw: 'openai' };
+// 只有 Chat Completions 发送惩罚项，Responses 与 OpenClaw 的 buildGenerationParams 都不带
+const PENALTY_PARAM_FORMATS = new Set(['openai']);
+const PENALTY_PARAM_INPUT_IDS = ['openai-frequency-penalty', 'openai-presence-penalty'];
+
+/**
+ * 按 API 格式切换参数面板与格式相关的设置项（格式切换、模型切换、加载配置共用）
+ * @param {string} format - 当前 API 格式
+ */
+export function syncFormatConfigPanels(format) {
+    const panelFormat = PARAM_PANEL_FORMAT[format] || format;
+    document.querySelectorAll('.api-config').forEach((panel) => {
+        panel.style.display = panel.id === `${panelFormat}-config` ? 'block' : 'none';
+    });
+    PENALTY_PARAM_INPUT_IDS.forEach((inputId) => {
+        const item = document.getElementById(inputId)?.closest('.param-item');
+        if (item) item.style.display = PENALTY_PARAM_FORMATS.has(format) ? '' : 'none';
+    });
+    const replyCountGroup = document.getElementById('reply-count-settings-group');
+    if (replyCountGroup) replyCountGroup.hidden = format === 'openai-image';
+}
+
+function setElementDisplay(id, visible, display) {
+    const element = document.getElementById(id);
+    if (element) element.style.display = visible ? display : 'none';
+}
+
+/**
+ * 思维链强度、Claude effort 与输出详细度控件的显隐只由开关状态决定，
+ * 设置面板、快捷开关、切换配置等所有改动这些开关的入口都走这里
+ */
+export function syncReasoningControlVisibility() {
+    const showEffort = state.thinkingEnabled && state.claudeAdaptiveThinking;
+    setElementDisplay('thinking-strength-group', state.thinkingEnabled, 'flex');
+    setElementDisplay('thinking-hint', state.thinkingEnabled, 'block');
+    setElementDisplay(
+        'thinking-budget-group',
+        state.thinkingEnabled && state.thinkingStrength === 'custom',
+        'flex'
+    );
+    setElementDisplay('claude-adaptive-row', state.thinkingEnabled, 'flex');
+    setElementDisplay('claude-effort-group', showEffort, 'flex');
+    setElementDisplay('claude-adaptive-hint', showEffort, 'block');
+    setElementDisplay('verbosity-select-group', state.verbosityEnabled, 'block');
+}
+
 /**
  * 将 state 同步到 UI 元素
  */
@@ -105,23 +152,9 @@ export function syncUIWithState() {
 
     // 思维链开关
     const thinkingEnabled = document.getElementById('thinking-enabled');
-    const thinkingStrengthGroup = document.getElementById('thinking-strength-group');
-    const thinkingHint = document.getElementById('thinking-hint');
-    const budgetGroup = document.getElementById('thinking-budget-group');
     const budgetInput = document.getElementById('thinking-budget');
     if (thinkingEnabled) {
         thinkingEnabled.checked = state.thinkingEnabled;
-        if (thinkingStrengthGroup) {
-            thinkingStrengthGroup.style.display = state.thinkingEnabled ? 'flex' : 'none';
-        }
-        if (thinkingHint) {
-            thinkingHint.style.display = state.thinkingEnabled ? 'block' : 'none';
-        }
-        // 更新自定义 budget 输入框显示状态和值
-        if (budgetGroup) {
-            const showBudget = state.thinkingEnabled && state.thinkingStrength === 'custom';
-            budgetGroup.style.display = showBudget ? 'flex' : 'none';
-        }
         if (budgetInput) {
             budgetInput.value = state.thinkingBudget;
         }
@@ -136,9 +169,6 @@ export function syncUIWithState() {
     // Claude Adaptive Thinking
     const claudeAdaptiveCheckbox = document.getElementById('claude-adaptive-thinking');
     if (claudeAdaptiveCheckbox) claudeAdaptiveCheckbox.checked = state.claudeAdaptiveThinking;
-    const claudeAdaptiveRow = document.getElementById('claude-adaptive-row');
-    if (claudeAdaptiveRow)
-        claudeAdaptiveRow.style.display = state.thinkingEnabled ? 'flex' : 'none';
     const claudeEffortBtns = document.querySelectorAll('.claude-effort-btn');
     claudeEffortBtns.forEach((btn) => {
         btn.classList.toggle('active', btn.dataset.effort === state.claudeEffortLevel);
@@ -155,6 +185,9 @@ export function syncUIWithState() {
     if (verbosityCheckbox) verbosityCheckbox.checked = state.verbosityEnabled;
     const verbositySelect = document.getElementById('output-verbosity');
     if (verbositySelect) verbositySelect.value = state.outputVerbosity;
+
+    // 切换配置会同时改动思维链、adaptive、详细度开关，控件显隐跟着重算
+    syncReasoningControlVisibility();
 
     // Gemini System Parts
     const geminiPartsCheckbox = document.getElementById('gemini-system-parts-enabled');
@@ -219,8 +252,7 @@ export function syncUIWithState() {
     if (elements.replyCountSelect && state.replyCount) {
         elements.replyCountSelect.value = state.replyCount;
     }
-    const replyCountGroup = document.getElementById('reply-count-settings-group');
-    if (replyCountGroup) replyCountGroup.hidden = state.apiFormat === 'openai-image';
+    syncFormatConfigPanels(state.apiFormat);
 
     // API 格式标签高亮
     document.querySelectorAll('.format-btn').forEach((btn) => {

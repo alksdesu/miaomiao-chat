@@ -15,7 +15,7 @@ import {
     updateProvider
 } from './manager.js';
 import { renderCapabilityBadges } from '../utils/capability-badges.js';
-import { showInputDialog } from '../utils/dialogs.js';
+import { showInputDialog, showConfirmDialog } from '../utils/dialogs.js';
 import { escapeHtml } from '../utils/helpers.js';
 import { showNotification } from '../ui/notifications.js';
 import { getIcon } from '../utils/icons.js';
@@ -415,6 +415,24 @@ function updateProfileAliasStatus() {
 }
 
 /**
+ * 别名优先于模型 ID 匹配能力表，填错时连原本能按模型 ID 识别的型号也会退化成通用规则，保存前要确认
+ * @returns {Promise<boolean>} 是否继续保存
+ */
+async function confirmProfileAlias(apiFormat, modelId, alias) {
+    // 没有能力表的格式隐藏了别名输入，残留的旧别名不影响请求
+    if (!alias || listProfileIds(apiFormat).length === 0) return true;
+    if (resolveModelProfile(apiFormat, modelId, { alias }).known) return true;
+    const byModelId = resolveModelProfile(apiFormat, modelId);
+    const consequence = byModelId.known
+        ? `保存后此模型不再按 ${byModelId.id} 处理，改用通用规则。`
+        : '保存后此模型按通用规则处理。';
+    return showConfirmDialog(
+        `能力表中没有官方型号「${alias}」。${consequence}\n\n建议从候选列表选择或清空别名，仍要保存吗？`,
+        '官方型号无法识别'
+    );
+}
+
+/**
  * 打开模型编辑弹窗
  */
 export function openEditModelModal(providerId, modelId) {
@@ -477,6 +495,8 @@ export async function saveEditedModel() {
         showNotification('请输入模型名称', 'error');
         return;
     }
+
+    if (!(await confirmProfileAlias(provider.apiFormat, modelId, profileAlias))) return;
 
     const modelIndex = provider.models.findIndex((m) => {
         return typeof m === 'string' ? m === modelId : m.id === modelId;

@@ -513,7 +513,9 @@ async function saveToBackgroundSessionUnlocked(
             updatedAt: newUpdatedAt,
             messageCount: existing.messages.length
         };
-        const baseline = state._lastKnownSessionUpdatedAt?.get(sessionId) ?? null;
+        // 本页没打开过的会话（含启动期快照恢复）没有基线，回退到元数据，否则乐观锁检查被跳过
+        const baseline =
+            state._lastKnownSessionUpdatedAt?.get(sessionId) ?? targetSession.updatedAt ?? null;
         try {
             await saveSessionAtomic(
                 newMeta,
@@ -644,7 +646,7 @@ async function writeToolResultsToBackgroundSessionUnlocked(sessionId, toolResult
         const existing = (await loadSessionMessages(sessionId)) || { messages: [] };
 
         const applied = applyToolResultsToMessages(existing.messages, toolResults);
-        const matched = applied.matched;
+        let matched = applied.matched;
         existing.messages = applied.messages;
 
         if (matched === 0) {
@@ -659,7 +661,7 @@ async function writeToolResultsToBackgroundSessionUnlocked(sessionId, toolResult
         // 不再 null bypass 让 silent 覆盖另一 tab 的写入
         const baseline =
             state._lastKnownSessionUpdatedAt?.get(sessionId) ?? targetSession.updatedAt ?? null;
-        const newUpdatedAt = Date.now();
+        let newUpdatedAt = Date.now();
         const newMeta = {
             ...targetSession,
             updatedAt: newUpdatedAt,
@@ -672,14 +674,26 @@ async function writeToolResultsToBackgroundSessionUnlocked(sessionId, toolResult
                 { expectedUpdatedAt: baseline }
             );
         } catch (saveErr) {
-            if (saveErr instanceof SessionConflictError) {
-                // 另一 tab 抢先写入：放弃本次写入，让用户切回时通过 reload 拉取最新内容
-                logger.warn(
-                    `[sync] 跨会话 tool result 写入冲突 ${sessionId}: baseline=${baseline}, actual=${saveErr.actualUpdatedAt}`
-                );
-                return 0;
-            }
-            throw saveErr;
+            if (!(saveErr instanceof SessionConflictError)) throw saveErr;
+            // 另一 tab 抢先写入时按最新内容重新配对并重试一次：任务期间基线不随广播推进，直接放弃会丢掉整轮工具结果
+            logger.warn(
+                `[sync] 跨会话 tool result 写入冲突 ${sessionId}: baseline=${baseline}, actual=${saveErr.actualUpdatedAt}，reload 重试`
+            );
+            const fresh = (await loadSessionMessages(sessionId)) || { messages: [] };
+            const reapplied = applyToolResultsToMessages(fresh.messages, toolResults);
+            if (reapplied.matched === 0) return 0;
+            newUpdatedAt = Date.now();
+            await saveSessionAtomic(
+                {
+                    ...targetSession,
+                    updatedAt: newUpdatedAt,
+                    messageCount: reapplied.messages.length
+                },
+                { messages: reapplied.messages, searchIndex: null },
+                { expectedUpdatedAt: saveErr.actualUpdatedAt }
+            );
+            existing.messages = reapplied.messages;
+            matched = reapplied.matched;
         }
 
         // 同步更新 state.sessions 与本 tab baseline，避免后续切回再次假冲突

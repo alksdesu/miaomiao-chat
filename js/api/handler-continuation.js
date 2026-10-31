@@ -53,11 +53,20 @@ function isTaskForeground(task, sessionId) {
 }
 
 /**
+ * 续作复用的助手消息元素：任务的锚点会在会话切回时重新定位，调用方早先捕获的元素可能已脱离页面
+ */
+function resolveContinuationElement(task, assistantMessageEl) {
+    const element = task?.messageElement || assistantMessageEl;
+    return element?.isConnected === false ? null : element || null;
+}
+
+/**
  * @param {HTMLElement|null} assistantMessageEl - 要复用的助手消息元素
  */
 export async function resendWithToolResults(assistantMessageEl = null, task = null) {
     logger.info('[Handler] 发送工具结果消息...');
     const sessionId = task?.sessionId || state.currentSessionId;
+    const continuationEl = resolveContinuationElement(task, assistantMessageEl);
 
     if (task && requestTaskRegistry.owns(task)) {
         task.isSavingContinuation = true;
@@ -66,13 +75,17 @@ export async function resendWithToolResults(assistantMessageEl = null, task = nu
     }
     if (isTaskForeground(task, sessionId)) {
         state.isToolCallPending = false;
-        if (assistantMessageEl) setToolCallContinuation(assistantMessageEl, sessionId);
+        if (continuationEl) setToolCallContinuation(continuationEl, sessionId);
     }
 
     if (task) {
-        requestStateMachine.transitionFor(task, RequestState.CONTINUATION, { assistantMessageEl });
+        requestStateMachine.transitionFor(task, RequestState.CONTINUATION, {
+            assistantMessageEl: continuationEl
+        });
     } else if (requestStateMachine.canTransition(RequestState.CONTINUATION)) {
-        requestStateMachine.transition(RequestState.CONTINUATION, { assistantMessageEl });
+        requestStateMachine.transition(RequestState.CONTINUATION, {
+            assistantMessageEl: continuationEl
+        });
     }
 
     // lazy import 打破循环依赖：handler.js → handler-continuation.js → handler.js
@@ -88,7 +101,10 @@ export async function resendWithToolResults(assistantMessageEl = null, task = nu
         if (task && requestTaskRegistry.owns(task)) task.isToolCallPending = false;
         if (isTaskForeground(task, sessionId)) state.isToolCallPending = false;
         if (isTaskForeground(task, sessionId)) {
-            appendContinuationErrorNode(assistantMessageEl, error.message);
+            appendContinuationErrorNode(
+                resolveContinuationElement(task, continuationEl),
+                error.message
+            );
         }
         throw error;
     } finally {
@@ -96,7 +112,7 @@ export async function resendWithToolResults(assistantMessageEl = null, task = nu
         if (isTaskForeground(task, sessionId)) state.isSavingContinuation = false;
 
         if (!task?.isToolCallPending && isTaskForeground(task, sessionId)) {
-            removeLoadingIndicators(assistantMessageEl);
+            removeLoadingIndicators(resolveContinuationElement(task, continuationEl));
         } else if (task?.isToolCallPending) {
             logger.debug('[Handler] 检测到新的工具调用，保留 loading 等待下一轮工具执行');
         }

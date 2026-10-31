@@ -6,7 +6,11 @@
  */
 
 import { generateMessageId } from '../utils/helpers.js';
-import { TOOL_INTERRUPTED_MESSAGE, TOOL_AGE_THRESHOLD_MS } from '../utils/constants.js';
+import {
+    TOOL_INTERRUPTED_MESSAGE,
+    TOOL_AGE_THRESHOLD_MS,
+    REPLY_TOOL_SKIPPED_MESSAGE
+} from '../utils/constants.js';
 
 export const SCHEMA_VERSION = 1;
 
@@ -248,6 +252,27 @@ export function partsToToolCallRestoreFormat(parts) {
         error: tc.error,
         duration: tc.duration
     }));
+}
+
+/**
+ * 多回复模式不执行客户端工具：回复里没有结果的调用一律按已跳过处理，与落库时选中回复的处理一致，
+ * 切换到其他回复后既不会下发孤儿 tool_use，也不会显示成执行中
+ * @param {Array} parts - 某个回复的 parts
+ * @returns {Array} 新数组；被改写的 tool_call 是新对象，其余 part 保持原引用
+ */
+export function markUnexecutedReplyToolCalls(parts) {
+    if (!Array.isArray(parts)) return [];
+    return parts.map((part) =>
+        part?.type === PartType.TOOL_CALL &&
+        !part.server &&
+        (!part.state || part.state === ToolState.PENDING || part.state === ToolState.RUNNING)
+            ? {
+                  ...part,
+                  state: ToolState.SKIPPED,
+                  result: { content: REPLY_TOOL_SKIPPED_MESSAGE, skipped: true }
+              }
+            : part
+    );
 }
 
 /**

@@ -74,7 +74,11 @@ vi.mock('../../js/utils/logger.js', () => ({
 
 import { state, elements } from '../../js/core/state.js';
 import { eventBus } from '../../js/core/events.js';
-import { syncUIWithState } from '../../js/state/config-ui-sync.js';
+import {
+    syncUIWithState,
+    syncFormatConfigPanels,
+    syncReasoningControlVisibility
+} from '../../js/state/config-ui-sync.js';
 
 describe('config-ui-sync', () => {
     beforeEach(() => {
@@ -188,6 +192,28 @@ describe('config-ui-sync', () => {
             syncUIWithState();
             expect(document.getElementById('verbosity-enabled').checked).toBe(true);
             expect(document.getElementById('output-verbosity').value).toBe('high');
+        });
+
+        it('切换配置后详细度与 effort 控件的显隐跟着开关重算', () => {
+            document.body.innerHTML = `
+                <div id="verbosity-select-group" style="display: none"></div>
+                <div id="claude-effort-group" style="display: none"></div>
+                <div id="claude-adaptive-hint" style="display: none"></div>
+            `;
+            state.verbosityEnabled = true;
+            state.thinkingEnabled = true;
+            state.claudeAdaptiveThinking = true;
+            syncUIWithState();
+            expect(document.getElementById('verbosity-select-group').style.display).toBe('block');
+            expect(document.getElementById('claude-effort-group').style.display).toBe('flex');
+            expect(document.getElementById('claude-adaptive-hint').style.display).toBe('block');
+
+            state.verbosityEnabled = false;
+            state.claudeAdaptiveThinking = false;
+            syncUIWithState();
+            expect(document.getElementById('verbosity-select-group').style.display).toBe('none');
+            expect(document.getElementById('claude-effort-group').style.display).toBe('none');
+            expect(document.getElementById('claude-adaptive-hint').style.display).toBe('none');
         });
 
         it('同步 web-search-enabled', () => {
@@ -347,6 +373,53 @@ describe('config-ui-sync', () => {
             state.geminiSystemPartsEnabled = true;
             syncUIWithState();
             expect(document.getElementById('gemini-system-parts-enabled').checked).toBe(true);
+        });
+    });
+
+    describe('syncFormatConfigPanels', () => {
+        beforeEach(() => {
+            document.body.innerHTML = `
+                <div class="api-config" id="openai-config">
+                    <div class="param-item"><input id="openai-frequency-penalty" /></div>
+                    <div class="param-item"><input id="openai-presence-penalty" /></div>
+                </div>
+                <div class="api-config" id="claude-config"></div>
+                <div class="api-config" id="openai-image-config"></div>
+                <div id="reply-count-settings-group"></div>
+            `;
+        });
+
+        it('Responses 与 OpenClaw 共用 OpenAI 参数面板', () => {
+            for (const format of ['openai-responses', 'openclaw']) {
+                syncFormatConfigPanels(format);
+                expect(document.getElementById('openai-config').style.display).toBe('block');
+                expect(document.getElementById('claude-config').style.display).toBe('none');
+                const penalty = document.getElementById('openai-presence-penalty');
+                expect(penalty.closest('.param-item').style.display).toBe('none');
+            }
+        });
+
+        it('出图格式隐藏全局回复数量', () => {
+            syncFormatConfigPanels('openai-image');
+            expect(document.getElementById('openai-image-config').style.display).toBe('block');
+            expect(document.getElementById('reply-count-settings-group').hidden).toBe(true);
+
+            syncFormatConfigPanels('claude');
+            expect(document.getElementById('reply-count-settings-group').hidden).toBe(false);
+        });
+    });
+
+    describe('syncReasoningControlVisibility', () => {
+        it('思维链关闭时 effort 也隐藏，即使 adaptive 仍开着', () => {
+            document.body.innerHTML = `
+                <div id="claude-adaptive-row"></div>
+                <div id="claude-effort-group"></div>
+            `;
+            state.thinkingEnabled = false;
+            state.claudeAdaptiveThinking = true;
+            syncReasoningControlVisibility();
+            expect(document.getElementById('claude-adaptive-row').style.display).toBe('none');
+            expect(document.getElementById('claude-effort-group').style.display).toBe('none');
         });
     });
 });

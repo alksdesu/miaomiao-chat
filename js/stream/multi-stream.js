@@ -17,6 +17,7 @@ import {
     buildCanonicalReplies,
     pickInitialReplyIndex
 } from '../messages/parts-builder.js';
+import { REPLY_TOOL_SKIPPED_MESSAGE } from '../utils/constants.js';
 import { setCurrentMessageIndex } from '../messages/dom-sync.js';
 import { renderReplyWithSelector } from '../messages/renderer.js';
 import { renderHumanizedError, readErrorBody, buildRequestTimeoutError } from '../utils/errors.js';
@@ -308,7 +309,7 @@ export async function handleMultiStreamResponses(ctx) {
             ? selectedReply.toolCalls.map((tc) => ({
                   ...tc,
                   status: 'skipped',
-                  error: '多回复模式不支持工具调用，已跳过执行'
+                  error: REPLY_TOOL_SKIPPED_MESSAGE
               }))
             : undefined;
 

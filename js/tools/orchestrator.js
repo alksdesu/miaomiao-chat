@@ -784,14 +784,16 @@ export function finishToolTask(task, phase, detail = null) {
 export async function handleToolCallStream(toolCalls, context = {}) {
     logger.debug('[Orchestrator] 🚀 开始工具调用流程');
 
-    // 调用方未传时回退读全局（兼容老调用方 + 测试 happy path）
+    const sourceSessionId = context.sourceSessionId ?? state.currentSessionId;
+    const task = context.task || requestTaskRegistry.getBySession(sourceSessionId);
+    // 调用方未传时回退读全局（兼容老调用方 + 测试 happy path）；任务只认自己的锚点，后台任务读全局会拿到前台会话的元素
     const assistantMessageEl =
-        context.assistantMessageEl ?? state.currentAssistantMessage?.closest('.message') ?? null;
+        context.assistantMessageEl ??
+        (task ? task.messageElement : state.currentAssistantMessage?.closest('.message')) ??
+        null;
     if (assistantMessageEl) {
         logger.debug('[Orchestrator] 保存消息元素引用用于 continuation');
     }
-    const sourceSessionId = context.sourceSessionId ?? state.currentSessionId;
-    const task = context.task || requestTaskRegistry.getBySession(sourceSessionId);
     const resolveTargetContainer = () => {
         if (!isTaskForeground(task, sourceSessionId)) return null;
         const messageEl = task?.messageElement || assistantMessageEl;

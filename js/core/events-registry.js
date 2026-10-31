@@ -105,7 +105,9 @@ export const EVENTS = Object.freeze({
     STATE_MESSAGES_REPLACED: 'state:messages-replaced',
 
     // 存储
+    STORAGE_CONFLICT: 'storage:conflict',
     STORAGE_QUOTA_EXCEEDED: 'storage:quota-exceeded',
+    STORAGE_REMOTE_UPDATED: 'storage:remote-updated',
 
     // 流式生命周期
     STREAM_COMPLETE: 'stream:complete',

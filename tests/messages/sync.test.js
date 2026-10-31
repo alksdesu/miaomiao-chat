@@ -77,8 +77,16 @@ import {
     copyMessageMetadata,
     extractTextContent,
     extractImages,
-    mergeContinuationParts
+    mergeContinuationParts,
+    writeToolResultsToBackgroundSession,
+    saveAssistantMessageToBackground
 } from '../../js/messages/sync.js';
+import {
+    loadSessionMessages,
+    saveSessionAtomic,
+    SessionConflictError
+} from '../../js/state/storage.js';
+import { broadcastEvent } from '../../js/state/tab-sync.js';
 import {
     buildPartsFromStreamingState,
     buildMetaFromStreamingState
@@ -633,5 +641,127 @@ describe('saveErrorMessage', () => {
             'messages:changed',
             expect.objectContaining({ action: 'error_added' })
         );
+    });
+});
+
+// ========== writeToolResultsToBackgroundSession ==========
+
+describe('writeToolResultsToBackgroundSession 写入冲突', () => {
+    const toolResults = [
+        { id: 'call_bg', name: 'search', result: { text: 'done' }, isError: false }
+    ];
+    const userMessage = (id, text) => ({ id, role: 'user', parts: [{ type: 'text', text }] });
+    const pendingMessages = () => [
+        userMessage('u1', '问题'),
+        {
+            id: 'a1',
+            role: 'assistant',
+            parts: [
+                { type: 'tool_call', id: 'call_bg', name: 'search', args: {}, state: 'pending' }
+            ]
+        }
+    ];
+    const conflict = (actualUpdatedAt) =>
+        Object.assign(new SessionConflictError('conflict'), { actualUpdatedAt });
+
+    beforeEach(() => {
+        state.sessions = [{ id: 'session-bg', name: '后台会话', updatedAt: 100 }];
+        state._lastKnownSessionUpdatedAt = new Map([['session-bg', 100]]);
+    });
+
+    afterEach(() => {
+        delete state.sessions;
+        delete state._lastKnownSessionUpdatedAt;
+    });
+
+    it('其他标签页抢先写入时按最新内容重新配对并重试一次', async () => {
+        loadSessionMessages
+            .mockResolvedValueOnce({ messages: pendingMessages() })
+            .mockResolvedValueOnce({
+                messages: [...pendingMessages(), userMessage('u2', '另一页追加')]
+            });
+        saveSessionAtomic.mockRejectedValueOnce(conflict(300)).mockResolvedValueOnce(undefined);
+
+        const matched = await writeToolResultsToBackgroundSession('session-bg', toolResults);
+
+        expect(matched).toBe(1);
+        expect(saveSessionAtomic).toHaveBeenCalledTimes(2);
+        expect(saveSessionAtomic.mock.calls[0][2]).toEqual({ expectedUpdatedAt: 100 });
+        const [meta, payload, options] = saveSessionAtomic.mock.calls[1];
+        expect(options).toEqual({ expectedUpdatedAt: 300 });
+        expect(payload.messages).toHaveLength(3);
+        expect(payload.messages[1].parts[0]).toMatchObject({
+            state: 'done',
+            result: { text: 'done' }
+        });
+        expect(payload.messages[2].parts[0].text).toBe('另一页追加');
+        expect(meta.messageCount).toBe(3);
+        expect(state.sessions[0].updatedAt).toBe(meta.updatedAt);
+        expect(state._lastKnownSessionUpdatedAt.get('session-bg')).toBe(meta.updatedAt);
+        expect(broadcastEvent).toHaveBeenCalledWith(
+            'session-updated',
+            expect.objectContaining({ sessionId: 'session-bg', messageCount: 3 })
+        );
+    });
+
+    it('最新内容里已没有对应的工具调用时放弃写入', async () => {
+        loadSessionMessages
+            .mockResolvedValueOnce({ messages: pendingMessages() })
+            .mockResolvedValueOnce({ messages: [userMessage('u1', '问题')] });
+        saveSessionAtomic.mockRejectedValueOnce(conflict(300));
+
+        expect(await writeToolResultsToBackgroundSession('session-bg', toolResults)).toBe(0);
+
+        expect(saveSessionAtomic).toHaveBeenCalledTimes(1);
+        expect(state._lastKnownSessionUpdatedAt.get('session-bg')).toBe(100);
+        expect(broadcastEvent).not.toHaveBeenCalled();
+    });
+
+    it('重试仍冲突时放弃写入，基线保持不动', async () => {
+        loadSessionMessages
+            .mockResolvedValueOnce({ messages: pendingMessages() })
+            .mockResolvedValueOnce({ messages: pendingMessages() });
+        saveSessionAtomic.mockRejectedValueOnce(conflict(300)).mockRejectedValueOnce(conflict(400));
+
+        expect(await writeToolResultsToBackgroundSession('session-bg', toolResults)).toBe(0);
+
+        expect(saveSessionAtomic).toHaveBeenCalledTimes(2);
+        expect(state._lastKnownSessionUpdatedAt.get('session-bg')).toBe(100);
+        expect(broadcastEvent).not.toHaveBeenCalled();
+    });
+});
+
+// ========== saveAssistantMessageToBackground ==========
+
+describe('saveAssistantMessageToBackground 乐观锁基线', () => {
+    beforeEach(() => {
+        state.sessions = [{ id: 'session-bg', name: '后台会话', updatedAt: 200 }];
+        state._lastKnownSessionUpdatedAt = new Map();
+        loadSessionMessages.mockResolvedValue({ messages: [] });
+        saveSessionAtomic.mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+        delete state.sessions;
+        delete state._lastKnownSessionUpdatedAt;
+    });
+
+    it('本页没打开过的会话没有基线时按元数据做冲突检测，不跳过乐观锁', async () => {
+        await saveAssistantMessageToBackground(
+            'session-bg',
+            [{ type: 'text', text: '恢复的内容' }],
+            {}
+        );
+
+        expect(saveSessionAtomic).toHaveBeenCalledTimes(1);
+        expect(saveSessionAtomic.mock.calls[0][2]).toEqual({ expectedUpdatedAt: 200 });
+    });
+
+    it('有基线时以基线为准', async () => {
+        state._lastKnownSessionUpdatedAt.set('session-bg', 150);
+
+        await saveAssistantMessageToBackground('session-bg', [{ type: 'text', text: 'x' }], {});
+
+        expect(saveSessionAtomic.mock.calls[0][2]).toEqual({ expectedUpdatedAt: 150 });
     });
 });

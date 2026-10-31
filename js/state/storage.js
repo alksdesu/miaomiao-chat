@@ -201,6 +201,29 @@ export async function loadAllSessionsFromDB() {
 }
 
 /**
+ * 读取单个会话的库内元数据
+ * 乐观锁基线以库内记录为准：内存元数据会被保存失败的时间戳或其他标签页的广播改写
+ * @param {string} sessionId - 会话 ID
+ * @returns {Promise<Object|null>} 会话元数据，不存在时返回 null
+ */
+export async function loadSessionMetaFromDB(sessionId) {
+    if (!getDB()) {
+        try {
+            await initDB();
+        } catch (_) {
+            /* ignore */
+        }
+        if (!getDB()) throw new Error('数据库未初始化且重连失败');
+    }
+    return new Promise((resolve, reject) => {
+        const transaction = getDB().transaction([STORE_NAME], 'readonly');
+        const request = transaction.objectStore(STORE_NAME).get(sessionId);
+        request.onsuccess = () => resolve(request.result || null);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+/**
  * 从 IndexedDB 删除会话
  * @param {string} sessionId - 会话 ID
  * @returns {Promise<void>}

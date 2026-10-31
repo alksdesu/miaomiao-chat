@@ -15,6 +15,22 @@ const { mcpManager } = require('./mcp-manager');
 
 let mainWindow;
 
+// 多个实例共用同一份 userData（IndexedDB），而跨标签页同步与快照存活探测只在单个实例内生效
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+    app.quit();
+} else {
+    app.on('second-instance', () => {
+        if (!mainWindow || mainWindow.isDestroyed()) {
+            if (app.isReady()) createWindow();
+            return;
+        }
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+    });
+}
+
 /**
  * 校验 URL 是否为安全的外部链接协议（仅允许 http/https）
  * 防止 file:///、smb:// 等危险协议被 shell.openExternal 打开
@@ -341,6 +357,7 @@ function startChiiServer() {
 }
 
 app.whenReady().then(async () => {
+    if (!hasSingleInstanceLock) return;
     try {
         await startChiiServer();
     } catch (e) {

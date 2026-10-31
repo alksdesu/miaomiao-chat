@@ -650,7 +650,7 @@ async function importSessions(data) {
     // 否则 UI 仍显示旧消息且下次保存触发乐观锁假冲突让用户被强制丢改动
     if (data.sessions.some((s) => s.id === state.currentSessionId)) {
         try {
-            await reloadCurrentSessionMessages();
+            await reloadCurrentSessionMessages({ discardLocalChanges: true });
         } catch (e) {
             logger.warn('[Import] 覆盖当前会话后 reload 失败:', e);
         }
@@ -775,7 +775,7 @@ async function importFullBackup(data) {
         // 与 importSessions 同款守卫：覆盖当前激活会话时主动 reload + 刷 baseline
         if (data.sessions.some((s) => s.id === state.currentSessionId)) {
             try {
-                await reloadCurrentSessionMessages();
+                await reloadCurrentSessionMessages({ discardLocalChanges: true });
             } catch (e) {
                 logger.warn('[Import] 覆盖当前会话后 reload 失败:', e);
             }

@@ -49,7 +49,11 @@ beforeEach(() => {
     state.apiFormat = 'openai';
     state.messages = [];
     document.body.innerHTML = `
-        <div class="api-config" id="openai-config" style="display:block"></div>
+        <div class="api-config" id="openai-config" style="display:block">
+            <div class="param-item"><input id="openai-temperature" /></div>
+            <div class="param-item"><input id="openai-frequency-penalty" /></div>
+            <div class="param-item"><input id="openai-presence-penalty" /></div>
+        </div>
         <div class="api-config" id="gemini-config" style="display:none"></div>
         <div class="api-config" id="claude-config" style="display:none"></div>
         <div class="api-config" id="openai-image-config" style="display:none"></div>
@@ -102,6 +106,32 @@ describe('setApiFormat', () => {
         setApiFormat('gemini');
         const openaiConfig = document.getElementById('openai-config');
         expect(openaiConfig.style.display).toBe('none');
+    });
+
+    function paramItemDisplay(inputId) {
+        return document.getElementById(inputId).closest('.param-item').style.display;
+    }
+
+    it.each(['openai-responses', 'openclaw'])(
+        '%s 显示它实际使用的 OpenAI 参数面板并隐藏不发送的惩罚项',
+        (format) => {
+            setApiFormat('gemini');
+            setApiFormat(format);
+
+            expect(document.getElementById('openai-config').style.display).toBe('block');
+            expect(document.getElementById('gemini-config').style.display).toBe('none');
+            expect(paramItemDisplay('openai-temperature')).toBe('');
+            expect(paramItemDisplay('openai-frequency-penalty')).toBe('none');
+            expect(paramItemDisplay('openai-presence-penalty')).toBe('none');
+        }
+    );
+
+    it('切回 Chat Completions 时恢复惩罚项', () => {
+        setApiFormat('openai-responses');
+        setApiFormat('openai');
+
+        expect(paramItemDisplay('openai-frequency-penalty')).toBe('');
+        expect(paramItemDisplay('openai-presence-penalty')).toBe('');
     });
 
     it('相同格式不触发消息转换', () => {

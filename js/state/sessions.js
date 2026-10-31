@@ -15,6 +15,7 @@ import {
     savePreference,
     loadPreference,
     loadSessionMessages,
+    loadSessionMetaFromDB,
     saveSessionMessages,
     saveSessionAtomic,
     saveSessionSearchIndex,
@@ -32,8 +33,10 @@ import { withSessionWriteLock } from './session-write-queue.js';
 import { broadcastEvent } from './tab-sync.js';
 import { recoverStreamSnapshots } from './stream-snapshot.js';
 import { buildSessionSearchIndexAsync } from './session-search-index.js';
-import { createThinkingDots } from '../api/handler-loading-dots.js';
+import { createThinkingDots, createContinuationLoading } from '../api/handler-loading-dots.js';
+import { markContinuationElement } from '../api/placeholder-resolver.js';
 import { updateStreamingMessage, flushPendingRender } from '../stream/helpers.js';
+import { messageRenderController } from '../messages/message-render-controller.js';
 import { getTextContent, agePendingToolCallsInPlace } from '../messages/schema.js';
 import {
     replaceVideoDataUrlsDeep,
@@ -123,6 +126,98 @@ export function updateSessionMeta(sessionId, patch) {
         changed = true;
     }
     return changed;
+}
+
+/**
+ * 中止会话的请求任务（本页删除或其他标签页删除会话时调用）
+ * @param {string} sessionId
+ * @param {string} reason - 写入任务结束详情，便于区分删除来源
+ */
+export function stopSessionTask(sessionId, reason = 'session-deleted') {
+    const task = requestTaskRegistry.getBySession(sessionId);
+    if (task) {
+        requestTaskRegistry.abort(task);
+        if (requestStateMachine.owns(task)) requestStateMachine.cancel();
+        requestTaskRegistry.finish(task, 'cancelled', { reason });
+        return;
+    }
+    const legacyTask = state.backgroundTasks.get(sessionId);
+    legacyTask?.abortController?.abort?.();
+    legacyTask?.toolAbortController?.abort?.();
+    state.backgroundTasks.delete(sessionId);
+}
+
+function hasActiveSessionTask(sessionId) {
+    return requestTaskRegistry.isActive(requestTaskRegistry.getBySession(sessionId));
+}
+
+/**
+ * 当前会话是否有尚未落库的本地内容：未保存的改动、进行中的保存、未处理的冲突或正在编辑的消息
+ */
+function hasUnsavedLocalChanges() {
+    return (
+        state.sessionDirty ||
+        !!_savingPromise ||
+        _conflictPending ||
+        (state.editingIndex !== null && state.editingIndex !== undefined)
+    );
+}
+
+/**
+ * 从存储重载当前会话会丢掉的本地内容
+ * @returns {'task'|'unsaved'|null} 有进行中的任务 / 有未落库的改动 / 可以安全重载
+ */
+function getReloadBlocker(sessionId) {
+    if (hasActiveSessionTask(sessionId)) return 'task';
+    if (hasUnsavedLocalChanges()) return 'unsaved';
+    return null;
+}
+
+/**
+ * 按库内会话记录推进乐观锁基线；只前进不后退，乱序到达的旧广播不会把基线拉回去
+ */
+function advanceSessionBaseline(sessionId, updatedAt) {
+    if (!updatedAt || !state._lastKnownSessionUpdatedAt) return;
+    const current = state._lastKnownSessionUpdatedAt.get(sessionId);
+    if (current == null || updatedAt > current) {
+        state._lastKnownSessionUpdatedAt.set(sessionId, updatedAt);
+    }
+}
+
+async function readStoredUpdatedAt(sessionId) {
+    try {
+        const meta = await loadSessionMetaFromDB(sessionId);
+        return meta?.updatedAt ?? null;
+    } catch (e) {
+        logger.debug(`[Session] 读取会话 ${sessionId} 的库内元数据失败，使用内存元数据:`, e);
+        return null;
+    }
+}
+
+/**
+ * 其他标签页写入了会话：本页没有未落库的内容时同步到最新并推进乐观锁基线；
+ * 否则保持基线，让本页下次保存走冲突检测而不是用旧内容静默覆盖对方
+ * @param {string} sessionId
+ * @param {number} [updatedAt] - 对方写入的 updatedAt
+ * @returns {Promise<boolean>} 是否已同步到对方的写入
+ */
+export async function applyRemoteSessionUpdate(sessionId, updatedAt) {
+    if (!sessionId || _deletedSessionIds.has(sessionId)) return false;
+    const isCurrent = sessionId === state.currentSessionId;
+    const blocked = isCurrent ? getReloadBlocker(sessionId) : hasActiveSessionTask(sessionId);
+    if (blocked) {
+        if (isCurrent) {
+            eventBus.emit('storage:remote-updated', { sessionId, updatedAt, synced: false });
+        }
+        return false;
+    }
+    if (!isCurrent) {
+        advanceSessionBaseline(sessionId, updatedAt);
+        return true;
+    }
+    const synced = await reloadCurrentSessionMessages();
+    eventBus.emit('storage:remote-updated', { sessionId, updatedAt, synced });
+    return synced;
 }
 
 // 会话切换 AbortController
@@ -333,6 +428,7 @@ export async function saveCurrentSessionMessages(force = false) {
 
     const session = state.sessions.find((s) => s.id === state.currentSessionId);
     if (!session) return;
+    const previousUpdatedAt = session.updatedAt;
     session.apiFormat = state.apiFormat;
     session.updatedAt = Date.now();
 
@@ -427,6 +523,8 @@ export async function saveCurrentSessionMessages(force = false) {
             } catch (e) {
                 if (e instanceof SessionConflictError) {
                     _conflictPending = true;
+                    // 这次写入没有落库，元数据回到库内版本，否则重载或切回会拿失败的时间戳当基线
+                    session.updatedAt = e.actualUpdatedAt ?? previousUpdatedAt;
                     cancelPendingSave();
                     logger.warn(
                         `[Session] 多 tab 写入冲突 ${e.sessionId}: 期望 ${e.expectedUpdatedAt}, IDB ${e.actualUpdatedAt}`
@@ -521,15 +619,26 @@ export function cancelPendingSave() {
 /**
  * 从 IDB 重新加载 currentSession 的消息（用于多 tab 冲突/远端更新恢复路径）
  *
- * 流程：丢弃 dirty + 重 load messages + 更新乐观锁基线 + 触发 UI 重渲染。
+ * 流程：重 load messages + 按库内记录更新乐观锁基线 + 触发 UI 重渲染。
+ * 默认在有进行中的任务或未落库的改动时放弃，避免丢掉还没保存的内容；
+ * 冲突对话框确认丢弃、导入覆盖当前会话等路径传 discardLocalChanges 强制重载。
  * 仅在 currentSessionId 已存在且非已删的情况下执行
+ * @param {Object} [options]
+ * @param {boolean} [options.discardLocalChanges=false] - 丢弃本地未保存的改动强制重载
+ * @returns {Promise<boolean>} 是否完成重载
  */
-export async function reloadCurrentSessionMessages() {
+export async function reloadCurrentSessionMessages({ discardLocalChanges = false } = {}) {
     const sid = state.currentSessionId;
     if (!sid || _deletedSessionIds.has(sid)) return false;
-    cancelPendingSave();
-    state.sessionDirty = false;
+    if (discardLocalChanges) {
+        cancelPendingSave();
+        state.sessionDirty = false;
+    } else if (getReloadBlocker(sid)) {
+        return false;
+    }
 
+    // 先读元数据再读消息：两次读取之间被其他标签页写入时基线偏旧，下次保存走冲突而不是静默覆盖
+    const storedUpdatedAt = await readStoredUpdatedAt(sid);
     let msgData = null;
     try {
         msgData = await loadSessionMessages(sid);
@@ -541,16 +650,21 @@ export async function reloadCurrentSessionMessages() {
         logger.debug(`[Session] 重新加载完成时会话已变化，丢弃 ${sid} 的结果`);
         return false;
     }
+    if (!discardLocalChanges && getReloadBlocker(sid)) {
+        logger.debug(`[Session] 重新加载期间 ${sid} 出现了本地改动或任务，放弃本次重载`);
+        return false;
+    }
     const activeTask = requestTaskRegistry.getBySession(sid);
     const aged = activeTask
         ? 0
         : agePendingToolCallsInPlace(msgData?.messages, { nowMs: Date.now() });
     replaceAllMessages(msgData?.messages || []);
 
-    // 更新乐观锁基线：从 sessions 数组对应记录拿最新 updatedAt（loadAllSessions 已同步过元数据）
     const session = state.sessions.find((s) => s.id === sid);
-    if (session?.updatedAt) {
-        state._lastKnownSessionUpdatedAt.set(sid, session.updatedAt);
+    if (session && storedUpdatedAt) session.updatedAt = storedUpdatedAt;
+    const baseline = storedUpdatedAt ?? session?.updatedAt;
+    if (baseline) {
+        state._lastKnownSessionUpdatedAt.set(sid, baseline);
     }
 
     // 触发 UI 重渲染。emit 用 'reloaded' action 让全局 messages:changed 监听器跳过
@@ -567,6 +681,28 @@ export async function reloadCurrentSessionMessages() {
         await saveCurrentSessionMessages(true);
     }
     return true;
+}
+
+const RELOAD_BLOCKED_MESSAGES = {
+    task: '当前会话正在生成，完成后再同步最新内容',
+    unsaved: '当前会话有未保存的改动，暂不从存储重新加载'
+};
+
+/**
+ * 用户在侧栏点击当前会话：同步存储里的最新内容，但不丢弃还没落库的本地内容
+ * @returns {Promise<boolean>} 是否完成重载
+ */
+export async function refreshCurrentSession() {
+    const blocker = getReloadBlocker(state.currentSessionId);
+    if (blocker) {
+        eventBus.emit('ui:notification', {
+            message: RELOAD_BLOCKED_MESSAGES[blocker],
+            type: 'info',
+            duration: 3000
+        });
+        return false;
+    }
+    return reloadCurrentSessionMessages();
 }
 
 /**
@@ -654,6 +790,54 @@ export async function createNewSession(shouldSwitch = true) {
 }
 
 /**
+ * 把任务已接收但未落库的流式内容回放到新锚点
+ */
+function replayPartialRender(task, contentDiv) {
+    if (!task.partialRender) return;
+    updateStreamingMessage(
+        task.partialRender.textContent,
+        task.partialRender.thinkingContent,
+        contentDiv,
+        task
+    );
+    flushPendingRender(contentDiv, task);
+}
+
+/**
+ * 当前轮已落库（工具执行中或续作中）时，切回后的任务锚点改为落库消息自身的元素：
+ * 工具卡片状态更新和续作内容都写进这条消息，而不是新建占位符重复显示上一轮内容
+ * @param {Object} task - 刚恢复到前台的任务
+ * @param {HTMLElement} messagesArea
+ * @returns {boolean} 是否已锚定到落库消息
+ */
+function anchorTaskToCommittedMessage(task, messagesArea) {
+    if (!task.isToolCallPending && !task.isSavingContinuation) return false;
+    // 任务运行期间无法追加消息，当前轮落库后必是最后一条；不是 assistant 说明本次加载时还没落库
+    const lastMessage = state.messages[state.messages.length - 1];
+    if (lastMessage?.role !== 'assistant' || !lastMessage.id) return false;
+    const messageEl = Array.from(messagesArea.querySelectorAll('.message.assistant')).find(
+        (element) => element.dataset.messageId === lastMessage.id
+    );
+    const contentDiv = messageEl?.querySelector('.message-content');
+    if (!contentDiv) return false;
+
+    // 视口回收会清空 message-content，锚点在任务结束前必须常驻
+    messageRenderController.pin(messageEl);
+    state.currentAssistantMessage = contentDiv;
+    requestTaskRegistry.setAssistantElement(task, messageEl);
+    requestStateMachine.attach(task, messageEl);
+    logger.debug('[sessions.js] 后台任务切回：沿用已落库消息作为锚点');
+
+    if (task.isSavingContinuation) {
+        // hydration 覆盖内容后下一帧仍按续作追加，续作轮出错时也能把错误拆成单独一条
+        markContinuationElement(messageEl);
+        contentDiv.appendChild(createContinuationLoading());
+        replayPartialRender(task, contentDiv);
+    }
+    return true;
+}
+
+/**
  * 切换到指定会话
  * @param {string} sessionId - 会话 ID
  * @param {boolean} saveOld - 是否保存旧会话
@@ -737,6 +921,13 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
             return;
         }
 
+        // 先读库内元数据再读消息：两次读取之间被其他标签页写入时基线偏旧，下次保存走冲突而不是静默覆盖
+        const storedUpdatedAt = await readStoredUpdatedAt(sessionId);
+        if (signal.aborted) {
+            logger.debug('[Session] 会话切换在读取元数据后被取消');
+            return;
+        }
+
         // v4: 从 messages store 按需加载（不再从内存中的 session 对象取消息）
         // 重要：currentSessionId 赋值延后到 await 完成之后；中间 await 被 abort 时 currentSessionId
         // 保持原值，避免 B 数据落库到 C 的连切覆盖 race
@@ -789,6 +980,7 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
         _conflictPending = false;
 
         // 记录加载时的 updatedAt 作为乐观锁基线，下次 saveSessionAtomic 用它对比
+        if (storedUpdatedAt) session.updatedAt = storedUpdatedAt;
         if (session.updatedAt) {
             state._lastKnownSessionUpdatedAt.set(sessionId, session.updatedAt);
         }
@@ -935,10 +1127,10 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
                         return;
                     }
 
-                    // renderSessionMessages 已基于 state.messages 重渲，DOM 上的
-                    // .message.assistant:last-child 一定是已落库的历史消息（流式 placeholder
-                    // 未 commit 不在 state.messages 中、不会被渲染）。复用历史 DOM 会让流式
-                    // update 覆盖老消息内容 — 总是新建占位符，commit 后由 messages:changed
+                    if (anchorTaskToCommittedMessage(backgroundTask, messagesArea)) return;
+
+                    // 当前轮还没落库：DOM 上的 .message.assistant:last-child 是已落库的历史消息，
+                    // 复用会让流式 update 覆盖老消息内容 — 新建占位符，commit 后由 messages:changed
                     // 触发 renderSessionMessages 重渲换成正式 DOM
                     logger.debug('[sessions.js] 后台任务切回：新建流式占位符');
 
@@ -964,15 +1156,7 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
                     state.currentAssistantMessage = contentDiv;
                     requestTaskRegistry.setAssistantElement(backgroundTask, messageDiv);
                     requestStateMachine.attach(backgroundTask, messageDiv);
-                    if (backgroundTask.partialRender) {
-                        updateStreamingMessage(
-                            backgroundTask.partialRender.textContent,
-                            backgroundTask.partialRender.thinkingContent,
-                            contentDiv,
-                            backgroundTask
-                        );
-                        flushPendingRender(contentDiv, backgroundTask);
-                    }
+                    replayPartialRender(backgroundTask, contentDiv);
                 } catch (error) {
                     logger.error('[sessions.js] ❌ 恢复后台任务失败:', error);
                 }
@@ -1049,17 +1233,7 @@ export async function deleteSession(sessionId) {
     }
 
     // 停止该会话的后台任务
-    const task = requestTaskRegistry.getBySession(sessionId);
-    if (task) {
-        requestTaskRegistry.abort(task);
-        if (requestStateMachine.owns(task)) requestStateMachine.cancel();
-        requestTaskRegistry.finish(task, 'cancelled', { reason: 'session-deleted' });
-    } else {
-        const legacyTask = state.backgroundTasks.get(sessionId);
-        legacyTask?.abortController?.abort?.();
-        legacyTask?.toolAbortController?.abort?.();
-        state.backgroundTasks.delete(sessionId);
-    }
+    stopSessionTask(sessionId);
 
     // 从状态中删除
     state.sessions.splice(sessionIndex, 1);
@@ -1152,27 +1326,33 @@ eventBus.on('storage:conflict', async ({ sessionId }) => {
         _conflictPending = false;
         // dialog 打开期间可能已切会话，上下文失效时不 reload 以免覆盖新会话的未保存改动
         if (confirmed && sessionId === state.currentSessionId) {
-            await reloadCurrentSessionMessages();
+            await reloadCurrentSessionMessages({ discardLocalChanges: true });
         }
     } catch (e) {
         _conflictPending = false;
         logger.error('[Session] 处理冲突 dialog 失败:', e);
         eventBus.emit('ui:notification', {
-            message: '检测到此会话在其他标签页已更新（保存冲突），点击侧栏对应会话可重新加载',
+            message: '检测到此会话在其他标签页已更新（保存冲突），下次保存时会再次询问是否重新加载',
             type: 'warning',
             duration: 8000
         });
     }
 });
 
-// 监听远端 tab 更新：仅提示，不主动覆盖避免打断本 tab 输入
-eventBus.on('storage:remote-updated', ({ sessionId }) => {
+// 监听远端 tab 更新：本页没有未落库内容时已自动同步；否则不覆盖，保存时走冲突确认
+eventBus.on('storage:remote-updated', ({ sessionId, synced }) => {
     if (sessionId !== state.currentSessionId) return;
-    eventBus.emit('ui:notification', {
-        message: '此会话在其他标签页有更新，点击侧栏对应会话可同步最新内容',
-        type: 'info',
-        duration: 5000
-    });
+    eventBus.emit(
+        'ui:notification',
+        synced
+            ? { message: '已同步此会话在其他标签页的更新', type: 'info', duration: 3000 }
+            : {
+                  message:
+                      '此会话在其他标签页有更新，本页还有未保存的内容或正在生成，保存时会提示冲突',
+                  type: 'warning',
+                  duration: 6000
+              }
+    );
 });
 
 // 监听跨标签页会话切换请求

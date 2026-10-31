@@ -31,6 +31,17 @@ function removeWelcomeMessageIfAny() {
 }
 
 /**
+ * 标记续作复用的消息：流式渲染读 .message-content 上的标记判断追加，出错拆分读 .message 上的标记
+ * 只靠工具卡片或 loading 判断时，没有客户端工具调用的 pause_turn 续作会覆盖上一轮内容
+ * @param {HTMLElement} messageEl - .message 元素
+ */
+export function markContinuationElement(messageEl) {
+    messageEl.dataset.isContinuation = 'true';
+    const messageContent = messageEl.querySelector('.message-content');
+    if (messageContent) messageContent.dataset.isContinuation = 'true';
+}
+
+/**
  * 分支 A：工具调用 continuation
  * @returns {HTMLElement} 复用的 assistantMessageEl
  */
@@ -46,9 +57,9 @@ function resolveContinuation() {
         messageContent.appendChild(createContinuationLoading());
     }
 
-    // dataset 标记给 finalRender 流程识别 continuation 模式，
+    // dataset 标记给流式与 finalRender 流程识别 continuation 模式，
     // 与流式渲染移除 thinking-dots 时机解耦
-    assistantMessageEl.dataset.isContinuation = 'true';
+    markContinuationElement(assistantMessageEl);
     state.isSavingContinuation = true;
     clearToolCallContinuation();
     return assistantMessageEl;
@@ -138,8 +149,17 @@ export function resolvePlaceholder(ctx) {
         clearToolCallContinuation();
     }
 
+    // 切走再切回后旧元素已随重渲染脱离页面，复用会把后续内容写进看不见的节点
+    const continuationDetached =
+        state.isToolCallContinuation && state.toolCallContinuationElement?.isConnected === false;
+    if (continuationDetached) {
+        logger.warn('[PlaceholderResolver] continuation 元素已脱离页面，改用新占位符');
+        clearToolCallContinuation();
+    }
+
     if (
         !continuationStaleByCrossSession &&
+        !continuationDetached &&
         state.isToolCallContinuation &&
         state.toolCallContinuationElement
     ) {
@@ -163,8 +183,16 @@ export function resolvePlaceholder(ctx) {
         clearImageRetry();
     }
 
+    const imageRetryDetached =
+        state.isImageCompressionRetry && state.imageRetryMessageElement?.isConnected === false;
+    if (imageRetryDetached) {
+        logger.warn('[PlaceholderResolver] image-retry 元素已脱离页面，改用新占位符');
+        clearImageRetry();
+    }
+
     if (
         !imageRetryStaleByCrossSession &&
+        !imageRetryDetached &&
         state.isImageCompressionRetry &&
         state.imageRetryMessageElement
     ) {

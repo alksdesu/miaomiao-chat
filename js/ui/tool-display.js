@@ -801,6 +801,7 @@ export async function restoreToolCallsGroup(toolCalls, contentDiv) {
         totalCount: toolCalls.length
     };
 
+    const restoredAt = Date.now();
     for (const tc of toolCalls) {
         // 'skipped' result 含 skipped:true 标记或顶层 status='skipped'，提取友好错误文案；
         // 批量动作中止、请求停止的结果落库时是 error 状态，按 error_kind 还原成未执行
@@ -818,7 +819,8 @@ export async function restoreToolCallsGroup(toolCalls, contentDiv) {
                 : tc.error
                   ? tc.error.message || tc.error
                   : null,
-            startTime: 0,
+            // 执行中恢复的工具稍后由 updateToolCallStatus 收尾，耗时从恢复时刻起算
+            startTime: tc.status === 'executing' ? restoredAt : 0,
             duration: tc.duration || null
         };
 

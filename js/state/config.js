@@ -15,7 +15,7 @@ import {
     loadSavedConfigs as loadSavedConfigsFromDB
 } from './storage.js';
 // UI 同步模块
-import { syncUIWithState } from './config-ui-sync.js';
+import { syncUIWithState, syncFormatConfigPanels } from './config-ui-sync.js';
 export { syncUIWithState };
 
 // ⭐ 配置版本管理
@@ -697,14 +697,7 @@ export function applyConfigToState(config) {
             btn?.classList.toggle('active', fmt === config.apiFormat);
         });
 
-        // 更新配置面板显示：只显示当前格式对应的配置面板
-        document.querySelectorAll('.api-config').forEach((panel) => {
-            panel.style.display = 'none';
-        });
-        const configPanel = document.getElementById(`${config.apiFormat}-config`);
-        if (configPanel) {
-            configPanel.style.display = 'block';
-        }
+        syncFormatConfigPanels(config.apiFormat);
 
         logger.debug(`API格式已恢复为: ${config.apiFormat}`);
     }

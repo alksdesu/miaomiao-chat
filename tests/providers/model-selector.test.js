@@ -30,7 +30,8 @@ vi.mock('../../js/utils/capability-badges.js', () => ({
 }));
 
 vi.mock('../../js/utils/dialogs.js', () => ({
-    showInputDialog: vi.fn()
+    showInputDialog: vi.fn(),
+    showConfirmDialog: vi.fn(async () => true)
 }));
 
 vi.mock('../../js/utils/helpers.js', () => ({
@@ -67,6 +68,7 @@ import {
     initModelSelectorEvents
 } from '../../js/providers/model-selector.js';
 import { updateProvider } from '../../js/providers/manager.js';
+import { showConfirmDialog } from '../../js/utils/dialogs.js';
 
 beforeEach(() => {
     vi.clearAllMocks();
@@ -262,5 +264,63 @@ describe('模型编辑弹窗的官方型号别名', () => {
             name: 'plain',
             capabilities: { imageInput: false, imageOutput: false }
         });
+    });
+
+    it('已识别的官方型号别名直接保存，不弹确认', async () => {
+        state.providers = [{ id: 'p1', apiFormat: 'claude', models: ['proxy-x'] }];
+        openEditModelModal('p1', 'proxy-x');
+        document.getElementById('edit-model-profile-alias').value = 'claude-sonnet-5-5';
+
+        await saveEditedModel();
+
+        expect(showConfirmDialog).not.toHaveBeenCalled();
+        expect(state.providers[0].models[0].profileAlias).toBe('claude-sonnet-5-5');
+    });
+
+    it('别名解析不到官方型号时保存前确认，取消则不保存', async () => {
+        state.providers = [{ id: 'p1', apiFormat: 'claude', models: ['claude-opus-5-5'] }];
+        openEditModelModal('p1', 'claude-opus-5-5');
+        document.getElementById('edit-model-profile-alias').value = 'not-a-model';
+        showConfirmDialog.mockResolvedValueOnce(false);
+
+        await saveEditedModel();
+
+        expect(showConfirmDialog).toHaveBeenCalledWith(
+            expect.stringContaining('claude-opus-5-5'),
+            expect.any(String)
+        );
+        expect(updateProvider).not.toHaveBeenCalled();
+        expect(state.providers[0].models[0]).toBe('claude-opus-5-5');
+    });
+
+    it('没有能力表的格式不为隐藏输入里残留的别名弹确认', async () => {
+        state.providers = [
+            {
+                id: 'p1',
+                apiFormat: 'openclaw',
+                models: [{ id: 'agent', name: 'Agent', profileAlias: 'claude-opus-5-5' }]
+            }
+        ];
+        openEditModelModal('p1', 'agent');
+
+        await saveEditedModel();
+
+        expect(showConfirmDialog).not.toHaveBeenCalled();
+        expect(state.providers[0].models[0].profileAlias).toBe('claude-opus-5-5');
+    });
+
+    it('确认后仍可保存无法识别的别名', async () => {
+        state.providers = [{ id: 'p1', apiFormat: 'claude', models: ['proxy-x'] }];
+        openEditModelModal('p1', 'proxy-x');
+        document.getElementById('edit-model-profile-alias').value = 'internal-model';
+        showConfirmDialog.mockResolvedValueOnce(true);
+
+        await saveEditedModel();
+
+        expect(showConfirmDialog).toHaveBeenCalledWith(
+            expect.stringContaining('internal-model'),
+            expect.any(String)
+        );
+        expect(state.providers[0].models[0].profileAlias).toBe('internal-model');
     });
 });
