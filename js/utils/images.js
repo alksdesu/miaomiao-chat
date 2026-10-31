@@ -4,7 +4,6 @@
  */
 
 import { logger } from './logger.js';
-import { detectImageFormat } from './helpers.js';
 import { API_FILE_SIZE_LIMITS } from './constants.js';
 import { PartType, MediaKind } from '../messages/schema.js';
 
@@ -247,54 +246,4 @@ export async function compressImagesInMessages(messages, apiFormat, fastMode = f
     }
 
     return compressedMessages;
-}
-
-/**
- * 下载图片（保持原始格式）
- * @param {string} dataUrl - Data URL
- * @param {string} filename - 文件名
- */
-export function downloadImage(dataUrl, filename) {
-    try {
-        // 解析 data URL
-        const [header, base64Data] = dataUrl.split(',');
-        const declaredMime = header.match(/data:([^;]+)/)?.[1] || 'image/png';
-
-        // 将 base64 转换为二进制数据
-        const binaryString = atob(base64Data);
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
-        }
-
-        // 检测实际格式（不信任声明的 MIME 类型）
-        const detected = detectImageFormat(bytes);
-
-        // 修正文件名扩展名
-        const baseName = filename.replace(/\.[^.]+$/, '');
-        const correctFilename = `${baseName}.${detected.ext}`;
-
-        // 创建 Blob（使用检测到的实际格式）
-        const blob = new Blob([bytes], { type: detected.mime });
-
-        // 创建下载链接
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = correctFilename;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-
-        // 释放 URL
-        URL.revokeObjectURL(url);
-
-        logger.debug(`下载图片: ${correctFilename}`);
-        logger.debug(`  声明格式: ${declaredMime}`);
-        logger.debug(`  实际格式: ${detected.mime}`);
-        logger.debug(`  文件大小: ${(bytes.length / 1024 / 1024).toFixed(2)} MB`);
-    } catch (e) {
-        logger.error('下载图片失败:', e);
-        window.open(dataUrl, '_blank');
-    }
 }

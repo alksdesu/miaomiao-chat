@@ -2,10 +2,14 @@
  * media.js 媒体工具函数测试
  */
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../js/utils/logger.js', () => ({
     logger: { warn: vi.fn(), debug: vi.fn(), error: vi.fn(), info: vi.fn() }
+}));
+
+vi.mock('../../js/utils/platform.js', () => ({
+    isAndroid: vi.fn(() => false)
 }));
 
 import {
@@ -20,6 +24,9 @@ import {
     isVideoUrl,
     downloadMedia
 } from '../../js/utils/media.js';
+import { createTrackedObjectUrl, revokeTrackedObjectUrl } from '../../js/utils/object-urls.js';
+import { isAndroid } from '../../js/utils/platform.js';
+import { eventBus } from '../../js/core/events.js';
 
 // ========== isDataUrl ==========
 
@@ -237,52 +244,165 @@ describe('isVideoUrl', () => {
 
 describe('downloadMedia', () => {
     let clickSpy;
-    let createObjectURLSpy;
-    let revokeObjectURLSpy;
+    let emitSpy;
+
+    const lastDownloadedBlob = () => URL.createObjectURL.mock.calls.at(-1)[0];
+    const lastLink = () => clickSpy.mock.contexts.at(-1);
+
+    function installAndroidFilesystem(writeFile) {
+        window.Capacitor = {
+            Plugins: {
+                Filesystem: {
+                    checkPermissions: vi.fn(async () => ({ publicStorage: 'granted' })),
+                    stat: vi.fn(async () => {
+                        throw new Error('File does not exist');
+                    }),
+                    writeFile,
+                    appendFile: vi.fn(),
+                    deleteFile: vi.fn(async () => {})
+                }
+            }
+        };
+    }
 
     beforeEach(() => {
-        clickSpy = vi.fn();
-        createObjectURLSpy = vi.fn(() => 'blob:test');
-        revokeObjectURLSpy = vi.fn();
-        globalThis.URL.createObjectURL = createObjectURLSpy;
-        globalThis.URL.revokeObjectURL = revokeObjectURLSpy;
-
-        const origCreateElement = document.createElement.bind(document);
-        vi.spyOn(document, 'createElement').mockImplementation((tag) => {
-            const el = origCreateElement(tag);
-            if (tag === 'a') {
-                el.click = clickSpy;
-            }
-            return el;
-        });
-        vi.spyOn(document.body, 'appendChild').mockImplementation(() => {});
-        vi.spyOn(document.body, 'removeChild').mockImplementation(() => {});
+        isAndroid.mockReturnValue(false);
+        URL.createObjectURL = vi.fn(() => 'blob:download');
+        URL.revokeObjectURL = vi.fn();
+        clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+        emitSpy = vi.spyOn(eventBus, 'emit');
     });
 
-    it('data URL 下载触发 click', async () => {
-        await downloadMedia('data:image/png;base64,iVBORw0KGgo=', 'test.png');
-        expect(clickSpy).toHaveBeenCalled();
-        expect(revokeObjectURLSpy).toHaveBeenCalled();
+    afterEach(() => {
+        clickSpy.mockRestore();
+        emitSpy.mockRestore();
+        delete window.Capacitor;
+    });
+
+    it('data URL 解码后下载', async () => {
+        const result = await downloadMedia('data:image/png;base64,iVBORw0KGgo=', 'test.png');
+
+        expect(result).toEqual({ savedTo: null });
+        expect(clickSpy).toHaveBeenCalledTimes(1);
+        expect(lastLink().download).toBe('test.png');
+        expect(lastDownloadedBlob().type).toBe('image/png');
+    });
+
+    it('图片按文件头修正扩展名与类型：标成 PNG 的 JPEG 存为 .jpg', async () => {
+        const jpegBase64 = btoa(String.fromCharCode(0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10));
+
+        await downloadMedia(`data:image/png;base64,${jpegBase64}`, 'tool-image-1.png');
+
+        expect(lastLink().download).toBe('tool-image-1.jpg');
+        expect(lastDownloadedBlob().type).toBe('image/jpeg');
+    });
+
+    it('识别不出的图片格式（SVG）保留原名与类型', async () => {
+        const svgBase64 = btoa('<svg xmlns="http://www.w3.org/2000/svg"/>');
+
+        await downloadMedia(`data:image/svg+xml;base64,${svgBase64}`, 'image-1.svg');
+
+        expect(lastLink().download).toBe('image-1.svg');
+        expect(lastDownloadedBlob().type).toBe('image/svg+xml');
+    });
+
+    it('视频不做图片格式修正', async () => {
+        const videoBase64 = btoa(String.fromCharCode(0x89, 0x50, 0x4e, 0x47, 0x00, 0x00));
+
+        await downloadMedia(`data:video/mp4;base64,${videoBase64}`, 'clip.mp4');
+
+        expect(lastLink().download).toBe('clip.mp4');
+        expect(lastDownloadedBlob().type).toBe('video/mp4');
+    });
+
+    it('未给文件名时按 MIME 生成', async () => {
+        await downloadMedia('data:video/webm;base64,AAAA');
+        expect(lastLink().download).toMatch(/^media-\d+\.webm$/);
+    });
+
+    it('页面登记过的 blob: URL 取回原始 Blob 下载', async () => {
+        const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+        const original = new Blob([pngBytes], { type: 'image/png' });
+        URL.createObjectURL = vi.fn(() => 'blob:tracked-image');
+        const trackedUrl = createTrackedObjectUrl(original);
+        URL.createObjectURL = vi.fn(() => 'blob:download');
+
+        try {
+            await downloadMedia(trackedUrl, 'image-1.png');
+
+            expect(lastDownloadedBlob()).toBe(original);
+            expect(lastLink().href).toBe('blob:download');
+            expect(lastLink().target).toBe('');
+        } finally {
+            revokeTrackedObjectUrl(trackedUrl);
+        }
+    });
+
+    it('http(s) 与未登记的 blob: URL 用新窗口链接下载，不让页面跳走', async () => {
+        const result = await downloadMedia('https://example.com/a.png', 'a.png');
+
+        expect(result).toEqual({ savedTo: null });
+        expect(lastLink().href).toBe('https://example.com/a.png');
+        expect(lastLink().target).toBe('_blank');
+        expect(lastLink().rel).toBe('noopener noreferrer');
+        expect(lastLink().download).toBe('a.png');
+
+        await downloadMedia('blob:http://localhost/unknown', 'b.png');
+        expect(lastLink().href).toBe('blob:http://localhost/unknown');
+        expect(lastLink().target).toBe('_blank');
+        expect(URL.createObjectURL).not.toHaveBeenCalled();
     });
 
     it('空 URL 走错误路径', async () => {
         const openSpy = vi.spyOn(window, 'open').mockImplementation(() => {});
-        await downloadMedia('');
+        expect(await downloadMedia('')).toBeNull();
         expect(openSpy).toHaveBeenCalled();
         openSpy.mockRestore();
     });
 
     it('null URL 走错误路径', async () => {
         const openSpy = vi.spyOn(window, 'open').mockImplementation(() => {});
-        await downloadMedia(null);
+        expect(await downloadMedia(null)).toBeNull();
         expect(openSpy).toHaveBeenCalled();
         openSpy.mockRestore();
     });
 
-    it('HTTP URL 不抛错', async () => {
-        // HTTP URL 走链接下载路径
-        await expect(
-            downloadMedia('https://example.com/video.mp4', 'video.mp4')
-        ).resolves.not.toThrow();
+    it('Android 写入本地目录后提示保存位置', async () => {
+        isAndroid.mockReturnValue(true);
+        installAndroidFilesystem(
+            vi.fn(async ({ path }) => ({ uri: `file:///storage/emulated/0/Documents/${path}` }))
+        );
+
+        const result = await downloadMedia('data:image/png;base64,iVBORw0KGgo=', 'image-1.png');
+
+        expect(result).toEqual({ savedTo: 'Documents/WebChat/image-1.png' });
+        expect(emitSpy).toHaveBeenCalledWith('ui:notification', {
+            message: '已保存到 Documents/WebChat/image-1.png',
+            type: 'success'
+        });
+        expect(clickSpy).not.toHaveBeenCalled();
+    });
+
+    it('Android 保存失败时提示错误，不打开新窗口', async () => {
+        isAndroid.mockReturnValue(true);
+        installAndroidFilesystem(
+            vi.fn(async () => {
+                throw new Error('disk full');
+            })
+        );
+        const openSpy = vi.spyOn(window, 'open').mockImplementation(() => {});
+
+        try {
+            const result = await downloadMedia('data:image/png;base64,iVBORw0KGgo=', 'a.png');
+
+            expect(result).toBeNull();
+            expect(openSpy).not.toHaveBeenCalled();
+            expect(emitSpy).toHaveBeenCalledWith('ui:notification', {
+                message: '下载失败：disk full',
+                type: 'error'
+            });
+        } finally {
+            openSpy.mockRestore();
+        }
     });
 });

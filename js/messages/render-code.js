@@ -8,7 +8,8 @@ import { eventBus } from '../core/events.js';
 import { updateMessageTextAt } from '../core/state-mutations.js';
 import { state } from '../core/state.js';
 import { escapeHtml } from '../utils/helpers.js';
-import { downloadImage } from '../utils/images.js';
+import { downloadMedia } from '../utils/media.js';
+import { downloadBlob, describeSavedLocation } from '../utils/download.js';
 import {
     getCurrentMermaidTheme,
     renderMermaidBlock,
@@ -208,7 +209,7 @@ export function bindImageClickEvents(container) {
                 const url = resolveImageUrl(img);
                 const match = url.match(/^data:image\/(\w+);/);
                 const ext = match ? match[1] : 'png';
-                downloadImage(url, `image-${Date.now()}.${ext}`);
+                downloadMedia(url, `image-${Date.now()}.${ext}`);
             };
         }
     });
@@ -774,16 +775,27 @@ function downloadCodeAsFile(code, language) {
 
     const ext = extensions[language] || 'txt';
     const filename = `code-${Date.now()}.${ext}`;
-
     const blob = new Blob([code], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
+    return downloadGeneratedFile(blob, filename, `已下载为 ${filename}`);
+}
 
-    eventBus.emit('ui:notification', { message: `已下载为 ${filename}`, type: 'success' });
+/**
+ * 下载生成的文件并提示结果，Android 上附带保存位置
+ */
+async function downloadGeneratedFile(blob, filename, successMessage) {
+    try {
+        const result = await downloadBlob(blob, filename);
+        eventBus.emit('ui:notification', {
+            message: describeSavedLocation(successMessage, result),
+            type: 'success'
+        });
+    } catch (error) {
+        logger.error('[RenderCode] 文件下载失败:', error);
+        eventBus.emit('ui:notification', {
+            message: `下载失败：${error?.message || error}`,
+            type: 'error'
+        });
+    }
 }
 
 // 表格增强
@@ -845,15 +857,9 @@ function exportTableAsCSV(table) {
         })
         .join('\n');
 
+    // BOM 让 Excel 按 UTF-8 打开中文
     const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `table-${Date.now()}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-
-    eventBus.emit('ui:notification', { message: '表格已导出为 CSV', type: 'success' });
+    return downloadGeneratedFile(blob, `table-${Date.now()}.csv`, '表格已导出为 CSV');
 }
 
 // 代码块内容更新

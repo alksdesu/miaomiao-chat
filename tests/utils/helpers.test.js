@@ -103,6 +103,23 @@ describe('detectImageFormat', () => {
         const bytes = new Uint8Array([0x00, 0x00, 0x00, 0x00]);
         expect(detectImageFormat(bytes)).toEqual({ mime: 'image/png', ext: 'png' });
     });
+
+    it('fallback 为 null 时未知格式返回 null，已知格式照常识别', () => {
+        const unknown = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"/>');
+        expect(detectImageFormat(unknown, { fallback: null })).toBeNull();
+
+        const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        expect(detectImageFormat(jpeg, { fallback: null })).toEqual({
+            mime: 'image/jpeg',
+            ext: 'jpg'
+        });
+    });
+
+    it('每次返回新对象，修改结果不影响后续默认值', () => {
+        const first = detectImageFormat(new Uint8Array([0]));
+        first.ext = 'changed';
+        expect(detectImageFormat(new Uint8Array([0]))).toEqual({ mime: 'image/png', ext: 'png' });
+    });
 });
 
 // ========== extractBase64Images ==========

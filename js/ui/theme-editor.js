@@ -29,6 +29,7 @@ import {
     importThemeFromFile
 } from '../state/theme-storage.js';
 import { bindTopmostEscape } from '../utils/modal-stack.js';
+import { describeSavedLocation } from '../utils/download.js';
 import { logger } from '../utils/logger.js';
 
 let modal = null;
@@ -542,9 +543,21 @@ async function onImport() {
     }
 }
 
-function onExport() {
+async function onExport() {
     if (!currentThemeData) return;
-    exportThemeAsJSON(currentThemeData);
+    try {
+        const result = await exportThemeAsJSON(currentThemeData);
+        // 浏览器下载由浏览器自己提示；Android 写入本地目录，需要告知保存位置
+        if (result?.savedTo) {
+            eventBus.emit('ui:notification', {
+                message: describeSavedLocation('主题已导出', result),
+                type: 'success'
+            });
+        }
+    } catch (e) {
+        logger.error('[ThemeEditor] 导出主题失败:', e);
+        eventBus.emit('ui:notification', { message: `导出主题失败：${e.message}`, type: 'error' });
+    }
 }
 
 /* ===== 打开/关闭 ===== */

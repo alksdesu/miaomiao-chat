@@ -43,12 +43,16 @@ export function escapeHtml(text) {
     return div.innerHTML;
 }
 
+const DEFAULT_IMAGE_FORMAT = Object.freeze({ mime: 'image/png', ext: 'png' });
+
 /**
  * 检测图片实际格式（通过文件头魔数）
  * @param {Uint8Array} bytes - 图片字节数据
- * @returns {{mime: string, ext: string}} 图片MIME类型和扩展名
+ * @param {Object} [options]
+ * @param {{mime: string, ext: string}|null} [options.fallback] - 魔数都不匹配时的返回值，缺省按 PNG
+ * @returns {{mime: string, ext: string}|null} 图片MIME类型和扩展名
  */
-export function detectImageFormat(bytes) {
+export function detectImageFormat(bytes, { fallback = DEFAULT_IMAGE_FORMAT } = {}) {
     // PNG: 89 50 4E 47 0D 0A 1A 0A
     if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
         return { mime: 'image/png', ext: 'png' };
@@ -74,8 +78,7 @@ export function detectImageFormat(bytes) {
     ) {
         return { mime: 'image/webp', ext: 'webp' };
     }
-    // 默认
-    return { mime: 'image/png', ext: 'png' };
+    return fallback ? { ...fallback } : null;
 }
 
 /**

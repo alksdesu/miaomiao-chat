@@ -25,11 +25,17 @@ vi.mock('../../js/utils/logger.js', () => ({
     logger: { warn: vi.fn(), debug: vi.fn(), error: vi.fn(), info: vi.fn() }
 }));
 
+vi.mock('../../js/utils/media.js', async (importOriginal) => ({
+    ...(await importOriginal()),
+    downloadMedia: vi.fn(() => Promise.resolve({ savedTo: null }))
+}));
+
 import {
     createToolCallUI,
     updateToolCallStatus,
     restoreToolCallsGroup
 } from '../../js/ui/tool-display.js';
+import { downloadMedia } from '../../js/utils/media.js';
 
 describe('tool-display', () => {
     beforeEach(() => {
@@ -245,6 +251,31 @@ describe('tool-display', () => {
 
             const group = container.querySelector('.tool-calls-group');
             expect(group).toBeTruthy();
+        });
+
+        it('工具结果图片的下载按钮走统一的媒体下载', async () => {
+            const container = document.createElement('div');
+            container.className = 'message-content';
+            document.body.appendChild(container);
+            const imageUrl = 'data:image/png;base64,iVBORw0KGgo=';
+
+            await restoreToolCallsGroup(
+                [
+                    {
+                        id: 'tc1',
+                        name: 'screenshot',
+                        status: 'completed',
+                        result: { image: imageUrl }
+                    }
+                ],
+                container
+            );
+
+            container.querySelector('.download-image-btn').click();
+            expect(downloadMedia).toHaveBeenCalledWith(
+                imageUrl,
+                expect.stringMatching(/^tool-image-\d+\.png$/)
+            );
         });
 
         it('落库为 error 的中止动作恢复为未执行，失败动作仍显示失败', async () => {

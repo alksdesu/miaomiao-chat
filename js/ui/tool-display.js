@@ -14,6 +14,7 @@ import { undo, canUndoNow } from '../tools/undo.js';
 import { getIcon } from '../utils/icons.js';
 import { showConfirmDialog } from '../utils/dialogs.js';
 import { bindTopmostEscape } from '../utils/modal-stack.js';
+import { downloadMedia } from '../utils/media.js';
 import { logger } from '../utils/logger.js';
 
 // 工具名称映射
@@ -420,18 +421,6 @@ function createVideoWrapper(url) {
 
     wrapper.appendChild(video);
     return wrapper;
-}
-
-/**
- * 下载媒体文件
- */
-function downloadMedia(url, filename) {
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
 }
 
 // ==================== 详情弹窗 ====================

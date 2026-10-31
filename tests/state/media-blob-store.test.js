@@ -2,6 +2,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
 import { Blob as NodeBlob } from 'node:buffer';
+import { findTrackedBlob } from '../../js/utils/object-urls.js';
 
 let db;
 let indexeddbModule;
@@ -97,11 +98,14 @@ describe('media-blob-store', () => {
         const displayed = await mediaStore.resolveMessageMediaForDisplay(externalized.messages[0]);
         expect(displayed.message.parts[0].url).toBe('blob:media-preview');
         expect(displayed.mediaIds).toEqual([persistedPart.mediaId]);
+        // 展示用 URL 能反查到原始数据，下载时不必 fetch blob:
+        expect(await findTrackedBlob('blob:media-preview').text()).toBe('hello');
 
         await mediaStore.acquireMediaObjectUrl(persistedPart.mediaId);
         expect(mediaStore.releaseMediaObjectUrl(persistedPart.mediaId)).toBe(false);
         expect(mediaStore.releaseMediaObjectUrl(persistedPart.mediaId)).toBe(true);
         expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:media-preview');
+        expect(findTrackedBlob('blob:media-preview')).toBeNull();
     });
 
     it('媒体记录缺失时阻止发送不完整请求', async () => {

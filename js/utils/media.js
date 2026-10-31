@@ -1,4 +1,10 @@
 import { logger } from './logger.js';
+import { eventBus } from '../core/events.js';
+import { EVENTS } from '../core/events-registry.js';
+import { detectImageFormat } from './helpers.js';
+import { isAndroid } from './platform.js';
+import { downloadBlob } from './download.js';
+import { findTrackedBlob } from './object-urls.js';
 
 /**
  * 媒体工具函数
@@ -196,100 +202,129 @@ function base64ToBlob(base64Data, mimeType) {
     return new Blob([bytes], { type: mimeType || 'application/octet-stream' });
 }
 
-/**
- * 触发浏览器下载
- * @param {Blob} blob - 文件 Blob
- * @param {string} filename - 文件名
- */
-function triggerBlobDownload(blob, filename) {
-    const blobUrl = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = blobUrl;
-    link.download = filename || `download-${Date.now()}`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(blobUrl);
+// 覆盖 PNG / JPEG / GIF / WebP 的文件头魔数
+const IMAGE_SIGNATURE_BYTES = 16;
+
+function defaultMediaName(mimeType) {
+    return `media-${Date.now()}.${getExtensionFromMimeType(mimeType, 'bin')}`;
 }
 
 /**
- * 下载通用媒体（图片/视频）
- * - data URL: 本地解码后下载
- * - file URL (Electron): 通过 IPC 读取后下载
- * - 其他 URL: 直接触发浏览器下载
- *
+ * 把媒体 URL 读成 Blob；读不了的（http(s)、未登记的 blob: 等）返回 null，交给链接下载
+ * @param {string} mediaUrl
+ * @returns {Promise<{blob: Blob, defaultName: string}|null>}
+ */
+async function readMediaBlob(mediaUrl) {
+    if (isDataUrl(mediaUrl)) {
+        const mimeType = extractDataUrlMimeType(mediaUrl) || 'application/octet-stream';
+        const blob = base64ToBlob(mediaUrl.split(',')[1] || '', mimeType);
+        return { blob, defaultName: defaultMediaName(mimeType) };
+    }
+
+    if (mediaUrl.startsWith('blob:')) {
+        const blob = findTrackedBlob(mediaUrl);
+        return blob ? { blob, defaultName: defaultMediaName(blob.type) } : null;
+    }
+
+    // file:// URL：Electron 下通过主进程读取，保证下载可靠
+    if (mediaUrl.startsWith('file://') && window.electron?.ipcRenderer) {
+        const readResult = await window.electron.ipcRenderer.invoke('mcp:read-media-file', {
+            fileUrl: mediaUrl
+        });
+        if (!readResult?.success || !readResult.base64) return null;
+        const mimeType = readResult.mimeType || 'application/octet-stream';
+        return {
+            blob: base64ToBlob(readResult.base64, mimeType),
+            defaultName: readResult.fileName || defaultMediaName(mimeType)
+        };
+    }
+
+    // Capacitor 本地文件 URL（Android）
+    if (isCapacitorLocalMediaUrl(mediaUrl)) {
+        const response = await fetch(mediaUrl);
+        if (!response.ok) {
+            throw new Error(`读取本地媒体失败: ${response.status}`);
+        }
+        const blob = await response.blob();
+        return {
+            blob,
+            defaultName: `media-${Date.now()}.${getMediaExtension(mediaUrl, blob.type, 'bin')}`
+        };
+    }
+
+    return null;
+}
+
+/**
+ * 图片按文件头识别真实格式并修正扩展名：声明的 MIME 与文件名常与内容不符；识别不出的格式（如 SVG）原样保留
+ */
+async function withDetectedImageFormat(blob, filename) {
+    if (blob.type && blob.type !== 'application/octet-stream' && !isImageMimeType(blob.type)) {
+        return { blob, filename };
+    }
+    const header = new Uint8Array(await blob.slice(0, IMAGE_SIGNATURE_BYTES).arrayBuffer());
+    const detected = detectImageFormat(header, { fallback: null });
+    if (!detected) return { blob, filename };
+    return {
+        blob: blob.type === detected.mime ? blob : new Blob([blob], { type: detected.mime }),
+        filename: `${filename.replace(/\.[^.]+$/, '')}.${detected.ext}`
+    };
+}
+
+function openLinkDownload(mediaUrl, filename) {
+    const link = document.createElement('a');
+    link.href = mediaUrl;
+    if (filename) {
+        link.download = filename;
+    }
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+}
+
+/**
+ * 下载媒体（图片/视频/音频）：能读成 Blob 的来源统一走 downloadBlob（Android 写入本地目录），
+ * http(s) 等其余 URL 用新窗口链接下载
  * @param {string} mediaUrl - 媒体 URL
- * @param {string} filename - 建议文件名
+ * @param {string} [filename] - 建议文件名
+ * @returns {Promise<import('./download.js').DownloadResult|null>} 失败时为 null
  */
 export async function downloadMedia(mediaUrl, filename = '') {
     try {
         if (!mediaUrl || typeof mediaUrl !== 'string') {
             throw new Error('无效的媒体 URL');
         }
-
-        // Data URL：直接解码
-        if (isDataUrl(mediaUrl)) {
-            const mimeType = extractDataUrlMimeType(mediaUrl) || 'application/octet-stream';
-            const base64Data = mediaUrl.split(',')[1] || '';
-            const blob = base64ToBlob(base64Data, mimeType);
-
-            const finalName =
-                filename || `media-${Date.now()}.${getExtensionFromMimeType(mimeType, 'bin')}`;
-            triggerBlobDownload(blob, finalName);
-            return;
+        const source = await readMediaBlob(mediaUrl);
+        if (!source) {
+            openLinkDownload(mediaUrl, filename);
+            return { savedTo: null };
         }
-
-        // file:// URL：Electron 下通过主进程读取，保证下载可靠
-        if (mediaUrl.startsWith('file://') && window.electron?.ipcRenderer) {
-            const readResult = await window.electron.ipcRenderer.invoke('mcp:read-media-file', {
-                fileUrl: mediaUrl
+        const prepared = await withDetectedImageFormat(source.blob, filename || source.defaultName);
+        const result = await downloadBlob(prepared.blob, prepared.filename);
+        if (result.savedTo) {
+            eventBus.emit(EVENTS.UI_NOTIFICATION, {
+                message: `已保存到 ${result.savedTo}`,
+                type: 'success'
             });
-
-            if (readResult?.success && readResult.base64) {
-                const mimeType = readResult.mimeType || 'application/octet-stream';
-                const blob = base64ToBlob(readResult.base64, mimeType);
-                const finalName =
-                    filename ||
-                    readResult.fileName ||
-                    `media-${Date.now()}.${getExtensionFromMimeType(mimeType, 'bin')}`;
-                triggerBlobDownload(blob, finalName);
-                return;
-            }
         }
-
-        // Capacitor 本地文件 URL（Android）：先 fetch 成 Blob 再下载
-        if (isCapacitorLocalMediaUrl(mediaUrl)) {
-            const response = await fetch(mediaUrl);
-            if (!response.ok) {
-                throw new Error(`读取本地媒体失败: ${response.status}`);
-            }
-
-            const blob = await response.blob();
-            const inferredMimeType = blob.type || 'application/octet-stream';
-            const finalName =
-                filename ||
-                `media-${Date.now()}.${getMediaExtension(mediaUrl, inferredMimeType, 'bin')}`;
-            triggerBlobDownload(blob, finalName);
-            return;
-        }
-
-        // HTTP/HTTPS/blob/file（非 Electron）等：回退到链接下载
-        const link = document.createElement('a');
-        link.href = mediaUrl;
-        if (filename) {
-            link.download = filename;
-        }
-        link.target = '_blank';
-        link.rel = 'noopener noreferrer';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+        return result;
     } catch (error) {
         logger.error('[Media] 下载失败:', error);
-        try {
-            window.open(mediaUrl, '_blank');
-        } catch {
-            // ignore
+        // Android WebView 打不开 data: / blob: 新窗口，只能如实提示
+        if (isAndroid()) {
+            eventBus.emit(EVENTS.UI_NOTIFICATION, {
+                message: `下载失败：${error?.message || error}`,
+                type: 'error'
+            });
+        } else {
+            try {
+                window.open(mediaUrl, '_blank');
+            } catch {
+                // 弹窗被拦截时没有更多退路，错误已记录
+            }
         }
+        return null;
     }
 }

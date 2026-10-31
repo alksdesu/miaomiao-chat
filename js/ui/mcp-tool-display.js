@@ -22,6 +22,7 @@ import {
     getAvailableTemplates
 } from '../tools/mcp/config-converter.js';
 import { renderServerList } from './mcp-server-list.js';
+import { downloadJSON, describeSavedLocation } from '../utils/download.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -30,21 +31,12 @@ import { logger } from '../utils/logger.js';
 export async function exportMCPConfig() {
     try {
         const standardConfig = internalToStandard(state.mcpServers || []);
-        const jsonString = JSON.stringify(standardConfig, null, 2);
-        const blob = new Blob([jsonString], { type: 'application/json' });
-
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
         const filename = `mcp-config-${timestamp}.json`;
-
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
-        link.download = filename;
-        link.click();
-
-        setTimeout(() => URL.revokeObjectURL(link.href), 100);
+        const result = await downloadJSON(standardConfig, filename);
 
         // showNotification 用 textContent 渲染，禁止拼 getIcon HTML（SVG 会裸显成源码文字）
-        showNotification(`配置已导出: ${filename}`, 'success');
+        showNotification(describeSavedLocation(`配置已导出: ${filename}`, result), 'success');
     } catch (error) {
         logger.error('[MCP Settings] 导出配置失败:', error);
         showNotification(`导出配置失败: ${error.message}`, 'error');

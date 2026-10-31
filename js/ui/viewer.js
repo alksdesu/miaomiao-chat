@@ -5,11 +5,9 @@
 
 import { eventBus } from '../core/events.js';
 import { elements } from '../core/state.js';
-import { downloadImage } from '../utils/images.js';
-import { downloadMedia } from '../utils/media.js';
+import { downloadMedia, getMediaExtension } from '../utils/media.js';
 import { bindTopmostEscape } from '../utils/modal-stack.js';
 import { activateModalIsolation } from '../utils/focus-trap.js';
-import { getMediaExtension } from '../utils/media.js';
 import { logger } from '../utils/logger.js';
 
 let viewerIsolation = null;
@@ -72,16 +70,11 @@ function handleMediaAreaClick(e) {
 
     if (action === 'download-media') {
         // 下载按钮的祖先链上有 .image-wrapper（图片）/ .video-wrapper / .audio-wrapper
-        // 当前 download-media 统一走 downloadMedia，仅图片走 downloadImage（保持原 inline 行为）
         e.stopPropagation();
         const mediaKind = target.dataset.mediaKind || 'image';
         const ext = target.dataset.ext || getMediaExtension(url, '', 'png');
         const filename = target.dataset.filename || `${mediaKind}-${Date.now()}.${ext}`;
-        if (mediaKind === 'image') {
-            downloadImage(url, filename);
-        } else {
-            downloadMedia(url, filename);
-        }
+        downloadMedia(url, filename);
     }
 }
 

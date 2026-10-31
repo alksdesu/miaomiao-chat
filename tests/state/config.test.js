@@ -99,7 +99,6 @@ import {
     buildConfigObject,
     getDefaultCapabilities,
     applyConfigToState,
-    generateExportFilename,
     loadConfig
 } from '../../js/state/config.js';
 
@@ -645,26 +644,6 @@ describe('applyConfigToState', () => {
         });
         expect(state.geminiSystemPartsEnabled).toBe(true);
         expect(state.geminiSystemParts).toHaveLength(1);
-    });
-});
-
-// ========== generateExportFilename ==========
-
-describe('generateExportFilename', () => {
-    it('包含类型名', () => {
-        expect(generateExportFilename('config')).toContain('config');
-    });
-
-    it('包含 webchat 前缀', () => {
-        expect(generateExportFilename('sessions')).toMatch(/^webchat-/);
-    });
-
-    it('包含日期', () => {
-        expect(generateExportFilename('config')).toMatch(/\d{4}-\d{2}-\d{2}/);
-    });
-
-    it('以 .json 结尾', () => {
-        expect(generateExportFilename('config')).toMatch(/\.json$/);
     });
 });
 

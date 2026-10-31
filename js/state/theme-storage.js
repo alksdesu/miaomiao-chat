@@ -4,7 +4,7 @@
  */
 
 import { getDB, initDB, withDBLock } from './storage.js';
-import { downloadJSON } from './config.js';
+import { downloadJSON } from '../utils/download.js';
 import { generateId } from '../utils/helpers.js';
 import { THEME_PROPERTIES, BUILTIN_THEMES, sanitizeCustomCSS } from '../ui/theme-engine.js';
 import { logger } from '../utils/logger.js';
@@ -138,8 +138,11 @@ export async function listThemes() {
 
 /* ===== 导入导出 ===== */
 
+/**
+ * @returns {Promise<import('../utils/download.js').DownloadResult>}
+ */
 export function exportThemeAsJSON(themeData) {
-    downloadJSON(themeData, `${themeData.name || 'theme'}.json`);
+    return downloadJSON(themeData, `${themeData.name || 'theme'}.json`);
 }
 
 export function importThemeFromFile() {

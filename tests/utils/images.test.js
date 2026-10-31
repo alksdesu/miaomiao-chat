@@ -27,7 +27,7 @@ vi.mock('../../js/messages/schema.js', () => ({
     MediaKind: { IMAGE: 'image', VIDEO: 'video', AUDIO: 'audio' }
 }));
 
-import { isImageSizeError, downloadImage } from '../../js/utils/images.js';
+import { isImageSizeError } from '../../js/utils/images.js';
 
 describe('images', () => {
     // ========== isImageSizeError ==========
@@ -94,52 +94,6 @@ describe('images', () => {
 
         it('普通对象 JSON 序列化后检测', () => {
             expect(isImageSizeError({ code: 413 })).toBe(true);
-        });
-    });
-
-    // ========== downloadImage ==========
-    describe('downloadImage', () => {
-        it('处理 base64 data URL', () => {
-            // 创建一个最小的白色 1x1 PNG
-            const dataUrl =
-                'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMBAQApDs4AAAAASUVORK5CYII=';
-
-            const createObjectURLMock = vi.fn(() => 'blob:mock');
-            const revokeObjectURLMock = vi.fn();
-            const clickMock = vi.fn();
-
-            globalThis.URL.createObjectURL = createObjectURLMock;
-            globalThis.URL.revokeObjectURL = revokeObjectURLMock;
-
-            // mock createElement 只对 'a' 标签生效
-            const origCreateElement = document.createElement.bind(document);
-            vi.spyOn(document, 'createElement').mockImplementation((tag) => {
-                const el = origCreateElement(tag);
-                if (tag === 'a') {
-                    el.click = clickMock;
-                }
-                return el;
-            });
-
-            downloadImage(dataUrl, 'test.png');
-
-            expect(createObjectURLMock).toHaveBeenCalled();
-            expect(clickMock).toHaveBeenCalled();
-            expect(revokeObjectURLMock).toHaveBeenCalled();
-
-            document.createElement.mockRestore?.();
-        });
-
-        it('下载失败时 fallback 到 window.open', () => {
-            const openMock = vi.fn();
-            const origOpen = window.open;
-            window.open = openMock;
-
-            // 一个无效的 data url（base64 解码会失败）
-            downloadImage('data:image/png;base64,!!!invalid!!!', 'test.png');
-
-            expect(openMock).toHaveBeenCalledWith('data:image/png;base64,!!!invalid!!!', '_blank');
-            window.open = origOpen;
         });
     });
 });

@@ -1,5 +1,6 @@
 import { getDB, hasMediaBlobStore, STORES, withDBLock } from './indexeddb.js';
 import { logger } from '../utils/logger.js';
+import { createTrackedObjectUrl, revokeTrackedObjectUrl } from '../utils/object-urls.js';
 
 const objectUrlCache = new Map();
 
@@ -127,7 +128,7 @@ export async function acquireMediaObjectUrl(mediaId) {
     }
     const record = await loadMediaBlob(mediaId);
     if (!record?.blob) return null;
-    const url = URL.createObjectURL(record.blob);
+    const url = createTrackedObjectUrl(record.blob);
     objectUrlCache.set(mediaId, { url, references: 1 });
     return url;
 }
@@ -137,13 +138,13 @@ export function releaseMediaObjectUrl(mediaId) {
     if (!cached) return false;
     cached.references -= 1;
     if (cached.references > 0) return false;
-    URL.revokeObjectURL(cached.url);
+    revokeTrackedObjectUrl(cached.url);
     objectUrlCache.delete(mediaId);
     return true;
 }
 
 export function releaseAllMediaObjectUrls() {
-    for (const cached of objectUrlCache.values()) URL.revokeObjectURL(cached.url);
+    for (const cached of objectUrlCache.values()) revokeTrackedObjectUrl(cached.url);
     objectUrlCache.clear();
 }
 

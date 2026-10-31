@@ -37,6 +37,7 @@ import { normalizeSessionRecord } from '../messages/compat/gateway.js';
 import { CompatibilityStatus } from '../messages/compat/result.js';
 import { logger } from '../utils/logger.js';
 import { IMPORT_FILE_MAX_SIZE } from '../utils/constants.js';
+import { downloadJSON, describeSavedLocation } from '../utils/download.js';
 import { resolveMessagesMediaForApi } from './media-blob-store.js';
 
 function normalizeImportedMessages(session, messages, geminiContents = [], claudeContents = []) {
@@ -139,26 +140,9 @@ function backfillToolCallIdMap(messages) {
  * @param {string} type - 导出类型
  * @returns {string} 文件名
  */
-function generateExportFilename(type) {
+export function generateExportFilename(type) {
     const date = new Date().toISOString().slice(0, 10);
     return `webchat-${type}-${date}.json`;
-}
-
-/**
- * 下载 JSON 文件
- * @param {Object} data - 要导出的数据
- * @param {string} filename - 文件名
- */
-function downloadJSON(data, filename) {
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
 }
 
 /**
@@ -289,8 +273,8 @@ export async function exportConfig() {
             }
         };
 
-        downloadJSON(exportData, generateExportFilename('config'));
-        showNotification('配置已导出', 'success');
+        const result = await downloadJSON(exportData, generateExportFilename('config'));
+        showNotification(describeSavedLocation('配置已导出', result), 'success');
     } catch (error) {
         logger.error('导出配置失败:', error);
         showNotification('导出配置失败: ' + error.message, 'error');
@@ -325,19 +309,28 @@ export async function exportSessions() {
             folders
         };
 
-        downloadJSON(exportData, generateExportFilename('sessions'));
+        const result = await downloadJSON(exportData, generateExportFilename('sessions'));
         const strippedNote =
             exportStats.sensitiveStripped > 0
                 ? `（已移除 ${exportStats.sensitiveStripped} 个服务端签名字段以保护隐私）`
                 : '';
         if (loadStats.loadFailed > 0) {
             showNotification(
-                `已导出 ${cleanedSessions.length} 个会话${strippedNote}，但 ${loadStats.loadFailed} 个会话消息读取失败未包含在备份中`,
+                describeSavedLocation(
+                    `已导出 ${cleanedSessions.length} 个会话${strippedNote}，但 ${loadStats.loadFailed} 个会话消息读取失败未包含在备份中`,
+                    result
+                ),
                 'warning',
                 10000
             );
         } else {
-            showNotification(`已导出 ${cleanedSessions.length} 个会话${strippedNote}`, 'success');
+            showNotification(
+                describeSavedLocation(
+                    `已导出 ${cleanedSessions.length} 个会话${strippedNote}`,
+                    result
+                ),
+                'success'
+            );
         }
     } catch (error) {
         logger.error('导出会话失败:', error);
@@ -408,20 +401,26 @@ export async function exportAllData() {
             folders
         };
 
-        downloadJSON(exportData, generateExportFilename('backup'));
+        const result = await downloadJSON(exportData, generateExportFilename('backup'));
         const strippedNote =
             exportStats.sensitiveStripped > 0
                 ? `（已移除 ${exportStats.sensitiveStripped} 个服务端签名字段以保护隐私）`
                 : '';
         if (loadStats.loadFailed > 0) {
             showNotification(
-                `已导出完整备份（${cleanedSessions.length} 个会话）${strippedNote}，但 ${loadStats.loadFailed} 个会话消息读取失败未包含在备份中`,
+                describeSavedLocation(
+                    `已导出完整备份（${cleanedSessions.length} 个会话）${strippedNote}，但 ${loadStats.loadFailed} 个会话消息读取失败未包含在备份中`,
+                    result
+                ),
                 'warning',
                 10000
             );
         } else {
             showNotification(
-                `已导出完整备份（${cleanedSessions.length} 个会话）${strippedNote}`,
+                describeSavedLocation(
+                    `已导出完整备份（${cleanedSessions.length} 个会话）${strippedNote}`,
+                    result
+                ),
                 'success'
             );
         }

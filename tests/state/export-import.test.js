@@ -60,7 +60,8 @@ vi.mock('../../js/api/format-converter.js', () => ({
     ensureIdMap: vi.fn(() => false)
 }));
 
-vi.mock('../../js/utils/file-helpers.js', () => ({
+vi.mock('../../js/utils/file-helpers.js', async (importOriginal) => ({
+    ...(await importOriginal()),
     categorizeFile: vi.fn((mime) => {
         if (mime.startsWith('image/')) return 'image';
         if (mime.startsWith('video/')) return 'video';
@@ -87,7 +88,8 @@ import {
     initExportImport,
     exportConfig,
     exportSessions,
-    exportAllData
+    exportAllData,
+    generateExportFilename
 } from '../../js/state/export-import.js';
 import { state } from '../../js/core/state.js';
 import { showNotification } from '../../js/ui/notifications.js';
@@ -209,11 +211,53 @@ describe('export-import', () => {
         });
     });
 
+    // ========== generateExportFilename ==========
+    describe('generateExportFilename', () => {
+        it('包含类型名', () => {
+            expect(generateExportFilename('config')).toContain('config');
+        });
+
+        it('包含 webchat 前缀', () => {
+            expect(generateExportFilename('sessions')).toMatch(/^webchat-/);
+        });
+
+        it('包含日期', () => {
+            expect(generateExportFilename('config')).toMatch(/\d{4}-\d{2}-\d{2}/);
+        });
+
+        it('以 .json 结尾', () => {
+            expect(generateExportFilename('config')).toMatch(/\.json$/);
+        });
+    });
+
     // ========== exportConfig ==========
     describe('exportConfig', () => {
         beforeEach(() => {
             global.URL.createObjectURL = vi.fn(() => 'blob:test');
             global.URL.revokeObjectURL = vi.fn();
+        });
+
+        it('按导出类型命名下载文件', async () => {
+            showConfirmDialog.mockResolvedValue(true);
+            state.storageMode = 'localStorage';
+            localStorage.setItem('geminiChatConfig', '{"apiKey":"test"}');
+            const clickSpy = vi
+                .spyOn(HTMLAnchorElement.prototype, 'click')
+                .mockImplementation(() => {});
+            vi.useFakeTimers();
+
+            try {
+                await exportConfig();
+                expect(clickSpy).toHaveBeenCalledTimes(1);
+                expect(clickSpy.mock.contexts[0].download).toMatch(
+                    /^webchat-config-\d{4}-\d{2}-\d{2}\.json$/
+                );
+                vi.runAllTimers();
+                expect(global.URL.revokeObjectURL).toHaveBeenCalledWith('blob:test');
+            } finally {
+                vi.useRealTimers();
+                clickSpy.mockRestore();
+            }
         });
 
         it('用户取消不导出', async () => {

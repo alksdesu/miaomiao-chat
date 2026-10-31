@@ -20,10 +20,6 @@ vi.mock('../../js/core/state.js', () => ({
     }
 }));
 
-vi.mock('../../js/utils/images.js', () => ({
-    downloadImage: vi.fn()
-}));
-
 vi.mock('../../js/utils/media.js', () => ({
     downloadMedia: vi.fn(),
     getMediaExtension: vi.fn(() => 'png')
@@ -141,7 +137,6 @@ describe('viewer', () => {
             initImageViewer();
             expect(window.openImageViewer).toBeUndefined();
             expect(window.closeImageViewer).toBeUndefined();
-            expect(window.downloadImage).toBeUndefined();
             expect(window.downloadMedia).toBeUndefined();
         });
     });

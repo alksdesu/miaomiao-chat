@@ -11,7 +11,7 @@ vi.mock('../../js/state/storage.js', () => ({
     withDBLock: vi.fn(async (name, fn) => fn())
 }));
 
-vi.mock('../../js/state/config.js', () => ({
+vi.mock('../../js/utils/download.js', () => ({
     downloadJSON: vi.fn()
 }));
 
