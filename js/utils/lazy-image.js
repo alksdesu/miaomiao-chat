@@ -22,8 +22,6 @@ export class LazyImageManager {
         this.loadingImages = new Set(); // 正在加载的图片
         this.pendingLoaders = new WeakMap();
         this.unloadTimers = new Map();
-        this.pinnedImages = new WeakSet();
-        this.ownedObjectUrls = new Set();
         this.imageStats = {
             total: 0,
             loaded: 0,
@@ -181,7 +179,6 @@ export class LazyImageManager {
         this.imageStats = { total: 0, loaded: 0, failed: 0 };
         this.observedImages = new WeakSet();
         this.loadedImages = new WeakSet();
-        this.revokeAllObjectUrls();
         longChatPerformance.setGauge('observedImages', 0);
         longChatPerformance.setGauge('loadedImages', 0);
         longChatPerformance.setGauge('failedImages', 0);
@@ -231,20 +228,8 @@ export class LazyImageManager {
         return true;
     }
 
-    pinMedia(img) {
-        if (!img) return false;
-        this.pinnedImages.add(img);
-        return true;
-    }
-
-    unpinMedia(img) {
-        if (!img) return false;
-        return this.pinnedImages.delete(img);
-    }
-
     isProtected(img) {
         if (!img) return true;
-        if (this.pinnedImages.has(img)) return true;
         if (typeof document !== 'undefined' && document.activeElement === img) return true;
         return Boolean(img.closest('.image-viewer, .viewer-modal, .editing'));
     }
@@ -282,22 +267,6 @@ export class LazyImageManager {
         return unloaded;
     }
 
-    trackObjectUrl(url) {
-        if (typeof url === 'string' && url.startsWith('blob:')) this.ownedObjectUrls.add(url);
-        return url;
-    }
-
-    revokeObjectUrl(url) {
-        if (!this.ownedObjectUrls.delete(url)) return false;
-        URL.revokeObjectURL(url);
-        return true;
-    }
-
-    revokeAllObjectUrls() {
-        for (const url of this.ownedObjectUrls) URL.revokeObjectURL(url);
-        this.ownedObjectUrls.clear();
-    }
-
     /**
      * 打印统计信息
      */
@@ -308,32 +277,7 @@ export class LazyImageManager {
             `[LazyImage] 统计 - 总数: ${total}, 已加载: ${loaded} (${percentage}%), 失败: ${failed}`
         );
     }
-
-    /**
-     * 预加载指定范围内的图片
-     * @param {number} startIndex - 起始索引
-     * @param {number} endIndex - 结束索引
-     */
-    preloadRange(startIndex, endIndex) {
-        const images = document.querySelectorAll(
-            `[data-message-index] img.lazy-image:not(.loaded)`
-        );
-        images.forEach((img) => {
-            const messageEl = img.closest('[data-message-index]');
-            if (messageEl) {
-                const index = parseInt(messageEl.dataset.messageIndex);
-                if (index >= startIndex && index <= endIndex) {
-                    this.loadImage(img);
-                }
-            }
-        });
-    }
 }
 
 // 创建全局实例
 export const lazyImageManager = new LazyImageManager();
-
-// 导出给虚拟滚动使用的预加载函数
-export function preloadImagesInRange(start, end) {
-    lazyImageManager.preloadRange(start, end);
-}

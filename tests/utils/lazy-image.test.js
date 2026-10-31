@@ -12,7 +12,7 @@ vi.mock('../../js/core/events.js', () => ({
     eventBus: { on: vi.fn(), off: vi.fn(), emit: vi.fn() }
 }));
 
-import { LazyImageManager, preloadImagesInRange } from '../../js/utils/lazy-image.js';
+import { LazyImageManager } from '../../js/utils/lazy-image.js';
 
 describe('LazyImageManager', () => {
     let manager;
@@ -208,27 +208,5 @@ describe('LazyImageManager', () => {
             manager.imageStats = { total: 0, loaded: 0, failed: 0 };
             expect(() => manager.logStats()).not.toThrow();
         });
-    });
-
-    describe('preloadRange', () => {
-        it('预加载指定范围内的图片', () => {
-            document.body.innerHTML = `
-                <div data-message-index="0"><img class="lazy-image" data-src="img0.png" /></div>
-                <div data-message-index="1"><img class="lazy-image" data-src="img1.png" /></div>
-                <div data-message-index="5"><img class="lazy-image" data-src="img5.png" /></div>
-            `;
-            // 不抛错即可
-            expect(() => manager.preloadRange(0, 2)).not.toThrow();
-        });
-
-        it('无匹配图片不抛错', () => {
-            expect(() => manager.preloadRange(100, 200)).not.toThrow();
-        });
-    });
-});
-
-describe('preloadImagesInRange', () => {
-    it('是一个函数', () => {
-        expect(typeof preloadImagesInRange).toBe('function');
     });
 });

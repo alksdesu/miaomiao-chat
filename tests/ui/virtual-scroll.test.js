@@ -27,7 +27,7 @@ vi.mock('../../js/utils/logger.js', () => ({
 }));
 
 vi.mock('../../js/utils/lazy-image.js', () => ({
-    preloadImagesInRange: vi.fn()
+    lazyImageManager: { unloadOutsideRange: vi.fn(() => 0) }
 }));
 
 import {
