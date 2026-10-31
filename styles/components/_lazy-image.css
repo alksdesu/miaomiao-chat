@@ -34,6 +34,20 @@
     border: 2px dashed var(--color-error);
 }
 
+/* 单图外层是 1×1 网格，提示与图片叠放在同一格；用户附件直接排在多图网格里，只显示错误框 */
+.image-wrapper:has(> .lazy-image.error)::after {
+    content: '图片加载失败';
+    grid-row-start: 1;
+    grid-column-start: 1;
+    align-self: center;
+    justify-self: center;
+    /* 虚拟滚动下图片带 will-change 自成层，需显式抬高才不被盖住 */
+    z-index: var(--z-base);
+    color: var(--color-error);
+    font-size: var(--fs-md);
+    pointer-events: none;
+}
+
 /* 图片加载指示器容器 */
 .image-loader {
     position: absolute;

@@ -16,7 +16,8 @@ vi.mock('../../js/messages/render-thinking.js', () => ({
     restoreExpandedThinkingState: vi.fn()
 }));
 
-import { renderCanonicalParts } from '../../js/messages/renderer.js';
+import { createMessageElement, renderCanonicalParts } from '../../js/messages/renderer.js';
+import { LAZY_IMAGE_PLACEHOLDER } from '../../js/utils/lazy-image.js';
 import {
     MediaKind,
     filePart,
@@ -54,5 +55,40 @@ describe('canonical message rendering', () => {
         expect(html).toContain('class="lazy-image"');
         expect(html).toContain('data-src="https://example.com/image.png"');
         expect(html).toContain('<audio');
+    });
+
+    it('懒加载占位图完整写进 src 属性，后面的属性不被截断', () => {
+        const html = renderCanonicalParts(
+            [mediaPart(MediaKind.IMAGE, 'https://example.com/image.png', 'image/png')],
+            'assistant',
+            { lazyImages: true }
+        );
+        const img = new window.DOMParser().parseFromString(html, 'text/html').querySelector('img');
+
+        expect(img.getAttribute('src')).toBe(LAZY_IMAGE_PLACEHOLDER);
+        expect(img.dataset.src).toBe('https://example.com/image.png');
+        expect(img.getAttributeNames().sort()).toEqual([
+            'alt',
+            'class',
+            'data-src',
+            'decoding',
+            'loading',
+            'src',
+            'style'
+        ]);
+    });
+
+    it('用户附件图片使用同一份懒加载占位图', () => {
+        vi.stubGlobal('requestIdleCallback', vi.fn());
+        const dataUrl = 'data:image/png;base64,iVBORw0KGgo=';
+
+        const messageEl = createMessageElement('user', 'hi', [
+            { type: 'image/png', name: 'photo.png', data: dataUrl }
+        ]);
+        vi.unstubAllGlobals();
+
+        const img = messageEl.querySelector('.message-images img.lazy-image');
+        expect(img.getAttribute('src')).toBe(LAZY_IMAGE_PLACEHOLDER);
+        expect(img.dataset.src).toBe(dataUrl);
     });
 });

@@ -7,8 +7,9 @@ import { logger } from './logger.js';
 import { eventBus } from '../core/events.js';
 import { longChatPerformance } from './long-chat-performance.js';
 
-const IMAGE_PLACEHOLDER =
-    'data:image/svg+xml,%3Csvg width="400" height="300" xmlns="http://www.w3.org/2000/svg"%3E%3Crect width="100%25" height="100%25" fill="%23f0f0f0"/%3E%3C/svg%3E';
+// 透明且保留 4:3 固有尺寸：底色由样式按主题绘制；引号全部转义，可直接拼进 HTML 属性
+export const LAZY_IMAGE_PLACEHOLDER =
+    'data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%22400%22%20height=%22300%22/%3E';
 const OFFSCREEN_UNLOAD_DELAY_MS = 1500;
 
 /**
@@ -143,9 +144,8 @@ export class LazyImageManager {
             img.classList.remove('loading');
             img.classList.add('error');
 
-            // 显示错误占位图
-            img.src =
-                'data:image/svg+xml,%3Csvg width="400" height="300" xmlns="http://www.w3.org/2000/svg"%3E%3Crect width="100%25" height="100%25" fill="%23fee" stroke="%23c00" stroke-width="2"/%3E%3Ctext x="50%25" y="50%25" text-anchor="middle" dominant-baseline="middle" fill="%23c00"%3E图片加载失败%3C/text%3E%3C/svg%3E';
+            // 错误底色、边框与提示文字由样式按主题绘制
+            img.src = LAZY_IMAGE_PLACEHOLDER;
 
             // 移除加载指示器
             const loader = img.parentElement?.querySelector('.image-loader');
@@ -245,8 +245,8 @@ export class LazyImageManager {
         this.cancelPendingLoad(img);
 
         const source = img.dataset.src || img.currentSrc || img.src;
-        if (source && source !== IMAGE_PLACEHOLDER) img.dataset.src = source;
-        img.src = IMAGE_PLACEHOLDER;
+        if (source && source !== LAZY_IMAGE_PLACEHOLDER) img.dataset.src = source;
+        img.src = LAZY_IMAGE_PLACEHOLDER;
         img.classList.remove('loaded', 'loading', 'error');
         this.loadedImages.delete(img);
         img.parentElement?.querySelector('.image-loader')?.remove();

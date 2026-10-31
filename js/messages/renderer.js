@@ -13,7 +13,7 @@ import { getCurrentModelCapabilities } from '../api/current.js';
 import { renderCapabilityBadgesText } from '../utils/capability-badges.js';
 import { renderHumanizedError } from '../utils/errors.js';
 import { categorizeFile, truncateFileName } from '../utils/file-helpers.js';
-import { lazyImageManager } from '../utils/lazy-image.js';
+import { lazyImageManager, LAZY_IMAGE_PLACEHOLDER } from '../utils/lazy-image.js';
 import {
     PartType,
     MediaKind,
@@ -148,8 +148,7 @@ export function createMessageElement(
 
             if (category === 'image') {
                 const imgEl = document.createElement('img');
-                imgEl.src =
-                    'data:image/svg+xml,%3Csvg width="400" height="300" xmlns="http://www.w3.org/2000/svg"%3E%3Crect width="100%25" height="100%25" fill="%23f5f5f5"/%3E%3C/svg%3E';
+                imgEl.src = LAZY_IMAGE_PLACEHOLDER;
                 imgEl.dataset.src = file.compressed || file.data;
                 imgEl.alt = file.name;
                 imgEl.title = '点击查看大图';
@@ -404,9 +403,6 @@ function syncCurrentAssistantMessageReference() {
 }
 
 // 文件附件卡片 HTML（pdf / 文本类），与 createMessageElement 的附件渲染保持一致
-const LAZY_IMAGE_PLACEHOLDER =
-    'data:image/svg+xml,%3Csvg width="400" height="300" xmlns="http://www.w3.org/2000/svg"%3E%3Crect width="100%25" height="100%25" fill="%23f5f5f5"/%3E%3C/svg%3E';
-
 function renderFilePartCard(name, mime) {
     const isPdf = mime === 'application/pdf';
     const isMarkdown = mime === 'text/markdown' || (name || '').endsWith('.md');

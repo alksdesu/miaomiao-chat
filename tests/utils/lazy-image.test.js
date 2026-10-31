@@ -12,7 +12,43 @@ vi.mock('../../js/core/events.js', () => ({
     eventBus: { on: vi.fn(), off: vi.fn(), emit: vi.fn() }
 }));
 
-import { LazyImageManager } from '../../js/utils/lazy-image.js';
+import { LazyImageManager, LAZY_IMAGE_PLACEHOLDER } from '../../js/utils/lazy-image.js';
+
+class FailingImage {
+    set src(_value) {
+        this.onerror?.();
+    }
+}
+
+describe('LAZY_IMAGE_PLACEHOLDER', () => {
+    it('透明且保留 400×300 固有尺寸，底色交给样式', () => {
+        const svgText = decodeURIComponent(
+            LAZY_IMAGE_PLACEHOLDER.slice('data:image/svg+xml,'.length)
+        );
+        const svg = new window.DOMParser().parseFromString(
+            svgText,
+            'image/svg+xml'
+        ).documentElement;
+
+        expect(svg.tagName).toBe('svg');
+        expect(svg.getAttribute('width')).toBe('400');
+        expect(svg.getAttribute('height')).toBe('300');
+        expect(svg.children).toHaveLength(0);
+    });
+
+    it('放进双引号或单引号属性都能原样解析', () => {
+        for (const quote of ['"', "'"]) {
+            const doc = new window.DOMParser().parseFromString(
+                `<img src=${quote}${LAZY_IMAGE_PLACEHOLDER}${quote} alt="x">`,
+                'text/html'
+            );
+            const img = doc.querySelector('img');
+
+            expect(img.getAttribute('src')).toBe(LAZY_IMAGE_PLACEHOLDER);
+            expect(img.getAttributeNames()).toEqual(['src', 'alt']);
+        }
+    });
+});
 
 describe('LazyImageManager', () => {
     let manager;
@@ -117,6 +153,56 @@ describe('LazyImageManager', () => {
             manager.loadImage(img);
             expect(img.classList.contains('loading')).toBe(true);
         });
+    });
+
+    describe('加载失败', () => {
+        const MISSING_URL = 'https://example.com/missing.png';
+        let wrapper;
+        let img;
+
+        beforeEach(() => {
+            vi.stubGlobal('Image', FailingImage);
+            wrapper = document.createElement('div');
+            img = document.createElement('img');
+            img.src = LAZY_IMAGE_PLACEHOLDER;
+            img.dataset.src = MISSING_URL;
+            wrapper.appendChild(img);
+            document.body.appendChild(wrapper);
+            manager.observe(img);
+        });
+
+        afterEach(() => {
+            vi.unstubAllGlobals();
+        });
+
+        it('保持透明占位并标记 error，错误态交给样式绘制', () => {
+            manager.loadImage(img);
+
+            expect(img.getAttribute('src')).toBe(LAZY_IMAGE_PLACEHOLDER);
+            expect(img.classList.contains('error')).toBe(true);
+            expect(img.classList.contains('loading')).toBe(false);
+            expect(wrapper.querySelector('.image-loader')).toBeNull();
+            expect(manager.observer.unobserve).toHaveBeenCalledWith(img);
+        });
+
+        it('卸载出错的图片时保留原地址并清掉错误态', () => {
+            manager.loadImage(img);
+            manager.unloadImage(img, { reobserve: false });
+
+            expect(img.dataset.src).toBe(MISSING_URL);
+            expect(img.classList.contains('error')).toBe(false);
+            expect(img.getAttribute('src')).toBe(LAZY_IMAGE_PLACEHOLDER);
+        });
+    });
+
+    it('从未加载过的图片卸载时不会把占位图当成原地址', () => {
+        const img = document.createElement('img');
+        img.src = LAZY_IMAGE_PLACEHOLDER;
+        document.body.appendChild(img);
+
+        manager.unloadImage(img, { reobserve: false });
+
+        expect(img.dataset.src).toBeUndefined();
     });
 
     describe('cleanup', () => {
