@@ -421,3 +421,49 @@ describe('updateMessageContent 结束原因', () => {
         expect(state.messages[0].meta).toBe(meta);
     });
 });
+
+// ============================================================
+// 重新生成的守卫
+// ============================================================
+
+describe('handleRetry 守卫', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+    });
+
+    it('回复进行中时给出提示，不移除任何消息', async () => {
+        const { state } = await import('../../js/core/state.js');
+        const { eventBus } = await import('../../js/core/events.js');
+        const { popLastAssistantMessage, removeMessagesAfter } =
+            await import('../../js/core/state-mutations.js');
+        const { handleRetry } = await import('../../js/messages/editor.js');
+        state.isLoading = true;
+        state.messages = [{ id: 'u1', role: 'user', parts: [] }];
+
+        await handleRetry();
+
+        expect(eventBus.emit).toHaveBeenCalledWith(
+            'ui:notification',
+            expect.objectContaining({ type: 'warning' })
+        );
+        expect(eventBus.emit).not.toHaveBeenCalledWith('api:resend-requested');
+        expect(popLastAssistantMessage).not.toHaveBeenCalled();
+        expect(removeMessagesAfter).not.toHaveBeenCalled();
+        state.isLoading = false;
+    });
+
+    it('请求已结束时照常重新生成', async () => {
+        const { state } = await import('../../js/core/state.js');
+        const { eventBus } = await import('../../js/core/events.js');
+        const { handleRetry } = await import('../../js/messages/editor.js');
+        state.isLoading = false;
+        state.messages = [
+            { id: 'u1', role: 'user', parts: [] },
+            { id: 'a1', role: 'assistant', parts: [] }
+        ];
+
+        await handleRetry();
+
+        expect(eventBus.emit).toHaveBeenCalledWith('api:resend-requested');
+    });
+});

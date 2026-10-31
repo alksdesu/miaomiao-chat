@@ -224,6 +224,52 @@ describe('isBusy', () => {
     });
 });
 
+// ========== isRequestActive / settle ==========
+
+describe('结束过渡态', () => {
+    function startRequest() {
+        sm.transition(RequestState.SENDING, {
+            abortController: new AbortController(),
+            sessionId: 's1',
+            requestId: 'r1'
+        });
+    }
+
+    it('进行中的请求算活跃，结束过渡态与 IDLE 不算', () => {
+        expect(sm.isRequestActive()).toBe(false);
+        startRequest();
+        expect(sm.isRequestActive()).toBe(true);
+        sm.transition(RequestState.CANCELLED);
+        expect(sm.isBusy()).toBe(true);
+        expect(sm.isRequestActive()).toBe(false);
+    });
+
+    it('settle 把结束过渡态立即收口到 IDLE，随后可以马上发起新请求', () => {
+        startRequest();
+        sm.transition(RequestState.CANCELLED);
+
+        expect(sm.settle()).toBe(true);
+        expect(sm.getState()).toBe(RequestState.IDLE);
+        expect(
+            sm.transition(RequestState.SENDING, {
+                abortController: new AbortController(),
+                sessionId: 's1',
+                requestId: 'r2'
+            })
+        ).toBe(true);
+
+        vi.advanceTimersByTime(200);
+        expect(sm.getState()).toBe(RequestState.SENDING);
+        expect(sm.requestId).toBe('r2');
+    });
+
+    it('请求仍在进行时 settle 不改变状态', () => {
+        startRequest();
+        expect(sm.settle()).toBe(false);
+        expect(sm.getState()).toBe(RequestState.SENDING);
+    });
+});
+
 // ========== cancel ==========
 
 describe('cancel', () => {

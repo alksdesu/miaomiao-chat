@@ -19,11 +19,13 @@ import {
 } from '../messages/parts-builder.js';
 import { setCurrentMessageIndex } from '../messages/dom-sync.js';
 import { renderReplyWithSelector } from '../messages/renderer.js';
-import { renderHumanizedError } from '../utils/errors.js';
+import { renderHumanizedError, readErrorBody, buildRequestTimeoutError } from '../utils/errors.js';
+import { linkAbortSignal } from '../utils/abort.js';
 import { getSendFunction } from '../api/factory.js';
 import { executeRequest } from '../api/request-pipeline.js';
 import { BufferedSink } from './sink.js';
 import { requestTaskRegistry } from '../core/request-task-registry.js';
+import { requestStateMachine, RequestState } from '../core/request-state-machine.js';
 import { safeSetHTML } from '../utils/helpers.js';
 
 function isForegroundContext(ctx) {
@@ -60,11 +62,54 @@ function splitStreamFailure(reason) {
 }
 
 /**
+ * 并发请求各自计连接超时：响应头到达即清除，超时只中止这一路；用户取消经共享信号同时中止全部
+ */
+function sendWithConnectTimeout(sendFn, ctx) {
+    // 响应头到达后只停计时，流式读取仍要随共享信号中止
+    const linked = linkAbortSignal(ctx.abortController.signal, { timeoutMs: ctx.timeoutMs });
+    return new Promise((resolve) =>
+        resolve(sendFn(ctx.endpoint, ctx.apiKey, ctx.model, linked.signal))
+    ).finally(linked.stopTimer);
+}
+
+/**
+ * 没拿到响应的请求保留原因：Error / DOMException 展开后会丢掉 message
+ */
+function describeRequestFailure(reason, ctx) {
+    if (reason?.name === 'TimeoutError') return { error: buildRequestTimeoutError(ctx.timeoutMs) };
+    return {
+        error: {
+            type: reason?.name || 'network_error',
+            message: reason?.message || String(reason)
+        }
+    };
+}
+
+/**
+ * 用户点了停止（不是超时触发的中止）：交给 handler 走取消路径，不把取消落成错误回复
+ */
+function throwIfUserAborted(signal) {
+    if (!signal?.aborted || signal.reason?.name === 'TimeoutError') return;
+    const abortErr = new Error('Multi-stream aborted by user');
+    abortErr.name = 'AbortError';
+    throw abortErr;
+}
+
+/**
+ * 全部回复失败：错误消息已落库，任务按出错结束，状态机经 ERROR 回到空闲
+ */
+function markRepliesFailed(ctx, error) {
+    if (!ctx.task) return;
+    requestTaskRegistry.setPhase(ctx.task, RequestState.ERROR);
+    requestStateMachine.transitionFor(ctx.task, RequestState.ERROR, { error });
+}
+
+/**
  * 处理多个流式响应（并行）
  * @param {import('../api/handler-context.js').HandlerContext} ctx - sendToAPI 的不可变快照
  */
 export async function handleMultiStreamResponses(ctx) {
-    const { endpoint, apiKey, model, abortController, sessionId, adapter, requestFormat } = ctx;
+    const { abortController, sessionId, adapter, requestFormat } = ctx;
     const replyCount = ctx.replyCount || 1;
     const foreground = isForegroundContext(ctx);
     const { target } = getContextElements(ctx);
@@ -98,7 +143,7 @@ export async function handleMultiStreamResponses(ctx) {
 
     const promises = [];
     for (let i = 0; i < replyCount; i++) {
-        promises.push(boundSendFn(endpoint, apiKey, model, abortController.signal));
+        promises.push(sendWithConnectTimeout(boundSendFn, ctx));
     }
 
     // 等待所有请求返回响应对象
@@ -112,31 +157,26 @@ export async function handleMultiStreamResponses(ctx) {
         if (result.status === 'fulfilled' && result.value.ok) {
             validResponses.push({ index: i, response: result.value });
         } else if (result.status === 'rejected') {
-            errorDetails.push({ index: i + 1, type: 'network', error: result.reason });
+            errorDetails.push({
+                index: i + 1,
+                type: 'network',
+                error: describeRequestFailure(result.reason, ctx)
+            });
             logger.error(`Response ${i + 1} failed:`, result.reason);
         } else {
             const response = result.value;
-            try {
-                const errorData = await response.clone().json();
-                errorDetails.push({
-                    index: i + 1,
-                    type: 'api',
-                    status: response.status,
-                    error: errorData
-                });
-            } catch (_error) {
-                errorDetails.push({
-                    index: i + 1,
-                    type: 'http',
-                    status: response.status,
-                    error: { message: `HTTP ${response.status}` }
-                });
-            }
+            errorDetails.push({
+                index: i + 1,
+                type: 'api',
+                status: response.status,
+                error: await readErrorBody(response)
+            });
             logger.error(`Response ${i + 1} not ok:`, response.status);
         }
     }
 
     if (validResponses.length === 0) {
+        throwIfUserAborted(abortController.signal);
         const firstError = errorDetails[0];
         // 浅拷贝 firstError.error 后再挂 allErrors：直接复用引用会污染 errorDetails[0].error
         // 原对象，下游若再次读取 errorDetails 会拿到带 allErrors 的污染版本
@@ -168,7 +208,16 @@ export async function handleMultiStreamResponses(ctx) {
                 errorHtml
             }
         );
+        markRepliesFailed(ctx, errorObj);
         return;
+    }
+
+    // 连接阶段结束：与单流一致进入 STREAMING，发送锁随之解除，长时间的流式接收不会被强制中止
+    if (ctx.task) {
+        requestTaskRegistry.setPhase(ctx.task, RequestState.STREAMING);
+        requestStateMachine.transitionFor(ctx.task, RequestState.STREAMING, {
+            assistantMessageEl: ctx.assistantMessageEl
+        });
     }
 
     // 更新进度文本（仅替换文本，DOM 节点保留），首流首 token 到来后会被 updateStreamingMessage
@@ -320,6 +369,14 @@ export async function handleMultiStreamResponses(ctx) {
 
         // 添加统计信息
         if (foregroundAtCommit) appendStreamStats();
+
+        // 优先选中成功的回复，选中的仍是失败回复说明全部失败
+        if (selectedReply.isError) {
+            markRepliesFailed(ctx, {
+                code: selectedReply.errorType,
+                message: selectedReply.errorMessage
+            });
+        }
     } else {
         // 所有流都失败且没有任何内容，显示详细错误信息
         let errorObj;
@@ -354,6 +411,7 @@ export async function handleMultiStreamResponses(ctx) {
                 errorHtml
             }
         );
+        markRepliesFailed(ctx, errorObj);
     }
 }
 

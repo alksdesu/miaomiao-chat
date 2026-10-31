@@ -13,11 +13,13 @@ import { eventBus } from '../core/events.js';
 import { requestStateMachine, RequestState } from '../core/request-state-machine.js';
 import { saveAssistantMessageAsync, saveAssistantMessageToBackground } from '../messages/sync.js';
 import { setCurrentMessageIndex } from '../messages/dom-sync.js';
-import { renderHumanizedError } from '../utils/errors.js';
+import { renderHumanizedError, readErrorBody } from '../utils/errors.js';
 import { safeSetHTML } from '../utils/helpers.js';
 import { logger } from '../utils/logger.js';
 import { attemptImageCompressionRetry, resetAllImageRetryState } from './image-retry.js';
 import { requestTaskRegistry } from '../core/request-task-registry.js';
+import { resolveErrorTarget } from './placeholder-resolver.js';
+import { withSessionLabel } from './request-notices.js';
 
 /**
  * 跨会话路径：错误消息落库到原会话不污染当前会话
@@ -43,7 +45,7 @@ async function persistErrorToBackground(ctx, errorData, status) {
     if (!persisted) {
         eventBus.emit('ui:notification', {
             type: 'warning',
-            message: '错误消息未持久化（原会话可能已删除）',
+            message: withSessionLabel(ctx.sessionId, '的错误消息未持久化（会话可能已删除）'),
             duration: 5000
         });
     }
@@ -55,12 +57,7 @@ async function persistErrorToBackground(ctx, errorData, status) {
  * @returns {Promise<{retried: boolean}>}
  */
 export async function handleHttpErrorResponse(response, ctx) {
-    let errorData;
-    try {
-        errorData = await response.json();
-    } catch {
-        errorData = { error: { message: `HTTP ${response.status}` } };
-    }
+    const errorData = await readErrorBody(response);
 
     const retried = await attemptImageCompressionRetry(
         errorData,
@@ -100,7 +97,7 @@ export async function handleHttpErrorResponse(response, ctx) {
     }
 
     const errorHtml = renderHumanizedError(errorData, response.status);
-    const target = ctx.assistantMessageEl?.querySelector?.('.message-content') || null;
+    const target = resolveErrorTarget(ctx);
     if (target) safeSetHTML(target, errorHtml);
     const messageIndex = await saveAssistantMessageAsync(
         [],

@@ -8,7 +8,7 @@ import { escapeHtml } from './helpers.js';
 // 人性化错误消息映射
 const ERROR_MESSAGES = {
     // HTTP 状态码
-    400: { title: '请求格式错误', hint: '请检查消息内容是否符合要求' },
+    400: { title: '请求格式错误', hint: '请检查消息内容与请求参数是否符合要求' },
     401: { title: '认证失败', hint: '请检查 API Key 是否正确' },
     403: { title: '访问被拒绝', hint: '您的账户可能没有访问此模型的权限' },
     404: { title: '资源未找到', hint: '请检查端点地址或模型名称' },
@@ -74,8 +74,39 @@ const ERROR_MESSAGES = {
     other: { title: '生成中断' }
 };
 
+// 服务端原因过长时截断，完整内容在技术详情里
+const MAX_REASON_LENGTH = 300;
+// 代理返回的纯文本错误体可能是整页日志，只保留开头一段
+const MAX_TEXT_BODY_LENGTH = 2000;
+
+/**
+ * 取服务端或异常给出的原因：兼容 {error:{message}}、{error:'...'}、{message}、{detail:'...'} 几种响应体
+ * @returns {string}
+ */
+export function extractErrorMessage(error) {
+    const candidates = [
+        error?.error?.message,
+        typeof error?.error === 'string' ? error.error : null,
+        error?.message,
+        typeof error?.detail === 'string' ? error.detail : null
+    ];
+    const message = candidates.find((item) => typeof item === 'string' && item.trim());
+    return message ? message.trim() : '';
+}
+
+/**
+ * 固定指引之前先给出原因；原因已包含在标题或指引里时不再重复
+ */
 function withHint(entry, errorMessage) {
-    return entry.hint ? entry : { title: entry.title, hint: errorMessage || '发生未知错误' };
+    if (!entry.hint) return { title: entry.title, hint: errorMessage || '发生未知错误' };
+    if (!errorMessage || entry.title.includes(errorMessage) || entry.hint.includes(errorMessage)) {
+        return { title: entry.title, hint: entry.hint };
+    }
+    const reason =
+        errorMessage.length > MAX_REASON_LENGTH
+            ? `${errorMessage.slice(0, MAX_REASON_LENGTH)}…`
+            : errorMessage;
+    return { title: entry.title, hint: `${reason}\n${entry.hint}` };
 }
 
 /**
@@ -85,7 +116,7 @@ function withHint(entry, errorMessage) {
  * @returns {Object} { title, hint }
  */
 export function getHumanizedError(error, httpStatus = null) {
-    const errorMessage = error?.error?.message || error?.message || '';
+    const errorMessage = extractErrorMessage(error);
 
     // 尝试从 HTTP 状态码获取
     if (httpStatus && ERROR_MESSAGES[httpStatus]) {
@@ -111,13 +142,13 @@ export function getHumanizedError(error, httpStatus = null) {
         msgLower.includes('apikey') ||
         msgLower.includes('unauthorized')
     ) {
-        return ERROR_MESSAGES['invalid_api_key'];
+        return withHint(ERROR_MESSAGES['invalid_api_key'], errorMessage);
     }
     if (msgLower.includes('quota') || msgLower.includes('billing')) {
-        return ERROR_MESSAGES['insufficient_quota'];
+        return withHint(ERROR_MESSAGES['insufficient_quota'], errorMessage);
     }
     if (msgLower.includes('rate limit') || msgLower.includes('too many')) {
-        return ERROR_MESSAGES['rate_limit_exceeded'];
+        return withHint(ERROR_MESSAGES['rate_limit_exceeded'], errorMessage);
     }
     if (
         msgLower.includes('context_length') ||
@@ -127,13 +158,13 @@ export function getHumanizedError(error, httpStatus = null) {
         msgLower.includes('too long') ||
         msgLower.includes('too many tokens')
     ) {
-        return ERROR_MESSAGES['context_length_exceeded'];
+        return withHint(ERROR_MESSAGES['context_length_exceeded'], errorMessage);
     }
     if (msgLower.includes('not found') || msgLower.includes('does not exist')) {
-        return ERROR_MESSAGES['model_not_found'];
+        return withHint(ERROR_MESSAGES['model_not_found'], errorMessage);
     }
     if (msgLower.includes('overloaded') || msgLower.includes('capacity')) {
-        return ERROR_MESSAGES['overloaded'];
+        return withHint(ERROR_MESSAGES['overloaded'], errorMessage);
     }
 
     // 默认
@@ -251,4 +282,42 @@ export function renderHumanizedError(error, httpStatus = null, showDetails = tru
     }
 
     return html;
+}
+
+/**
+ * 单个请求超时：并发的多回复请求各自计时，超时只让这一路失败
+ * @param {number} timeoutMs
+ * @returns {{ type: string, message: string }}
+ */
+export function buildRequestTimeoutError(timeoutMs) {
+    const seconds = Math.round((timeoutMs ?? 0) / 1000);
+    return { type: 'timeout', message: `请求超时（${seconds}s 未收到响应）` };
+}
+
+/**
+ * 读取错误响应体：JSON 原样返回；代理返回的纯文本作为原因保留；HTML 错误页只留状态码
+ * @param {Response} response
+ * @returns {Promise<Object>}
+ */
+export async function readErrorBody(response) {
+    let text = '';
+    try {
+        text = await response.text();
+    } catch {
+        // 响应体已被读取或连接中断，只能按状态码描述
+    }
+    const body = text.trim();
+    try {
+        const parsed = JSON.parse(body);
+        if (parsed && typeof parsed === 'object') return parsed;
+    } catch {
+        // 不是 JSON，按纯文本处理
+    }
+    const isHtml = body.startsWith('<');
+    return {
+        error: {
+            message:
+                body && !isHtml ? body.slice(0, MAX_TEXT_BODY_LENGTH) : `HTTP ${response.status}`
+        }
+    };
 }

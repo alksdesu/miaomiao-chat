@@ -979,6 +979,8 @@ export async function switchToSession(sessionId, saveOld = true, elements = null
             });
         }
 
+        requestTaskRegistry.clearFailure(sessionId);
+
         // 通知 UI 更新
         eventBus.emit('session:switched', {
             oldId: oldSessionId,

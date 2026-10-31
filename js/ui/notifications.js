@@ -76,6 +76,7 @@ export function showNotification(message, type = 'info', duration = 3000) {
     notification.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');
 
     const messageSpan = document.createElement('span');
+    messageSpan.className = 'notification-message';
     messageSpan.textContent = message;
     notification.appendChild(messageSpan);
 

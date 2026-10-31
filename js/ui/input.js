@@ -245,7 +245,11 @@ async function prepareAndSend(sourceSessionId) {
         return;
     }
 
-    if (requestTaskRegistry.getBySession(sourceSessionId) || requestStateMachine.isBusy()) {
+    // 结束后等待自动回 IDLE 的过渡态不拦截，sendToAPI 会先把状态机收口到 IDLE
+    if (
+        requestTaskRegistry.getBySession(sourceSessionId) ||
+        requestStateMachine.isRequestActive()
+    ) {
         logger.debug(
             '[input.js] handleSend 被阻止: 请求正在进行中, 当前状态:',
             requestStateMachine.getState()

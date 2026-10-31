@@ -7,7 +7,6 @@ import { logger } from '../utils/logger.js';
 import { BaseStreamParser } from './base-parser.js';
 
 import { handleContentArray } from './helpers.js';
-import { eventBus } from '../core/events.js';
 import { createToolCallAccumulator } from './openai-tool-accumulator.js';
 import { ToolMode } from '../messages/schema.js';
 import { normalizeOpenAIChatStop, normalizeResponsesStop } from '../messages/stop-reason.js';
@@ -595,7 +594,7 @@ export class OpenAIStreamParser extends BaseStreamParser {
         logger.error(`OpenAI API 错误 (流式响应):`, error);
 
         const userMessage = this.buildStreamErrorUserMessage(errorCode, errorMessage);
-        eventBus.emit('ui:notification', { message: userMessage, type: 'error', duration: 8000 });
+        this.notifyStreamError(userMessage);
         await this.reader.cancel();
 
         // 尚未收到内容时也要落错误消息，否则只剩一闪而过的通知和空白气泡

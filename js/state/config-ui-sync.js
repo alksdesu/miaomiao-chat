@@ -53,14 +53,26 @@ function syncModelParamsToUI() {
     syncParamsToInputs('gemini', geminiParams);
     syncParamsToInputs('claude', claudeParams);
     syncParamsToInputs('openai-image', openaiImageParams);
+    syncOpenAIImageParamControls();
+}
 
-    const imageParams = state.modelParams['openai-image'];
+/**
+ * 生图参数控件联动：自定义尺寸与压缩率按需显示；选了透明背景时 JPEG 不可选
+ */
+export function syncOpenAIImageParamControls() {
+    const imageParams = state.modelParams?.['openai-image'];
     const sizeGroup = document.getElementById('openai-image-custom-size-group');
     if (sizeGroup) sizeGroup.hidden = imageParams?.size !== 'custom';
     const compressionGroup = document.getElementById('openai-image-compression-group');
     if (compressionGroup) {
         const format = imageParams?.output_format;
         compressionGroup.hidden = format !== 'jpeg' && format !== 'webp';
+    }
+    const jpegOption = document.querySelector('#openai-image-output-format option[value="jpeg"]');
+    if (jpegOption) {
+        const transparent = imageParams?.background === 'transparent';
+        jpegOption.disabled = transparent;
+        jpegOption.title = transparent ? '透明背景仅支持 PNG 或 WebP' : '';
     }
 }
 

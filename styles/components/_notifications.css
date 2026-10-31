@@ -32,6 +32,11 @@
     }
 }
 
+/* 提示文案用换行分段（如互斥说明），textContent 渲染时需保留换行 */
+.notification-message {
+    white-space: pre-line;
+}
+
 .notification-error {
     background: var(--md-coral);
     color: var(--color-text-on-accent, #1a1a1a);

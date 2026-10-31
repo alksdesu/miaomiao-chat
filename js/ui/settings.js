@@ -14,6 +14,7 @@ import { checkForUpdatesManually } from '../update/apk-updater.js';
 import { trapFocus, removeFocusTrap, acquireInert, releaseInert } from '../utils/focus-trap.js';
 import { logger } from '../utils/logger.js';
 import { hasComputerGuiPermission } from '../tools/computer-actions.js';
+import { rejectComputerUseForMultiReply } from './multi-reply-tools.js';
 
 // 开关 id → state.computerUsePermissions 字段，主进程按同名字段校验
 const COMPUTER_USE_PERMISSION_TOGGLES = Object.freeze([
@@ -319,6 +320,10 @@ function bindGeneralSettingsEvents() {
 
     const computerUseSwitch = document.getElementById('computer-use-enabled');
     addManagedListener(settingsCleanupCallbacks, computerUseSwitch, 'change', (event) => {
+        if (event.target.checked && rejectComputerUseForMultiReply()) {
+            event.target.checked = false;
+            return;
+        }
         state.computerUseEnabled = event.target.checked;
         document
             .getElementById('toggle-computer-use')

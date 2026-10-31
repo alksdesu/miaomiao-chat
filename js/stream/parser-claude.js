@@ -6,7 +6,6 @@
 import { logger } from '../utils/logger.js';
 import { BaseStreamParser } from './base-parser.js';
 
-import { eventBus } from '../core/events.js';
 import { ToolMode } from '../messages/schema.js';
 import {
     buildPartsFromStreamingState,
@@ -356,7 +355,7 @@ export class ClaudeStreamParser extends BaseStreamParser {
         logger.error(`Claude API 错误 (流式响应):`, error);
 
         const userMessage = this.buildStreamErrorUserMessage(errorCode, errorMessage);
-        eventBus.emit('ui:notification', { message: userMessage, type: 'error', duration: 8000 });
+        this.notifyStreamError(userMessage);
         await this.reader.cancel();
 
         // 错误中断也要收尾未关闭的 thinking 块，否则 retry 重发时缺最后那段 thinking

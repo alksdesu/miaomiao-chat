@@ -52,10 +52,15 @@ vi.mock('../../js/utils/platform.js', () => ({
     isAndroid: vi.fn(() => false)
 }));
 
+vi.mock('../../js/ui/multi-reply-tools.js', () => ({
+    rejectComputerUseForMultiReply: vi.fn(() => false)
+}));
+
 import { elements } from '../../js/core/elements.js';
 import { state } from '../../js/core/state.js';
 import { saveCurrentConfig } from '../../js/state/config.js';
 import { isElectron } from '../../js/utils/platform.js';
+import { rejectComputerUseForMultiReply } from '../../js/ui/multi-reply-tools.js';
 import { toggleSettings, initSettings, cleanupSettings } from '../../js/ui/settings.js';
 
 beforeEach(() => {
@@ -297,6 +302,26 @@ describe('Computer Use 权限开关', () => {
 
         toggle('allow-mouse', true);
         expect(document.getElementById('computer-use-gui-off-hint').hidden).toBe(true);
+    });
+
+    it('多回复互斥时 Computer Use 开关不开启，state 不变', () => {
+        document.body.insertAdjacentHTML(
+            'beforeend',
+            '<input type="checkbox" id="computer-use-enabled" /><button id="toggle-computer-use"></button>'
+        );
+        state.computerUseEnabled = false;
+        rejectComputerUseForMultiReply.mockReturnValueOnce(true);
+        initSettings();
+
+        toggle('computer-use-enabled', true);
+
+        expect(state.computerUseEnabled).toBe(false);
+        expect(document.getElementById('computer-use-enabled').checked).toBe(false);
+        expect(saveCurrentConfig).not.toHaveBeenCalled();
+
+        toggle('computer-use-enabled', true);
+        expect(state.computerUseEnabled).toBe(true);
+        state.computerUseEnabled = false;
     });
 
     it('主进程返回失败时记录警告', async () => {

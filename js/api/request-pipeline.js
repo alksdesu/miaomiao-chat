@@ -286,7 +286,9 @@ export async function executeRequest(
         computerDisplay,
         notices
     });
-    emitRequestNotices(sessionId, notices);
+    emitRequestNotices(sessionId, notices, {
+        modelName: requestProfile.modelDisplayName || model || ''
+    });
 
     const finalEndpoint = adapter.resolveEndpoint(
         endpoint,

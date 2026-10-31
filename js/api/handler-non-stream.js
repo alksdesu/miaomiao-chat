@@ -24,6 +24,8 @@ import { renderFinalTextWithThinking, renderFinalContentWithThinking } from '../
 import { renderReplyWithSelector } from '../messages/renderer.js';
 import { handleToolCallStream, startPauseTurnContinuation } from '../tools/orchestrator.js';
 import { safeSetHTML } from '../utils/helpers.js';
+import { readErrorBody, extractErrorMessage, buildRequestTimeoutError } from '../utils/errors.js';
+import { linkAbortSignal } from '../utils/abort.js';
 import { logger } from '../utils/logger.js';
 import { requestTaskRegistry } from '../core/request-task-registry.js';
 import { buildEmptyReplyError } from '../messages/stop-reason.js';
@@ -61,6 +63,23 @@ function normalizeRequestError(err) {
         type: err?.type || err?.name || 'network_error',
         code: err?.code,
         fullError: err
+    };
+}
+
+/**
+ * 额外请求返回非 2xx 时保留服务端给出的原因：纯文本错误体直接 json() 只会得到解析错误，
+ * {detail} 这类非标准错误体会被当成成功响应解析成空回复
+ * @param {Response} response
+ * @returns {Promise<{message: string, type: string, code: *, fullError: Object}>}
+ */
+async function readFailedReplyError(response) {
+    const body = await readErrorBody(response);
+    const detail = body?.error && typeof body.error === 'object' ? body.error : null;
+    return {
+        message: extractErrorMessage(body) || `HTTP ${response.status}`,
+        type: detail?.type || 'http_error',
+        code: detail?.code ?? response.status,
+        fullError: body
     };
 }
 
@@ -158,23 +177,34 @@ async function fetchAdditionalReplies(ctx, replyCount) {
 
     const promises = [];
     for (let i = 1; i < replyCount; i++) {
+        // 主请求的超时在收到响应时已清除，额外请求各自计时，服务端不响应时不会一直挂着
+        const linked = linkAbortSignal(signal, { timeoutMs: ctx.timeoutMs });
         promises.push(
             executeRequest(adapter, {
                 endpoint,
                 apiKey,
                 model,
-                signal,
+                signal: linked.signal,
                 sessionId: ctx.sessionId,
                 sourceMessages: ctx.sourceMessages,
                 requestProfile: ctx.requestProfile
             })
-                .then((res) => res.json())
+                .then(async (res) =>
+                    res.ok ? res.json() : { error: await readFailedReplyError(res) }
+                )
                 .catch((err) => {
+                    if (err?.name === 'TimeoutError') {
+                        logger.error(`Request ${i + 1} timed out`);
+                        return {
+                            error: { ...buildRequestTimeoutError(ctx.timeoutMs), fullError: err }
+                        };
+                    }
                     if (err?.name !== 'AbortError') {
                         logger.error(`Request ${i + 1} failed:`, err);
                     }
                     return { error: normalizeRequestError(err) };
                 })
+                .finally(linked.dispose)
         );
     }
 

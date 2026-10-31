@@ -1,7 +1,7 @@
 /**
  * config.js 配置管理测试
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // mock 所有依赖 — 工厂函数内只用字面量
 vi.mock('../../js/core/state.js', () => ({
@@ -92,12 +92,15 @@ vi.mock('../../js/state/storage.js', () => ({
     loadSavedConfigs: vi.fn(() => Promise.resolve(null))
 }));
 
+vi.mock('../../js/state/config-ui-sync.js', () => ({ syncUIWithState: vi.fn() }));
+
 import { state, elements } from '../../js/core/state.js';
 import {
     buildConfigObject,
     getDefaultCapabilities,
     applyConfigToState,
-    generateExportFilename
+    generateExportFilename,
+    loadConfig
 } from '../../js/state/config.js';
 
 function resetState() {
@@ -350,6 +353,68 @@ describe('配置升级 v2 → v3', () => {
 // ========== applyConfigToState ==========
 
 describe('applyConfigToState', () => {
+    describe('生图参数复查', () => {
+        beforeEach(async () => {
+            const { eventBus } = await import('../../js/core/events.js');
+            eventBus.emit.mockClear();
+            state.modelParams['openai-image'] = {
+                size: null,
+                customSize: '',
+                background: null,
+                output_format: null
+            };
+        });
+
+        it('已保存的过小自定义尺寸回到默认并提示', async () => {
+            const { eventBus } = await import('../../js/core/events.js');
+
+            const result = applyConfigToState({
+                configVersion: 3,
+                providers: [],
+                modelParams: { 'openai-image': { size: 'custom', customSize: '512x512' } }
+            });
+
+            expect(result).toEqual({ imageParamsCorrected: true });
+            expect(state.modelParams['openai-image']).toEqual(
+                expect.objectContaining({ size: null, customSize: '' })
+            );
+            expect(eventBus.emit).toHaveBeenCalledWith(
+                'ui:notification',
+                expect.objectContaining({
+                    type: 'warning',
+                    message: expect.stringContaining('512x512')
+                })
+            );
+        });
+
+        it('透明背景配 JPEG 的旧配置改为 PNG', () => {
+            const result = applyConfigToState({
+                configVersion: 3,
+                providers: [],
+                modelParams: {
+                    'openai-image': { background: 'transparent', output_format: 'jpeg' }
+                }
+            });
+
+            expect(result.imageParamsCorrected).toBe(true);
+            expect(state.modelParams['openai-image'].output_format).toBe('png');
+        });
+
+        it('合法参数不纠正也不提示', async () => {
+            const { eventBus } = await import('../../js/core/events.js');
+
+            const result = applyConfigToState({
+                configVersion: 3,
+                providers: [],
+                modelParams: { 'openai-image': { size: 'custom', customSize: '1536x864' } }
+            });
+
+            expect(result.imageParamsCorrected).toBe(false);
+            expect(state.modelParams['openai-image'].customSize).toBe('1536x864');
+            expect(eventBus.emit).not.toHaveBeenCalledWith('ui:notification', expect.anything());
+        });
+    });
+
     it('拒绝越界或错误类型的 Bash 配置', () => {
         expect(() =>
             applyConfigToState({
@@ -600,5 +665,55 @@ describe('generateExportFilename', () => {
 
     it('以 .json 结尾', () => {
         expect(generateExportFilename('config')).toMatch(/\.json$/);
+    });
+});
+
+// ========== loadConfig ==========
+
+describe('loadConfig 生图参数复查', () => {
+    beforeEach(() => {
+        vi.useFakeTimers();
+        vi.stubGlobal('localStorage', { getItem: vi.fn(() => null), setItem: vi.fn() });
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+        vi.unstubAllGlobals();
+    });
+
+    it('纠正过的生图参数写回存储，下次启动不再提示', async () => {
+        const storage = await import('../../js/state/storage.js');
+        storage.saveConfig.mockClear();
+        storage.loadConfig.mockResolvedValueOnce({
+            configVersion: 3,
+            providers: [],
+            modelParams: { 'openai-image': { size: 'custom', customSize: '512x512' } }
+        });
+
+        await loadConfig();
+        await vi.runAllTimersAsync();
+
+        expect(storage.saveConfig).toHaveBeenCalledWith(
+            expect.objectContaining({
+                modelParams: expect.objectContaining({
+                    'openai-image': expect.objectContaining({ size: null, customSize: '' })
+                })
+            })
+        );
+    });
+
+    it('生图参数合法时加载不写回', async () => {
+        const storage = await import('../../js/state/storage.js');
+        storage.saveConfig.mockClear();
+        storage.loadConfig.mockResolvedValueOnce({
+            configVersion: 3,
+            providers: [],
+            modelParams: { 'openai-image': { size: 'custom', customSize: '1536x864' } }
+        });
+
+        await loadConfig();
+        await vi.runAllTimersAsync();
+
+        expect(storage.saveConfig).not.toHaveBeenCalled();
     });
 });

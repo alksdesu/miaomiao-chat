@@ -19,6 +19,7 @@ import { state, elements } from '../core/state.js';
 import { clearToolCallContinuation, clearImageRetry } from '../core/state-mutations.js';
 import { createAssistantMessagePlaceholder } from '../messages/placeholder.js';
 import { createContinuationLoading, createThinkingDots } from './handler-loading-dots.js';
+import { requestTaskRegistry } from '../core/request-task-registry.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -77,6 +78,45 @@ function resolveNew() {
     elements.messagesArea.appendChild(assistantMessageEl);
     state.currentAssistantMessage = assistantMessageEl.querySelector('.message-content');
     return assistantMessageEl;
+}
+
+/**
+ * 续作轮出错时错误单独成条：复用元素去掉本轮的流式残留回到续作前的样子，
+ * 错误渲染到紧随其后新建的占位元素，与落库后"原消息 + 错误消息"的顺序一致
+ * @param {HTMLElement|null} assistantMessageEl - 续作复用的助手消息元素（或其 .message-content）
+ * @returns {HTMLElement|null} 新建的占位元素；不是续作复用元素或已脱离文档时返回 null
+ */
+export function splitContinuationErrorPlaceholder(assistantMessageEl) {
+    const messageEl = assistantMessageEl?.closest?.('.message') || null;
+    if (!messageEl?.isConnected || messageEl.dataset.isContinuation !== 'true') return null;
+
+    const messageContent = messageEl.querySelector('.message-content');
+    messageContent
+        ?.querySelectorAll('.continuation-content, .continuation-loading, .thinking-dots')
+        .forEach((el) => el.remove());
+    delete messageEl.dataset.isContinuation;
+    if (messageContent) delete messageContent.dataset.isContinuation;
+
+    const errorMessageEl = createAssistantMessagePlaceholder();
+    messageEl.after(errorMessageEl);
+    state.currentAssistantMessage = errorMessageEl.querySelector('.message-content');
+    return errorMessageEl;
+}
+
+/**
+ * 请求出错时错误块的写入目标：前台续作轮改写到新建的占位元素，不覆盖复用元素里已有的工具调用与正文
+ * @param {import('./handler-context.js').HandlerContext} ctx
+ * @returns {HTMLElement|null} .message-content
+ */
+export function resolveErrorTarget(ctx) {
+    if (ctx.isContinuationMode) {
+        const errorMessageEl = splitContinuationErrorPlaceholder(ctx.assistantMessageEl);
+        if (errorMessageEl) {
+            ctx.assistantMessageEl = errorMessageEl;
+            if (ctx.task) requestTaskRegistry.setAssistantElement(ctx.task, errorMessageEl);
+        }
+    }
+    return ctx.assistantMessageEl?.querySelector?.('.message-content') || null;
 }
 
 /**

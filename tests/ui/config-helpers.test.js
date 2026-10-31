@@ -101,8 +101,16 @@ vi.mock('../../js/utils/logger.js', () => ({
     logger: { warn: vi.fn(), debug: vi.fn(), error: vi.fn(), info: vi.fn() }
 }));
 
+vi.mock('../../js/utils/platform.js', async (importOriginal) => ({
+    ...(await importOriginal()),
+    isElectron: vi.fn(() => false)
+}));
+
 import { state } from '../../js/core/state.js';
 import { elements } from '../../js/core/elements.js';
+import { eventBus } from '../../js/core/events.js';
+import { showNotification } from '../../js/ui/notifications.js';
+import { isElectron } from '../../js/utils/platform.js';
 import {
     initEndpointInputListeners,
     initThinkingControls,
@@ -281,6 +289,56 @@ describe('config-helpers', () => {
             expect(state.modelParams['openai-image'].customSize).toBe('1536x864');
             expect(document.getElementById('openai-image-custom-size-group').hidden).toBe(false);
             expect(document.getElementById('openai-image-compression-group').hidden).toBe(false);
+        });
+
+        it('选透明背景时输出格式从 JPEG 改为 PNG，并禁用 JPEG 选项', () => {
+            document.body.innerHTML = `
+                <select id="openai-image-output-format">
+                    <option value="">default</option>
+                    <option value="png">png</option>
+                    <option value="jpeg">jpeg</option>
+                </select>
+                <div id="openai-image-compression-group" hidden></div>
+                <select id="openai-image-background">
+                    <option value="">default</option>
+                    <option value="transparent">transparent</option>
+                </select>
+            `;
+            initEndpointInputListeners();
+            const format = document.getElementById('openai-image-output-format');
+            format.value = 'jpeg';
+            format.dispatchEvent(new Event('change'));
+            expect(document.getElementById('openai-image-compression-group').hidden).toBe(false);
+
+            const background = document.getElementById('openai-image-background');
+            background.value = 'transparent';
+            background.dispatchEvent(new Event('change'));
+
+            const params = state.modelParams['openai-image'];
+            expect(params.background).toBe('transparent');
+            expect(params.output_format).toBe('png');
+            expect(format.value).toBe('png');
+            expect(format.querySelector('option[value="jpeg"]').disabled).toBe(true);
+            expect(document.getElementById('openai-image-compression-group').hidden).toBe(true);
+            expect(showNotification).toHaveBeenCalledWith(expect.stringContaining('PNG'), 'info');
+
+            background.value = '';
+            background.dispatchEvent(new Event('change'));
+            expect(format.querySelector('option[value="jpeg"]').disabled).toBe(false);
+        });
+
+        it('切换配置替换参数对象后，改动写入当前对象', () => {
+            document.body.innerHTML = `
+                <select id="openai-image-quality"><option value="high">high</option></select>
+            `;
+            initEndpointInputListeners();
+            state.modelParams['openai-image'] = { ...state.modelParams['openai-image'] };
+
+            const quality = document.getElementById('openai-image-quality');
+            quality.value = 'high';
+            quality.dispatchEvent(new Event('change'));
+
+            expect(state.modelParams['openai-image'].quality).toBe('high');
         });
     });
 
@@ -527,6 +585,52 @@ describe('config-helpers', () => {
             select.value = '1';
             select.dispatchEvent(new Event('change'));
             expect(state.replyCount).toBe(1);
+        });
+
+        describe('多回复与客户端工具互斥', () => {
+            function setupReplyCountSelect() {
+                const select = document.createElement('select');
+                select.innerHTML = '<option value="1">1</option><option value="3">3</option>';
+                select.value = '1';
+                elements.replyCountSelect = select;
+                initOtherConfigInputs();
+                return select;
+            }
+
+            afterEach(() => {
+                state.computerUseEnabled = false;
+                isElectron.mockReturnValue(false);
+                elements.replyCountSelect = null;
+            });
+
+            it('Electron 下开着 Computer Use 时不能开启多回复', () => {
+                state.computerUseEnabled = true;
+                isElectron.mockReturnValue(true);
+                const select = setupReplyCountSelect();
+
+                select.value = '3';
+                select.dispatchEvent(new Event('change'));
+
+                expect(state.replyCount).toBe(1);
+                expect(select.value).toBe('1');
+                expect(eventBus.emit).toHaveBeenCalledWith(
+                    'ui:notification',
+                    expect.objectContaining({
+                        type: 'error',
+                        message: expect.stringContaining('Computer Use')
+                    })
+                );
+            });
+
+            it('非 Electron 环境 Computer Use 不生效，不拦截多回复', () => {
+                state.computerUseEnabled = true;
+                const select = setupReplyCountSelect();
+
+                select.value = '3';
+                select.dispatchEvent(new Event('change'));
+
+                expect(state.replyCount).toBe(3);
+            });
         });
 
         it('tool:enabled:changed 事件注册', async () => {

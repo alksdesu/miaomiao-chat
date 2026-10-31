@@ -706,10 +706,14 @@ describe('请求预检提示', () => {
             sourceMessages: state.messages
         });
 
-        expect(emitRequestNotices).toHaveBeenCalledWith('session-9', [
-            { key: 'tools', message: '工具已调整' },
-            { key: 'params', message: '参数已调整' }
-        ]);
+        expect(emitRequestNotices).toHaveBeenCalledWith(
+            'session-9',
+            [
+                { key: 'tools', message: '工具已调整' },
+                { key: 'params', message: '参数已调整' }
+            ],
+            { modelName: 'm' }
+        );
     });
 
     it('生成参数与请求体组装的提示合并后按会话弹出', async () => {
@@ -734,10 +738,14 @@ describe('请求预检提示', () => {
             sourceMessages: state.messages
         });
 
-        expect(emitRequestNotices).toHaveBeenCalledWith('session-9', [
-            { key: 'params', message: '参数已调整' },
-            { key: 'body', message: '请求体已调整' }
-        ]);
+        expect(emitRequestNotices).toHaveBeenCalledWith(
+            'session-9',
+            [
+                { key: 'params', message: '参数已调整' },
+                { key: 'body', message: '请求体已调整' }
+            ],
+            { modelName: 'm' }
+        );
     });
 
     it('复用 requestProfile 时不会累积上一次请求体的提示', async () => {

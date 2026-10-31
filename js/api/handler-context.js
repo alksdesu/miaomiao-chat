@@ -37,12 +37,33 @@ import { applyToolResultsToMessages } from '../messages/tool-results.js';
  * @property {HTMLElement|null} assistantMessageEl - resolvePlaceholder 填入
  * @property {boolean} isContinuationMode     - resolvePlaceholder 填入：工具调用 continuation 复用（影响 streamStats）
  * @property {boolean} isImageRetryMode       - resolvePlaceholder 填入：图片压缩重试复用（仅复用 DOM，不影响 streamStats）
+ * @property {Error|null} setupError          - 请求快照构造失败的原因；非空时请求不会发出，sendToAPI 按请求错误处理
  */
 
 /**
+ * 不会抛错：快照构造失败时返回带 setupError 的上下文，交给 sendToAPI 的统一错误处理展示与落库
  * @returns {HandlerContext}
  */
 export function createHandlerContext(task = null) {
+    const sessionId = task?.sessionId || state.currentSessionId;
+    const base = {
+        abortController: new AbortController(),
+        sessionId,
+        timeoutId: null,
+        assistantMessageEl: null,
+        isContinuationMode: false,
+        isImageRetryMode: false,
+        task,
+        setupError: null
+    };
+    try {
+        return { ...base, ...captureRequestSnapshot(task, sessionId) };
+    } catch (error) {
+        return { ...base, ...createFailedSnapshot(task, error) };
+    }
+}
+
+function captureRequestSnapshot(task, sessionId) {
     // requestFormat/adapter 与 endpoint/apiKey/model 一同快照：请求往返期间用户切 provider 时，
     // 响应侧仍用发起时锁定的 adapter 解析，避免 Claude 流被 OpenAI parser 解成空流
     const origin = task?.requestOrigin || null;
@@ -51,7 +72,6 @@ export function createHandlerContext(task = null) {
     const endpoint = origin?.endpoint || getCurrentEndpoint();
     const apiKey = origin?.apiKey ?? getCurrentApiKey();
     const model = origin?.model || getCurrentModel();
-    const sessionId = task?.sessionId || state.currentSessionId;
     const requestProfile = task?.requestProfile || captureRequestProfile(adapter, model);
     let sourceMessages =
         task?.retryMessages ||
@@ -70,17 +90,44 @@ export function createHandlerContext(task = null) {
         model,
         requestFormat,
         adapter,
-        abortController: new AbortController(),
-        sessionId,
         timeoutMs: requestProfile.state?.requestTimeout ?? state.requestTimeout,
-        timeoutId: null,
-        assistantMessageEl: null,
-        isContinuationMode: false,
-        isImageRetryMode: false,
-        task,
         requestProfile,
         sourceMessages,
         streamEnabled: requestProfile.streamEnabled,
-        replyCount: requestProfile.replyCount
+        // 工具续作只需要一个回复：多回复的并发流不执行工具调用，额外的回复只会白白多发请求
+        replyCount: task?.isSavingContinuation === true ? 1 : requestProfile.replyCount
+    };
+}
+
+function readOrDefault(read, fallback) {
+    try {
+        return read() ?? fallback;
+    } catch {
+        return fallback;
+    }
+}
+
+/**
+ * 快照构造失败时只保留错误处理与清理会读到的字段，请求本身不会发出
+ */
+function createFailedSnapshot(task, error) {
+    const origin = task?.requestOrigin || null;
+    const model = origin?.model || readOrDefault(getCurrentModel, '');
+    return {
+        endpoint: origin?.endpoint || '',
+        apiKey: origin?.apiKey ?? '',
+        model,
+        requestFormat: origin?.requestFormat || null,
+        adapter: origin?.adapter || null,
+        timeoutMs: state.requestTimeout,
+        requestProfile: task?.requestProfile || {
+            state: { requestTimeout: state.requestTimeout },
+            modelDisplayName: model,
+            providerName: readOrDefault(() => getCurrentProvider()?.name, '')
+        },
+        sourceMessages: null,
+        streamEnabled: false,
+        replyCount: 1,
+        setupError: error
     };
 }

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildOpenAIImageParams, validateOpenAIImageSize } from '../../js/api/image-params.js';
+import {
+    buildOpenAIImageParams,
+    sanitizeOpenAIImageParams,
+    validateOpenAIImageSize
+} from '../../js/api/image-params.js';
 
 describe('validateOpenAIImageSize', () => {
     it('接受标准尺寸和合法自定义尺寸', () => {
@@ -66,5 +70,48 @@ describe('图片参数取值范围', () => {
         expect(buildOpenAIImageParams({ quality: 'xhigh' }).quality).toBe('xhigh');
         expect(buildOpenAIImageParams({ quality: 'max' }).quality).toBe('max');
         expect(buildOpenAIImageParams({ quality: 'ultra' })).not.toHaveProperty('quality');
+    });
+});
+
+describe('sanitizeOpenAIImageParams', () => {
+    it('合法参数原样返回且不修改入参', () => {
+        const params = { size: 'custom', customSize: '1536x864', output_format: 'png' };
+        const result = sanitizeOpenAIImageParams(params);
+        expect(result.corrections).toEqual([]);
+        expect(result.params).toEqual(params);
+        expect(result.params).not.toBe(params);
+    });
+
+    it('正在使用的自定义尺寸低于新下限时回到服务端默认', () => {
+        const params = { size: 'custom', customSize: '512x512' };
+        const { params: next, corrections } = sanitizeOpenAIImageParams(params);
+        expect(next).toEqual({ size: null, customSize: '' });
+        expect(corrections).toEqual([expect.stringContaining('512x512')]);
+        expect(params.customSize).toBe('512x512');
+    });
+
+    it('未使用的失效自定义尺寸只清除，预设尺寸保留', () => {
+        const { params: next, corrections } = sanitizeOpenAIImageParams({
+            size: '1024x1024',
+            customSize: '1024x608'
+        });
+        expect(next).toEqual({ size: '1024x1024', customSize: '' });
+        expect(corrections).toEqual([expect.stringContaining('已清除')]);
+    });
+
+    it('旧版本保存的过小预设尺寸回到服务端默认', () => {
+        const { params: next, corrections } = sanitizeOpenAIImageParams({ size: '256x256' });
+        expect(next.size).toBeNull();
+        expect(corrections).toHaveLength(1);
+    });
+
+    it('透明背景配 JPEG 时输出格式改为 PNG，纠正后不再触发构造错误', () => {
+        const { params: next, corrections } = sanitizeOpenAIImageParams({
+            background: 'transparent',
+            output_format: 'jpeg'
+        });
+        expect(next.output_format).toBe('png');
+        expect(corrections).toEqual([expect.stringContaining('PNG')]);
+        expect(() => buildOpenAIImageParams(next)).not.toThrow();
     });
 });

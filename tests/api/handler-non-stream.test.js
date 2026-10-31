@@ -52,7 +52,7 @@ import { appendStopNotice } from '../../js/messages/render-stop-notice.js';
 const maxTokensStop = { kind: 'max_tokens', reason: 'length' };
 
 function jsonResponse(data) {
-    return { json: async () => data };
+    return { ok: true, json: async () => data };
 }
 
 // parseResponse 原样返回响应里预置的 reply，便于逐个请求控制解析结果
@@ -223,6 +223,87 @@ describe('handleNonStreamResponse - 多回复', () => {
             }
         });
         expect(saveAssistantMessageAsync).not.toHaveBeenCalled();
+    });
+
+    it('额外请求返回非 2xx 时保留服务端给出的原因', async () => {
+        const { response, ctx } = makeCtx({
+            replies: [{ content: '第一个回复' }],
+            replyCount: 3
+        });
+        executeRequest
+            .mockResolvedValueOnce({
+                ok: false,
+                status: 400,
+                text: async () => 'Bad Request: n must be 1'
+            })
+            .mockResolvedValueOnce({
+                ok: false,
+                status: 422,
+                text: async () => JSON.stringify({ detail: 'temperature out of range' })
+            });
+
+        await handleNonStreamResponse(response, ctx);
+
+        const [, , opts] = saveAssistantMessageAsync.mock.calls[0];
+        expect(opts.selectedReplyIndex).toBe(0);
+        expect(opts.allReplies[1].error).toEqual(
+            expect.objectContaining({ message: 'Bad Request: n must be 1' })
+        );
+        expect(opts.allReplies[2].error).toEqual(
+            expect.objectContaining({ message: 'temperature out of range' })
+        );
+    });
+
+    it('额外请求各自计时，超时的那一路记为超时失败，其他回复照常保存', async () => {
+        vi.useFakeTimers();
+        try {
+            const { response, ctx } = makeCtx({
+                replies: [{ content: '第一个回复' }],
+                replyCount: 2
+            });
+            ctx.timeoutMs = 5000;
+            let seenSignal = null;
+            executeRequest.mockImplementationOnce(
+                (_adapter, { signal }) =>
+                    new Promise((_, reject) => {
+                        seenSignal = signal;
+                        signal.addEventListener('abort', () => reject(signal.reason));
+                    })
+            );
+
+            const pending = handleNonStreamResponse(response, ctx);
+            await vi.advanceTimersByTimeAsync(5000);
+            await pending;
+
+            expect(seenSignal).not.toBe(ctx.abortController.signal);
+            expect(ctx.abortController.signal.aborted).toBe(false);
+            const [, , opts] = saveAssistantMessageAsync.mock.calls[0];
+            expect(opts.selectedReplyIndex).toBe(0);
+            expect(opts.allReplies[1].error).toEqual(
+                expect.objectContaining({ type: 'timeout', message: '请求超时（5s 未收到响应）' })
+            );
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('用户停止时额外请求一并中止，不落成错误回复', async () => {
+        const { response, ctx } = makeCtx({
+            replies: [{ content: '第一个回复' }],
+            replyCount: 2
+        });
+        executeRequest.mockImplementationOnce(
+            (_adapter, { signal }) =>
+                new Promise((_, reject) => {
+                    signal.addEventListener('abort', () => reject(signal.reason));
+                    ctx.abortController.abort();
+                })
+        );
+
+        await handleNonStreamResponse(response, ctx);
+
+        const [, , opts] = saveAssistantMessageAsync.mock.calls[0] || [];
+        expect(opts?.allReplies?.some((reply) => reply?.error?.type === 'timeout')).not.toBe(true);
     });
 });
 

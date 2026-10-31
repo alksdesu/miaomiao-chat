@@ -71,6 +71,8 @@ vi.mock('../../js/api/openclaw.js', () => ({
 
 import { state } from '../../js/core/state.js';
 import { saveCurrentConfig } from '../../js/state/config.js';
+import { eventBus } from '../../js/core/events.js';
+import { isElectron } from '../../js/utils/platform.js';
 import {
     syncQuickToggles,
     initQuickToggles,
@@ -272,5 +274,33 @@ describe('initQuickToggles', () => {
         document.getElementById('toggle-thinking').click();
         const strengthGroup = document.getElementById('thinking-strength-group');
         expect(strengthGroup.style.display).toBe('flex');
+    });
+
+    it('多回复数量大于 1 时 Computer Use 按钮不开启并提示，关闭不受限制', () => {
+        isElectron.mockReturnValue(true);
+        state.replyCount = 2;
+        state.computerUseEnabled = false;
+        document.body.insertAdjacentHTML(
+            'beforeend',
+            '<button id="toggle-computer-use"></button><input type="checkbox" id="computer-use-enabled" />'
+        );
+        initQuickToggles();
+        const btn = document.getElementById('toggle-computer-use');
+
+        btn.click();
+        expect(state.computerUseEnabled).toBe(false);
+        expect(saveCurrentConfig).not.toHaveBeenCalled();
+        expect(eventBus.emit).toHaveBeenCalledWith(
+            'ui:notification',
+            expect.objectContaining({ type: 'error' })
+        );
+
+        state.computerUseEnabled = true;
+        btn.click();
+        expect(state.computerUseEnabled).toBe(false);
+        expect(saveCurrentConfig).toHaveBeenCalled();
+
+        state.replyCount = 1;
+        isElectron.mockReturnValue(false);
     });
 });

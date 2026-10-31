@@ -122,4 +122,55 @@ describe('RequestTaskRegistry', () => {
         });
         expect(registry.getBySession('session-a')).toBe(currentTask);
     });
+
+    describe('后台失败标记', () => {
+        function createDetachedTask(sessionId = 'session-a') {
+            const task = registry.create({ sessionId, abortController: new AbortController() });
+            registry.detach(task);
+            return task;
+        }
+
+        it('后台任务出错结束时标记会话失败，并通知侧栏刷新', async () => {
+            const { eventBus } = await import('../../js/core/events.js');
+            const task = createDetachedTask();
+            eventBus.emit.mockClear();
+
+            registry.finish(task, 'error');
+
+            expect(state.backgroundTasks.has('session-a')).toBe(false);
+            expect(registry.hasFailure('session-a')).toBe(true);
+            expect(eventBus.emit).toHaveBeenCalledWith('sessions:updated', expect.any(Object));
+        });
+
+        it('后台任务正常完成或取消不标记失败', () => {
+            registry.finish(createDetachedTask('session-a'), 'completed');
+            registry.finish(createDetachedTask('session-b'), 'cancelled');
+
+            expect(registry.hasFailure('session-a')).toBe(false);
+            expect(registry.hasFailure('session-b')).toBe(false);
+        });
+
+        it('前台任务出错不标记失败', () => {
+            const task = registry.create({
+                sessionId: 'session-a',
+                abortController: new AbortController()
+            });
+
+            registry.finish(task, 'error');
+
+            expect(registry.hasFailure('session-a')).toBe(false);
+        });
+
+        it('回到会话或重新发起请求后清除标记', () => {
+            registry.finish(createDetachedTask('session-a'), 'error');
+            registry.finish(createDetachedTask('session-b'), 'error');
+
+            expect(registry.clearFailure('session-a')).toBe(true);
+            expect(registry.hasFailure('session-a')).toBe(false);
+            expect(registry.clearFailure('session-a')).toBe(false);
+
+            registry.create({ sessionId: 'session-b', abortController: new AbortController() });
+            expect(registry.hasFailure('session-b')).toBe(false);
+        });
+    });
 });

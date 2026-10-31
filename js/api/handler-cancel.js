@@ -40,7 +40,9 @@ function _doCancel() {
     logger.debug('[Handler] 取消按钮被点击, 当前状态:', requestStateMachine.getState());
 
     try {
-        abortToolExecution(requestTaskRegistry.getBySession(state.currentSessionId));
+        // 当前会话没有任务时不取消任何工具执行：其他会话的后台工具任务不受这里的停止影响
+        const sessionTask = requestTaskRegistry.getBySession(state.currentSessionId);
+        if (sessionTask) abortToolExecution(sessionTask);
     } catch (err) {
         logger.error('[Handler] 通知工具执行取消失败:', err);
     }

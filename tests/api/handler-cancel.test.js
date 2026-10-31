@@ -111,4 +111,17 @@ describe('cancelCurrentRequest', () => {
         expect(mocks.stateMachine.cancel).not.toHaveBeenCalled();
         await Promise.resolve();
     });
+
+    it('只取消当前会话任务的工具执行；当前会话没有任务时不碰其他会话的后台工具', async () => {
+        cancelCurrentRequest();
+        expect(mocks.abortToolExecution).toHaveBeenCalledWith(mocks.task);
+        await Promise.resolve();
+
+        mocks.abortToolExecution.mockClear();
+        mocks.registry.getBySession.mockReturnValue(null);
+        mocks.stateMachine.getState.mockReturnValue('idle');
+        cancelCurrentRequest();
+        expect(mocks.abortToolExecution).not.toHaveBeenCalled();
+        await Promise.resolve();
+    });
 });

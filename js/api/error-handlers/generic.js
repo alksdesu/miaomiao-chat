@@ -11,6 +11,7 @@ import { setCurrentMessageIndex } from '../../messages/dom-sync.js';
 import { renderHumanizedError } from '../../utils/errors.js';
 import { safeSetHTML } from '../../utils/helpers.js';
 import { requestTaskRegistry } from '../../core/request-task-registry.js';
+import { resolveErrorTarget } from '../placeholder-resolver.js';
 
 /**
  * @param {import('../error-classifier.js').ClassifiedError} classification
@@ -22,9 +23,9 @@ export async function handleGenericError(classification, ctx) {
     const foreground =
         ctx.sessionId === state.currentSessionId &&
         (!ctx.task || (requestTaskRegistry.owns(ctx.task) && !ctx.task.isDetached));
-    const target = ctx.assistantMessageEl?.querySelector?.('.message-content') || null;
+    const target = foreground ? resolveErrorTarget(ctx) : null;
 
-    if (foreground && target) safeSetHTML(target, errorHtml);
+    if (target) safeSetHTML(target, errorHtml);
     const messageIndex = await saveAssistantMessageAsync(
         [],
         {

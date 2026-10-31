@@ -126,8 +126,8 @@ function _saveCore(parts, meta, opts) {
         return savePromise;
     }
 
-    // Continuation 模式
-    if (isContinuation) {
+    // Continuation 模式；出错的续作轮单独落错误消息，并进原消息会随上下文回放给模型
+    if (isContinuation && !isError) {
         const mergeIndex = findMergeTarget();
         if (mergeIndex >= 0) {
             return mergeContinuation(mergeIndex, parts, meta, toolCalls);
@@ -583,7 +583,7 @@ async function saveToBackgroundSessionUnlocked(
     } catch (e) {
         logger.error('[sync] 保存后台会话消息失败:', e);
         eventBus.emit('ui:notification', {
-            message: '消息保存失败，请检查存储空间',
+            message: `会话"${targetSession.name || '会话'}"的消息保存失败，请检查存储空间`,
             type: 'error'
         });
         throw e;

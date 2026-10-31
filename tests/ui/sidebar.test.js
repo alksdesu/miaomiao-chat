@@ -213,6 +213,39 @@ describe('updateSessionList', () => {
         updateSessionList();
         expect(elements.sessionList.querySelector('.export-session-btn')).not.toBeNull();
     });
+
+    it('后台出错的会话沿用生成中指示的样式标出失败，生成中优先显示', async () => {
+        const { requestTaskRegistry } = await import('../../js/core/request-task-registry.js');
+        requestTaskRegistry.clearForTests();
+        const failedTask = requestTaskRegistry.create({
+            sessionId: 'session-2',
+            abortController: new AbortController()
+        });
+        requestTaskRegistry.detach(failedTask);
+        requestTaskRegistry.finish(failedTask, 'error');
+        state.sessions = [
+            { id: 'session-1', name: '当前' },
+            { id: 'session-2', name: '后台失败' }
+        ];
+
+        updateSessionList();
+        const failedItem = elements.sessionList.querySelector('[data-session-id="session-2"]');
+        const status = failedItem.querySelector('.session-generating');
+        expect(status.classList.contains('session-task-failed')).toBe(true);
+        expect(status.textContent).toBe('生成失败');
+        expect(
+            elements.sessionList.querySelector('[data-session-id="session-1"] .session-generating')
+        ).toBeNull();
+
+        state.backgroundTasks = new Map([['session-2', {}]]);
+        updateSessionList();
+        const generating = elements.sessionList.querySelector(
+            '[data-session-id="session-2"] .session-generating'
+        );
+        expect(generating.textContent).toBe('生成中...');
+        expect(generating.classList.contains('session-task-failed')).toBe(false);
+        requestTaskRegistry.clearForTests();
+    });
 });
 
 describe('cleanupSidebar', () => {

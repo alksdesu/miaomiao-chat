@@ -9,6 +9,7 @@ import { saveCurrentConfig } from '../state/config.js';
 import { handleAttachFile } from './input.js';
 import { showNotification } from './notifications.js';
 import { isElectron } from '../utils/platform.js';
+import { rejectComputerUseForMultiReply } from './multi-reply-tools.js';
 import { setMonitorEnabled } from '../devtools/monitor-state.js';
 import { openCronPanel } from './openclaw-cron.js';
 import { openclawClient } from '../api/openclaw.js';
@@ -133,6 +134,7 @@ export function initQuickToggles() {
 
         // 点击事件
         toggleComputerUse.addEventListener('click', async () => {
+            if (!state.computerUseEnabled && rejectComputerUseForMultiReply()) return;
             state.computerUseEnabled = !state.computerUseEnabled;
             toggleComputerUse.classList.toggle('active', state.computerUseEnabled);
 

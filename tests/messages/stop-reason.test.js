@@ -221,4 +221,35 @@ describe('buildEmptyReplyError', () => {
         expect(error.code).toBe(EMPTY_REPLY_CODE);
         expect(error.message).toEqual(expect.any(String));
     });
+
+    it.each([
+        StopKind.MAX_TOKENS,
+        StopKind.CONTEXT_OVERFLOW,
+        StopKind.SAFETY,
+        StopKind.PROMPT_BLOCKED,
+        StopKind.REFUSAL,
+        StopKind.RECITATION,
+        StopKind.MALFORMED_TOOL_CALL,
+        StopKind.CONTINUATION,
+        StopKind.OTHER
+    ])('%s 的空回复说明不沿用"已截断/后续内容"这类以已有内容为前提的措辞', (kind) => {
+        const { code, message } = buildEmptyReplyError({ kind, reason: 'raw' });
+        expect(code).toBe(kind);
+        expect(message).toContain('（raw）');
+        expect(message).not.toMatch(/截断|后续内容|后续/);
+        expect(message).not.toBe(describeStop({ kind, reason: 'raw' }).title);
+    });
+
+    it('达到最大输出长度却没有正文时指向思考用完输出额度', () => {
+        const { message } = buildEmptyReplyError({ kind: StopKind.MAX_TOKENS, reason: 'length' });
+        expect(message).toContain('思考');
+        expect(message).toContain('最大输出');
+    });
+
+    it('声明要调用工具却没有工具调用时单独说明', () => {
+        const error = buildEmptyReplyError({ kind: StopKind.TOOL_USE, reason: 'tool_use' });
+        expect(error.code).toBe(EMPTY_REPLY_CODE);
+        expect(error.message).toContain('没有可执行的工具调用');
+        expect(error.message).toContain('tool_use');
+    });
 });

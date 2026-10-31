@@ -12,8 +12,10 @@ import {
     applyConfigToState,
     buildConfigObject
 } from '../state/config.js';
+import { syncOpenAIImageParamControls } from '../state/config-ui-sync.js';
 import { populateModelSelect } from './models.js';
-import { getToolStats, setToolEnabled } from '../tools/manager.js';
+import { setToolEnabled } from '../tools/manager.js';
+import { describeEnabledClientTools } from './multi-reply-tools.js';
 import { eventBus } from '../core/events.js';
 import { EVENTS } from '../core/events-registry.js';
 import { syncQuickToggles } from './quick-toggles.js';
@@ -73,8 +75,9 @@ export function initEndpointInputListeners() {
 }
 
 function initOpenAIImageParamsListeners() {
-    const params = state.modelParams['openai-image'];
-    if (!params) return;
+    if (!state.modelParams['openai-image']) return;
+    // 切换或导入配置会整体替换参数对象，每次事件都取当前对象，避免写进旧引用
+    const getParams = () => state.modelParams['openai-image'];
     const fields = {
         'openai-image-size': 'size',
         'openai-image-custom-size': 'customSize',
@@ -94,20 +97,11 @@ function initOpenAIImageParamsListeners() {
         partial_images: [0, 3]
     };
 
-    const updateDependencies = () => {
-        const customSizeGroup = document.getElementById('openai-image-custom-size-group');
-        if (customSizeGroup) customSizeGroup.hidden = params.size !== 'custom';
-        const compressionGroup = document.getElementById('openai-image-compression-group');
-        if (compressionGroup) {
-            compressionGroup.hidden =
-                params.output_format !== 'jpeg' && params.output_format !== 'webp';
-        }
-    };
-
     Object.entries(fields).forEach(([id, key]) => {
         const input = document.getElementById(id);
         if (!input) return;
         input.addEventListener('change', (event) => {
+            const params = getParams();
             const rawValue = event.target.value.trim();
             const value = numericFields.has(key)
                 ? rawValue === ''
@@ -134,12 +128,22 @@ function initOpenAIImageParamsListeners() {
             }
 
             params[key] = key === 'customSize' && value === null ? '' : value;
-            updateDependencies();
+            if (
+                key === 'background' &&
+                value === 'transparent' &&
+                params.output_format === 'jpeg'
+            ) {
+                params.output_format = 'png';
+                const formatSelect = document.getElementById('openai-image-output-format');
+                if (formatSelect) formatSelect.value = 'png';
+                showNotification('透明背景仅支持 PNG 或 WebP，输出格式已改为 PNG', 'info');
+            }
+            syncOpenAIImageParamControls();
             saveCurrentConfig();
         });
     });
 
-    updateDependencies();
+    syncOpenAIImageParamControls();
 }
 
 /**
@@ -627,26 +631,18 @@ export function initOtherConfigInputs() {
         const newCount = parseInt(e.target.value, 10);
 
         // ⭐ 检测多回复与工具调用互斥
-        if (newCount > 1) {
-            try {
-                const stats = getToolStats();
+        const enabledClientTools = newCount > 1 ? describeEnabledClientTools() : '';
+        if (enabledClientTools) {
+            // ui:notification 经 textContent 纯文本渲染，禁止拼接 getIcon 等 HTML 字符串
+            eventBus.emit('ui:notification', {
+                message: `多回复模式与工具调用功能互斥\n\n当前已启用 ${enabledClientTools}，请先关闭后再开启多回复模式。`,
+                type: 'error',
+                duration: 6000
+            });
 
-                if (stats.enabled > 0) {
-                    // 有启用的工具，阻止设置多回复
-                    // ui:notification 经 textContent 纯文本渲染，禁止拼接 getIcon 等 HTML 字符串
-                    eventBus.emit('ui:notification', {
-                        message: `多回复模式与工具调用功能互斥\n\n当前有 ${stats.enabled} 个工具已启用，请先禁用所有工具后再开启多回复模式。`,
-                        type: 'error',
-                        duration: 6000
-                    });
-
-                    // 恢复原值
-                    e.target.value = state.replyCount;
-                    return;
-                }
-            } catch (error) {
-                logger.warn('[ConfigHelpers] 工具系统未加载:', error);
-            }
+            // 恢复原值
+            e.target.value = state.replyCount;
+            return;
         }
 
         state.replyCount = newCount;

@@ -6,7 +6,6 @@
 import { logger } from '../utils/logger.js';
 import { BaseStreamParser } from './base-parser.js';
 
-import { eventBus } from '../core/events.js';
 import { parseStreamingMarkdownImages } from '../utils/markdown-image-parser.js';
 import { isVideoMimeType, isAudioMimeType } from '../utils/media.js';
 import { ToolMode } from '../messages/schema.js';
@@ -323,7 +322,7 @@ export class GeminiStreamParser extends BaseStreamParser {
         logger.error(`Gemini API 错误 (流式响应):`, error);
 
         const userMessage = this.buildStreamErrorUserMessage(errorCode, errorMessage);
-        eventBus.emit('ui:notification', { message: userMessage, type: 'error', duration: 8000 });
+        this.notifyStreamError(userMessage);
         await this.reader.cancel();
 
         // 尚未收到内容时也要落错误消息，否则只剩一闪而过的通知和空白气泡

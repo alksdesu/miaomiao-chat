@@ -12,7 +12,7 @@ vi.mock('../../js/utils/helpers.js', () => ({
             .replace(/"/g, '&quot;')
 }));
 
-import { getHumanizedError, renderHumanizedError } from '../../js/utils/errors.js';
+import { getHumanizedError, renderHumanizedError, readErrorBody } from '../../js/utils/errors.js';
 
 // ========== getHumanizedError ==========
 
@@ -179,10 +179,54 @@ describe('getHumanizedError', () => {
         expect(getHumanizedError({ error: { type: 'refusal' } }).hint).toBe('发生未知错误');
     });
 
-    it('带固定提示语的错误类型不受消息影响', () => {
+    it('带固定提示语的错误类型先给出原因再附指引', () => {
         expect(getHumanizedError({ error: { type: 'overloaded', message: 'raw' } }).hint).toBe(
-            '当前请求量大，请稍后再试'
+            'raw\n当前请求量大，请稍后再试'
         );
+    });
+
+    it('400 显示服务端返回的原因并附上指引', () => {
+        const result = getHumanizedError(
+            { error: { message: 'max_tokens: 64000 > 32000, which is the maximum allowed' } },
+            400
+        );
+        expect(result.title).toBe('请求格式错误');
+        expect(result.hint.split('\n')).toEqual([
+            'max_tokens: 64000 > 32000, which is the maximum allowed',
+            '请检查消息内容与请求参数是否符合要求'
+        ]);
+    });
+
+    it('按消息关键字归类时同样保留原因', () => {
+        const result = getHumanizedError({ error: { message: 'Rate limit reached for tpm' } });
+        expect(result.title).toBe('速率限制');
+        expect(result.hint).toBe('Rate limit reached for tpm\n请求太频繁，请稍等片刻');
+    });
+
+    it('兼容 error 为字符串与 detail 字段的响应体', () => {
+        expect(getHumanizedError({ error: 'Invalid model name' }, 400).hint).toContain(
+            'Invalid model name'
+        );
+        expect(getHumanizedError({ detail: 'Not authenticated' }, 401).hint).toContain(
+            'Not authenticated'
+        );
+    });
+
+    it('原因与标题重复时不再重复显示', () => {
+        expect(getHumanizedError({ code: 'user_cancelled', message: '请求已取消' }).hint).toBe(
+            '已保留取消前接收的内容'
+        );
+    });
+
+    it('过长的原因截断显示', () => {
+        const hint = getHumanizedError({ error: { message: 'x'.repeat(1000) } }, 400).hint;
+        const [reason] = hint.split('\n');
+        expect(reason.length).toBeLessThan(400);
+        expect(reason.endsWith('…')).toBe(true);
+    });
+
+    it('没有原因时只显示指引', () => {
+        expect(getHumanizedError({}, 400).hint).toBe('请检查消息内容与请求参数是否符合要求');
     });
 });
 
@@ -264,5 +308,59 @@ describe('renderHumanizedError', () => {
     it('字符串 error 序列化', () => {
         const html = renderHumanizedError('raw string error');
         expect(html).toContain('raw string error');
+    });
+});
+
+// ========== readErrorBody ==========
+
+function bodyResponse(status, text) {
+    return { status, text: async () => text };
+}
+
+describe('readErrorBody', () => {
+    it('JSON 错误体原样返回', async () => {
+        const body = { error: { message: 'max_tokens too large', type: 'invalid_request_error' } };
+        expect(await readErrorBody(bodyResponse(400, JSON.stringify(body)))).toEqual(body);
+    });
+
+    it('纯文本错误体作为原因保留', async () => {
+        expect(await readErrorBody(bodyResponse(400, '  Bad Request: model not found\n'))).toEqual({
+            error: { message: 'Bad Request: model not found' }
+        });
+    });
+
+    it('HTML 错误页只保留状态码', async () => {
+        expect(
+            await readErrorBody(bodyResponse(502, '<html><body>Bad gateway</body></html>'))
+        ).toEqual({
+            error: { message: 'HTTP 502' }
+        });
+    });
+
+    it('空响应体只保留状态码', async () => {
+        expect(await readErrorBody(bodyResponse(500, ''))).toEqual({
+            error: { message: 'HTTP 500' }
+        });
+    });
+
+    it('JSON 原始值按纯文本处理', async () => {
+        expect(await readErrorBody(bodyResponse(500, 'null'))).toEqual({
+            error: { message: 'null' }
+        });
+    });
+
+    it('超长纯文本截断', async () => {
+        const result = await readErrorBody(bodyResponse(500, 'x'.repeat(5000)));
+        expect(result.error.message.length).toBe(2000);
+    });
+
+    it('读取响应体失败时按状态码描述', async () => {
+        const response = {
+            status: 503,
+            text: async () => {
+                throw new TypeError('body used already');
+            }
+        };
+        expect(await readErrorBody(response)).toEqual({ error: { message: 'HTTP 503' } });
     });
 });

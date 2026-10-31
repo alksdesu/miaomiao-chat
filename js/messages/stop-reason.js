@@ -172,6 +172,22 @@ export function describeStop(stop) {
 
 export const EMPTY_REPLY_CODE = 'empty_reply';
 
+// 正文末尾提示条的文案以已有部分内容为前提，回复里一个字都没有时改用这组说明
+const EMPTY_REPLY_NOTICES = Object.freeze({
+    [StopKind.MAX_TOKENS]:
+        '还没输出正文就达到了最大输出长度，通常是思考过程用完了输出额度。可以调大最大输出 token 或降低思考强度后重新生成。',
+    [StopKind.CONTEXT_OVERFLOW]:
+        '对话超出模型上下文窗口，模型没有生成任何内容。可以删减历史消息或新开会话。',
+    [StopKind.SAFETY]: '回复被安全策略拦截，模型没有生成任何内容。可以调整提示词后重新生成。',
+    [StopKind.PROMPT_BLOCKED]: '请求被安全策略拦截，模型没有生成内容。可以修改消息后重新发送。',
+    [StopKind.REFUSAL]: '模型拒绝回答这个请求，没有生成任何内容。',
+    [StopKind.RECITATION]: '回复疑似大段引用受版权保护的内容，在输出正文前已被中止。',
+    [StopKind.MALFORMED_TOOL_CALL]:
+        '模型生成的工具调用不合法，回复在输出正文前已中止。可以重新生成。',
+    [StopKind.CONTINUATION]: '回复达到单次输出上限，没有生成任何内容。可以重新生成。',
+    [StopKind.OTHER]: '回复提前结束，模型没有生成任何内容。可以重新生成。'
+});
+
 /**
  * 没有任何正文的回复按错误落库：既说明原因，也不让空回复进入后续请求的上下文
  * code 取 StopKind，正常结束却没有内容时取 EMPTY_REPLY_CODE，与 utils/errors.js 的错误标题一一对应
@@ -179,12 +195,18 @@ export const EMPTY_REPLY_CODE = 'empty_reply';
  * @returns {{ code: string, message: string }}
  */
 export function buildEmptyReplyError(stop) {
-    const notice = describeStop(stop);
+    const notice = stop ? EMPTY_REPLY_NOTICES[stop.kind] : null;
     if (notice) {
-        const summary = `${notice.title}（${notice.reason}）`;
+        const summary = `${notice}（${stop.reason}）`;
         return {
             code: stop.kind,
-            message: notice.detail ? `${summary}\n${notice.detail}` : summary
+            message: stop.detail ? `${summary}\n${stop.detail}` : summary
+        };
+    }
+    if (stop?.kind === StopKind.TOOL_USE) {
+        return {
+            code: EMPTY_REPLY_CODE,
+            message: `模型表示要调用工具（${stop.reason}），但响应里没有可执行的工具调用。可以重新生成，或检查代理是否完整转发了工具调用。`
         };
     }
     return {

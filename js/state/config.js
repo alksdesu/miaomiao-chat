@@ -6,6 +6,7 @@
 import { state, elements } from '../core/state.js';
 import { eventBus } from '../core/events.js';
 import { logger } from '../utils/logger.js';
+import { sanitizeOpenAIImageParams } from '../api/image-params.js';
 // IndexedDB 存储 API
 import {
     saveConfig as saveConfigToDB,
@@ -387,7 +388,7 @@ export async function loadConfig() {
         logger.info('[loadConfig] 解析配置成功, apiFormat:', savedConfig.apiFormat);
 
         // 应用配置到 state
-        applyConfigToState(savedConfig);
+        const { imageParamsCorrected } = applyConfigToState(savedConfig);
 
         // 验证 currentProviderId 是否有效
         if (state.currentProviderId) {
@@ -414,6 +415,9 @@ export async function loadConfig() {
         }
 
         logger.debug('配置已加载:', savedConfig);
+
+        // 纠正结果落盘后下次启动不再重复提示
+        if (imageParamsCorrected) saveCurrentConfig();
 
         // 同步 UI 状态
         syncUIWithState();
@@ -547,6 +551,7 @@ export function applyConfigToState(config) {
             }
         });
     }
+    const imageParamsCorrected = reviewOpenAIImageParams();
 
     // 自定义请求头
     state.customHeaders = config.customHeaders ?? [];
@@ -703,6 +708,27 @@ export function applyConfigToState(config) {
 
         logger.debug(`API格式已恢复为: ${config.apiFormat}`);
     }
+
+    return { imageParamsCorrected };
+}
+
+/**
+ * 已保存的生图参数按当前校验规则复查，不合法的值就地纠正并提示，避免每次发送都被参数校验拦下
+ * @returns {boolean} 是否做了纠正（调用方据此持久化，下次启动不再提示）
+ */
+function reviewOpenAIImageParams() {
+    const params = state.modelParams?.['openai-image'];
+    if (!params) return false;
+    const { params: sanitized, corrections } = sanitizeOpenAIImageParams(params);
+    if (corrections.length === 0) return false;
+    state.modelParams['openai-image'] = sanitized;
+    logger.warn('[Config] 生图参数已纠正:', corrections);
+    eventBus.emit('ui:notification', {
+        message: `生图参数已按当前规则调整：${corrections.join('；')}`,
+        type: 'warning',
+        duration: 8000
+    });
+    return true;
 }
 
 function validateConfigShape(config) {

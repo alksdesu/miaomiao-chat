@@ -625,7 +625,14 @@ export function removeMessagesAfterAll(index) {
  * @param {HTMLElement} [messageEl] - 目标助手消息元素，省略时重发最后一条
  */
 export async function handleRetry(messageEl = null) {
-    if (state.isLoading) return;
+    if (state.isLoading) {
+        eventBus.emit('ui:notification', {
+            message: '请等待当前回复完成或先点停止，再重新生成',
+            type: 'warning',
+            duration: 2000
+        });
+        return;
+    }
 
     // 清空当前的多回复状态
     state.currentReplies = [];

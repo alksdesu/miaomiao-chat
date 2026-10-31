@@ -3,7 +3,7 @@
  * 测试 buildGeminiReplyParts 内部逻辑（通过集成测试覆盖）
  */
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // mock 依赖
 vi.mock('../../js/core/state.js', () => ({
@@ -22,6 +22,9 @@ vi.mock('../../js/core/state.js', () => ({
         selectedReplyIndex: 0
     }
 }));
+
+// 状态机 _updateUI 读取按钮元素，测试环境不初始化真实 DOM 缓存
+vi.mock('../../js/core/elements.js', () => ({ elements: {} }));
 
 vi.mock('../../js/stream/stats.js', () => ({
     recordFirstToken: vi.fn(),
@@ -47,7 +50,8 @@ vi.mock('../../js/messages/renderer.js', () => ({
     renderReplyWithSelector: vi.fn()
 }));
 
-vi.mock('../../js/utils/errors.js', () => ({
+vi.mock('../../js/utils/errors.js', async (importOriginal) => ({
+    ...(await importOriginal()),
     renderHumanizedError: vi.fn(() => '<div>error</div>')
 }));
 
@@ -148,6 +152,7 @@ import { appendStreamStats } from '../../js/stream/stats.js';
 import { executeRequest } from '../../js/api/request-pipeline.js';
 import { getAdapter } from '../../js/api/adapters/index.js';
 import { requestTaskRegistry } from '../../js/core/request-task-registry.js';
+import { requestStateMachine, RequestState } from '../../js/core/request-state-machine.js';
 
 function makeCtx(overrides = {}) {
     const assistantMessageEl = document.createElement('div');
@@ -245,9 +250,7 @@ describe('handleMultiStreamResponses - 所有请求失败', () => {
         executeRequest.mockImplementation(async () => ({
             ok: false,
             status: 429,
-            clone: () => ({
-                json: async () => ({ error: { message: 'Rate limit' } })
-            })
+            text: async () => JSON.stringify({ error: { message: 'Rate limit' } })
         }));
 
         await handleMultiStreamResponses(makeCtx());
@@ -281,9 +284,7 @@ describe('handleMultiStreamResponses - 部分成功', () => {
             return {
                 ok: false,
                 status: 500,
-                clone: () => ({
-                    json: async () => ({ error: { message: 'Server error' } })
-                })
+                text: async () => JSON.stringify({ error: { message: 'Server error' } })
             };
         });
 
@@ -392,5 +393,142 @@ describe('handleMultiStreamResponses - 默认选中与空回复', () => {
             1,
             expect.anything()
         );
+    });
+});
+
+function rejectOnAbort(signal) {
+    if (signal.aborted) return Promise.reject(signal.reason);
+    return new Promise((_, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+}
+
+describe('handleMultiStreamResponses - 发送锁、连接超时与结束状态', () => {
+    afterEach(() => {
+        vi.useRealTimers();
+        requestStateMachine.forceReset({ silent: true });
+        requestTaskRegistry.clearForTests();
+    });
+
+    it('收到响应后进入 STREAMING，发送锁随之清除', async () => {
+        mockOkResponses();
+        const abortController = new AbortController();
+        const task = requestTaskRegistry.create({ sessionId: 'session-1', abortController });
+        requestStateMachine.forceReset({ silent: true });
+        requestStateMachine.transition(RequestState.SENDING, {
+            abortController,
+            sessionId: 'session-1',
+            requestId: task.id,
+            timeoutMs: 1000
+        });
+        expect(requestStateMachine.sendLockTimeout).not.toBeNull();
+
+        await handleMultiStreamResponses(makeCtx({ task, abortController }));
+
+        expect(task.phase).toBe(RequestState.STREAMING);
+        expect(requestStateMachine.getState()).toBe(RequestState.STREAMING);
+        expect(requestStateMachine.sendLockTimeout).toBeNull();
+    });
+
+    it('单个请求连接超时只中止这一路，其余回复照常保存', async () => {
+        vi.useFakeTimers();
+        const signals = [];
+        executeRequest.mockImplementation((_adapter, { signal }) => {
+            signals.push(signal);
+            if (signals.length === 1) {
+                return Promise.resolve({
+                    ok: true,
+                    body: { getReader: () => createSimpleMockReader() }
+                });
+            }
+            return rejectOnAbort(signal);
+        });
+        const ctx = makeCtx({ timeoutMs: 1000 });
+
+        const pending = handleMultiStreamResponses(ctx);
+        await vi.advanceTimersByTimeAsync(1000);
+        await pending;
+
+        expect(signals[0]).not.toBe(signals[1]);
+        expect(signals[1].reason.name).toBe('TimeoutError');
+        expect(signals[0].aborted).toBe(false);
+        expect(ctx.abortController.signal.aborted).toBe(false);
+        const [, , opts] = saveAssistantMessageAsync.mock.calls[0];
+        expect(opts.isError).toBeUndefined();
+    });
+
+    it('连接阶段全部超时：错误保留超时原因，任务按出错结束', async () => {
+        vi.useFakeTimers();
+        executeRequest.mockImplementation((_adapter, { signal }) => rejectOnAbort(signal));
+        const task = requestTaskRegistry.create({
+            sessionId: 'session-1',
+            abortController: new AbortController()
+        });
+
+        const pending = handleMultiStreamResponses(makeCtx({ task, timeoutMs: 2000 }));
+        await vi.advanceTimersByTimeAsync(2000);
+        await pending;
+
+        const [, , opts] = saveAssistantMessageAsync.mock.calls[0];
+        expect(opts.isError).toBe(true);
+        expect(opts.errorData.error).toEqual(
+            expect.objectContaining({ type: 'timeout', message: expect.stringContaining('2s') })
+        );
+        expect(task.phase).toBe(RequestState.ERROR);
+    });
+
+    it('网络错误保留原因而不是展开成空对象', async () => {
+        executeRequest.mockImplementation(async () => {
+            throw new TypeError('Failed to fetch');
+        });
+
+        await handleMultiStreamResponses(makeCtx());
+
+        const [, , opts] = saveAssistantMessageAsync.mock.calls[0];
+        expect(opts.errorData.error.message).toBe('Failed to fetch');
+        expect(opts.errorData.allErrors[0].message).toBe('Failed to fetch');
+    });
+
+    it('连接阶段用户点停止：同时中止全部请求，按取消处理不落错误回复', async () => {
+        executeRequest.mockImplementation((_adapter, { signal }) => rejectOnAbort(signal));
+        const abortController = new AbortController();
+
+        const pending = handleMultiStreamResponses(makeCtx({ abortController, timeoutMs: 60000 }));
+        abortController.abort();
+
+        await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+        expect(saveAssistantMessageAsync).not.toHaveBeenCalled();
+    });
+
+    it('全部回复失败但有部分内容时任务按出错结束', async () => {
+        mockOkResponses();
+        const adapter = makeStreamingAdapter([
+            { content: '部分', errorInfo: { errorCode: 'network_error', errorMessage: '中断' } },
+            { errorInfo: { errorCode: 'safety', errorMessage: '拦截' } }
+        ]);
+        const task = requestTaskRegistry.create({
+            sessionId: 'session-1',
+            abortController: new AbortController()
+        });
+
+        await handleMultiStreamResponses(makeCtx({ adapter, task }));
+
+        expect(task.phase).toBe(RequestState.ERROR);
+    });
+
+    it('有成功回复时任务不按出错结束', async () => {
+        mockOkResponses();
+        const adapter = makeStreamingAdapter([
+            { errorInfo: { errorCode: 'safety', errorMessage: '拦截' } },
+            { content: '成功' }
+        ]);
+        const task = requestTaskRegistry.create({
+            sessionId: 'session-1',
+            abortController: new AbortController()
+        });
+
+        await handleMultiStreamResponses(makeCtx({ adapter, task }));
+
+        expect(task.phase).toBe(RequestState.STREAMING);
     });
 });

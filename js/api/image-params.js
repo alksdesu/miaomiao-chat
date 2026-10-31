@@ -29,6 +29,49 @@ export function validateOpenAIImageSize(size) {
     return null;
 }
 
+/**
+ * 按当前校验规则复查已保存的生图参数，返回纠正后的参数，不修改入参
+ * 尺寸不合法时回到服务端默认；透明背景配 JPEG 时输出格式改为 PNG
+ * @param {Object} params
+ * @returns {{ params: Object, corrections: string[] }} corrections 为给用户看的纠正说明
+ */
+export function sanitizeOpenAIImageParams(params = {}) {
+    const next = { ...params };
+    const corrections = [];
+
+    const customSize = typeof next.customSize === 'string' ? next.customSize.trim() : '';
+    const customSizeError = customSize ? validateOpenAIImageSize(customSize) : null;
+    if (customSizeError) {
+        next.customSize = '';
+        if (next.size === 'custom') {
+            next.size = null;
+            corrections.push(
+                `自定义尺寸 ${customSize} 不符合当前要求（${customSizeError}），已改回服务端默认尺寸`
+            );
+        } else {
+            corrections.push(
+                `已清除不符合当前要求的自定义尺寸 ${customSize}（${customSizeError}）`
+            );
+        }
+    }
+
+    const presetSizeError =
+        next.size && next.size !== 'custom' ? validateOpenAIImageSize(next.size) : null;
+    if (presetSizeError) {
+        corrections.push(
+            `尺寸 ${next.size} 不符合当前要求（${presetSizeError}），已改回服务端默认尺寸`
+        );
+        next.size = null;
+    }
+
+    if (next.background === 'transparent' && next.output_format === 'jpeg') {
+        next.output_format = 'png';
+        corrections.push('透明背景仅支持 PNG 或 WebP，输出格式已改为 PNG');
+    }
+
+    return { params: next, corrections };
+}
+
 export function buildOpenAIImageParams(params = {}, streamEnabled = false) {
     const result = {};
     const size = params.size === 'custom' ? params.customSize?.trim() : params.size;

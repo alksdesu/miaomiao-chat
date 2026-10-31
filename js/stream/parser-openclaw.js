@@ -92,6 +92,7 @@ export async function handleOpenClawStream(sessionId, sink = null, signal = null
                     state.isToolCallPending = false;
                 }
                 stats.finalize();
+                sink.beginErrorReply?.();
 
                 const remaining = thinkTagParser.flush();
                 if (remaining.thinkingDelta) thinkingContent += remaining.thinkingDelta;

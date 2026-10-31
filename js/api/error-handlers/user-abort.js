@@ -23,6 +23,20 @@ import { logger } from '../../utils/logger.js';
 import { requestTaskRegistry } from '../../core/request-task-registry.js';
 
 /**
+ * 续作轮取消且没收到内容：复用元素里是上一轮的工具调用与正文，只在末尾追加取消提示
+ * @param {HTMLElement} contentEl - .message-content
+ */
+function appendCancelNotice(contentEl) {
+    contentEl
+        .querySelectorAll('.continuation-loading, .thinking-dots')
+        .forEach((el) => el.remove());
+    const notice = document.createElement('div');
+    notice.className = 'error-message';
+    notice.textContent = '[!] 请求已取消';
+    contentEl.appendChild(notice);
+}
+
+/**
  * @param {import('../error-classifier.js').ClassifiedError} classification
  * @param {import('../handler-context.js').HandlerContext} ctx
  * @returns {Promise<{handled: true}>}
@@ -47,7 +61,11 @@ export async function handleUserAbort(classification, ctx) {
 
     const target = ctx.assistantMessageEl?.querySelector?.('.message-content') || null;
     if (!partialSaved && target) {
-        safeSetHTML(target, '<div class="error-message">[!] 请求已取消</div>');
+        if (ctx.isContinuationMode) {
+            appendCancelNotice(target);
+        } else {
+            safeSetHTML(target, '<div class="error-message">[!] 请求已取消</div>');
+        }
     }
     eventBus.emit('ui:notification', { message: '请求已取消', type: 'info' });
 

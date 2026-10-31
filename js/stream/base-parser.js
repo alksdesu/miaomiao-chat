@@ -18,6 +18,7 @@ import { state } from '../core/state.js';
 import { ThinkTagParser } from './think-tag-parser.js';
 import { ToolMode } from '../messages/schema.js';
 import { buildEmptyReplyError } from '../messages/stop-reason.js';
+import { withSessionLabel } from '../api/request-notices.js';
 import { DefaultSink } from './sink.js';
 
 // 响应长度限制
@@ -476,6 +477,29 @@ export class BaseStreamParser {
     }
 
     /**
+     * 流内错误提示，后台会话的提示带上会话名
+     * @param {string} message
+     */
+    notifyStreamError(message) {
+        eventBus.emit('ui:notification', {
+            message: this.labelBackgroundMessage(message),
+            type: 'error',
+            duration: 8000
+        });
+    }
+
+    /**
+     * 用户不在该会话时，提示前加上会话名以便分辨来源
+     * @param {string} message
+     * @returns {string}
+     */
+    labelBackgroundMessage(message) {
+        const sessionId = this.sink?.task?.sessionId || this.sessionId;
+        if (!sessionId || !this.sink?.isBackground()) return message;
+        return withSessionLabel(sessionId, message);
+    }
+
+    /**
      * 超长截断时的通用处理：通知 + cancel + flush + finalize
      * @param {ReadableStreamDefaultReader} reader
      * @param {Function} finalizeFn - 调用的 finalize 函数
@@ -483,7 +507,9 @@ export class BaseStreamParser {
     async handleTruncation(reader, finalizeFn) {
         logger.warn(`响应超长（${this.totalReceived} 字符），已强制截断`);
         eventBus.emit('ui:notification', {
-            message: `响应过长（${this.totalReceived.toLocaleString()} 字符），已自动截断`,
+            message: this.labelBackgroundMessage(
+                `响应过长（${this.totalReceived.toLocaleString()} 字符），已自动截断`
+            ),
             type: 'warning'
         });
         await reader.cancel();
@@ -680,6 +706,7 @@ export class BaseStreamParser {
         this.flushXmlAccumulator();
         this.stats.finalize();
         cleanupAllIncompleteImages(this.contentParts);
+        this.sink.beginErrorReply?.();
 
         const errorObject = { code: errorCode, message: errorMessage, type: errorCode };
         const hasPartialContent = !this._hasNoOutput();
@@ -688,9 +715,6 @@ export class BaseStreamParser {
             (hasPartialContent
                 ? `<div class="stream-error-partial-save">\u{1F4BE} 已保存部分接收的内容</div>`
                 : '');
-
-        // 没有收到任何内容时错误只由错误块展示，不再把错误文案写进正文
-        const finalText = hasPartialContent ? this.textContent + '\n\n' + errorMessage : '';
 
         if (!this.sink.isBackground()) {
             if (this.contentParts.length > 0) {
@@ -711,15 +735,16 @@ export class BaseStreamParser {
             this.sink.renderError(errorHtml);
 
             this.stats.recalculateTokenCount({
-                textContent: finalText,
+                textContent: this.textContent,
                 thinkingContent: this.thinkingContent,
                 contentParts: this.contentParts
             });
             this.sink.appendStats(this.stats);
         }
 
+        // 正文只保留模型的实际输出：错误文案写进正文会随上下文回放，刷新后还会与错误块重复显示
         const streamingState = {
-            textContent: finalText,
+            textContent: this.textContent,
             thinkingContent: this.thinkingContent,
             contentParts: this.contentParts,
             signatureFormat: this.signatureFormat,

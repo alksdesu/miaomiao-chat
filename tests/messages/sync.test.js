@@ -379,6 +379,52 @@ describe('saveAssistantMessage', () => {
         expect(msg.error.type).toBe('rate_limit');
     });
 
+    it('续作轮出错时单独落错误消息，原消息不并入部分内容', () => {
+        saveAssistantMessageFromStreamingState({
+            textContent: '第一轮',
+            toolCalls: [{ id: 'tc_1', name: 'search', arguments: {} }]
+        });
+        const originalParts = state.messages[0].parts;
+
+        const index = saveAssistantMessageFromStreamingState({
+            textContent: '续作轮的部分输出',
+            isContinuation: true,
+            isError: true,
+            errorData: { code: 'network_error', message: '连接中断' },
+            errorHtml: '<div>错误</div>'
+        });
+
+        expect(index).toBe(1);
+        expect(state.messages).toHaveLength(2);
+        expect(state.messages[0].parts).toBe(originalParts);
+        expect(state.messages[0].error).toBeFalsy();
+        expect(state.messages[1].parts).toEqual([
+            expect.objectContaining({ type: 'text', text: '续作轮的部分输出' })
+        ]);
+        expect(state.messages[1].error).toEqual({
+            type: 'network_error',
+            message: '连接中断',
+            html: '<div>错误</div>'
+        });
+        expect(updateMessageAt).not.toHaveBeenCalled();
+    });
+
+    it('续作轮还没收到内容就出错时错误同样落库', () => {
+        saveAssistantMessageFromStreamingState({ textContent: '第一轮' });
+
+        saveAssistantMessageFromStreamingState({
+            isContinuation: true,
+            isError: true,
+            errorData: { code: 'overloaded_error', message: 'Overloaded' }
+        });
+
+        expect(state.messages).toHaveLength(2);
+        expect(state.messages[1].parts).toEqual([]);
+        expect(state.messages[1].error).toEqual(
+            expect.objectContaining({ type: 'overloaded_error', message: 'Overloaded' })
+        );
+    });
+
     it('视频 contentParts 正确转换', () => {
         saveAssistantMessageFromStreamingState({
             contentParts: [

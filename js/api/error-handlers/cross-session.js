@@ -14,6 +14,7 @@ import { requestStateMachine, RequestState } from '../../core/request-state-mach
 import { requestTaskRegistry } from '../../core/request-task-registry.js';
 import { eventBus } from '../../core/events.js';
 import { logger } from '../../utils/logger.js';
+import { withSessionLabel } from '../request-notices.js';
 
 /**
  * 把任意 displayError 归一为 `{error:{type,message}}` 结构（renderHumanizedError 期望）
@@ -58,7 +59,7 @@ export async function handleCrossSession(classification, ctx) {
     if (!persisted) {
         eventBus.emit('ui:notification', {
             type: 'warning',
-            message: '错误消息未持久化（原会话可能已删除）',
+            message: withSessionLabel(ctx.sessionId, '的错误消息未持久化（会话可能已删除）'),
             duration: 5000
         });
     }

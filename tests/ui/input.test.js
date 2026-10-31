@@ -45,6 +45,7 @@ vi.mock('../../js/core/events.js', () => ({
 vi.mock('../../js/core/request-state-machine.js', () => ({
     requestStateMachine: {
         isBusy: vi.fn(() => false),
+        isRequestActive: vi.fn(() => false),
         getState: vi.fn(() => 'idle'),
         attach: vi.fn(),
         forceReset: vi.fn()
@@ -192,11 +193,20 @@ describe('handleSend', () => {
     });
 
     it('请求忙时不发送', async () => {
-        requestStateMachine.isBusy.mockReturnValue(true);
+        requestStateMachine.isRequestActive.mockReturnValue(true);
         elements.userInput.value = 'hello';
         await handleSend();
         expect(pushMessage).not.toHaveBeenCalled();
         // 还原
+        requestStateMachine.isRequestActive.mockReturnValue(false);
+    });
+
+    it('请求刚结束、等待自动回 IDLE 的过渡态不拦截发送', async () => {
+        requestStateMachine.isBusy.mockReturnValue(true);
+        requestStateMachine.isRequestActive.mockReturnValue(false);
+        elements.userInput.value = 'hello';
+        await handleSend();
+        expect(pushMessage).toHaveBeenCalled();
         requestStateMachine.isBusy.mockReturnValue(false);
     });
 

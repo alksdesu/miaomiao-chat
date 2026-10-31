@@ -29,3 +29,38 @@ export function throwIfAbortedBeforeRun(signal) {
     error.notExecuted = true;
     throw error;
 }
+
+/**
+ * 派生一个子信号：父 signal 中止时随之中止（reason 相同），超过 timeoutMs 时以 TimeoutError 中止
+ * 并发请求各自计时用：一路超时只中止这一路，用户停止经父 signal 中止全部
+ * @param {AbortSignal|null|undefined} parentSignal
+ * @param {Object} [options]
+ * @param {number} [options.timeoutMs] 非正数或缺省时不计时
+ * @returns {{ signal: AbortSignal, stopTimer: () => void, dispose: () => void }}
+ *   stopTimer 只清计时器（流式响应头到达后仍要随父 signal 中止）；dispose 同时解除与父 signal 的关联
+ */
+export function linkAbortSignal(parentSignal, { timeoutMs } = {}) {
+    const controller = new AbortController();
+    const abortFromParent = () => controller.abort(parentSignal.reason);
+    if (parentSignal?.aborted) {
+        abortFromParent();
+    } else {
+        parentSignal?.addEventListener('abort', abortFromParent, { once: true });
+    }
+    const timeoutId =
+        Number.isFinite(timeoutMs) && timeoutMs > 0
+            ? setTimeout(
+                  () => controller.abort(new DOMException('Request timeout', 'TimeoutError')),
+                  timeoutMs
+              )
+            : null;
+    const stopTimer = () => clearTimeout(timeoutId);
+    return {
+        signal: controller.signal,
+        stopTimer,
+        dispose() {
+            stopTimer();
+            parentSignal?.removeEventListener('abort', abortFromParent);
+        }
+    };
+}

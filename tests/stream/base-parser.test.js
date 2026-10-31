@@ -371,7 +371,7 @@ describe('finalizeStreamWithError 部分内容', () => {
         state.xmlToolCallingEnabled = false;
     });
 
-    it('有部分内容时保留正文并标注已保存', () => {
+    it('有部分内容时只保存模型的实际输出，错误文案不进正文', () => {
         const sink = createFakeSink();
         const parser = new BaseStreamParser('session_1', sink);
         parser.textContent = '部分';
@@ -379,10 +379,25 @@ describe('finalizeStreamWithError 部分内容', () => {
         parser.finalizeStreamWithError('network_error', '连接中断');
 
         expect(sink.renderError.mock.calls[0][0]).toContain('stream-error-partial-save');
-        const [parts] = sink.commitError.mock.calls[0];
-        expect(parts).toEqual([
-            expect.objectContaining({ type: 'text', text: '部分\n\n连接中断' })
-        ]);
+        const [parts, , , errorInfo] = sink.commitError.mock.calls[0];
+        expect(parts).toEqual([expect.objectContaining({ type: 'text', text: '部分' })]);
+        expect(errorInfo).toEqual(
+            expect.objectContaining({ errorCode: 'network_error', errorMessage: '连接中断' })
+        );
+    });
+
+    it('渲染与落库之前先让 sink 切换续作轮的错误渲染目标', () => {
+        const sink = createFakeSink({ continuation: true });
+        const calls = [];
+        sink.beginErrorReply = vi.fn(() => calls.push('begin'));
+        sink.renderFinalText.mockImplementation(() => calls.push('render'));
+        sink.commitError.mockImplementation(() => calls.push('commit'));
+        const parser = new BaseStreamParser('session_1', sink);
+        parser.textContent = '续作轮的部分输出';
+
+        parser.finalizeStreamWithError('network_error', '连接中断');
+
+        expect(calls).toEqual(['begin', 'render', 'commit']);
     });
 
     it('没有任何内容时只展示错误块', () => {
@@ -393,6 +408,41 @@ describe('finalizeStreamWithError 部分内容', () => {
 
         expect(sink.renderError.mock.calls[0][0]).not.toContain('stream-error-partial-save');
         expect(sink.commitError.mock.calls[0][0]).toEqual([]);
+    });
+});
+
+describe('流内错误提示', () => {
+    beforeEach(async () => {
+        const { eventBus } = await import('../../js/core/events.js');
+        eventBus.emit.mockClear();
+        state.sessions = [{ id: 'session_2', name: '写作助手' }];
+    });
+
+    it('前台会话原样提示', async () => {
+        const { eventBus } = await import('../../js/core/events.js');
+        const parser = new BaseStreamParser('session_1', createFakeSink());
+
+        parser.notifyStreamError('API 错误 (429): 限流');
+
+        expect(eventBus.emit).toHaveBeenCalledWith('ui:notification', {
+            message: 'API 错误 (429): 限流',
+            type: 'error',
+            duration: 8000
+        });
+    });
+
+    it('后台会话的提示带上会话名', async () => {
+        const { eventBus } = await import('../../js/core/events.js');
+        const sink = createFakeSink();
+        sink.isBackground.mockReturnValue(true);
+        const parser = new BaseStreamParser('session_2', sink);
+
+        parser.notifyStreamError('API 错误 (429): 限流');
+
+        expect(eventBus.emit).toHaveBeenCalledWith(
+            'ui:notification',
+            expect.objectContaining({ message: '「写作助手」API 错误 (429): 限流' })
+        );
     });
 });
 

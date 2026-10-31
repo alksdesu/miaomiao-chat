@@ -224,6 +224,11 @@
     animation: pulse 1.5s var(--ease) infinite;
 }
 
+.session-generating.session-task-failed {
+    color: var(--md-coral);
+    animation: none;
+}
+
 .session-actions {
     display: flex;
     flex-shrink: 0;

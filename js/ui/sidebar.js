@@ -5,6 +5,7 @@
 
 import { state, elements } from '../core/state.js';
 import { eventBus } from '../core/events.js';
+import { requestTaskRegistry } from '../core/request-task-registry.js';
 import {
     switchToSession,
     deleteSession,
@@ -206,12 +207,17 @@ function buildSessionElement(session, matchedMessages, currentQuery, isActive, h
     const sessionNameHTML = currentQuery
         ? highlightMatch(session.name, currentQuery)
         : escapeHtml(session.name);
+    const taskStatusHTML = hasBackgroundTask
+        ? '<span class="session-generating">生成中...</span>'
+        : requestTaskRegistry.hasFailure(session.id)
+          ? '<span class="session-generating session-task-failed">生成失败</span>'
+          : '';
 
     // eslint-disable-next-line no-restricted-syntax -- 已审计：静态HTML/已escapeHtml/safeMarkedParse输出
     sessionEl.innerHTML = `
         <div class="session-info">
             <span class="session-name" title="${escapeHtml(session.name)}">${sessionNameHTML}</span>
-            ${hasBackgroundTask ? '<span class="session-generating">生成中...</span>' : ''}
+            ${taskStatusHTML}
         </div>
         <div class="session-actions">
             <button class="session-action-btn pin-session-btn${session.pinned ? ' pinned' : ''}" title="${session.pinned ? '取消置顶' : '置顶会话'}" aria-label="${session.pinned ? '取消置顶' : '置顶会话'}">

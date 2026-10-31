@@ -45,6 +45,10 @@ vi.mock('../../js/utils/logger.js', () => ({
     logger: { warn: vi.fn(), debug: vi.fn(), error: vi.fn(), info: vi.fn() }
 }));
 
+vi.mock('../../js/core/events.js', () => ({
+    eventBus: { emit: vi.fn(), on: vi.fn() }
+}));
+
 import { state } from '../../js/core/state.js';
 import { elements } from '../../js/core/elements.js';
 import { handleClear, initClearChat } from '../../js/ui/clear.js';
@@ -67,11 +71,16 @@ describe('clear', () => {
 
     // ========== handleClear ==========
     describe('handleClear', () => {
-        it('加载中不执行', async () => {
+        it('加载中不执行并提示', async () => {
+            const { eventBus } = await import('../../js/core/events.js');
             state.isLoading = true;
             await handleClear();
             // 加载中提前返回，messagesArea 未被填充欢迎消息
             expect(elements.messagesArea.innerHTML).toBe('');
+            expect(eventBus.emit).toHaveBeenCalledWith(
+                'ui:notification',
+                expect.objectContaining({ type: 'warning' })
+            );
         });
 
         it('用户取消不执行', async () => {

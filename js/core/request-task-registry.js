@@ -18,6 +18,8 @@ export class RequestTaskRegistry {
     constructor() {
         this.tasksBySession = new Map();
         this.tasksById = new Map();
+        // 后台出错、用户还没回去查看的会话，侧栏据此标出失败
+        this.failedSessions = new Set();
     }
 
     create({ sessionId, abortController, requestContext = null }) {
@@ -26,6 +28,7 @@ export class RequestTaskRegistry {
         const existing = this.tasksBySession.get(sessionId);
         if (existing && !TERMINAL_PHASES.has(existing.phase)) return null;
         if (existing) this.finish(existing, existing.phase, { reason: 'terminal-replaced' });
+        this.clearFailure(sessionId);
 
         const id = nextRequestId();
         let resolveCompletion;
@@ -159,6 +162,7 @@ export class RequestTaskRegistry {
         task.lastActivityAt = Date.now();
         if (state.backgroundTasks.get(task.sessionId) === task) {
             state.backgroundTasks.delete(task.sessionId);
+            if (phase === 'error') this.failedSessions.add(task.sessionId);
             emitTaskListChanged();
         }
         this.tasksBySession.delete(task.sessionId);
@@ -168,9 +172,23 @@ export class RequestTaskRegistry {
         return true;
     }
 
+    hasFailure(sessionId) {
+        return this.failedSessions.has(sessionId);
+    }
+
+    /**
+     * 用户回到会话或重新发起请求后，后台失败标记不再需要
+     */
+    clearFailure(sessionId) {
+        if (!this.failedSessions.delete(sessionId)) return false;
+        emitTaskListChanged();
+        return true;
+    }
+
     clearForTests() {
         this.tasksBySession.clear();
         this.tasksById.clear();
+        this.failedSessions.clear();
     }
 }
 

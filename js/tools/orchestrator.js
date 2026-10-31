@@ -34,18 +34,21 @@ import { validateToolPairings, ToolMode } from '../messages/schema.js';
 import { applyToolResultsToMessages } from '../messages/tool-results.js';
 import { writeToolResultsToBackgroundSession } from '../messages/sync.js';
 import { isToolNotFoundError } from './tool-errors.js';
+import { withSessionLabel } from '../api/request-notices.js';
 
-// 模块级指针：仅保存"最后一个 in-flight controller"，供 abortToolExecution 外部触发取消
+// 模块级指针：只保存没有请求任务的那次执行（"最后一个"），有任务的按任务 id 记在 taskAbortControllers，
+// 不传任务的取消因此不会中止其他会话的后台工具执行
 // 所有读 .signal/.aborted 必须走 handleToolCallStream 内的局部 ctrl，杜绝 await 让出后被覆盖/清空的 null 竞态
 // （sink.js 非 await 触发 + resend 链路套娃 → 同模块并发两个 handleToolCallStream 确有发生）
-let currentAbortController = null;
+let untrackedAbortController = null;
 const taskAbortControllers = new Map();
 
 /**
  * 取消正在进行的工具执行
+ * @param {Object|null} [task] - 请求任务；不传时只取消没有任务的那次执行
  */
 export function abortToolExecution(task = null) {
-    const controller = task ? taskAbortControllers.get(task.id) : currentAbortController;
+    const controller = task ? taskAbortControllers.get(task.id) : untrackedAbortController;
     controller?.abort();
 }
 
@@ -746,7 +749,13 @@ function setTaskToolPending(task, pending) {
     }
 }
 
-function finishToolTask(task, phase, detail = null) {
+/**
+ * 结束挂起在工具调用或续作上的任务：清除挂起标记，状态机与任务表按 phase 收口
+ * @param {Object|null} task
+ * @param {string} phase - RequestState
+ * @param {*} [detail] - 出错原因，随状态机与任务表记录
+ */
+export function finishToolTask(task, phase, detail = null) {
     setTaskToolPending(task, false);
     if (!task || !requestTaskRegistry.owns(task)) return;
     requestTaskRegistry.setPhase(task, phase);
@@ -795,11 +804,12 @@ export async function handleToolCallStream(toolCalls, context = {}) {
     // try 外提升：finally 需访问本次调用持有的 ctrl 做自指清理
     // （局部持有 ctrl 而非读模块变量是修 .signal 读到 null 的关键，模块变量随时可能被并发调用覆盖/置空）
     const ctrl = new AbortController();
-    currentAbortController = ctrl;
     if (task) {
         taskAbortControllers.set(task.id, ctrl);
         requestTaskRegistry.setToolAbortController(task, ctrl);
         setTaskToolPending(task, true);
+    } else {
+        untrackedAbortController = ctrl;
     }
 
     try {
@@ -865,6 +875,13 @@ export async function handleToolCallStream(toolCalls, context = {}) {
                 finishToolTask(task, RequestState.ERROR, {
                     message: '工具结果未能写回源会话'
                 });
+                eventBus.emit('ui:notification', {
+                    message: withSessionLabel(
+                        sourceSessionId,
+                        '的工具结果未能写回，后续回复已停止'
+                    ),
+                    type: 'error'
+                });
                 return;
             }
             const { resendWithToolResults } = await import('../api/handler.js');
@@ -912,22 +929,28 @@ export async function handleToolCallStream(toolCalls, context = {}) {
             result: { content: error.message, is_error: true },
             isError: true
         }));
-        if (!isTaskForeground(task, sourceSessionId)) {
-            await writeToolResultsToBackgroundSession(sourceSessionId, errorResults);
-        } else {
-            writeToolResultsBackToState(errorResults);
+        const background = !isTaskForeground(task, sourceSessionId);
+        try {
+            if (background) {
+                await writeToolResultsToBackgroundSession(sourceSessionId, errorResults);
+            } else {
+                writeToolResultsBackToState(errorResults);
+            }
+        } catch (writeError) {
+            logger.error('[Orchestrator] 工具失败结果写回失败:', writeError);
         }
 
         finishToolTask(task, RequestState.ERROR, error);
 
+        const message = `工具调用失败: ${error.message}`;
         eventBus.emit('ui:notification', {
-            message: `工具调用失败: ${error.message}`,
+            message: background ? withSessionLabel(sourceSessionId, message) : message,
             type: 'error'
         });
     } finally {
         // 仅清自己写入的那个；并发场景下若已被后到者覆盖，保留对方的指针让 abortToolExecution 仍可工作
-        if (currentAbortController && currentAbortController === ctrl) {
-            currentAbortController = null;
+        if (untrackedAbortController === ctrl) {
+            untrackedAbortController = null;
         }
         if (task && taskAbortControllers.get(task.id) === ctrl) {
             taskAbortControllers.delete(task.id);

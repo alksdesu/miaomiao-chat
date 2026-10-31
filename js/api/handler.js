@@ -52,6 +52,29 @@ function isTaskForeground(task, sessionId) {
     );
 }
 
+const TERMINAL_TASK_PHASES = new Set([
+    RequestState.COMPLETED,
+    RequestState.ERROR,
+    RequestState.CANCELLED
+]);
+
+/**
+ * 续作发出前任务已被取消或中止：仍登记着的任务就地收口，避免既不发请求也永远不结束
+ */
+function settleInactiveTask(task) {
+    if (!requestTaskRegistry.owns(task)) return;
+    const phase = TERMINAL_TASK_PHASES.has(task.phase)
+        ? task.phase
+        : task.abortController?.signal?.aborted
+          ? RequestState.CANCELLED
+          : RequestState.ERROR;
+    task.isToolCallPending = false;
+    if (requestStateMachine.owns(task) && requestStateMachine.isRequestActive()) {
+        requestStateMachine.transitionFor(task, phase);
+    }
+    requestTaskRegistry.finish(task, phase, { reason: 'inactive-continuation' });
+}
+
 /**
  * 发送到 API（主入口）
  */
@@ -62,9 +85,18 @@ export async function sendToAPI(options = {}) {
             requestId: existingTask.id,
             phase: existingTask.phase
         });
+        settleInactiveTask(existingTask);
         return false;
     }
     const ctx = createHandlerContext(existingTask);
+    if (!ctx.sessionId) {
+        logger.warn('[sendToAPI] 没有当前会话，无法发送');
+        eventBus.emit('ui:notification', {
+            message: '没有可用的会话，请先新建会话后再发送',
+            type: 'error'
+        });
+        return false;
+    }
     const task =
         existingTask ||
         requestTaskRegistry.create({
@@ -114,7 +146,8 @@ export async function sendToAPI(options = {}) {
                       requestId: task.id,
                       timeoutMs: ctx.timeoutMs
                   })
-            : requestStateMachine.transition(RequestState.SENDING, {
+            : requestStateMachine.settle() &&
+              requestStateMachine.transition(RequestState.SENDING, {
                   abortController: ctx.abortController,
                   sessionId: ctx.sessionId,
                   requestId: task.id,
@@ -123,6 +156,11 @@ export async function sendToAPI(options = {}) {
         if (!transitioned) {
             requestTaskRegistry.finish(task, RequestState.ERROR, {
                 reason: 'state-transition-rejected'
+            });
+            eventBus.emit('ui:notification', {
+                message: '上一个请求尚未结束，本次发送没有执行',
+                type: 'warning',
+                duration: 3000
             });
             return false;
         }
@@ -135,34 +173,41 @@ export async function sendToAPI(options = {}) {
         logger.warn(`请求超时（${ctx.timeoutMs}ms），已自动取消`);
     }, ctx.timeoutMs);
 
-    if (isTaskForeground(task, ctx.sessionId)) {
-        resolvePlaceholder(ctx);
-    } else {
-        ctx.assistantMessageEl = null;
-        ctx.isContinuationMode = task.isSavingContinuation === true;
-        ctx.isImageRetryMode = task.isImageRetry === true;
-    }
-    requestTaskRegistry.setAssistantElement(task, ctx.assistantMessageEl);
-
-    // continuation 模式累计统计，image-retry 与 new 模式重置
-    if (!ctx.isContinuationMode || !task.requestStats) {
-        task.requestStats = new StreamStats();
-    } else {
-        logger.debug('[Handler] Continuation 模式，保留原有统计数据');
-    }
-    ctx.requestStats = task.requestStats;
-
     let requestSucceeded = false;
     try {
+        if (isTaskForeground(task, ctx.sessionId)) {
+            resolvePlaceholder(ctx);
+        } else {
+            ctx.assistantMessageEl = null;
+            ctx.isContinuationMode = task.isSavingContinuation === true;
+            ctx.isImageRetryMode = task.isImageRetry === true;
+        }
+        requestTaskRegistry.setAssistantElement(task, ctx.assistantMessageEl);
+
+        // continuation 模式累计统计，image-retry 与 new 模式重置
+        if (!ctx.isContinuationMode || !task.requestStats) {
+            task.requestStats = new StreamStats();
+        } else {
+            logger.debug('[Handler] Continuation 模式，保留原有统计数据');
+        }
+        ctx.requestStats = task.requestStats;
+
+        // 占位已建立，快照构造失败（如生图参数不合法）按请求错误展示并落库
+        if (ctx.setupError) throw ctx.setupError;
+
         const { requestFormat, adapter } = ctx;
         const canMultiStream = adapter?.supportsMultiStream !== false;
         const canMultipleReplies = adapter?.supportsMultipleReplies !== false;
 
         // 流式多回复路径
         if (ctx.streamEnabled && ctx.replyCount > 1 && canMultiStream && canMultipleReplies) {
+            // 各个并发请求在 multi-stream 里单独计连接超时
             clearTimeout(ctx.timeoutId);
             ctx.timeoutId = null;
             await handleMultiStreamResponses(ctx);
+            if (task.phase === RequestState.ERROR || task.phase === RequestState.CANCELLED) {
+                return false;
+            }
             requestSucceeded = true;
             if (!task.isToolCallPending) {
                 requestTaskRegistry.setPhase(task, RequestState.COMPLETED);
@@ -239,15 +284,33 @@ export async function sendToAPI(options = {}) {
 }
 
 /**
+ * sendToAPI 自身抛出的异常（如错误处理器落库失败）：告知用户，并收口挂在已结束任务上的状态机
+ */
+function reportUnhandledSendFailure(error) {
+    logger.error('[handler] sendToAPI 失败:', error);
+    eventBus.emit('ui:notification', {
+        message: `发送失败：${error?.message || String(error)}`,
+        type: 'error'
+    });
+    // 任务已结束而状态机还停在进行中时，发送按钮会一直显示为取消
+    if (
+        requestStateMachine.isRequestActive() &&
+        !requestTaskRegistry.getById(requestStateMachine.requestId)
+    ) {
+        requestStateMachine.forceReset({ silent: true });
+    }
+}
+
+/**
  * 初始化 API 处理器：注册事件监听
  */
 export function initAPIHandler() {
     eventBus.on('api:send-requested', () => {
-        sendToAPI().catch((err) => logger.error('[handler] sendToAPI 失败:', err));
+        sendToAPI().catch(reportUnhandledSendFailure);
     });
 
     eventBus.on('api:resend-requested', () => {
-        sendToAPI().catch((err) => logger.error('[handler] sendToAPI 失败:', err));
+        sendToAPI().catch(reportUnhandledSendFailure);
     });
 
     eventBus.on('api:cancel-requested', () => {
@@ -263,6 +326,11 @@ export function initAPIHandler() {
         if (task && !requestStateMachine.owns(task)) {
             requestTaskRegistry.setPhase(task, RequestState.ERROR);
             logger.debug('[Handler] 后台任务流错误已按任务收口');
+            return;
+        }
+        // 已结束任务的迟到错误：状态机此时可能已属于紧接着发起的新请求
+        if (!task && requestId && requestStateMachine.requestId !== requestId) {
+            logger.debug('[Handler] 忽略已结束任务的流错误', { requestId });
             return;
         }
 

@@ -154,6 +154,59 @@ describe('handleToolCallStream 跨会话归属', () => {
         expect(state.messages[0].parts[0].state).toBe('pending');
         expect(state.isToolCallPending).toBe(false);
     });
+
+    function createDetachedTask() {
+        const task = requestTaskRegistry.create({
+            sessionId: 'session-b',
+            abortController: new AbortController()
+        });
+        requestTaskRegistry.detach(task);
+        state.sessions = [{ id: 'session-b', name: '后台会话' }];
+        return task;
+    }
+
+    it('后台工具结果没能写回时结束任务，并在提示里标明会话', async () => {
+        const { eventBus } = await import('../../js/core/events.js');
+        const task = createDetachedTask();
+        writeToolResultsToBackgroundSession.mockResolvedValueOnce(0);
+
+        await handleToolCallStream([{ id: 'tc_lost', name: 'search', arguments: {} }], {
+            sourceSessionId: 'session-b',
+            task
+        });
+
+        expect(resendWithToolResults).not.toHaveBeenCalled();
+        expect(requestTaskRegistry.owns(task)).toBe(false);
+        expect(requestTaskRegistry.hasFailure('session-b')).toBe(true);
+        expect(eventBus.emit).toHaveBeenCalledWith(
+            'ui:notification',
+            expect.objectContaining({
+                type: 'error',
+                message: expect.stringContaining('「后台会话」')
+            })
+        );
+    });
+
+    it('后台工具流程失败时提示带会话名，失败结果写回出错也照样结束任务', async () => {
+        const { eventBus } = await import('../../js/core/events.js');
+        const task = createDetachedTask();
+        resendWithToolResults.mockRejectedValueOnce(new Error('续作失败'));
+        writeToolResultsToBackgroundSession
+            .mockResolvedValueOnce(1)
+            .mockRejectedValueOnce(new Error('写回失败'));
+
+        await handleToolCallStream([{ id: 'tc_fail', name: 'search', arguments: {} }], {
+            sourceSessionId: 'session-b',
+            task
+        });
+
+        expect(requestTaskRegistry.owns(task)).toBe(false);
+        expect(task.isToolCallPending).toBe(false);
+        expect(eventBus.emit).toHaveBeenCalledWith(
+            'ui:notification',
+            expect.objectContaining({ message: '「后台会话」工具调用失败: 续作失败' })
+        );
+    });
 });
 
 // ========== executeToolCalls ==========
@@ -638,6 +691,26 @@ describe('handleToolCallStream 停止后释放任务', () => {
     afterEach(() => {
         executeTool.mockReset();
         executeTool.mockImplementation(async () => ({ text: 'result' }));
+    });
+
+    it('不指定任务的取消不会中止属于某个请求任务的工具执行', async () => {
+        const task = requestTaskRegistry.create({
+            sessionId: 'session-a',
+            abortController: new AbortController()
+        });
+        let seenSignal = null;
+        executeTool.mockImplementationOnce(async (_name, _args, options) => {
+            abortToolExecution();
+            seenSignal = options.signal;
+            return { content: 'OK' };
+        });
+
+        await handleToolCallStream([{ id: 't1', name: 'search', arguments: {} }], {
+            sourceSessionId: 'session-a',
+            task
+        });
+
+        expect(seenSignal.aborted).toBe(false);
     });
 
     it('停止后不等排队动作跑完就结束任务，输入框随即可用', async () => {

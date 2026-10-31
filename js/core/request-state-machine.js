@@ -23,6 +23,12 @@ export const RequestState = {
     CANCELLED: 'cancelled' // 请求取消（临时状态，会立即转回 IDLE）
 };
 
+const TERMINAL_STATES = Object.freeze([
+    RequestState.COMPLETED,
+    RequestState.ERROR,
+    RequestState.CANCELLED
+]);
+
 /**
  * 状态转换规则
  * 定义哪些状态可以转换到哪些状态
@@ -560,6 +566,22 @@ export class RequestStateMachine {
      */
     isBusy() {
         return this.state !== RequestState.IDLE;
+    }
+
+    /**
+     * 请求是否仍在进行：结束后等待自动回 IDLE 的过渡态不算
+     */
+    isRequestActive() {
+        return this.state !== RequestState.IDLE && !TERMINAL_STATES.includes(this.state);
+    }
+
+    /**
+     * 结束过渡态立即回到 IDLE，紧接着发起的新请求不必等自动回 IDLE 的定时器
+     * @returns {boolean} 当前是否处于 IDLE
+     */
+    settle() {
+        if (TERMINAL_STATES.includes(this.state)) this.transition(RequestState.IDLE);
+        return this.state === RequestState.IDLE;
     }
 
     /**

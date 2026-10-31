@@ -5,6 +5,7 @@
 
 import { state } from '../core/state.js';
 import { elements } from '../core/elements.js';
+import { eventBus } from '../core/events.js';
 import { saveCurrentSessionMessages } from '../state/sessions.js';
 import { showConfirmDialog } from '../utils/dialogs.js';
 import { replaceAllMessages } from '../core/state-mutations.js';
@@ -17,7 +18,10 @@ import { createWelcomeMessage } from './welcome-message.js';
  */
 export async function handleClear() {
     // 流式加载中不允许清空
-    if (state.isLoading) return;
+    if (state.isLoading) {
+        eventBus.emit('ui:notification', { message: '请等待回复完成后再清空', type: 'warning' });
+        return;
+    }
 
     const confirmed = await showConfirmDialog('确定要清空当前会话的所有对话吗？', '确认清空');
     if (!confirmed) return;

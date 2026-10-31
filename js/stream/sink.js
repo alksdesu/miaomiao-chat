@@ -12,14 +12,20 @@ import { eventBus } from '../core/events.js';
 import {
     updateStreamingMessage,
     renderFinalContentWithThinking,
-    renderFinalTextWithThinking
+    renderFinalTextWithThinking,
+    disposeStreamRenderSession
 } from './helpers.js';
 import { appendStreamStats } from './stats.js';
 import { appendStopNotice } from '../messages/render-stop-notice.js';
 import { saveStreamSnapshotThrottled, clearStreamSnapshot } from '../state/stream-snapshot.js';
 import { saveAssistantMessage, saveAssistantMessageAsync } from '../messages/sync.js';
 import { setCurrentMessageIndex } from '../messages/dom-sync.js';
-import { handleToolCallStream, startPauseTurnContinuation } from '../tools/orchestrator.js';
+import {
+    handleToolCallStream,
+    startPauseTurnContinuation,
+    finishToolTask
+} from '../tools/orchestrator.js';
+import { splitContinuationErrorPlaceholder } from '../api/placeholder-resolver.js';
 import { requestStateMachine, RequestState } from '../core/request-state-machine.js';
 import { requestTaskRegistry } from '../core/request-task-registry.js';
 
@@ -31,6 +37,7 @@ import { requestTaskRegistry } from '../core/request-task-registry.js';
  * @property {(text: string, thinking: string) => void} streamingUpdate - 流式增量 UI 更新
  * @property {(contentParts: Array, thinking: string, grounding?: Object) => void} renderFinalContent
  * @property {(text: string, thinking: string, grounding?: Object) => void} renderFinalText
+ * @property {() => void} beginErrorReply - 流内出错收尾前调用：续作轮的错误改写到新建的占位元素（BufferedSink no-op）
  * @property {(errorHtml: string) => void} renderError - 错误 HTML 渲染到 DOM（BufferedSink no-op）
  * @property {(stop: Object|null) => void} renderStopNotice - 截断 / 拦截 / 拒答提示（BufferedSink no-op）
  * @property {(stats: import('./stats.js').StreamStats) => void} appendStats
@@ -183,10 +190,16 @@ export class DefaultSink {
         return idx;
     }
 
+    /**
+     * 等待已发起的后台提交；多个等待者并发调用时各自等完整批次，不把别人还在等的提交移走
+     */
     async waitForCommits() {
-        if (this.pendingCommits.length === 0) return;
-        const commits = this.pendingCommits.splice(0);
-        await Promise.all(commits);
+        const commits = [...this.pendingCommits];
+        if (commits.length === 0) return;
+        const results = await Promise.allSettled(commits);
+        this.pendingCommits = this.pendingCommits.filter((commit) => !commits.includes(commit));
+        const failure = results.find((result) => result.status === 'rejected');
+        if (failure) throw failure.reason;
     }
 
     _resolveMeta(meta) {
@@ -228,13 +241,17 @@ export class DefaultSink {
             )
             .catch((error) => {
                 logger.error('[Parser] 工具调用流程失败:', error);
-                if (this.task && requestTaskRegistry.owns(this.task)) {
-                    this.task.isToolCallPending = false;
-                }
+                // handler 收尾时任务还挂起着，没人再结束它
+                finishToolTask(this.task, RequestState.ERROR, error);
             });
     }
 
     triggerPauseTurnResend(assistantMessageEl) {
+        // 续作要等提交落库后才发起，先同步挂起任务，避免 handler 收尾时把任务当作已结束清理
+        if (this.task) {
+            this.task.isToolCallPending = true;
+            requestTaskRegistry.setPhase(this.task, RequestState.TOOL_CALLING);
+        }
         this.waitForCommits()
             .then(() =>
                 startPauseTurnContinuation(
@@ -243,7 +260,20 @@ export class DefaultSink {
                     this.task
                 )
             )
-            .catch((error) => logger.error('[Parser] pause_turn continuation 失败:', error));
+            .catch((error) => {
+                logger.error('[Parser] pause_turn continuation 失败:', error);
+                finishToolTask(this.task, RequestState.ERROR, error);
+            });
+    }
+
+    /**
+     * 续作轮出错时错误单独成条：最终渲染、错误块与统计改写到复用元素之后新建的占位元素
+     */
+    beginErrorReply() {
+        if (!this.task || this.task.isSavingContinuation !== true || this.isBackground()) return;
+        disposeStreamRenderSession(this.task);
+        const errorMessageEl = splitContinuationErrorPlaceholder(this.task.assistantMessageEl);
+        if (errorMessageEl) requestTaskRegistry.setAssistantElement(this.task, errorMessageEl);
     }
 }
 
@@ -293,6 +323,7 @@ export class BufferedSink {
     }
 
     // 多流最终渲染由 multi-stream 外层 renderReplyWithSelector 统一处理
+    beginErrorReply() {}
     renderFinalContent() {}
     renderFinalText() {}
     renderError() {}
