@@ -69,6 +69,13 @@ export const TOOL_INLINE_IMAGE_MAX = 20 * 1024 * 1024;
 /** 工具返回累计图片上限（字节），多图累计超限后续转占位 */
 export const TOOL_INLINE_IMAGE_TOTAL_MAX = 50 * 1024 * 1024;
 
+/** Claude 原生模式下在本地执行的原生工具：executor 按这些名字交给原生实现 */
+export const CLAUDE_NATIVE_TOOL_IDS = Object.freeze([
+    'computer',
+    'bash',
+    'str_replace_based_edit_tool'
+]);
+
 // ========== 导入/导出 ==========
 
 /** 导入备份文件大小上限（字节），防 OOM */

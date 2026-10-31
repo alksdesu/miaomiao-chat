@@ -13,6 +13,7 @@ vi.mock('../../js/core/state.js', () => ({
             requireConfirmation: false
         },
         currentSessionId: 'session-a',
+        sessions: [],
         bashConfig: { requireConfirmation: false }
     }
 }));
@@ -46,6 +47,8 @@ import {
     resetSessionGrants
 } from '../../js/tools/permissions.js';
 import { showConfirmDialog } from '../../js/utils/dialogs.js';
+import { eventBus } from '../../js/core/events.js';
+import { EVENTS } from '../../js/core/events-registry.js';
 
 beforeEach(() => {
     vi.clearAllMocks();
@@ -57,6 +60,10 @@ beforeEach(() => {
         requireConfirmation: false
     };
     state.currentSessionId = 'session-a';
+    state.sessions = [
+        { id: 'session-a', name: '整理桌面' },
+        { id: 'session-b', name: '后台下载' }
+    ];
     state.bashConfig = { requireConfirmation: false };
     resetSessionGrants('session-a');
     resetSessionGrants('session-b');
@@ -289,7 +296,7 @@ describe('工具确认作用域', () => {
         expect(showConfirmDialog).toHaveBeenCalledTimes(2);
     });
 
-    it('确认结果返回前任务被取消时不授予会话权限', async () => {
+    it('确认结果返回前任务被取消时抛 AbortError，不授予会话权限', async () => {
         state.toolPermissions.requireConfirmation = true;
         const controller = new AbortController();
         let resolveDialog;
@@ -312,7 +319,7 @@ describe('工具确认作用域', () => {
         controller.abort();
         resolveDialog({ confirmed: true, persistForSession: true });
 
-        await expect(pending).resolves.toBe(false);
+        await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
         await confirmToolExecutionIfRequired(
             'search',
             'search',
@@ -323,6 +330,215 @@ describe('工具确认作用域', () => {
             }
         );
         expect(showConfirmDialog).toHaveBeenCalledTimes(2);
+    });
+
+    it('停止导致弹窗关闭时不记成用户拒绝，同一轮再次请求重新弹窗', async () => {
+        state.bashConfig.requireConfirmation = true;
+        const controller = new AbortController();
+        showConfirmDialog.mockImplementationOnce(async () => {
+            controller.abort();
+            return { confirmed: false, persistForSession: false };
+        });
+        const args = { action: 'left_click', coordinate: [1, 2] };
+        const options = { sessionId: 'session-a', turnId: 'turn-stop' };
+
+        await expect(
+            confirmToolExecutionIfRequired('computer', 'computer', args, {
+                ...options,
+                signal: controller.signal
+            })
+        ).rejects.toMatchObject({ name: 'AbortError' });
+        showConfirmDialog.mockResolvedValueOnce({ confirmed: true, persistForSession: false });
+
+        await expect(
+            confirmToolExecutionIfRequired('computer', 'computer', args, options)
+        ).resolves.toBe(true);
+        expect(showConfirmDialog).toHaveBeenCalledTimes(2);
+    });
+
+    it('已停止时直接抛 AbortError，本会话已授权或无需确认也不放行', async () => {
+        state.bashConfig.requireConfirmation = true;
+        showConfirmDialog.mockResolvedValueOnce({ confirmed: true, persistForSession: true });
+        await confirmToolExecutionIfRequired(
+            'computer',
+            'computer',
+            {},
+            { sessionId: 'session-a' }
+        );
+        const controller = new AbortController();
+        controller.abort();
+
+        await expect(
+            confirmToolExecutionIfRequired(
+                'computer',
+                'computer',
+                {},
+                { sessionId: 'session-a', signal: controller.signal }
+            )
+        ).rejects.toMatchObject({ name: 'AbortError' });
+        state.bashConfig.requireConfirmation = false;
+        await expect(
+            confirmToolExecutionIfRequired(
+                'search',
+                'search',
+                {},
+                { sessionId: 'session-a', signal: controller.signal }
+            )
+        ).rejects.toMatchObject({ name: 'AbortError' });
+        expect(showConfirmDialog).toHaveBeenCalledTimes(1);
+    });
+
+    it('拿不到轮次 id 时不复用确认结果，旧的批准不会沿用到之后的请求', async () => {
+        state.toolPermissions.requireConfirmation = true;
+        showConfirmDialog.mockResolvedValue({ confirmed: true, persistForSession: false });
+
+        await confirmToolExecutionIfRequired('search', 'search', { q: 'x' }, {});
+        await confirmToolExecutionIfRequired('search', 'search', { q: 'x' }, {});
+
+        expect(showConfirmDialog).toHaveBeenCalledTimes(2);
+    });
+
+    it('确认前或确认期间停止时抛出的 AbortError 标记为未执行', async () => {
+        state.bashConfig.requireConfirmation = true;
+        const controller = new AbortController();
+        controller.abort();
+
+        await expect(
+            confirmToolExecutionIfRequired(
+                'computer',
+                'computer',
+                {},
+                { sessionId: 'session-a', signal: controller.signal }
+            )
+        ).rejects.toMatchObject({ name: 'AbortError', notExecuted: true });
+    });
+});
+
+describe('工具确认弹窗内容', () => {
+    beforeEach(() => {
+        state.bashConfig.requireConfirmation = true;
+    });
+
+    async function confirmMessage(toolId, args, options = {}) {
+        await confirmToolExecutionIfRequired(toolId, toolId, args, {
+            sessionId: 'session-a',
+            turnId: `turn-${Math.random()}`,
+            ...options
+        });
+        const [message, title, dialogOptions] = showConfirmDialog.mock.calls.at(-1);
+        return { message, title, dialogOptions };
+    }
+
+    it('标出来源会话，用中文描述桌面动作，默认聚焦取消', async () => {
+        const { message, title, dialogOptions } = await confirmMessage('computer', {
+            action: 'left_click',
+            coordinate: [100, 200]
+        });
+
+        expect(title).toBe('工具调用确认');
+        expect(message).toContain('会话：整理桌面');
+        expect(message).toContain('工具：桌面操作');
+        expect(message).toContain('操作：左键单击 (100, 200)');
+        expect(message).not.toContain('{');
+        expect(dialogOptions.defaultFocus).toBe('cancel');
+    });
+
+    it('后台会话的确认标明后台运行', async () => {
+        const { message } = await confirmMessage(
+            'computer',
+            { action: 'type', text: 'hello' },
+            { sessionId: 'session-b' }
+        );
+
+        expect(message).toContain('会话：后台下载（后台运行）');
+        expect(message).toContain('操作：输入文本「hello」');
+    });
+
+    it('命令与文件编辑写出命令和路径', async () => {
+        const bash = await confirmMessage('bash', { command: 'ls -la' });
+        expect(bash.message).toContain('工具：命令行');
+        expect(bash.message).toContain('执行命令：\nls -la');
+
+        const edit = await confirmMessage('str_replace_based_edit_tool', {
+            command: 'str_replace',
+            path: 'notes.txt',
+            old_str: 'a',
+            new_str: 'b'
+        });
+        expect(edit.message).toContain('工具：文件编辑');
+        expect(edit.message).toContain('修改文件 notes.txt\n原文：a\n改为：b');
+
+        const insert = await confirmMessage('str_replace_based_edit_tool', {
+            command: 'insert',
+            path: 'notes.txt',
+            insert_line: 3,
+            insert_text: 'new line'
+        });
+        expect(insert.message).toContain('在 notes.txt 第 3 行后插入文本\n内容：new line');
+    });
+
+    it('命令描述与实际执行取同一个字段', async () => {
+        const { message } = await confirmMessage('computer', {
+            action: 'bash',
+            text: '',
+            command: 'rm -rf build'
+        });
+        expect(message).toContain('执行命令：\nrm -rf build');
+    });
+
+    it('XML 模式内置 computer 工具按 action 描述为命令或文件编辑', async () => {
+        const bash = await confirmMessage('computer', { action: 'bash', text: 'whoami' });
+        expect(bash.message).toContain('工具：命令行');
+        expect(bash.message).toContain('whoami');
+
+        const edit = await confirmMessage('computer', {
+            action: 'str_replace_editor',
+            command: 'create',
+            path: 'a.txt',
+            file_text: 'hi'
+        });
+        expect(edit.message).toContain('工具：文件编辑');
+        expect(edit.message).toContain('创建文件 a.txt\n内容：hi');
+    });
+
+    it('其他工具保留参数摘要', async () => {
+        state.toolPermissions.requireConfirmation = true;
+        const { message } = await confirmMessage('search', { q: 'x' });
+
+        expect(message).toContain('工具：search');
+        expect(message).toContain('参数：{"q":"x"}');
+    });
+});
+
+describe('会话授权的生命周期', () => {
+    beforeEach(() => {
+        state.toolPermissions.requireConfirmation = true;
+        showConfirmDialog.mockResolvedValue({ confirmed: true, persistForSession: true });
+    });
+
+    const confirmIn = (sessionId, turnId) =>
+        confirmToolExecutionIfRequired('search', 'search', {}, { sessionId, turnId });
+
+    it('切换会话不清空授权，后台会话沿用自己的授权', async () => {
+        await confirmIn('session-b', 'turn-1');
+        state.currentSessionId = 'session-a';
+        eventBus.emit(EVENTS.SESSIONS_UPDATED, { sessions: state.sessions });
+
+        await confirmIn('session-b', 'turn-2');
+
+        expect(showConfirmDialog).toHaveBeenCalledTimes(1);
+    });
+
+    it('会话被删除后清除它的授权，其他会话不受影响', async () => {
+        await confirmIn('session-a', 'turn-1');
+        await confirmIn('session-b', 'turn-1');
+        state.sessions = state.sessions.filter((session) => session.id !== 'session-b');
+        eventBus.emit(EVENTS.SESSIONS_UPDATED, { sessions: state.sessions });
+
+        await confirmIn('session-a', 'turn-2');
+        await confirmIn('session-b', 'turn-2');
+
+        expect(showConfirmDialog).toHaveBeenCalledTimes(3);
     });
 });
 

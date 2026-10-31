@@ -77,10 +77,10 @@ export async function computerUseHandler(args) {
     try {
         switch (action) {
             case 'bash':
-                return await handleBash(args);
+                return await runBashCommand(args);
 
             case 'str_replace_editor':
-                return await handleTextEditor(args);
+                return await runTextEditorCommand(args);
 
             default:
                 throw new Error(
@@ -93,181 +93,29 @@ export async function computerUseHandler(args) {
     }
 }
 
-// ========== 操作处理函数 ==========
-
-/**
- * 执行 Bash 命令
- */
-async function handleBash(args) {
-    // 支持多种参数字段名（向后兼容）
-    // - text: 原始定义
-    // - command: 常用名称
-    // - bash_command: 明确的bash命令字段
-    const command = args.text || args.command || args.bash_command;
-
-    if (!command) {
-        throw new Error(
-            'Missing bash command parameter. Expected one of: text, command, or bash_command'
-        );
-    }
-
-    const result = await window.electronAPI.computerUse_executeBash(command);
-
-    if (!result.success) {
-        throw new Error(result.error || 'Bash execution failed');
-    }
-
-    return {
-        stdout: result.stdout,
-        stderr: result.stderr,
-        exitCode: result.exitCode
-    };
-}
-
-/**
- * 文本编辑器操作
- */
-async function handleTextEditor(args) {
-    const { command, path, file_text, old_str, new_str, insert_line } = args;
-
-    if (!command) {
-        throw new Error('command is required for str_replace_editor action');
-    }
-
-    switch (command) {
-        case 'view':
-            return await viewFile(path);
-
-        case 'create':
-            return await createFile(path, file_text);
-
-        case 'str_replace':
-            return await replaceString(path, old_str, new_str);
-
-        case 'insert':
-            return await insertLine(path, insert_line, file_text);
-
-        default:
-            throw new Error(`Unknown editor command: ${command}`);
-    }
-}
-
-/**
- * 查看文件
- */
-async function viewFile(path) {
-    if (!path) {
-        throw new Error('path is required for view command');
-    }
-
-    const result = await window.electronAPI.computerUse_readFile(path);
-
-    if (!result.success) {
-        throw new Error(result.error || 'Read file failed');
-    }
-
-    return {
-        content: result.content,
-        size: result.size
-    };
-}
-
-/**
- * 创建文件
- */
-async function createFile(path, content) {
-    if (!path || !content) {
-        throw new Error('path and file_text are required for create command');
-    }
-
-    const result = await window.electronAPI.computerUse_writeFile(path, content);
-
-    if (!result.success) {
-        throw new Error(result.error || 'Create file failed');
-    }
-
-    return {
-        path: result.path,
-        size: result.size
-    };
-}
-
-/**
- * 替换字符串
- */
-async function replaceString(path, oldStr, newStr) {
-    if (!path || oldStr === undefined || newStr === undefined) {
-        throw new Error('path, old_str, and new_str are required for str_replace command');
-    }
-
-    // 读取文件
-    const readResult = await window.electronAPI.computerUse_readFile(path);
-    if (!readResult.success) {
-        throw new Error(readResult.error || 'Read file failed');
-    }
-
-    // 替换字符串（要求唯一匹配）
-    const occurrences = readResult.content.split(oldStr).length - 1;
-    if (occurrences === 0) {
-        throw new Error('old_str not found in file');
-    } else if (occurrences > 1) {
-        throw new Error(
-            `old_str found ${occurrences} times, must be unique. Use more context to make it unique.`
-        );
-    }
-    const newContent = readResult.content.replace(oldStr, newStr);
-
-    // 写回文件
-    const writeResult = await window.electronAPI.computerUse_writeFile(path, newContent);
-    if (!writeResult.success) {
-        throw new Error(writeResult.error || 'Write file failed');
-    }
-
-    return {
-        path: writeResult.path,
-        size: writeResult.size,
-        replaced: true
-    };
-}
-
-/**
- * 插入行
- */
-async function insertLine(path, lineNumber, text) {
-    if (!path || lineNumber === undefined || !text) {
-        throw new Error('path, insert_line, and file_text are required for insert command');
-    }
-
-    // 读取文件
-    const readResult = await window.electronAPI.computerUse_readFile(path);
-    if (!readResult.success) {
-        throw new Error(readResult.error || 'Read file failed');
-    }
-
-    // 插入行
-    const lines = readResult.content.split('\n');
-    lines.splice(lineNumber, 0, text);
-    const newContent = lines.join('\n');
-
-    // 写回文件
-    const writeResult = await window.electronAPI.computerUse_writeFile(path, newContent);
-    if (!writeResult.success) {
-        throw new Error(writeResult.error || 'Write file failed');
-    }
-
-    return {
-        path: writeResult.path,
-        size: writeResult.size,
-        inserted: true
-    };
-}
-
 // ========== 标准化工具对象 ==========
 
 import { buildToolFromLegacy } from '../build-tool.js';
+import { runBashCommand, runTextEditorCommand } from '../computer-commands.js';
 import { logger } from '../../utils/logger.js';
+import { state } from '../../core/state.js';
+
+/**
+ * XML 模式下模型可以写出没有声明过的工具调用，执行前必须再确认 Computer Use 仍开着
+ * @returns {{ allowed: boolean, reason?: string, message?: string }}
+ */
+export function checkComputerUsePermission() {
+    return state.computerUseEnabled
+        ? { allowed: true }
+        : {
+              allowed: false,
+              reason: 'computer_use_disabled',
+              message: '无权限执行工具 "computer"：Computer Use 未开启'
+          };
+}
 
 export const computerUse = buildToolFromLegacy('computer', computerUseTool, computerUseHandler, {
     hidden: true,
-    enabled: true
+    enabled: true,
+    checkPermissions: checkComputerUsePermission
 });

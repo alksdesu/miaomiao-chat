@@ -9,7 +9,6 @@ import { saveCurrentConfig } from '../state/config.js';
 import { handleAttachFile } from './input.js';
 import { showNotification } from './notifications.js';
 import { isElectron } from '../utils/platform.js';
-import { setToolEnabled } from '../tools/manager.js';
 import { setMonitorEnabled } from '../devtools/monitor-state.js';
 import { openCronPanel } from './openclaw-cron.js';
 import { openclawClient } from '../api/openclaw.js';
@@ -137,20 +136,9 @@ export function initQuickToggles() {
             state.computerUseEnabled = !state.computerUseEnabled;
             toggleComputerUse.classList.toggle('active', state.computerUseEnabled);
 
-            // 同步设置面板开关
+            // 同步设置面板开关；内置 computer 工具的下发与执行都直接看 state.computerUseEnabled
             const panelSwitch = document.getElementById('computer-use-enabled');
             if (panelSwitch) panelSwitch.checked = state.computerUseEnabled;
-
-            // ⭐ 同步到工具管理器（Computer Use 工具 ID 为 'computer'）
-            try {
-                setToolEnabled('computer', state.computerUseEnabled);
-                logger.debug(
-                    `[Quick Toggle] Computer Use 工具已${state.computerUseEnabled ? '启用' : '禁用'}`
-                );
-            } catch (error) {
-                logger.error('[Quick Toggle] 同步 Computer Use 状态失败:', error);
-                showNotification('Computer Use 状态同步失败', 'error');
-            }
 
             saveCurrentConfig();
         });

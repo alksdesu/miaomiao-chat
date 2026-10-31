@@ -37,7 +37,8 @@ import { CLAUDE_EFFORTS } from '../model-profiles.js';
 import { pushXmlBuiltinToolsNotice } from '../request-notices.js';
 import {
     COMPUTER_MEMBER_PERMISSIONS,
-    COMPUTER_TOOLSET_NAME
+    COMPUTER_TOOLSET_NAME,
+    hasComputerGuiPermission
 } from '../../tools/computer-actions.js';
 import { normalizeClaudeStop } from '../../messages/stop-reason.js';
 
@@ -618,8 +619,6 @@ const CODE_EXECUTION_BETAS = Object.freeze([
     'files-api-2025-04-14'
 ]);
 
-const COMPUTER_GUI_PERMISSIONS = Object.freeze(['mouse', 'keyboard', 'screenshot']);
-
 function isComputerPermissionAllowed(permissions, permission) {
     return permissions?.[permission] !== false;
 }
@@ -696,10 +695,7 @@ function collectBuiltinTools(stateRef, { profile, notices } = {}) {
         const permissions = stateRef.computerUsePermissions;
         const computerType = profile?.computerUse?.type;
         // 鼠标、键盘、截图权限全关时 computer 的每个动作都会被拒，不再声明
-        const guiAllowed = COMPUTER_GUI_PERMISSIONS.some((permission) =>
-            isComputerPermissionAllowed(permissions, permission)
-        );
-        if (computerType && guiAllowed) {
+        if (computerType && hasComputerGuiPermission(permissions)) {
             tools.push(
                 computerType === COMPUTER_TOOLSET_TYPE
                     ? buildComputerToolset(permissions)

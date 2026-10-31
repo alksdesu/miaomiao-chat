@@ -11,11 +11,15 @@ vi.mock('../../js/utils/logger.js', () => ({
 vi.stubGlobal('window', {});
 
 import {
+    COMPUTER_GUI_PERMISSIONS,
     COMPUTER_MEMBER_PERMISSIONS,
+    describeComputerAction,
     executeComputerAction,
     fetchScreenGeometry,
+    hasComputerGuiPermission,
     isComputerToolsetCall,
-    parseKeyCombo
+    parseKeyCombo,
+    releaseHeldMouseButton
 } from '../../js/tools/computer-actions.js';
 
 // 截图按 0.5 缩放：截图坐标 ×2 即屏幕坐标
@@ -58,8 +62,11 @@ beforeEach(() => {
     window.electronAPI = api;
 });
 
-afterEach(() => {
+afterEach(async () => {
     vi.useRealTimers();
+    // 左键按下状态是模块级的，换一套正常的接口松开，避免串到下一个用例
+    window.electronAPI = createApi();
+    await releaseHeldMouseButton();
 });
 
 describe('isComputerToolsetCall', () => {
@@ -74,6 +81,68 @@ describe('isComputerToolsetCall', () => {
     it('17 个成员都有对应权限，wait 不需要权限', () => {
         expect(Object.keys(COMPUTER_MEMBER_PERMISSIONS)).toHaveLength(17);
         expect(COMPUTER_MEMBER_PERMISSIONS.wait).toBeNull();
+    });
+});
+
+describe('hasComputerGuiPermission', () => {
+    it('截图、鼠标、键盘三项任开一项即可，旧配置缺字段按开启处理', () => {
+        expect([...COMPUTER_GUI_PERMISSIONS].sort()).toEqual(['keyboard', 'mouse', 'screenshot']);
+        expect(hasComputerGuiPermission(undefined)).toBe(true);
+        expect(hasComputerGuiPermission({ bash: true, textEditor: true })).toBe(true);
+        expect(hasComputerGuiPermission({ mouse: false, keyboard: false, screenshot: true })).toBe(
+            true
+        );
+        expect(hasComputerGuiPermission({ mouse: false, keyboard: false, screenshot: false })).toBe(
+            false
+        );
+    });
+});
+
+describe('describeComputerAction', () => {
+    it.each([
+        ['screenshot', {}, '截取屏幕'],
+        ['left_click', { coordinate: [10, 20] }, '左键单击 (10, 20)'],
+        ['left_click', {}, '在当前位置左键单击'],
+        ['right_click', { coordinate: [1, 2], text: 'shift' }, '按住 shift 右键单击 (1, 2)'],
+        ['double_click', { coordinate: [3, 4] }, '双击 (3, 4)'],
+        [
+            'left_click_drag',
+            { start_coordinate: [1, 2], coordinate: [3, 4] },
+            '从 (1, 2) 拖拽到 (3, 4)'
+        ],
+        ['mouse_move', { coordinate: [5, 6] }, '移动鼠标到 (5, 6)'],
+        ['left_mouse_down', {}, '按下左键'],
+        ['left_mouse_up', { coordinate: [7, 8] }, '在 (7, 8) 松开左键'],
+        [
+            'scroll',
+            { coordinate: [9, 9], scroll_direction: 'up', scroll_amount: 3 },
+            '在 (9, 9) 向上滚动 3 格'
+        ],
+        ['zoom', { region: [0, 0, 100, 50] }, '放大查看区域 (0, 0) 到 (100, 50)'],
+        ['type', { text: 'hi' }, '输入文本「hi」'],
+        ['key', { text: 'ctrl+c' }, '按键 ctrl+c'],
+        ['key', { text: 'Down', repeat: 3 }, '按键 Down（连按 3 次）'],
+        ['hold_key', { text: 'shift', duration: 2 }, '按住 shift 2 秒'],
+        ['wait', { duration: 1.5 }, '等待 1.5 秒'],
+        ['cursor_position', {}, '读取光标位置']
+    ])('%s %j → %s', (action, input, expected) => {
+        expect(describeComputerAction(action, input)).toBe(expected);
+    });
+
+    it('输入里的换行显示成可见的回车，超长内容截断并注明总长', () => {
+        expect(describeComputerAction('type', { text: 'rm -rf ~\n' })).toBe(
+            '输入文本「rm -rf ~↵」'
+        );
+        const long = describeComputerAction('type', { text: 'a'.repeat(1200) });
+        expect(long).toContain('…（共 1200 字）');
+    });
+
+    it('参数不合法或缺少 action 时仍给出描述而不抛错', () => {
+        expect(describeComputerAction('mouse_move', { coordinate: 'x' })).toBe(
+            '移动鼠标到 (未指定)'
+        );
+        expect(describeComputerAction(undefined, null)).toBe('未指定的桌面动作');
+        expect(describeComputerAction('teleport')).toBe('执行 teleport');
     });
 });
 
@@ -402,6 +471,63 @@ describe('executeComputerAction 等待、失败与未知动作', () => {
         expect(api.computerUse_clickMouse).not.toHaveBeenCalled();
     });
 
+    it('已停止时不调用任何主进程接口', async () => {
+        const controller = new AbortController();
+        controller.abort();
+
+        await expect(
+            executeComputerAction(
+                'left_click',
+                { coordinate: [1, 1] },
+                { signal: controller.signal }
+            )
+        ).rejects.toMatchObject({ name: 'AbortError' });
+        expect(api.computerUse_getScreenGeometry).not.toHaveBeenCalled();
+        expect(api.computerUse_clickMouse).not.toHaveBeenCalled();
+    });
+
+    it('连按期间停止时不再按后续次数', async () => {
+        const controller = new AbortController();
+        api.computerUse_pressKey.mockImplementation(async () => {
+            if (api.computerUse_pressKey.mock.calls.length === 2) controller.abort();
+            return { success: true };
+        });
+
+        await expect(
+            executeComputerAction(
+                'key',
+                { text: 'Down', repeat: 10 },
+                { signal: controller.signal }
+            )
+        ).rejects.toMatchObject({ name: 'AbortError' });
+        expect(api.computerUse_pressKey).toHaveBeenCalledTimes(2);
+    });
+
+    it('点击成功但修饰键松不开时报错，并说明哪个键', async () => {
+        api.computerUse_releaseKey.mockResolvedValueOnce({
+            success: false,
+            error: 'Keyboard permission denied'
+        });
+
+        await expect(executeComputerAction('left_click', { text: 'shift' })).rejects.toThrow(
+            '松开按键失败: shift（Keyboard permission denied）'
+        );
+        expect(api.computerUse_clickMouse).toHaveBeenCalledTimes(1);
+    });
+
+    it('动作失败且修饰键也松不开时保留动作本身的错误', async () => {
+        api.computerUse_clickMouse.mockResolvedValueOnce({
+            success: false,
+            error: 'Mouse permission denied'
+        });
+        api.computerUse_releaseKey.mockResolvedValueOnce({ success: false, error: 'stuck' });
+
+        await expect(executeComputerAction('left_click', { text: 'ctrl' })).rejects.toThrow(
+            'Mouse permission denied'
+        );
+        expect(api.computerUse_releaseKey).toHaveBeenCalledWith('ctrl');
+    });
+
     it('未知动作报错', async () => {
         await expect(executeComputerAction('teleport')).rejects.toThrow(
             'Unknown computer action: "teleport"'
@@ -412,5 +538,66 @@ describe('executeComputerAction 等待、失败与未知动作', () => {
         await expect(executeComputerAction(undefined, { coordinate: [1, 1] })).rejects.toThrow(
             "Missing required parameter 'action'"
         );
+    });
+});
+
+describe('releaseHeldMouseButton', () => {
+    it('left_mouse_down 之后松开左键，只松一次', async () => {
+        await executeComputerAction('left_mouse_down');
+
+        await expect(releaseHeldMouseButton()).resolves.toBe(true);
+        await expect(releaseHeldMouseButton()).resolves.toBe(false);
+        expect(api.computerUse_releaseMouseButton).toHaveBeenCalledTimes(1);
+        expect(api.computerUse_releaseMouseButton).toHaveBeenCalledWith('left');
+    });
+
+    it.each([
+        ['left_mouse_up', {}],
+        ['left_click', {}],
+        ['double_click', {}],
+        ['left_click_drag', { start_coordinate: [1, 1], coordinate: [2, 2] }]
+    ])('%s 之后左键已松开，不再补发', async (action, input) => {
+        await executeComputerAction('left_mouse_down');
+        await executeComputerAction(action, input);
+        api.computerUse_releaseMouseButton.mockClear();
+
+        await expect(releaseHeldMouseButton()).resolves.toBe(false);
+        expect(api.computerUse_releaseMouseButton).not.toHaveBeenCalled();
+    });
+
+    it('右键点击不影响左键按下状态', async () => {
+        await executeComputerAction('left_mouse_down');
+        await executeComputerAction('right_click');
+
+        await expect(releaseHeldMouseButton()).resolves.toBe(true);
+    });
+
+    it('左键没按着时不调用主进程', async () => {
+        await expect(releaseHeldMouseButton()).resolves.toBe(false);
+        expect(api.computerUse_releaseMouseButton).not.toHaveBeenCalled();
+    });
+
+    it('主进程松开失败时保留按下状态，下次再试', async () => {
+        await executeComputerAction('left_mouse_down');
+        api.computerUse_releaseMouseButton.mockResolvedValueOnce({
+            success: false,
+            error: 'input blocked'
+        });
+
+        await expect(releaseHeldMouseButton()).resolves.toBe(false);
+        await expect(releaseHeldMouseButton()).resolves.toBe(true);
+        expect(api.computerUse_releaseMouseButton).toHaveBeenCalledTimes(2);
+    });
+
+    it('按下失败时不记为按着', async () => {
+        api.computerUse_pressMouseButton.mockResolvedValueOnce({
+            success: false,
+            error: 'Mouse permission denied'
+        });
+
+        await expect(executeComputerAction('left_mouse_down')).rejects.toThrow(
+            'Mouse permission denied'
+        );
+        await expect(releaseHeldMouseButton()).resolves.toBe(false);
     });
 });

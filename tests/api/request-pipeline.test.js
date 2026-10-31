@@ -819,6 +819,26 @@ describe('Tools 收集', () => {
         expect(ctx.tools).toEqual([{ name: 'web_search' }, { name: 'system_tool', wrapped: true }]);
     });
 
+    it('内置工具已占用的名字交给 getToolsForAPI 保留，没有 name 的内置工具不计入', async () => {
+        const adapter = createStubAdapter();
+        adapter.collectBuiltinTools.mockReturnValue([
+            { name: 'web_search' },
+            { type: 'computer_toolset_20260801' },
+            { name: 'bash' }
+        ]);
+        const { getToolsForAPI } = await import('../../js/tools/manager.js');
+
+        await executeRequest(adapter, {
+            endpoint: 'https://api.example.com',
+            apiKey: 'k',
+            model: 'm'
+        });
+
+        expect(getToolsForAPI).toHaveBeenCalledWith(adapter.apiFormat, {
+            reservedNames: ['web_search', 'bash']
+        });
+    });
+
     it('getToolsForAPI 抛错时 tools 只含 builtin（不阻塞请求）', async () => {
         const adapter = createStubAdapter();
         adapter.collectBuiltinTools.mockReturnValue([{ name: 'web_search' }]);
@@ -952,22 +972,29 @@ describe('computer 工具的显示器尺寸', () => {
         expect(adapter.buildRequestBody.mock.calls[0][0].computerDisplay).toBeNull();
     });
 
-    it('取不到截图尺寸时传 null，同一任务不再重试', async () => {
+    it('取不到截图尺寸时本次传 null，下次请求重新获取，取到后同一任务沿用', async () => {
         const { logger } = await import('../../js/utils/logger.js');
-        const getScreenGeometry = vi.fn(async () => ({ success: false, error: 'No display' }));
+        const getScreenGeometry = vi
+            .fn()
+            .mockResolvedValueOnce({ success: false, error: 'No display' })
+            .mockResolvedValue({ success: true, ...GEOMETRY });
         window.electronAPI = { computerUse_getScreenGeometry: getScreenGeometry };
         const adapter = adapterWithTool('computer_20251124');
         const request = requestOf(adapter, 'claude-opus-4-6');
 
         await executeRequest(adapter, request);
         await executeRequest(adapter, request);
+        await executeRequest(adapter, request);
 
-        expect(getScreenGeometry).toHaveBeenCalledTimes(1);
-        expect(adapter.buildRequestBody.mock.calls[1][0].computerDisplay).toBeNull();
+        expect(getScreenGeometry).toHaveBeenCalledTimes(2);
+        const displays = adapter.buildRequestBody.mock.calls.map(([ctx]) => ctx.computerDisplay);
+        expect(displays[0]).toBeNull();
+        expect(displays[1]).toEqual(GEOMETRY);
+        expect(displays[2]).toBe(displays[1]);
         expect(logger.warn).toHaveBeenCalledWith(
             expect.stringContaining('获取截图尺寸失败'),
             expect.any(Error)
         );
-        expect(fetchSpy).toHaveBeenCalledTimes(2);
+        expect(fetchSpy).toHaveBeenCalledTimes(3);
     });
 });

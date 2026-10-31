@@ -2,7 +2,7 @@
  * tools/manager 格式转换补充测试
  * cleanSchemaForGemini, convertTo*Format 等
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 vi.mock('../../js/core/events.js', () => ({
     eventBus: {
@@ -32,6 +32,10 @@ vi.mock('../../js/core/state.js', () => ({
         xmlToolCallingEnabled: false,
         computerUseEnabled: false
     }
+}));
+
+vi.mock('../../js/utils/platform.js', () => ({
+    isElectron: vi.fn(() => true)
 }));
 
 vi.mock('../../js/tools/build-tool.js', () => ({
@@ -64,6 +68,7 @@ vi.mock('../../js/tools/build-tool.js', () => ({
 }));
 
 import { state } from '../../js/core/state.js';
+import { isElectron } from '../../js/utils/platform.js';
 import {
     registerTool,
     getToolsForAPI,
@@ -363,24 +368,42 @@ describe('debugTools', () => {
 });
 
 describe('computer use 过滤', () => {
+    const exposedName = (tool) => tool.name ?? tool.function?.name;
+
     beforeEach(() => {
         vi.clearAllMocks();
+        isElectron.mockReturnValue(true);
         registerTestTool({ id: 'computer', name: 'computer', enabled: true });
+    });
+
+    afterEach(() => {
+        state.xmlToolCallingEnabled = false;
+        state.computerUseEnabled = false;
+        isElectron.mockReturnValue(true);
     });
 
     it('claude 格式 + xmlToolCallingEnabled=false 过滤 computer', () => {
         state.xmlToolCallingEnabled = false;
+        state.computerUseEnabled = true;
         const tools = getToolsForAPI('claude');
         const t = tools.find((t) => t.name === 'computer');
         expect(t).toBeUndefined();
     });
 
-    it('claude 格式 + xmlToolCallingEnabled=true 包含 computer', () => {
+    it('claude 格式 + XML 模式 + Computer Use 开启时包含 computer', () => {
         state.xmlToolCallingEnabled = true;
+        state.computerUseEnabled = true;
         const tools = getToolsForAPI('claude');
         const t = tools.find((t) => t.name === 'computer');
         expect(t).toBeDefined();
-        state.xmlToolCallingEnabled = false;
+    });
+
+    it('claude 格式 + XML 模式 + Computer Use 关闭时过滤 computer', () => {
+        state.xmlToolCallingEnabled = true;
+        state.computerUseEnabled = false;
+        const tools = getToolsForAPI('claude');
+        expect(tools.find((t) => t.name === 'computer')).toBeUndefined();
+        expect(tools.find((t) => t.name === 'fmt-test')).toBeDefined();
     });
 
     it('非 claude 格式 + computerUseEnabled=false 过滤 computer', () => {
@@ -395,6 +418,59 @@ describe('computer use 过滤', () => {
         const tools = getToolsForAPI('openai');
         const t = tools.find((t) => t.function?.name === 'computer');
         expect(t).toBeDefined();
-        state.computerUseEnabled = false;
+    });
+
+    it.each(['openai', 'openai-responses', 'gemini', 'openclaw', 'claude'])(
+        '非桌面端即使开启 Computer Use 也不下发 computer（%s）',
+        (apiFormat) => {
+            isElectron.mockReturnValue(false);
+            state.computerUseEnabled = true;
+            state.xmlToolCallingEnabled = true;
+            const tools = getToolsForAPI(apiFormat);
+            expect(tools.map(exposedName)).not.toContain('computer');
+        }
+    );
+
+    describe('与内置工具同名的 MCP 工具', () => {
+        const mcpTool = (name) =>
+            registerTestTool({ id: `srv__${name}`, name, type: 'mcp', serverId: 'srv' });
+
+        afterEach(() => {
+            ['computer', 'bash', 'web_search'].forEach((name) => removeTool(`srv__${name}`));
+        });
+
+        it('只过滤内置 computer，同名的 MCP 工具照常下发', () => {
+            mcpTool('computer');
+            state.computerUseEnabled = false;
+            const names = getToolsForAPI('openai').map(exposedName);
+            expect(names.filter((name) => name === 'computer')).toHaveLength(1);
+            expect(names).not.toContain('srv__computer');
+        });
+
+        it('Claude 原生模式下与原生工具同名的 MCP 工具改用 ID 暴露，不会被当成原生工具执行', () => {
+            mcpTool('bash');
+            mcpTool('computer');
+            state.computerUseEnabled = true;
+            const names = getToolsForAPI('claude').map(exposedName);
+            expect(names).toContain('srv__bash');
+            expect(names).toContain('srv__computer');
+            expect(names).not.toContain('bash');
+            expect(names).not.toContain('computer');
+        });
+
+        it('Claude XML 模式下不占用原生工具名', () => {
+            mcpTool('bash');
+            state.xmlToolCallingEnabled = true;
+            expect(getToolsForAPI('claude').map(exposedName)).toContain('bash');
+        });
+
+        it('adapter 已声明的内置工具名不再分给同名工具', () => {
+            mcpTool('web_search');
+            const names = getToolsForAPI('openai', { reservedNames: ['web_search'] }).map(
+                exposedName
+            );
+            expect(names).toContain('srv__web_search');
+            expect(names).not.toContain('web_search');
+        });
     });
 });

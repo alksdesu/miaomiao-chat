@@ -17,6 +17,8 @@ import { mcpClient } from './mcp/client.js';
 import { savePreference, loadPreference } from '../state/storage.js';
 import { state } from '../core/state.js';
 import { buildTool, buildToolFromLegacy } from './build-tool.js';
+import { isElectron } from '../utils/platform.js';
+import { CLAUDE_NATIVE_TOOL_IDS } from '../utils/constants.js';
 import { logger } from '../utils/logger.js';
 
 // ========== 核心存储 ==========
@@ -253,25 +255,33 @@ export function getEnabledTools() {
     return Array.from(tools.values()).filter((tool) => tool.enabled === true);
 }
 
+function isBuiltinComputerTool(tool) {
+    return tool.type === 'builtin' && tool.id === 'computer';
+}
+
 /**
  * 根据 API 格式获取工具列表
  * @param {string} apiFormat - 'openai' | 'gemini' | 'claude' | 'openai-responses' | 'openclaw'
+ * @param {Object} [options]
+ * @param {string[]} [options.reservedNames] - 本次请求里 adapter 已声明的内置工具名，同名工具改用 ID 暴露
  * @returns {Array}
  */
-export function getToolsForAPI(apiFormat) {
+export function getToolsForAPI(apiFormat, { reservedNames = [] } = {}) {
     let enabledTools = getEnabledTools();
 
-    // Computer Use 特殊处理
-    if (apiFormat === 'claude' && !state.xmlToolCallingEnabled) {
-        enabledTools = enabledTools.filter((tool) => tool.name !== 'computer');
-    } else if (apiFormat !== 'claude') {
-        if (!state.computerUseEnabled) {
-            enabledTools = enabledTools.filter((tool) => tool.name !== 'computer');
-        }
+    // Claude 原生模式由 adapter 声明原生 computer 工具；其余格式（含 Claude XML 模式）里
+    // 内置 computer 工具带命令执行与改文件能力，只在桌面端开启 Computer Use 时下发
+    const isClaudeNativeMode = apiFormat === 'claude' && !state.xmlToolCallingEnabled;
+    if (isClaudeNativeMode || !state.computerUseEnabled || !isElectron()) {
+        enabledTools = enabledTools.filter((tool) => !isBuiltinComputerTool(tool));
     }
 
-    // MCP 工具同名时用 ID 暴露重复项，避免一个服务器的工具被静默丢弃
-    const seenNames = new Set();
+    // 同名工具用 ID 暴露重复项，避免一个服务器的工具被静默丢弃；Claude 原生模式下
+    // executor 按名字把原生工具名的调用交给原生实现，同名的 MCP / 自定义工具也要改名
+    const seenNames = new Set([
+        ...reservedNames,
+        ...(isClaudeNativeMode ? CLAUDE_NATIVE_TOOL_IDS : [])
+    ]);
     enabledTools = enabledTools.map((tool) => {
         const name = tool.name || tool.id;
         if (seenNames.has(name)) {

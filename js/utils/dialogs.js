@@ -130,8 +130,11 @@ export function showInputDialog(message, defaultValue = '', title = '输入', op
  * @param {string} message - 确认消息
  * @param {string} title - 对话框标题
  * @param {object} [options]
- * @param {AbortSignal} [options.signal] - 外部 signal abort 时自动 resolve(false) 关闭对话框
+ * @param {AbortSignal} [options.signal] - 外部 signal abort 时自动 resolve(false) 关闭对话框；
+ *        排队等待中 abort 也立即 resolve(false)，不必等前一个对话框关闭
  * @param {number} [options.timeoutMs] - 自动超时（毫秒），超时 resolve(false)；不传则不超时
+ * @param {'confirm'|'cancel'} [options.defaultFocus='confirm'] - 打开后聚焦的按钮；
+ *        'cancel' 时误按回车等于取消，用于放行有风险操作的确认
  * @param {{label: string, key: string}} [options.allowSessionPersistOption]
  *        - 传入则在 body 末尾渲染 checkbox（默认未勾选）；用户勾选后调用方可在本次会话范围内
  *          以 `key` 为标识豁免后续相同确认。返回值升级为 `{confirmed, persistForSession}`；
@@ -145,7 +148,11 @@ export function showConfirmDialog(message, title = '确认', options = {}) {
     // 已有 dialog 在显示：排队等其结束后再启动新 dialog，避免并发抢同一 DOM。
     // 闲时直接同步调 _showConfirmDialogImpl，保证 listener 绑定与 click 触发在同步路径内
     if (_activeDialog) {
-        return _activeDialog.then(() => showConfirmDialog(message, title, options));
+        return waitForDialogTurn(_activeDialog, options.signal).then(() =>
+            options.signal?.aborted
+                ? buildConfirmResult(options, false, false)
+                : showConfirmDialog(message, title, options)
+        );
     }
     const p = _showConfirmDialogImpl(message, title, options);
     _activeDialog = p.finally(() => {
@@ -154,16 +161,40 @@ export function showConfirmDialog(message, title = '确认', options = {}) {
     return p;
 }
 
-function _showConfirmDialogImpl(message, title, options) {
-    const { signal, timeoutMs, allowSessionPersistOption } = options;
-    // 决定返回形态：传 option → 对象；未传 → 历史 boolean 契约
-    const hasPersistOption = !!(
+/**
+ * 等前一个对话框关闭；signal abort 时提前返回
+ */
+function waitForDialogTurn(activeDialog, signal) {
+    if (!signal) return activeDialog;
+    if (signal.aborted) return Promise.resolve();
+    return new Promise((resolve) => {
+        const onAbort = () => resolve();
+        signal.addEventListener('abort', onAbort, { once: true });
+        activeDialog.then(() => {
+            signal.removeEventListener('abort', onAbort);
+            resolve();
+        });
+    });
+}
+
+// 决定返回形态：传 allowSessionPersistOption → 对象；未传 → 历史 boolean 契约
+function hasSessionPersistOption({ allowSessionPersistOption } = {}) {
+    return !!(
         allowSessionPersistOption &&
         typeof allowSessionPersistOption.label === 'string' &&
         typeof allowSessionPersistOption.key === 'string'
     );
+}
+
+function buildConfirmResult(options, confirmed, persistForSession) {
+    return hasSessionPersistOption(options) ? { confirmed, persistForSession } : confirmed;
+}
+
+function _showConfirmDialogImpl(message, title, options) {
+    const { signal, timeoutMs, allowSessionPersistOption, defaultFocus = 'confirm' } = options;
+    const hasPersistOption = hasSessionPersistOption(options);
     const buildResult = (confirmed, persistForSession) =>
-        hasPersistOption ? { confirmed, persistForSession } : confirmed;
+        buildConfirmResult(options, confirmed, persistForSession);
 
     return new Promise((resolve) => {
         // 外部已 abort：跳过 DOM 操作直接拒绝
@@ -217,9 +248,8 @@ function _showConfirmDialogImpl(message, title, options) {
         // 模态隔离：trapFocus + .app-container inert + 关闭时还原焦点
         const isolation = activateModalIsolation(modal);
 
-        // 聚焦确定按钮
         setTimeout(() => {
-            confirmBtn.focus();
+            (defaultFocus === 'cancel' ? cancelBtn : confirmBtn).focus();
         }, 100);
 
         // 清理函数
@@ -265,7 +295,7 @@ function _showConfirmDialogImpl(message, title, options) {
         cancelBtn.addEventListener('click', handleCancel);
         closeBtn.addEventListener('click', handleCancel);
         modal.addEventListener('click', handleOverlayClick);
-        // 打开后默认聚焦确定按钮，因此常规路径下回车仍会确认；
+        // 回车走当前焦点按钮的原生行为：默认聚焦确定，defaultFocus='cancel' 时回车等于取消；
         // 若用户主动切到其他控件，则遵循当前焦点元素的原生行为，避免对话框外误触发确认
 
         removeEscapeListener = bindTopmostEscape(modal, handleCancel);

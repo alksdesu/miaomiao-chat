@@ -22,8 +22,12 @@ import { state } from '../core/state.js';
 import { checkToolPermission, confirmToolExecutionIfRequired } from './permissions.js';
 import { recordToolCall } from './history.js';
 import { isElectron } from '../utils/platform.js';
+import { CLAUDE_NATIVE_TOOL_IDS } from '../utils/constants.js';
 import { logger } from '../utils/logger.js';
+import { createAbortError, throwIfAbortedBeforeRun } from '../utils/abort.js';
 import { executeComputerAction } from './computer-actions.js';
+import { runBashCommand, runTextEditorCommand } from './computer-commands.js';
+import { createToolNotFoundError } from './tool-errors.js';
 
 // ========== 配置 ==========
 
@@ -51,97 +55,13 @@ async function executeNativeTool(toolName, args, options = {}) {
             return await executeComputerAction(args.action, args, { signal: options.signal });
 
         case 'bash':
-            return await executeBashTool(args);
+            return await runBashCommand(args);
 
         case 'str_replace_based_edit_tool':
-            return await executeTextEditorTool(args);
+            return await runTextEditorCommand(args);
 
         default:
             throw new Error(`未知的原生工具: ${toolName}`);
-    }
-}
-
-/**
- * 执行 bash 工具
- */
-async function executeBashTool(args) {
-    // 支持多种参数字段名（向后兼容）
-    const command = args.command || args.text || args.bash_command;
-    const { restart } = args;
-
-    if (!command) {
-        throw new Error(
-            'Missing bash command parameter. Expected one of: command, text, or bash_command'
-        );
-    }
-
-    if (restart) {
-        logger.warn('[Executor] Bash restart 参数被忽略');
-    }
-
-    const result = await window.electronAPI.computerUse_executeBash(command);
-    return result;
-}
-
-/**
- * 执行 text_editor 工具
- */
-async function executeTextEditorTool(args) {
-    const { command, path } = args;
-
-    switch (command) {
-        case 'view':
-            return await window.electronAPI.computerUse_readFile(path);
-
-        case 'create':
-            return await window.electronAPI.computerUse_writeFile(path, args.file_text || '');
-
-        case 'str_replace': {
-            // 先读取文件
-            const readResult = await window.electronAPI.computerUse_readFile(path);
-            if (!readResult.success) {
-                throw new Error(`读取文件失败: ${readResult.error}`);
-            }
-
-            // 验证 old_str 唯一性
-            const occurrences = readResult.content.split(args.old_str).length - 1;
-            if (occurrences === 0) {
-                throw new Error('old_str not found in file');
-            } else if (occurrences > 1) {
-                throw new Error(
-                    `old_str found ${occurrences} times, must be unique. Use more context to make it unique.`
-                );
-            }
-
-            // 执行替换
-            const newContent = readResult.content.replace(args.old_str, args.new_str);
-
-            // 写回文件
-            return await window.electronAPI.computerUse_writeFile(path, newContent);
-        }
-
-        case 'insert': {
-            // 先读取文件
-            const readResult2 = await window.electronAPI.computerUse_readFile(path);
-            if (!readResult2.success) {
-                throw new Error(`读取文件失败: ${readResult2.error}`);
-            }
-
-            // 在指定行插入
-            const lines = readResult2.content.split('\n');
-            lines.splice(args.insert_line, 0, args.new_str);
-            const newContent2 = lines.join('\n');
-
-            // 写回文件
-            return await window.electronAPI.computerUse_writeFile(path, newContent2);
-        }
-
-        case 'undo_edit':
-            // 简单实现：不支持撤销
-            throw new Error('Text editor undo_edit 操作暂不支持');
-
-        default:
-            throw new Error(`未知的 text_editor 操作: ${command}`);
     }
 }
 
@@ -166,15 +86,21 @@ export async function executeTool(toolId, args, options = {}) {
     // 特殊处理：Claude 原生工具（computer, bash, text_editor）
     // 这些工具通过 beta header 启用，只在 Claude 原生模式下使用
     // ⭐ XML 模式下即使是 Claude 也使用自定义工具
-    const nativeTools = ['computer', 'bash', 'str_replace_based_edit_tool'];
+    const isNativeToolName = CLAUDE_NATIVE_TOOL_IDS.includes(toolId);
     const isClaudeNativeMode = apiFormat === 'claude' && !isXmlMode;
 
     // 只有在 Claude 原生模式下才将这些工具名当作原生工具处理
-    if (nativeTools.includes(toolId) && isClaudeNativeMode) {
+    if (isNativeToolName && isClaudeNativeMode) {
         logger.debug(`[Executor] 🚀 执行 Claude 原生工具: ${toolId}`);
         logger.debug(`[Executor] 参数:`, args);
 
         try {
+            throwIfAbortedBeforeRun(options.signal);
+            // 关掉 Computer Use 后，排队中与续作里的原生工具调用也不再执行
+            if (!state.computerUseEnabled) {
+                throw new Error(`Computer Use 已关闭，拒绝执行工具 "${toolId}"`);
+            }
+
             // gate: 权限检查（与主分支等价，不进入 getTool 路径所以独立执行）
             const permission = checkToolPermission(toolId, toolId);
             if (!permission.allowed) {
@@ -194,6 +120,7 @@ export async function executeTool(toolId, args, options = {}) {
                 logger.warn(`[Executor] Claude native ${toolId} 被拒：${reason}`);
                 throw new Error(reason);
             }
+            throwIfAbortedBeforeRun(options.signal);
 
             const result = await executeNativeTool(toolId, args, options);
             const duration = Date.now() - startTime;
@@ -253,7 +180,7 @@ export async function executeTool(toolId, args, options = {}) {
     }
 
     // XML 模式下的提示
-    if (nativeTools.includes(toolId) && apiFormat === 'claude' && isXmlMode) {
+    if (isNativeToolName && apiFormat === 'claude' && isXmlMode) {
         logger.debug(`[Executor] 💬 XML 模式：使用自定义工具 "${toolId}"（非 Claude 原生工具）`);
     }
 
@@ -271,7 +198,7 @@ export async function executeTool(toolId, args, options = {}) {
                 return await executeTool(mcpToolId, args, options);
             }
         }
-        throw new Error(`工具不存在: ${toolId}`);
+        throw createToolNotFoundError(`工具不存在: ${toolId}`);
     }
 
     const toolName = tool.name || toolId;
@@ -280,7 +207,11 @@ export async function executeTool(toolId, args, options = {}) {
     logger.debug(`[Executor] 参数:`, args);
 
     try {
-        // 1. 权限检查
+        // 1. 权限检查：工具自身的执行前提（如 Computer Use 开关）不满足时直接拒绝，不再弹确认
+        const toolPermission = tool.checkPermissions?.(args);
+        if (toolPermission?.allowed === false) {
+            throw new Error(toolPermission.message || `无权限执行工具: ${toolName}`);
+        }
         try {
             const permission = checkToolPermission(toolId, toolName);
 
@@ -303,6 +234,8 @@ export async function executeTool(toolId, args, options = {}) {
                 throw new Error(`用户拒绝执行工具 "${toolName}"`);
             }
         } catch (err) {
+            // 确认期间停止了请求：不能落到下方的降级放行
+            if (err?.name === 'AbortError') throw err;
             // 如果是权限拒绝 / 用户拒绝错误，直接抛出
             if (
                 err.message &&
@@ -414,13 +347,11 @@ export async function executeTool(toolId, args, options = {}) {
  */
 async function executeWithTimeout(tool, args, timeout, externalSignal = null) {
     if (typeof tool.call !== 'function') {
-        throw new Error(`工具处理器不存在: ${tool.id}`);
+        throw createToolNotFoundError(`工具处理器不存在: ${tool.id}`);
     }
 
     // 已 abort 短路，避免无谓的工具启动
-    if (externalSignal?.aborted) {
-        throw new DOMException('Tool execution aborted', 'AbortError');
-    }
+    throwIfAbortedBeforeRun(externalSignal);
 
     const abortController = new AbortController();
     const { signal } = abortController;
@@ -456,10 +387,10 @@ async function executeWithTimeout(tool, args, timeout, externalSignal = null) {
     const externalAbortPromise = new Promise((_, reject) => {
         if (!externalSignal) return;
         if (externalSignal.aborted) {
-            reject(new DOMException('Tool execution aborted', 'AbortError'));
+            reject(createAbortError());
             return;
         }
-        const onAbort = () => reject(new DOMException('Tool execution aborted', 'AbortError'));
+        const onAbort = () => reject(createAbortError());
         externalSignal.addEventListener('abort', onAbort, { once: true });
         externalListeners.push(onAbort);
     });

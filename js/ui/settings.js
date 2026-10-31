@@ -13,6 +13,16 @@ import { isElectron, isAndroid } from '../utils/platform.js';
 import { checkForUpdatesManually } from '../update/apk-updater.js';
 import { trapFocus, removeFocusTrap, acquireInert, releaseInert } from '../utils/focus-trap.js';
 import { logger } from '../utils/logger.js';
+import { hasComputerGuiPermission } from '../tools/computer-actions.js';
+
+// 开关 id → state.computerUsePermissions 字段，主进程按同名字段校验
+const COMPUTER_USE_PERMISSION_TOGGLES = Object.freeze([
+    { id: 'allow-screenshot', key: 'screenshot' },
+    { id: 'allow-mouse', key: 'mouse' },
+    { id: 'allow-keyboard', key: 'keyboard' },
+    { id: 'allow-bash', key: 'bash' },
+    { id: 'allow-text-editor', key: 'textEditor' }
+]);
 
 let settingsInitialized = false;
 let settingsCleanupCallbacks = [];
@@ -180,15 +190,13 @@ function syncGeneralSettingsUI() {
         .getElementById('toggle-computer-use')
         ?.classList.toggle('active', state.computerUseEnabled || false);
 
-    const permissionIds = ['bash', 'text-editor'];
-    const permissionKeys = ['bash', 'textEditor'];
-    permissionIds.forEach((id, index) => {
-        const checkbox = document.getElementById(`allow-${id}`);
+    COMPUTER_USE_PERMISSION_TOGGLES.forEach(({ id, key }) => {
+        const checkbox = document.getElementById(id);
         if (checkbox) {
-            const key = permissionKeys[index];
             checkbox.checked = state.computerUsePermissions?.[key] !== false;
         }
     });
+    syncComputerGuiPermissionHint();
 
     const bashConfig = state.bashConfig || {};
 
@@ -204,7 +212,33 @@ function syncGeneralSettingsUI() {
 
     const bashConfirm = document.getElementById('bash-require-confirmation');
     if (bashConfirm) {
-        bashConfirm.checked = bashConfig.requireConfirmation ?? false;
+        bashConfirm.checked = bashConfig.requireConfirmation !== false;
+    }
+}
+
+// 截图、鼠标、键盘全关时 Claude 请求不再声明 computer 工具，提示用户桌面操作已整体不可用
+function syncComputerGuiPermissionHint() {
+    const hint = document.getElementById('computer-use-gui-off-hint');
+    if (hint) {
+        hint.hidden = hasComputerGuiPermission(state.computerUsePermissions);
+    }
+}
+
+/**
+ * 推送配置到主进程；主进程处理失败时返回 {success:false} 而不是 reject，两种都要记下
+ * @param {string} label - 日志里的配置名
+ * @param {() => Promise<{success?: boolean, error?: string}>} invoke
+ */
+function pushToMain(label, invoke) {
+    const report = (error) => logger.warn(`[Settings] 推送 ${label} 到主进程失败:`, error);
+    try {
+        Promise.resolve(invoke())
+            .then((result) => {
+                if (result?.success === false) report(result.error);
+            })
+            .catch(report);
+    } catch (error) {
+        report(error);
     }
 }
 
@@ -214,22 +248,25 @@ function syncBashConfigToMain() {
     if (!isElectron() || !window.electronAPI?.computerUse_updateBashConfig) {
         return;
     }
-    Promise.resolve(window.electronAPI.computerUse_updateBashConfig({ ...state.bashConfig })).catch(
-        (error) => {
-            logger.warn('[Settings] 推送 bashConfig 到主进程失败:', error);
-        }
+    pushToMain('bashConfig', () =>
+        window.electronAPI.computerUse_updateBashConfig({ ...state.bashConfig })
     );
 }
 
+// 渲染层把缺失字段当作允许，主进程却会沿用自己的默认拒绝，所以每一项都显式推送布尔值
 function syncPermissionsToMain() {
     if (!isElectron() || !window.electronAPI?.computerUse_updatePermissions) {
         return;
     }
-    Promise.resolve(
-        window.electronAPI.computerUse_updatePermissions({ ...state.computerUsePermissions })
-    ).catch((error) => {
-        logger.warn('[Settings] 推送 computerUsePermissions 到主进程失败:', error);
-    });
+    const permissions = Object.fromEntries(
+        COMPUTER_USE_PERMISSION_TOGGLES.map(({ key }) => [
+            key,
+            state.computerUsePermissions?.[key] !== false
+        ])
+    );
+    pushToMain('computerUsePermissions', () =>
+        window.electronAPI.computerUse_updatePermissions(permissions)
+    );
 }
 
 function bindGeneralSettingsEvents() {
@@ -290,15 +327,13 @@ function bindGeneralSettingsEvents() {
         logger.debug('[Settings] 💻 Computer Use 已', event.target.checked ? '启用' : '禁用');
     });
 
-    const permissionIds = ['bash', 'text-editor'];
-    const permissionKeys = ['bash', 'textEditor'];
-    permissionIds.forEach((id, index) => {
-        const checkbox = document.getElementById(`allow-${id}`);
-        const key = permissionKeys[index];
+    COMPUTER_USE_PERMISSION_TOGGLES.forEach(({ id, key }) => {
+        const checkbox = document.getElementById(id);
         addManagedListener(settingsCleanupCallbacks, checkbox, 'change', (event) => {
             state.computerUsePermissions[key] = event.target.checked;
             saveCurrentConfig();
             syncPermissionsToMain();
+            syncComputerGuiPermissionHint();
             logger.debug(`[Settings] 💻 ${key} 权限已`, event.target.checked ? '启用' : '禁用');
         });
     });
@@ -755,6 +790,9 @@ export function initSettings() {
     }
 
     bindGeneralSettingsEvents();
+    // 启动时配置先于设置面板加载，config:loaded 已经错过，主进程仍是默认的拒绝权限
+    syncBashConfigToMain();
+    syncPermissionsToMain();
     settingsInitialized = true;
     logger.debug('Settings panel initialized');
 }

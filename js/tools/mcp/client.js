@@ -13,6 +13,7 @@ import { getCachedTools } from './tool-cache.js';
 import { detectPlatform } from '../../utils/platform.js';
 import { connectLocalElectron, connectRemote, classifyError } from './connection.js';
 import { discoverTools, normalizeToolDefinition, callRemoteTool } from './tool-executor.js';
+import { createToolNotFoundError } from '../tool-errors.js';
 import { logger } from '../../utils/logger.js';
 
 // 向后兼容：re-export detectPlatform
@@ -206,7 +207,7 @@ export class MCPClient {
                 serverId = altTool.serverId;
                 toolName = altTool.name;
             } else {
-                throw new Error(`工具不存在: ${toolId}`);
+                throw createToolNotFoundError(`工具不存在: ${toolId}`);
             }
         } else {
             serverId = tool.serverId;

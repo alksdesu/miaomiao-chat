@@ -149,6 +149,56 @@ describe('tool-display', () => {
             expect(btn.getAttribute('data-status')).toBe('failed');
         });
 
+        it('批量动作中止的动作显示为未执行，原因用中文，不计入失败', async () => {
+            const container = document.createElement('div');
+            container.className = 'message-content';
+            document.body.appendChild(container);
+
+            await createToolCallUI({ id: 'a', name: 'left_click', args: {} }, container);
+            await createToolCallUI({ id: 'b', name: 'type', args: {} }, container);
+            updateToolCallStatus('a', 'completed', { result: { content: 'OK' } });
+            updateToolCallStatus('b', 'skipped', {
+                result: {
+                    error: 'Not executed: an earlier computer action in this turn failed.',
+                    is_error: true,
+                    error_kind: 'not_executed'
+                }
+            });
+
+            const btn = container.querySelector('.tool-calls-summary-btn');
+            expect(btn.dataset.status).toBe('completed');
+            expect(btn.querySelector('.summary-status').textContent).toBe('1 完成 / 1 跳过');
+            btn.click();
+            const skipped = document.querySelector('.tool-detail-skipped-msg');
+            expect(skipped.textContent).toBe('同一批中前面的桌面动作失败，此动作未执行');
+            expect(document.querySelector('.tool-detail-panel').textContent).not.toContain(
+                'Not executed'
+            );
+        });
+
+        it('停止请求后未执行与执行中被中止的动作分别给出原因', async () => {
+            const container = document.createElement('div');
+            container.className = 'message-content';
+            document.body.appendChild(container);
+
+            await createToolCallUI({ id: 'a', name: 'wait', args: {} }, container);
+            await createToolCallUI({ id: 'b', name: 'left_click', args: {} }, container);
+            updateToolCallStatus('a', 'skipped', {
+                result: { error: 'aborted', is_error: true, error_kind: 'aborted' }
+            });
+            updateToolCallStatus('b', 'skipped', {
+                result: { error: 'x', is_error: true, error_kind: 'aborted', executed: false }
+            });
+
+            const btn = container.querySelector('.tool-calls-summary-btn');
+            expect(btn.dataset.status).toBe('skipped');
+            btn.click();
+            const reasons = [...document.querySelectorAll('.tool-detail-skipped-msg')].map(
+                (el) => el.textContent
+            );
+            expect(reasons).toEqual(['请求已停止，执行被中止', '请求已停止，此动作未执行']);
+        });
+
         it('限定 scope 时不会更新其他消息中的同名工具 ID', async () => {
             const first = document.createElement('div');
             const second = document.createElement('div');
@@ -195,6 +245,48 @@ describe('tool-display', () => {
 
             const group = container.querySelector('.tool-calls-group');
             expect(group).toBeTruthy();
+        });
+
+        it('落库为 error 的中止动作恢复为未执行，失败动作仍显示失败', async () => {
+            const container = document.createElement('div');
+            container.className = 'message-content';
+            document.body.appendChild(container);
+
+            await restoreToolCallsGroup(
+                [
+                    {
+                        id: 'a',
+                        name: 'left_click',
+                        status: 'failed',
+                        result: {
+                            error: 'Error: Mouse permission denied',
+                            is_error: true,
+                            error_kind: 'execution_failed'
+                        }
+                    },
+                    {
+                        id: 'b',
+                        name: 'type',
+                        status: 'failed',
+                        result: {
+                            error: 'Not executed: an earlier computer action in this turn failed.',
+                            is_error: true,
+                            error_kind: 'not_executed'
+                        }
+                    }
+                ],
+                container
+            );
+
+            const btn = container.querySelector('.tool-calls-summary-btn');
+            expect(btn.dataset.status).toBe('failed');
+            expect(btn.querySelector('.summary-status').textContent).toBe('1 个失败');
+            btn.click();
+            const items = [...document.querySelectorAll('.tool-detail-item')];
+            expect(items.map((item) => item.dataset.status)).toEqual(['failed', 'skipped']);
+            expect(items[1].querySelector('.tool-detail-skipped-msg').textContent).toBe(
+                '同一批中前面的桌面动作失败，此动作未执行'
+            );
         });
     });
 });

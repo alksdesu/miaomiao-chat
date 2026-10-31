@@ -1070,8 +1070,8 @@
                                 <span>启用 Computer Use</span>
                             </div>
                             <p class="settings-hint">
-                                ⚠️ 允许 AI 执行命令和编辑文件<br />仅支持 Claude API + Electron
-                                环境（Gemini/OpenAI 支持通过自定义工具）
+                                ⚠️ 允许 AI 截屏、操作鼠标键盘、执行命令和编辑文件<br />仅支持 Claude
+                                API + Electron 环境（Gemini/OpenAI 支持通过自定义工具）
                             </p>
 
                             <!-- 权限控制 -->
@@ -1087,6 +1087,31 @@
                                 >
                                     <div class="toggle-row">
                                         <label class="switch">
+                                            <input type="checkbox" id="allow-screenshot" checked />
+                                            <span class="slider"></span>
+                                        </label>
+                                        <span>允许截取屏幕</span>
+                                    </div>
+                                    <div class="toggle-row">
+                                        <label class="switch">
+                                            <input type="checkbox" id="allow-mouse" checked />
+                                            <span class="slider"></span>
+                                        </label>
+                                        <span>允许控制鼠标</span>
+                                    </div>
+                                    <div class="toggle-row">
+                                        <label class="switch">
+                                            <input type="checkbox" id="allow-keyboard" checked />
+                                            <span class="slider"></span>
+                                        </label>
+                                        <span>允许控制键盘</span>
+                                    </div>
+                                    <p class="settings-hint" id="computer-use-gui-off-hint" hidden>
+                                        截图、鼠标、键盘都已关闭：Claude
+                                        不再获得桌面操作工具，命令与文件编辑不受影响
+                                    </p>
+                                    <div class="toggle-row">
+                                        <label class="switch">
                                             <input type="checkbox" id="allow-bash" checked />
                                             <span class="slider"></span>
                                         </label>
@@ -1098,6 +1123,19 @@
                                             <span class="slider"></span>
                                         </label>
                                         <span>允许编辑文件</span>
+                                    </div>
+                                    <div class="toggle-row">
+                                        <label class="switch">
+                                            <input
+                                                type="checkbox"
+                                                id="bash-require-confirmation"
+                                                checked
+                                            />
+                                            <span class="slider"></span>
+                                        </label>
+                                        <span
+                                            >每个操作执行前都需要确认（截图、鼠标、键盘、命令、文件编辑）</span
+                                        >
                                     </div>
                                 </div>
                             </details>
@@ -1166,14 +1204,6 @@
                                             border-radius: 4px;
                                         "
                                     />
-
-                                    <div class="toggle-row" style="margin-top: 12px">
-                                        <label class="switch">
-                                            <input type="checkbox" id="bash-require-confirmation" />
-                                            <span class="slider"></span>
-                                        </label>
-                                        <span>命令执行前需要确认（安全选项）</span>
-                                    </div>
                                 </div>
                             </details>
 
@@ -1189,8 +1219,8 @@
                             >
                                 <p style="margin: 0; font-size: 11px; color: var(--md-text)">
                                     <strong>安全提示：</strong>Computer Use 具有系统级权限，AI
-                                    可以执行 Shell 命令和修改文件。请仅在受控环境下使用，并注意监控
-                                    AI 的行为。
+                                    可以操作鼠标键盘、截取屏幕、执行 Shell
+                                    命令和修改文件。请仅在受控环境下使用，并注意监控 AI 的行为。
                                 </p>
                             </div>
                         </div>

@@ -37,7 +37,8 @@ vi.mock('../../js/tools/computer-actions.js', () => ({
 vi.mock('../../js/core/state.js', () => ({
     state: {
         apiFormat: 'openai',
-        xmlToolCallingEnabled: false
+        xmlToolCallingEnabled: false,
+        computerUseEnabled: true
     }
 }));
 
@@ -45,7 +46,9 @@ import { getTool } from '../../js/tools/manager.js';
 import { safeValidate } from '../../js/tools/validator.js';
 import { recordToolCall } from '../../js/tools/history.js';
 import { isElectron } from '../../js/utils/platform.js';
+import { confirmToolExecutionIfRequired } from '../../js/tools/permissions.js';
 import { executeComputerAction } from '../../js/tools/computer-actions.js';
+import { state } from '../../js/core/state.js';
 import {
     executeTool,
     executeToolsBatch,
@@ -54,10 +57,14 @@ import {
     executeCancelable
 } from '../../js/tools/executor.js';
 
+const abortError = () => new DOMException('Tool execution aborted', 'AbortError');
+
 beforeEach(() => {
     vi.clearAllMocks();
     // clearAllMocks 不重置 mockReturnValue，需手动还原默认
     safeValidate.mockReturnValue({ valid: true, errors: [] });
+    confirmToolExecutionIfRequired.mockImplementation(async () => true);
+    state.computerUseEnabled = true;
 });
 
 describe('executeTool', () => {
@@ -75,9 +82,12 @@ describe('executeTool', () => {
         expect(result).toEqual(mockResult);
     });
 
-    it('工具不存在时抛出错误', async () => {
+    it('工具不存在时抛出错误，带 TOOL_NOT_FOUND 代码供 orchestrator 分类', async () => {
         getTool.mockReturnValue(null);
         await expect(executeTool('nonexistent', {})).rejects.toThrow('工具不存在');
+        await expect(executeTool('nonexistent', {})).rejects.toMatchObject({
+            code: 'TOOL_NOT_FOUND'
+        });
     });
 
     it('参数验证失败时抛出错误', async () => {
@@ -156,6 +166,40 @@ describe('executeTool', () => {
             expect.objectContaining({ sessionId: 'source-session', toolId: 'computer' })
         );
     });
+
+    it('工具自身的权限检查不通过时不弹确认也不执行', async () => {
+        const call = vi.fn();
+        getTool.mockReturnValue({
+            id: 'computer',
+            name: 'computer',
+            call,
+            checkPermissions: () => ({
+                allowed: false,
+                message: '无权限执行工具 "computer"：Computer Use 未开启'
+            }),
+            inputSchema: { type: 'object', properties: {} }
+        });
+
+        await expect(
+            executeTool('computer', { action: 'bash', text: 'ls' }, { isXmlMode: true })
+        ).rejects.toThrow('Computer Use 未开启');
+        expect(confirmToolExecutionIfRequired).not.toHaveBeenCalled();
+        expect(call).not.toHaveBeenCalled();
+    });
+
+    it('确认期间停止时抛 AbortError，不降级放行', async () => {
+        const call = vi.fn();
+        getTool.mockReturnValue({
+            id: 'search',
+            name: 'search',
+            call,
+            inputSchema: { type: 'object', properties: {} }
+        });
+        confirmToolExecutionIfRequired.mockRejectedValueOnce(abortError());
+
+        await expect(executeTool('search', {})).rejects.toMatchObject({ name: 'AbortError' });
+        expect(call).not.toHaveBeenCalled();
+    });
 });
 
 describe('executeTool Claude 原生 computer 工具', () => {
@@ -199,6 +243,59 @@ describe('executeTool Claude 原生 computer 工具', () => {
         ).rejects.toThrow('仅在 Electron 环境中可用');
         expect(executeComputerAction).not.toHaveBeenCalled();
     });
+
+    const native = (signal) => ({ apiFormat: 'claude', isXmlMode: false, signal });
+
+    it('已停止时不确认也不执行', async () => {
+        const controller = new AbortController();
+        controller.abort();
+
+        await expect(
+            executeTool('computer', { action: 'left_click' }, native(controller.signal))
+        ).rejects.toMatchObject({ name: 'AbortError' });
+        expect(confirmToolExecutionIfRequired).not.toHaveBeenCalled();
+        expect(executeComputerAction).not.toHaveBeenCalled();
+    });
+
+    it('确认期间停止时抛 AbortError，而不是当成用户拒绝', async () => {
+        confirmToolExecutionIfRequired.mockRejectedValueOnce(abortError());
+
+        const error = await executeTool(
+            'computer',
+            { action: 'type', text: 'x' },
+            native(new AbortController().signal)
+        ).catch((e) => e);
+
+        expect(error.name).toBe('AbortError');
+        expect(error.message).not.toContain('用户拒绝');
+        expect(executeComputerAction).not.toHaveBeenCalled();
+    });
+
+    it('确认通过后已被停止时不执行', async () => {
+        const controller = new AbortController();
+        confirmToolExecutionIfRequired.mockImplementationOnce(async () => {
+            controller.abort();
+            return true;
+        });
+
+        await expect(
+            executeTool('computer', { action: 'key', text: 'Return' }, native(controller.signal))
+        ).rejects.toMatchObject({ name: 'AbortError' });
+        expect(executeComputerAction).not.toHaveBeenCalled();
+    });
+
+    it.each(['computer', 'bash', 'str_replace_based_edit_tool'])(
+        '关闭 Computer Use 后拒绝执行原生工具 %s',
+        async (toolId) => {
+            state.computerUseEnabled = false;
+
+            await expect(executeTool(toolId, { action: 'screenshot' }, native())).rejects.toThrow(
+                'Computer Use 已关闭'
+            );
+            expect(confirmToolExecutionIfRequired).not.toHaveBeenCalled();
+            expect(executeComputerAction).not.toHaveBeenCalled();
+        }
+    );
 });
 
 describe('executeToolsBatch', () => {

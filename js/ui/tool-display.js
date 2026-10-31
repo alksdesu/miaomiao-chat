@@ -29,6 +29,20 @@ const TOOL_DISPLAY_NAMES = {
 // 每个 group DOM 元素 → 详情数据
 const toolCallsDataMap = new WeakMap();
 
+/**
+ * 没有执行或被停止的工具结果在界面上按"未执行"展示；发给模型的英文原文不变
+ * @param {Object} [result] orchestrator 产出的失败结果
+ * @returns {string|null} 中文原因，普通失败返回 null
+ */
+function describeNotRunResult(result) {
+    if (result?.is_error !== true) return null;
+    if (result.error_kind === 'not_executed') return '同一批中前面的桌面动作失败，此动作未执行';
+    if (result.error_kind === 'aborted') {
+        return result.executed === false ? '请求已停止，此动作未执行' : '请求已停止，执行被中止';
+    }
+    return null;
+}
+
 // 计时器管理
 const groupTimers = new Map();
 
@@ -184,14 +198,15 @@ export function updateToolCallStatus(toolId, status, data = {}, scope = null) {
         eventBus.emit('tool:status:changed', { toolId, status: 'failed', error: data.error });
     }
 
-    // 多回复模式 BufferedSink 拦截的工具调用：灰色「未执行」UI，不计 failed 避免误导
+    // 多回复模式拦截、批量动作中止、请求停止的工具调用：灰色「未执行」UI，不计 failed 避免误导
     if (status === 'skipped') {
         toolInfo.status = 'skipped';
-        toolInfo.error = data.error || '多回复模式未执行此工具';
+        toolInfo.error =
+            data.error || describeNotRunResult(data.result) || '多回复模式未执行此工具';
         toolInfo.duration = ((Date.now() - toolInfo.startTime) / 1000).toFixed(1);
         gData.skippedCount++;
 
-        eventBus.emit('tool:status:changed', { toolId, status: 'skipped', error: data.error });
+        eventBus.emit('tool:status:changed', { toolId, status: 'skipped', error: toolInfo.error });
     }
 
     if (status === 'executing') {
@@ -721,7 +736,7 @@ function startGroupTimer(group) {
     const timer = setInterval(() => {
         const data = toolCallsDataMap.get(group);
         if (!data) return;
-        const done = data.completedCount + data.failedCount;
+        const done = data.completedCount + data.failedCount + data.skippedCount;
         if (done >= data.totalCount) return;
 
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -787,8 +802,11 @@ export async function restoreToolCallsGroup(toolCalls, contentDiv) {
     };
 
     for (const tc of toolCalls) {
-        // 'skipped' result 含 skipped:true 标记或顶层 status='skipped'，提取友好错误文案
-        const isSkipped = tc.status === 'skipped' || tc.result?.skipped === true;
+        // 'skipped' result 含 skipped:true 标记或顶层 status='skipped'，提取友好错误文案；
+        // 批量动作中止、请求停止的结果落库时是 error 状态，按 error_kind 还原成未执行
+        const notRunReason = describeNotRunResult(tc.result);
+        const isSkipped =
+            tc.status === 'skipped' || tc.result?.skipped === true || notRunReason !== null;
         const toolInfo = {
             id: tc.id,
             name: tc.name,
@@ -796,7 +814,7 @@ export async function restoreToolCallsGroup(toolCalls, contentDiv) {
             status: isSkipped ? 'skipped' : tc.status || 'completed',
             result: tc.result || null,
             error: isSkipped
-                ? tc.error || tc.result?.content || '多回复模式未执行此工具'
+                ? notRunReason || tc.error || tc.result?.content || '多回复模式未执行此工具'
                 : tc.error
                   ? tc.error.message || tc.error
                   : null,

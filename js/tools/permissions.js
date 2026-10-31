@@ -27,14 +27,28 @@
  */
 
 import { state } from '../core/state.js';
+import { eventBus } from '../core/events.js';
+import { EVENTS } from '../core/events-registry.js';
 import { savePreference, loadPreference } from '../state/storage.js';
 import { showConfirmDialog } from '../utils/dialogs.js';
+import { throwIfAbortedBeforeRun } from '../utils/abort.js';
 import { logger } from '../utils/logger.js';
+import { describeComputerAction } from './computer-actions.js';
+import { resolveBashCommand, resolveInsertText } from './computer-commands.js';
 
-import { TOOL_CONFIRM_DIALOG_TIMEOUT } from '../utils/constants.js';
+import { TOOL_CONFIRM_DIALOG_TIMEOUT, CLAUDE_NATIVE_TOOL_IDS } from '../utils/constants.js';
 
 // Claude computer-use 的 3 件原生工具：bashConfig.requireConfirmation 仅对它们生效
-const NATIVE_TOOL_IDS = new Set(['computer', 'bash', 'str_replace_based_edit_tool']);
+const NATIVE_TOOL_IDS = new Set(CLAUDE_NATIVE_TOOL_IDS);
+
+const GLOBAL_SESSION_KEY = '__global__';
+const CONFIRM_TOOL_LABELS = Object.freeze({
+    computer: '桌面操作',
+    bash: '命令行',
+    str_replace_based_edit_tool: '文件编辑'
+});
+const CONFIRM_PREVIEW_LIMIT = 1000;
+const FILE_CONTENT_PREVIEW_LIMIT = 300;
 
 function isPermissionPatch(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -55,10 +69,9 @@ function isPermissionPatch(value) {
 
 const sessionGrantedTools = new Map();
 const turnApprovalCaches = new Map();
-let legacyTurnId = null;
 
 function getSessionKey(sessionId) {
-    return sessionId || '__global__';
+    return sessionId || GLOBAL_SESSION_KEY;
 }
 
 function getSessionGrants(sessionId) {
@@ -67,8 +80,10 @@ function getSessionGrants(sessionId) {
     return sessionGrantedTools.get(key);
 }
 
+// 同一轮请求内同参数复用确认结果；拿不到轮次 id 时不复用，否则旧的批准会沿用到之后的请求
 function getTurnCache(sessionId, turnId) {
-    const key = `${getSessionKey(sessionId)}:${turnId || legacyTurnId || '__turn__'}`;
+    if (!turnId) return new Map();
+    const key = `${getSessionKey(sessionId)}:${turnId}`;
     if (!turnApprovalCaches.has(key)) {
         if (turnApprovalCaches.size >= 64) {
             turnApprovalCaches.delete(turnApprovalCaches.keys().next().value);
@@ -97,20 +112,8 @@ function hashArgs(args) {
 }
 
 /**
- * 进入新 turn 边界时调用，幂等：同 turnId 重复调用不清缓存
- * 由 chat 发送入口（api:send-requested handler）传入新 requestId 触发
- * @param {string|number} turnId - 本轮请求的唯一标识
- */
-export function resetTurnApprovalCache(turnId) {
-    if (turnId !== legacyTurnId) {
-        turnApprovalCaches.clear();
-        legacyTurnId = turnId;
-    }
-}
-
-/**
- * 切换会话时调用，清空"本次会话全部允许"集合 + turn 缓存
- * 避免授权跨会话残留，符合"会话级"语义
+ * 清空某个会话"本次会话全部允许"的授权与它的 turn 缓存
+ * 授权按会话 id 隔离，切换会话不清空：后台继续运行的任务仍属于原会话，沿用原会话的授权
  */
 export function resetSessionGrants(sessionId = state.currentSessionId) {
     const sessionKey = getSessionKey(sessionId);
@@ -118,6 +121,112 @@ export function resetSessionGrants(sessionId = state.currentSessionId) {
     for (const key of turnApprovalCaches.keys()) {
         if (key.startsWith(`${sessionKey}:`)) turnApprovalCaches.delete(key);
     }
+}
+
+/**
+ * 会话被删除（本标签页或其他标签页）后，它的授权随之失效
+ */
+function pruneDeletedSessionGrants() {
+    const liveSessionKeys = new Set(
+        (state.sessions || []).map((session) => getSessionKey(session?.id))
+    );
+    for (const sessionKey of [...sessionGrantedTools.keys()]) {
+        if (sessionKey !== GLOBAL_SESSION_KEY && !liveSessionKeys.has(sessionKey)) {
+            resetSessionGrants(sessionKey);
+            logger.debug(`[Permissions] 会话已删除，清除其工具授权: ${sessionKey}`);
+        }
+    }
+}
+
+eventBus.on(EVENTS.SESSIONS_UPDATED, pruneDeletedSessionGrants);
+
+// ========== 确认弹窗文案 ==========
+
+function previewText(value, limit = CONFIRM_PREVIEW_LIMIT) {
+    const text = String(value);
+    return text.length > limit ? `${text.slice(0, limit)}…（共 ${text.length} 字）` : text;
+}
+
+function describeShellCommand(command) {
+    return typeof command === 'string' && command.trim()
+        ? `执行命令：\n${previewText(command)}`
+        : null;
+}
+
+function describeFileEdit(input = {}) {
+    const { command, path, file_text, old_str, new_str, insert_line } = input;
+    if (typeof path !== 'string' || !path.trim()) return null;
+    const preview = (label, value) =>
+        typeof value === 'string'
+            ? `\n${label}：${previewText(value, FILE_CONTENT_PREVIEW_LIMIT)}`
+            : '';
+    switch (command) {
+        case 'view':
+            return `查看 ${path}`;
+        case 'create':
+            return `创建文件 ${path}${preview('内容', file_text)}`;
+        case 'str_replace':
+            return `修改文件 ${path}${preview('原文', old_str)}${preview('改为', new_str)}`;
+        case 'insert':
+            return `在 ${path} 第 ${insert_line ?? '?'} 行后插入文本${preview('内容', resolveInsertText(input))}`;
+        case 'undo_edit':
+            return `撤销对 ${path} 的上次修改`;
+        default:
+            return null;
+    }
+}
+
+/**
+ * Computer Use 相关工具写成人能读懂的一句话；无法识别时返回 null，退回参数摘要
+ * XML 模式的内置 computer 工具用 action 区分命令与改文件，原生 computer 的 action 是桌面动作
+ * @returns {{ label: string, description: string }|null}
+ */
+function describeToolAction(toolId, args) {
+    const input = args && typeof args === 'object' ? args : {};
+    let label = CONFIRM_TOOL_LABELS[toolId];
+    let description = null;
+    if (toolId === 'computer' && input.action === 'bash') {
+        label = CONFIRM_TOOL_LABELS.bash;
+        description = describeShellCommand(resolveBashCommand(input));
+    } else if (toolId === 'computer' && input.action === 'str_replace_editor') {
+        label = CONFIRM_TOOL_LABELS.str_replace_based_edit_tool;
+        description = describeFileEdit(input);
+    } else if (toolId === 'computer') {
+        description = describeComputerAction(input.action, input);
+    } else if (toolId === 'bash') {
+        description =
+            input.restart === true
+                ? '重启命令行会话'
+                : describeShellCommand(resolveBashCommand(input));
+    } else if (toolId === 'str_replace_based_edit_tool') {
+        description = describeFileEdit(input);
+    }
+    return label && description ? { label, description } : null;
+}
+
+function summarizeArgs(args) {
+    try {
+        const s = typeof args === 'string' ? args : JSON.stringify(args);
+        return s.length > 200 ? s.slice(0, 200) + '…' : s;
+    } catch {
+        return '[args 无法序列化]';
+    }
+}
+
+function describeSourceSession(sessionId) {
+    const name = state.sessions?.find?.((session) => session?.id === sessionId)?.name;
+    const label = name || '未命名会话';
+    return sessionId && sessionId !== state.currentSessionId ? `${label}（后台运行）` : label;
+}
+
+function buildConfirmMessage(toolId, toolName, args, sessionId) {
+    const action = describeToolAction(toolId, args);
+    const lines = [
+        `会话：${describeSourceSession(sessionId)}`,
+        action ? `工具：${action.label}` : `工具：${toolName}`,
+        action ? `操作：${action.description}` : `参数：${summarizeArgs(args)}`
+    ];
+    return `${lines.join('\n')}\n\n是否允许执行？`;
 }
 
 /**
@@ -135,17 +244,23 @@ export function resetSessionGrants(sessionId = state.currentSessionId) {
  * 此 helper 由 executor.executeTool 在权限检查通过后调用，返回 false 时 executor
  * 抛 "用户拒绝执行" 走 ERROR 路径，UI tool-display 显示 'failed' 状态。
  *
+ * 停止请求与用户拒绝分开：signal 已中止（包括弹窗因停止而关闭）时抛 AbortError，
+ * 不返回 false，也不写入任何缓存或授权
+ *
  * @param {string} toolId
  * @param {string} toolName
  * @param {Object} args - 工具参数（用于摘要展示给用户）
  * @param {object} [options]
- * @param {AbortSignal} [options.signal] - 用户点停止按钮 → abort → 关闭对话框 resolve(false)
- * @returns {Promise<boolean>} true = 批准执行，false = 用户拒绝/超时/abort
+ * @param {AbortSignal} [options.signal] - 用户点停止按钮 → abort → 关闭对话框并抛 AbortError
+ * @param {string} [options.sessionId] - 工具调用所属会话，弹窗里标出会话名
+ * @param {string} [options.turnId] - 本轮请求 id，同轮同参数复用确认结果
+ * @returns {Promise<boolean>} true = 批准执行，false = 用户拒绝/超时
  */
 export async function confirmToolExecutionIfRequired(toolId, toolName, args, options = {}) {
+    const { signal } = options;
+    throwIfAbortedBeforeRun(signal);
     const sessionId = options.sessionId ?? state.currentSessionId;
     const grants = getSessionGrants(sessionId);
-    const approvalCache = getTurnCache(sessionId, options.turnId);
     // 本会话已授权 → 直接放行（不进缓存判定，省一次 hash 计算）
     if (grants.has(toolId)) return true;
 
@@ -156,34 +271,28 @@ export async function confirmToolExecutionIfRequired(toolId, toolName, args, opt
     if (!needConfirm) return true;
 
     // 同 turn 同参数复用历史决定（含拒绝）
+    const approvalCache = getTurnCache(sessionId, options.turnId);
     const cacheKey = toolId + ':' + hashArgs(args);
     if (approvalCache.has(cacheKey)) return approvalCache.get(cacheKey);
 
-    let argsSummary = '';
-    try {
-        const s = typeof args === 'string' ? args : JSON.stringify(args);
-        argsSummary = s.length > 200 ? s.slice(0, 200) + '…' : s;
-    } catch {
-        argsSummary = '[args 无法序列化]';
-    }
-
     const result = await showConfirmDialog(
-        `工具：${toolName}\n参数：${argsSummary}\n\n是否允许执行？`,
+        buildConfirmMessage(toolId, toolName, args, sessionId),
         '工具调用确认',
         {
-            signal: options.signal,
+            signal,
             timeoutMs: TOOL_CONFIRM_DIALOG_TIMEOUT,
+            // 用户可能正在输入框里打字，回车不能直接放行
+            defaultFocus: 'cancel',
             allowSessionPersistOption: {
                 label: '本次会话全部允许',
                 key: 'persist'
             }
         }
     );
+    throwIfAbortedBeforeRun(signal);
 
     // 兼容 dialog 两种返回形态：boolean（未传 option）/ {confirmed, persistForSession}（传了 option）
-    const confirmed =
-        !options.signal?.aborted &&
-        (typeof result === 'object' && result !== null ? !!result.confirmed : !!result);
+    const confirmed = typeof result === 'object' && result !== null ? !!result.confirmed : !!result;
     const persistForSession =
         typeof result === 'object' && result !== null ? !!result.persistForSession : false;
 

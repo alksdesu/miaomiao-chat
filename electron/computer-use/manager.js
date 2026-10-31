@@ -260,11 +260,9 @@ class ComputerUseManager {
 
     /**
      * 释放鼠标按钮
+     * 不检查权限：权限中途被关掉时也必须能松开已经按下的按钮
      */
     async releaseMouseButton(button = 'left') {
-        if (!this.checkPermission('mouse')) {
-            throw new Error('Mouse permission denied');
-        }
         return await mouse.releaseButton(button);
     }
 
@@ -300,11 +298,9 @@ class ComputerUseManager {
 
     /**
      * 释放按键
+     * 不检查权限：权限中途被关掉时也必须能松开已经按住的键
      */
     async releaseKey(key) {
-        if (!this.checkPermission('keyboard')) {
-            throw new Error('Keyboard permission denied');
-        }
         return await keyboard.release(key);
     }
 

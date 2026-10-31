@@ -207,6 +207,9 @@ describe('MCPClient', () => {
 
         it('工具不存在抛错', async () => {
             await expect(client.callTool('server__tool', {})).rejects.toThrow('工具不存在');
+            await expect(client.callTool('server__tool', {})).rejects.toMatchObject({
+                code: 'TOOL_NOT_FOUND'
+            });
         });
 
         it('斜杠格式 ID 也能解析', async () => {

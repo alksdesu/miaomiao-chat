@@ -12,7 +12,7 @@ vi.mock('../../js/core/state.js', () => ({
         codeExecutionEnabled: false,
         computerUseEnabled: false,
         computerUsePermissions: { bash: true, textEditor: true },
-        bashConfig: { workingDirectory: '', timeout: 30, requireConfirmation: false }
+        bashConfig: { workingDirectory: '', timeout: 30, requireConfirmation: true }
     }
 }));
 
@@ -53,6 +53,9 @@ vi.mock('../../js/utils/platform.js', () => ({
 }));
 
 import { elements } from '../../js/core/elements.js';
+import { state } from '../../js/core/state.js';
+import { saveCurrentConfig } from '../../js/state/config.js';
+import { isElectron } from '../../js/utils/platform.js';
 import { toggleSettings, initSettings, cleanupSettings } from '../../js/ui/settings.js';
 
 beforeEach(() => {
@@ -216,5 +219,102 @@ describe('cleanupSettings', () => {
     it('多次清理不报错', () => {
         cleanupSettings();
         cleanupSettings();
+    });
+});
+
+describe('Computer Use 权限开关', () => {
+    const GUI_TOGGLES = ['allow-screenshot', 'allow-mouse', 'allow-keyboard'];
+
+    function toggle(id, checked) {
+        const checkbox = document.getElementById(id);
+        checkbox.checked = checked;
+        checkbox.dispatchEvent(new Event('change'));
+    }
+
+    beforeEach(() => {
+        isElectron.mockReturnValue(true);
+        window.electronAPI = {
+            computerUse_updatePermissions: vi.fn(async () => ({ success: true })),
+            computerUse_updateBashConfig: vi.fn(async () => ({ success: true }))
+        };
+        // 旧配置只有 bash / textEditor 两项
+        state.computerUsePermissions = { bash: true, textEditor: false };
+        state.bashConfig = { workingDirectory: '', timeout: 30, requireConfirmation: true };
+        document.body.innerHTML = `
+            <input type="checkbox" id="allow-screenshot" />
+            <input type="checkbox" id="allow-mouse" />
+            <input type="checkbox" id="allow-keyboard" />
+            <p id="computer-use-gui-off-hint" hidden></p>
+            <input type="checkbox" id="allow-bash" />
+            <input type="checkbox" id="allow-text-editor" />
+            <input type="checkbox" id="bash-require-confirmation" />
+        `;
+    });
+
+    afterEach(() => {
+        isElectron.mockReturnValue(false);
+        delete window.electronAPI;
+    });
+
+    it('旧配置缺少的三项按开启显示，初始化时把五项权限显式推送给主进程', () => {
+        initSettings();
+
+        GUI_TOGGLES.forEach((id) => expect(document.getElementById(id).checked).toBe(true));
+        expect(document.getElementById('allow-text-editor').checked).toBe(false);
+        expect(document.getElementById('bash-require-confirmation').checked).toBe(true);
+        expect(document.getElementById('computer-use-gui-off-hint').hidden).toBe(true);
+        expect(window.electronAPI.computerUse_updatePermissions).toHaveBeenCalledWith({
+            screenshot: true,
+            mouse: true,
+            keyboard: true,
+            bash: true,
+            textEditor: false
+        });
+        expect(window.electronAPI.computerUse_updateBashConfig).toHaveBeenCalledTimes(1);
+    });
+
+    it('切换开关写入 state 并推送主进程，三项全关时显示提示', () => {
+        initSettings();
+        window.electronAPI.computerUse_updatePermissions.mockClear();
+
+        GUI_TOGGLES.forEach((id) => toggle(id, false));
+
+        expect(state.computerUsePermissions).toMatchObject({
+            screenshot: false,
+            mouse: false,
+            keyboard: false
+        });
+        expect(window.electronAPI.computerUse_updatePermissions).toHaveBeenCalledTimes(3);
+        expect(window.electronAPI.computerUse_updatePermissions).toHaveBeenLastCalledWith({
+            screenshot: false,
+            mouse: false,
+            keyboard: false,
+            bash: true,
+            textEditor: false
+        });
+        expect(saveCurrentConfig).toHaveBeenCalledTimes(3);
+        expect(document.getElementById('computer-use-gui-off-hint').hidden).toBe(false);
+
+        toggle('allow-mouse', true);
+        expect(document.getElementById('computer-use-gui-off-hint').hidden).toBe(true);
+    });
+
+    it('主进程返回失败时记录警告', async () => {
+        const { logger } = await import('../../js/utils/logger.js');
+        const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+        window.electronAPI.computerUse_updatePermissions.mockResolvedValue({
+            success: false,
+            error: 'Computer Use 权限 mouse 必须是布尔值'
+        });
+
+        initSettings();
+
+        await vi.waitFor(() =>
+            expect(warn).toHaveBeenCalledWith(
+                expect.stringContaining('computerUsePermissions'),
+                'Computer Use 权限 mouse 必须是布尔值'
+            )
+        );
+        warn.mockRestore();
     });
 });

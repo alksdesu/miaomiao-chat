@@ -2,7 +2,7 @@
  * utils/dialogs.js 对话框测试
  */
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../js/utils/modal-stack.js', () => ({
     bindTopmostEscape: vi.fn(() => vi.fn())
@@ -205,5 +205,71 @@ describe('showConfirmDialog', () => {
         modal.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
         expect(await promise).toBe(false);
+    });
+
+    describe('默认焦点', () => {
+        afterEach(() => {
+            vi.useRealTimers();
+        });
+
+        it('默认聚焦确定按钮', async () => {
+            vi.useFakeTimers();
+            const { confirmBtn, cancelBtn } = createDialogDOM('confirm');
+
+            const promise = showConfirmDialog('确认？');
+            vi.advanceTimersByTime(100);
+
+            expect(document.activeElement).toBe(confirmBtn);
+            cancelBtn.click();
+            await promise;
+        });
+
+        it("defaultFocus='cancel' 时聚焦取消按钮", async () => {
+            vi.useFakeTimers();
+            const { confirmBtn, cancelBtn } = createDialogDOM('confirm');
+
+            const promise = showConfirmDialog('允许执行？', '工具调用确认', {
+                defaultFocus: 'cancel'
+            });
+            vi.advanceTimersByTime(100);
+
+            expect(document.activeElement).toBe(cancelBtn);
+            confirmBtn.click();
+            await promise;
+        });
+    });
+
+    it('排队中的确认被中止时立即返回取消，不等前一个对话框关闭', async () => {
+        const { cancelBtn } = createDialogDOM('confirm');
+        const first = showConfirmDialog('第一个？');
+        const controller = new AbortController();
+        const queued = showConfirmDialog('第二个？', '确认', {
+            signal: controller.signal,
+            allowSessionPersistOption: { label: '本次会话全部允许', key: 'persist' }
+        });
+
+        controller.abort();
+
+        await expect(queued).resolves.toEqual({ confirmed: false, persistForSession: false });
+        expect(document.getElementById('confirm-dialog-message').textContent).toBe('第一个？');
+        cancelBtn.click();
+        await expect(first).resolves.toBe(false);
+    });
+
+    it('排队中的确认在前一个关闭后照常显示', async () => {
+        const { confirmBtn, cancelBtn } = createDialogDOM('confirm');
+        const first = showConfirmDialog('第一个？');
+        const second = showConfirmDialog('第二个？', '确认', {
+            signal: new AbortController().signal
+        });
+
+        cancelBtn.click();
+        await first;
+        await vi.waitFor(() =>
+            expect(document.getElementById('confirm-dialog-message').textContent).toBe('第二个？')
+        );
+        confirmBtn.click();
+
+        await expect(second).resolves.toBe(true);
     });
 });

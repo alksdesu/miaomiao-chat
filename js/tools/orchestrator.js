@@ -12,10 +12,12 @@ import { logger } from '../utils/logger.js';
 import { eventBus } from '../core/events.js';
 import { executeTool } from './executor.js';
 import {
+    COMPUTER_ABORT_MESSAGE,
     COMPUTER_HALT_MESSAGE,
     COMPUTER_IMAGE_ACTIONS,
     executeComputerAction,
-    isComputerToolsetCall
+    isComputerToolsetCall,
+    releaseHeldMouseButton
 } from './computer-actions.js';
 import { snapshotBeforeToolCall } from './undo.js';
 import { createToolCallUI, updateToolCallStatus } from '../ui/tool-display.js';
@@ -23,11 +25,15 @@ import { state } from '../core/state.js';
 import { updateMessageAt } from '../core/state-mutations.js';
 import { requestStateMachine, RequestState } from '../core/request-state-machine.js';
 import { requestTaskRegistry } from '../core/request-task-registry.js';
-import { TOOL_INLINE_IMAGE_MAX, TOOL_INLINE_IMAGE_TOTAL_MAX } from '../utils/constants.js';
+import {
+    TOOL_INLINE_IMAGE_MAX,
+    TOOL_INLINE_IMAGE_TOTAL_MAX,
+    CLAUDE_NATIVE_TOOL_IDS
+} from '../utils/constants.js';
 import { validateToolPairings, ToolMode } from '../messages/schema.js';
 import { applyToolResultsToMessages } from '../messages/tool-results.js';
 import { writeToolResultsToBackgroundSession } from '../messages/sync.js';
-import { getCurrentProvider, getCurrentActiveApiKey } from '../api/current.js';
+import { isToolNotFoundError } from './tool-errors.js';
 
 // 模块级指针：仅保存"最后一个 in-flight controller"，供 abortToolExecution 外部触发取消
 // 所有读 .signal/.aborted 必须走 handleToolCallStream 内的局部 ctrl，杜绝 await 让出后被覆盖/清空的 null 竞态
@@ -48,9 +54,10 @@ export function abortToolExecution(task = null) {
  * 支持MCP标准格式和Claude Code Execution格式
  * @param {Object} result - 工具执行结果
  * @param {string} toolName - 工具名称
+ * @param {Object} [fileSource] - 下载 Claude 文件用的请求来源，见 downloadClaudeFile
  * @returns {Promise<Object>} 增强后的结果
  */
-async function enrichToolResultWithFiles(result, toolName) {
+async function enrichToolResultWithFiles(result, toolName, fileSource = {}) {
     const unwrapResultPayload = (rawResult) => {
         if (!rawResult || typeof rawResult !== 'object') return rawResult;
         if (Array.isArray(rawResult.content)) return rawResult;
@@ -259,7 +266,7 @@ async function enrichToolResultWithFiles(result, toolName) {
 
                         try {
                             // 下载文件
-                            const fileData = await downloadClaudeFile(item.file_id);
+                            const fileData = await downloadClaudeFile(item.file_id, fileSource);
                             if (fileData) {
                                 images.push({
                                     type: 'image_url',
@@ -290,25 +297,48 @@ async function enrichToolResultWithFiles(result, toolName) {
 }
 
 /**
- * 下载 Claude 文件
+ * Files API 与请求端点同源同前缀：.../v1/messages → .../v1/files/{id}
+ * @param {string} messagesEndpoint - 发起请求时锁定的 messages 端点
  * @param {string} fileId - 文件 ID
+ * @returns {string}
+ */
+function resolveClaudeFileUrl(messagesEndpoint, fileId) {
+    const url = new URL(messagesEndpoint);
+    const basePath = url.pathname.replace(/\/messages\/?$/, '');
+    if (basePath === url.pathname) {
+        throw new Error('请求端点不是 messages 地址，无法定位 Files API');
+    }
+    url.pathname = `${basePath}/files/${encodeURIComponent(fileId)}`;
+    url.hash = '';
+    return url.toString();
+}
+
+/**
+ * 下载 Claude 文件：端点与密钥取自该任务发起请求时锁定的来源，
+ * 请求途中切换渠道也不会把其他渠道的密钥发出去
+ * @param {string} fileId - 文件 ID
+ * @param {Object} [source]
+ * @param {Object|null} [source.requestOrigin] - task.requestOrigin（endpoint / apiKey / requestFormat）
+ * @param {Object|null} [source.customHeaders] - 请求快照里的自定义请求头
  * @returns {Promise<string>} Base64 编码的文件内容
  */
-async function downloadClaudeFile(fileId) {
-    // 从当前提供商获取 API key，而非硬编码 claude
-    const provider = getCurrentProvider();
-    const apiKey = provider ? getCurrentActiveApiKey(provider.id) : state.apiKeys?.claude;
+async function downloadClaudeFile(fileId, { requestOrigin = null, customHeaders = null } = {}) {
+    if (requestOrigin?.requestFormat !== 'claude') {
+        throw new Error('只能下载 Claude 请求产生的文件');
+    }
+    const apiKey = requestOrigin.apiKey;
     if (!apiKey) {
         throw new Error('Claude API key not found');
     }
 
     try {
-        const response = await fetch(`https://api.anthropic.com/v1/files/${fileId}`, {
+        const response = await fetch(resolveClaudeFileUrl(requestOrigin.endpoint, fileId), {
             headers: {
                 'x-api-key': apiKey,
                 'anthropic-version': '2023-06-01',
                 'anthropic-beta': 'files-api-2025-04-14',
-                'anthropic-dangerous-direct-browser-access': 'true'
+                'anthropic-dangerous-direct-browser-access': 'true',
+                ...(customHeaders || {})
             }
         });
 
@@ -347,7 +377,13 @@ function getComputerActionKind(toolCall) {
  * 工具集批量动作没有以截图或放大结束时，最后一个动作的结果附带一张截图，模型据此确认动作效果
  */
 async function appendClosingScreenshot(result, signal) {
-    if (signal?.aborted || state.computerUsePermissions?.screenshot === false) return result;
+    if (
+        signal?.aborted ||
+        !state.computerUseEnabled ||
+        state.computerUsePermissions?.screenshot === false
+    ) {
+        return result;
+    }
     try {
         const screenshot = await executeComputerAction('screenshot', {}, { signal });
         return { ...result, media: [...(result?.media || []), ...screenshot.media] };
@@ -360,11 +396,18 @@ async function appendClosingScreenshot(result, signal) {
 /**
  * 执行工具调用并渲染 UI：普通工具并行执行，computer 动作按顺序逐个执行
  * @param {Array} toolCalls - 工具调用列表
+ * @param {Object} [options]
+ * @param {AbortSignal|null} [options.signal] - 停止请求后排队中的 computer 动作不再执行
+ * @param {Object|null} [options.requestOrigin] - task.requestOrigin，下载 Claude 文件时使用
  * @returns {Promise<Array>} 工具结果列表
  */
 export async function executeToolCalls(toolCalls, options = {}) {
     logger.debug(`[Orchestrator] 🔧 并行执行 ${toolCalls.length} 个工具调用`);
     const externalSignal = options.signal || null;
+    const fileSource = {
+        requestOrigin: options.requestOrigin || null,
+        customHeaders: options.requestProfile?.customHeaders || null
+    };
     const hasScopedRenderer = typeof options.resolveTargetContainer === 'function';
     const resolveTargetContainer = () => {
         const target = hasScopedRenderer
@@ -487,7 +530,7 @@ export async function executeToolCalls(toolCalls, options = {}) {
             logger.debug(`[Orchestrator] 工具执行成功: ${name}`, result);
 
             // 检测并处理多媒体内容（图片、视频等）
-            const enrichedResult = await enrichToolResultWithFiles(result, name);
+            const enrichedResult = await enrichToolResultWithFiles(result, name, fileSource);
 
             // 更新 UI 为成功状态（使用 enriched 结果以正确渲染图片）
             try {
@@ -516,14 +559,6 @@ export async function executeToolCalls(toolCalls, options = {}) {
                 args: JSON.stringify(args, null, 2)
             });
 
-            // 更新 UI 为失败状态
-            updateToolUi(id, 'failed', {
-                error: error.message,
-                errorCode: error.code,
-                toolName: name,
-                toolArgs: args
-            });
-
             // 错误语义分级：AbortError / 用户拒绝 是用户主动决策（非工具技术故障），
             // 给 LLM 明确信号避免它把"被中断/被拒"误读为可重试的瞬态故障
             // AbortError：用户点停止 / 切会话 / 超时触发 abortController → DOMException name='AbortError'
@@ -535,9 +570,16 @@ export async function executeToolCalls(toolCalls, options = {}) {
                 !isAbortError &&
                 typeof error.message === 'string' &&
                 error.message.includes('用户拒绝');
+            // 停止发生在动作开始之前（确认弹窗期间、出队时）：动作没有执行
+            const notExecuted = isAbortError && error.notExecuted === true;
 
             let errorMessage;
-            if (isAbortError) {
+            if (notExecuted) {
+                errorMessage = computerKind
+                    ? COMPUTER_ABORT_MESSAGE
+                    : `Tool "${name}" was not executed: the user stopped the request before it ran. ` +
+                      `This is not a tool failure. Do NOT retry unless the user asks again.`;
+            } else if (isAbortError) {
                 errorMessage =
                     `Tool "${name}" was aborted by the user (request cancellation or session switch). ` +
                     `This is not a tool failure. Do NOT retry. ` +
@@ -548,8 +590,9 @@ export async function executeToolCalls(toolCalls, options = {}) {
                     `The user does NOT want this tool to run. Do NOT retry this tool call. ` +
                     `Please respond to the user WITHOUT using this tool, ` +
                     `using an alternative approach or asking what the user prefers.`;
-            } else if (computerKind) {
-                // computer 动作失败只回报原因，模型据此换一种操作继续，而不是放弃整个任务
+            } else if (computerKind || CLAUDE_NATIVE_TOOL_IDS.includes(name)) {
+                // computer 动作、命令与文件编辑失败只回报原因（如 old_str 不唯一），
+                // 模型据此调整参数继续，而不是放弃整个任务
                 errorMessage = `Error: ${error.message}`;
             } else if (error.message.includes('Missing required parameter')) {
                 errorMessage =
@@ -557,11 +600,7 @@ export async function executeToolCalls(toolCalls, options = {}) {
                     `This is a parameter schema issue, not a temporary error. ` +
                     `Do NOT retry this tool call. Please respond to the user explaining the issue. ` +
                     `Error details: ${error.message}`;
-            } else if (
-                error.message.includes('不存在') ||
-                error.message.includes('not found') ||
-                error.message.includes('not available')
-            ) {
+            } else if (isToolNotFoundError(error)) {
                 errorMessage =
                     `Tool "${name}" is not available or not registered. ` +
                     `This tool cannot be used. Do NOT retry this tool. ` +
@@ -573,46 +612,79 @@ export async function executeToolCalls(toolCalls, options = {}) {
                     `Do NOT retry this tool call. Please respond to the user based on this error.`;
             }
 
-            return {
-                id,
-                name,
-                result: {
-                    error: errorMessage,
-                    is_error: true,
-                    original_error: error.message,
-                    error_kind: isAbortError
-                        ? 'aborted'
-                        : isUserRejected
-                          ? 'user_rejected'
-                          : 'execution_failed',
-                    failed_args: args
-                },
-                isError: true
+            const result = {
+                error: errorMessage,
+                is_error: true,
+                original_error: error.message,
+                error_kind: isAbortError
+                    ? 'aborted'
+                    : isUserRejected
+                      ? 'user_rejected'
+                      : 'execution_failed',
+                failed_args: args,
+                ...(notExecuted ? { executed: false } : {})
             };
+            // 停止请求不是工具故障，界面按已中止展示
+            if (isAbortError) {
+                updateToolUi(id, 'skipped', { result });
+            } else {
+                updateToolUi(id, 'failed', {
+                    error: error.message,
+                    errorCode: error.code,
+                    toolName: name,
+                    toolArgs: args
+                });
+            }
+
+            return { id, name, result, isError: true };
         }
     };
 
-    const haltToolsetCall = ({ id, name }) => {
-        updateToolUi(id, 'failed', { error: COMPUTER_HALT_MESSAGE, toolName: name });
-        return {
-            id,
-            name,
-            result: { error: COMPUTER_HALT_MESSAGE, is_error: true, error_kind: 'not_executed' },
-            isError: true
-        };
+    // 没有执行的 computer 动作：界面显示未执行，发给模型的仍是英文原文
+    const skipComputerCall = ({ id, name }, result) => {
+        updateToolUi(id, 'skipped', { result });
+        return { id, name, result, isError: true };
     };
+    const haltToolsetCall = (toolCall) =>
+        skipComputerCall(toolCall, {
+            error: COMPUTER_HALT_MESSAGE,
+            is_error: true,
+            error_kind: 'not_executed'
+        });
+    const abortQueuedComputerCall = (toolCall) =>
+        skipComputerCall(toolCall, {
+            error: COMPUTER_ABORT_MESSAGE,
+            is_error: true,
+            error_kind: 'aborted',
+            executed: false
+        });
 
     // 第三步：普通工具并行执行；computer 动作排队按顺序执行，
-    // 工具集批量动作中一个失败后，其余动作是在它成功的前提下规划的，不再执行
+    // 工具集批量动作中一个失败后，其余动作是在它成功的前提下规划的，不再执行；
+    // 停止请求后，排队中的动作一律不再执行
     let computerQueue = Promise.resolve();
     let toolsetFailed = false;
+    const runQueuedComputerCall = async (toolCall, computerKind) => {
+        if (computerKind === 'toolset' && toolsetFailed) return haltToolsetCall(toolCall);
+        if (externalSignal?.aborted) return abortQueuedComputerCall(toolCall);
+        const outcome = await runToolCall(toolCall);
+        // 被停止不是动作失败：后续动作按已停止回复，而不是前一个动作失败的中止文字
+        if (
+            computerKind === 'toolset' &&
+            outcome.isError &&
+            outcome.result?.error_kind !== 'aborted'
+        ) {
+            toolsetFailed = true;
+        }
+        return outcome;
+    };
     const executionPromises = toolCalls.map((toolCall) => {
         const computerKind = getComputerActionKind(toolCall);
         if (!computerKind) return runToolCall(toolCall);
         const queued = computerQueue.then(async () => {
-            if (computerKind === 'toolset' && toolsetFailed) return haltToolsetCall(toolCall);
-            const outcome = await runToolCall(toolCall);
-            if (computerKind === 'toolset' && outcome.isError) toolsetFailed = true;
+            const outcome = await runQueuedComputerCall(toolCall, computerKind);
+            // 动作没按计划走完时，left_mouse_down 按下的左键不能一直按着
+            if (outcome.isError) await releaseHeldMouseButton();
             return outcome;
         });
         computerQueue = queued;
@@ -620,6 +692,8 @@ export async function executeToolCalls(toolCalls, options = {}) {
     });
 
     const results = await Promise.all(executionPromises);
+    // 停止后不会再有后续动作松开左键
+    if (externalSignal?.aborted) await releaseHeldMouseButton();
 
     logger.debug(`[Orchestrator] 🎉 所有工具执行完成: ${results.length}/${toolCalls.length}`);
 
@@ -748,6 +822,7 @@ export async function handleToolCallStream(toolCalls, context = {}) {
             signal: ctrl.signal,
             sessionId: sourceSessionId,
             turnId: task?.id || null,
+            requestOrigin: task?.requestOrigin || null,
             requestProfile: task?.requestProfile || null,
             resolveTargetContainer,
             captureUndo: !!resolveTargetContainer()

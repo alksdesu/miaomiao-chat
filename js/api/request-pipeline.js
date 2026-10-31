@@ -153,11 +153,15 @@ function collectPrefill(apiFormat) {
 
 /**
  * 收集工具列表：adapter.collectBuiltinTools + getToolsForAPI + adapter.formatSystemTools
+ * 内置工具已占用的名字不再分给 MCP / 自定义工具，同名请求会被拒绝
  */
 function collectTools(adapter, stateRef, profile, notices) {
     const tools = [...adapter.collectBuiltinTools(stateRef, { profile, notices })];
     try {
-        const systemTools = getToolsForAPI(adapter.apiFormat);
+        const reservedNames = tools
+            .map((tool) => tool?.name)
+            .filter((name) => typeof name === 'string' && name);
+        const systemTools = getToolsForAPI(adapter.apiFormat, { reservedNames });
         tools.push(...adapter.formatSystemTools(systemTools));
     } catch (error) {
         logger.warn(`[${adapter.name}] 工具系统未加载:`, error);
@@ -167,7 +171,7 @@ function collectTools(adapter, stateRef, profile, notices) {
 
 /**
  * 需要声明显示器尺寸的 computer 工具按回传截图的尺寸声明；同一任务的续作沿用首次取到的尺寸，
- * 工具定义前后一致
+ * 工具定义前后一致。只缓存取到的尺寸，失败时本次按窗口所在屏幕声明，下次请求再取
  * @returns {Promise<Object|null>} fetchScreenGeometry 的结果，取不到时为 null
  */
 async function resolveComputerDisplay(requestProfile, tools) {
@@ -175,7 +179,7 @@ async function resolveComputerDisplay(requestProfile, tools) {
     if (!computerUse?.declaresDisplay || !tools.some((tool) => tool?.type === computerUse.type)) {
         return null;
     }
-    if (requestProfile.computerDisplay === undefined) {
+    if (!requestProfile.computerDisplay) {
         try {
             requestProfile.computerDisplay = await fetchScreenGeometry();
         } catch (error) {
@@ -183,7 +187,7 @@ async function resolveComputerDisplay(requestProfile, tools) {
                 '[RequestPipeline] 获取截图尺寸失败，computer 工具按窗口所在屏幕声明:',
                 error
             );
-            requestProfile.computerDisplay = null;
+            return null;
         }
     }
     return requestProfile.computerDisplay;

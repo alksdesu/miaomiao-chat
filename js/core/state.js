@@ -178,7 +178,7 @@ const _rawState = {
     bashConfig: {
         workingDirectory: '', // 默认工作目录（空表示应用根目录）
         timeout: 30, // 超时时间（秒）
-        requireConfirmation: true // 是否需要用户确认
+        requireConfirmation: true // Computer Use 每个操作（截图、鼠标、键盘、命令、文件编辑）执行前确认
     },
 
     // 工具调用兜底
